@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local plotting/runtime cache
+.matplotlib/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local generated data
+outputs/
+_uploads/
+
+# Release/package artifacts
+release/
+build/
+dist/
+*.zip
+
+# Embedded/local runtimes
+_tools/
+
+# Local backup or scratch files
+run_web_backup_before_replace.py
+*.tmp
+*.log
+
+# Desktop launcher runtime cache
+.webview2/
+desktop_runtime/
+
+# Local tool/editor state
+.vscode/
+.idea/
+.agents/
