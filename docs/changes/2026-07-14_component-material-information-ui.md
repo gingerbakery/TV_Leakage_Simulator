@@ -23,3 +23,8 @@
   - `Base materials`
   - `Surface properties`
   - `BSDF assets`
+
+## 2026-07-14 추가 수정 (`v0.7.9`)
+- ROI 설정 메뉴가 초기 화면에서 자동으로 열리지 않도록 변경했다.
+- 세로형 메뉴에서 모든 메뉴가 닫힌 상태도 허용하도록 sidebar open 상태 보정 로직을 제거했다.
+- 가로형 메뉴 전환 시에는 기존처럼 `ROI 설정`을 기준 탭으로 사용할 수 있도록 active tab 값은 유지했다.

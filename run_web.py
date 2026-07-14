@@ -21,7 +21,7 @@ from leakage_simulator.materials import default_material_library
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.7.8"
+WEB_UI_VERSION = "0.7.9"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
@@ -1219,7 +1219,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         </div>
         <div class=\"sidebar-nav-shell\" id=\"sidebarNavShell\" data-layout=\"vertical\">
           <div class=\"sidebar-tabs\" id=\"sideTabBar\">
-            <button type=\"button\" class=\"side-tab-btn active\" data-side-tab=\"roi\">ROI 설정</button>
+            <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"roi\">ROI 설정</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"components\">Components</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"transform_manager\">Transform manager</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"material\">Material library</button>
@@ -1227,8 +1227,8 @@ def _build_html_form(material_options: str, version: str) -> str:
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"result\">Result</button>
           </div>
 
-          <div class=\"side-tab-panel active\" data-side-panel=\"roi\">
-          <button type=\"button\" class=\"accordion-btn active\" data-side-tab=\"roi\">ROI 설정</button>
+          <div class=\"side-tab-panel\" data-side-panel=\"roi\">
+          <button type=\"button\" class=\"accordion-btn\" data-side-tab=\"roi\">ROI 설정</button>
           <div class=\"side-panel-body\">
           <div class=\"card\">
           <div class=\"step\">Step 2</div>
@@ -2213,7 +2213,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       transform: {{ yaw: 0.7, pitch: 0.4, distance: 1.8 }},
       sidebarLayout: 'vertical',
       activeSideTab: 'roi',
-      openSidePanels: new Set(['roi']),
+      openSidePanels: new Set(),
       selectedMaterialObjectId: null,
       materialTargetMode: 'part',
       materialAssignments: [],
@@ -2467,9 +2467,6 @@ def _build_html_form(material_options: str, version: str) -> str:
       const buttons = sidebarLayoutToggle.querySelectorAll('[data-layout]');
       for (const button of buttons) {{
         button.classList.toggle('active', button.getAttribute('data-layout') === state.sidebarLayout);
-      }}
-      if (state.sidebarLayout === 'vertical' && !state.openSidePanels.size) {{
-        state.openSidePanels.add(state.activeSideTab || 'roi');
       }}
       syncSidePanels();
     }}
