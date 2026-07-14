@@ -21,7 +21,7 @@ from leakage_simulator.materials import default_material_library
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.7.10"
+WEB_UI_VERSION = "0.7.11"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
@@ -152,22 +152,31 @@ def _build_html_form(material_options: str, version: str) -> str:
       --accent: #2563eb;
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{
+      height: 100%;
+    }}
     body {{
       margin: 0;
       background: #f1f5f9;
       color: var(--ink);
       font-family: "Segoe UI", Arial, sans-serif;
+      overflow: hidden;
     }}
     .app {{
       display: grid;
       grid-template-columns: 460px 1fr;
-      min-height: 100vh;
+      height: 100vh;
+      min-height: 0;
+      overflow: hidden;
     }}
     .panel {{
       background: white;
       border-right: 1px solid var(--line);
       padding: 16px;
-      overflow: auto;
+      height: 100vh;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
     }}
     .toolbar {{
       display: flex;
@@ -451,14 +460,22 @@ def _build_html_form(material_options: str, version: str) -> str:
     .viewer-wrap {{
       position: relative;
       background: #020617;
-      min-height: 100vh;
+      height: 100vh;
+      min-height: 0;
+      min-width: 0;
       color: #f8fafc;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }}
     .viewer-inner {{
-      height: calc(100vh - 52px);
+      flex: 1;
+      min-height: 0;
       padding: 12px;
+      overflow: hidden;
     }}
     .viewer-head {{
+      flex: 0 0 auto;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -1117,8 +1134,8 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
     .viewer-stage {{
       position: relative;
-      height: calc(100vh - 145px);
-      min-height: 520px;
+      height: 100%;
+      min-height: 0;
     }}
     .viewer-card {{
       position: absolute;

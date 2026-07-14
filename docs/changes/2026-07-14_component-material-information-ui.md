@@ -33,3 +33,8 @@
 - 3D viewer 하단에 따로 노출되던 `World coordinates` 정보를 viewer 내부 상단 overlay로 이동했다.
 - 기본 표시를 `Center / Size` 한 줄 요약으로 바꾸고, 상세 `Origin / Center / BBox`는 클릭해서 펼쳐보는 방식으로 정리했다.
 - 큰 모델이나 긴 페이지에서도 좌표 정보를 보기 위해 스크롤을 많이 내려야 하는 문제를 줄였다.
+
+## 2026-07-14 추가 수정 (`v0.7.11`)
+- 좌측 메뉴 panel과 우측 3D viewer의 스크롤을 완전히 분리했다.
+- 전체 page/body 스크롤을 막고, 좌측 panel만 독립적으로 세로 스크롤되도록 변경했다.
+- 우측 3D viewer는 viewport 높이에 고정되어 좌측 메뉴를 많이 펼쳐도 모델 view가 아래로 밀리지 않도록 했다.
