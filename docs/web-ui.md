@@ -53,3 +53,7 @@
   - 3D observer view
   - ray path overlay
   - before/after compare 고도화
+
+## Three.js 전환
+- 3D viewer는 `docs/viewer-data-contract.md`의 `mesh-scene.v1`을 기준으로 단계 전환한다.
+- 세부 전환 계획은 `docs/threejs-viewer-migration.md`를 따른다.

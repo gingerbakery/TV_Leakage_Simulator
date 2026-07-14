@@ -76,6 +76,7 @@
   - 시감도
   - 색온도/색좌표
 - GUI:
+  - Three.js 기반 viewer
   - 관측 시점 렌더
   - ray path overlay
   - before/after compare 고도화
