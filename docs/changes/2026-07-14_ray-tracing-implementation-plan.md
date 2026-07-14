@@ -53,3 +53,31 @@
 ## 다음 작업 업데이트
 - 다음 단계는 `RT-1: 면 emitter + direct receiver hit` 구현이다.
 - synthetic plane emitter/receiver 기준으로 direct hit heatmap을 먼저 구현한다.
+
+## RT-1 구현 완료
+- `src/leakage_simulator/raytracer.py`에 direct ray tracing V1 진입점을 추가했다.
+- 추가된 코드:
+  - `DirectRayTraceInput`
+  - `run_direct_ray_trace()`
+  - 면 광원 face 면적 가중 sampling
+  - `lambertian`, `isotropic`, `gaussian` 방향 sampling
+  - rectangular receiver plane 교차 판정
+  - receiver grid bin별 `flux_lumen` 누적
+  - receiver별 `peak_nit_est`, `mean_nit_est`, `p95_nit_est` metrics
+- 아직 반사/산란 surface hit는 계산하지 않는다.
+- optical property는 결과 계약에 포함되지만 direct hit 감쇄에는 아직 적용하지 않는다.
+
+## RT-1 검증
+- `tests/test_raytracer_rt1.py`를 추가했다.
+- 정면 receiver case:
+  - gaussian face emitter에서 receiver hit가 발생하는지 확인했다.
+  - `peak_nit_est > 0`을 확인했다.
+- 후면 receiver case:
+  - emitter normal 반대편 receiver에는 direct hit가 발생하지 않는지 확인했다.
+- 실행 명령:
+  - `python -m unittest discover -s tests -p "test_*.py" -v`
+
+## 다음 작업 업데이트
+- 선택지 A: Ray tracing UI에 RT-1 emitter/receiver 입력을 연결한다.
+- 선택지 B: RT-2로 넘어가 1회 반사와 optical property 감쇄를 구현한다.
+- 추천은 A를 짧게 붙인 뒤 B로 넘어가는 것이다. 그래야 UI에서 emitter/receiver 설정 감각을 빠르게 확인할 수 있다.

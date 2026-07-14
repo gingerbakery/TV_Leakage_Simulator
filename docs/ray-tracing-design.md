@@ -247,6 +247,25 @@ RT-0 주의사항:
 - receiver를 뒤쪽에 두면 hit ratio가 낮아야 한다.
 - ray count가 증가하면 heatmap noise가 감소해야 한다.
 
+구현 위치:
+- `src/leakage_simulator/raytracer.py`
+- `tests/test_raytracer_rt1.py`
+
+RT-1 구현 상태:
+- `DirectRayTraceInput` 추가
+- `run_direct_ray_trace()` 추가
+- 면 광원 face 면적 가중 sampling 추가
+- `lambertian`, `isotropic`, `gaussian` 방향 sampling 추가
+- rectangular receiver plane intersection 추가
+- receiver grid bin별 `flux_lumen` 누적 추가
+- receiver별 `peak_nit_est`, `mean_nit_est`, `p95_nit_est`, `total_flux_lumen`, `hit_count` metrics 추가
+
+RT-1 한계:
+- 반사/산란 후 재추적은 아직 수행하지 않는다.
+- CAD geometry와의 occlusion/intersection은 아직 direct receiver hit 이전에 차단하지 않는다.
+- optical property는 결과 계약에 포함되지만 direct hit 감쇄에는 아직 사용하지 않는다.
+- 이 한계는 `RT-2: 1회 반사와 optical property`에서 해소한다.
+
 ### Phase RT-2: 1회 반사와 optical property
 목표:
 - ray-triangle intersection을 추가한다.
@@ -345,8 +364,8 @@ src/leakage_simulator/raytracing/
 
 ## 우선 구현 순서
 1. `Phase RT-0` 데이터 구조를 `types.py`에 추가한다. `[완료]`
-2. synthetic plane emitter/receiver 테스트를 만든다.
-3. direct ray hit 기반 receiver heatmap을 JSON/CSV로 출력한다.
+2. synthetic plane emitter/receiver 테스트를 만든다. `[완료]`
+3. direct ray hit 기반 receiver heatmap을 JSON/CSV로 출력한다. `[부분 완료: ReceiverGrid/metrics in-memory 출력]`
 4. Web UI의 Ray tracing 메뉴에 최소 입력값을 연결한다.
 5. 그 다음 material reflectance와 1회 반사를 붙인다.
 
@@ -362,4 +381,4 @@ src/leakage_simulator/raytracing/
 - V1은 파이썬 자체 ray tracing으로 시작한다.
 - 정확도 검증을 위해 알고리즘을 투명하게 유지한다.
 - 속도 병목이 확인된 지점에만 BVH/NumPy/Numba/Open3D 같은 가속을 붙인다.
-- 다음 실제 개발 단계는 `Phase RT-1: 면 emitter + direct receiver hit`이다.
+- 다음 실제 개발 단계는 `Phase RT-2: 1회 반사 + optical property` 또는 `RT-1 UI 연결`이다.

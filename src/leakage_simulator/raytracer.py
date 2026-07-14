@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import math
 import random
 import time
@@ -9,13 +9,17 @@ import time
 from .geometry import (
     TriangleMesh,
     vec_add,
+    vec_cross,
     vec_dot,
+    vec_len,
     vec_mul,
     vec_norm,
     vec_reflect,
+    vec_sub,
     clamp01,
 )
 from .types import EmitterConfig, GapRule, MaterialProfile, ReceiverMetrics, RunConfig, ReceiverPatchConfig, Vec3, fresh_run_id
+from .types import EmitterSpec, OpticalProfile, RayHit, RayTraceConfig, RayTraceResult, ReceiverGrid, ReceiverSpec
 from .types import SimulationOutput, RunResultSummary, random_unit_vector
 from .gap import GapSample, sample_gap_profiles
 
@@ -41,6 +45,23 @@ class RayPathEvent:
     energy: float
     depth: int
     is_receiver: bool
+
+
+@dataclass
+class DirectRayTraceInput:
+    mesh: TriangleMesh
+    emitters: List[EmitterSpec]
+    receivers: List[ReceiverSpec]
+    optical_profiles: List[OpticalProfile]
+    config: RayTraceConfig
+    project_name: str = "TV-Leakage-RT1"
+
+
+@dataclass
+class ReceiverFrame:
+    receiver: ReceiverSpec
+    u_axis: Vec3
+    v_axis: Vec3
 
 
 def run_simulation(engine_input: EngineInput) -> SimulationOutput:
@@ -106,6 +127,270 @@ def run_simulation(engine_input: EngineInput) -> SimulationOutput:
         receiver_hits=receiver_hits,
         config=engine_input.config,
     )
+
+
+def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
+    start_time = time.time()
+    rng = random.Random(trace_input.config.seed)
+    receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
+    receiver_grids = {
+        receiver.receiver_id: ReceiverGrid.empty(receiver)
+        for receiver in trace_input.receivers
+        if receiver.enabled
+    }
+    stored_paths: List[List[RayHit]] = []
+    total_rays = 0
+    receiver_hit_count = 0
+    terminated_ray_count = 0
+
+    for emitter in trace_input.emitters:
+        if not emitter.enabled:
+            continue
+        emitter_rng = random.Random(emitter.seed if emitter.seed is not None else rng.randint(0, 2**31 - 1))
+        face_weights = _build_emitter_face_weights(trace_input.mesh, emitter.face_indices)
+        ray_power = emitter.power_lumen / float(emitter.ray_count)
+        for _ in range(emitter.ray_count):
+            total_rays += 1
+            ray = _sample_face_emitter_ray(trace_input.mesh, emitter, face_weights, emitter_rng, trace_input.config.epsilon_mm)
+            if ray is None:
+                terminated_ray_count += 1
+                continue
+            origin, direction, source_face = ray
+            hit = _first_receiver_hit(
+                origin=origin,
+                direction=direction,
+                power_lumen=ray_power,
+                source_face=source_face,
+                receivers=receiver_frames,
+                grids=receiver_grids,
+                config=trace_input.config,
+            )
+            if hit is None:
+                terminated_ray_count += 1
+                continue
+            receiver_hit_count += 1
+            if trace_input.config.store_ray_paths and len(stored_paths) < trace_input.config.max_stored_paths:
+                stored_paths.append([hit])
+
+    grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
+    metrics = _build_direct_metrics(grids, trace_input.config)
+    return RayTraceResult(
+        run_id=fresh_run_id("rt1"),
+        config=trace_input.config,
+        emitters=trace_input.emitters,
+        receivers=trace_input.receivers,
+        receiver_grids=grids,
+        optical_profiles=trace_input.optical_profiles,
+        total_rays=total_rays,
+        receiver_hit_count=receiver_hit_count,
+        surface_hit_count=0,
+        terminated_ray_count=terminated_ray_count,
+        runtime_sec=time.time() - start_time,
+        stored_paths=stored_paths,
+        metrics=metrics,
+    )
+
+
+def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
+    normal = vec_norm(receiver.normal)
+    reference = (0.0, 0.0, 1.0)
+    if abs(vec_dot(normal, reference)) > 0.95:
+        reference = (0.0, 1.0, 0.0)
+    u_axis = vec_norm(vec_cross(reference, normal))
+    v_axis = vec_norm(vec_cross(normal, u_axis))
+    return ReceiverFrame(receiver=receiver, u_axis=u_axis, v_axis=v_axis)
+
+
+def _build_emitter_face_weights(mesh: TriangleMesh, face_indices: List[int]) -> List[Tuple[int, float]]:
+    weighted: List[Tuple[int, float]] = []
+    total_area = 0.0
+    for face_index in face_indices:
+        if face_index < 0 or face_index >= len(mesh.faces):
+            continue
+        area = max(0.0, mesh.area(face_index))
+        if area <= 0.0:
+            continue
+        total_area += area
+        weighted.append((face_index, total_area))
+    if total_area <= 0.0:
+        return []
+    return [(face_index, cumulative / total_area) for face_index, cumulative in weighted]
+
+
+def _choose_weighted_face(face_weights: List[Tuple[int, float]], rng: random.Random) -> Optional[int]:
+    if not face_weights:
+        return None
+    value = rng.random()
+    for face_index, cumulative in face_weights:
+        if value <= cumulative:
+            return face_index
+    return face_weights[-1][0]
+
+
+def _sample_face_emitter_ray(
+    mesh: TriangleMesh,
+    emitter: EmitterSpec,
+    face_weights: List[Tuple[int, float]],
+    rng: random.Random,
+    epsilon_mm: float,
+) -> Optional[Tuple[Vec3, Vec3, int]]:
+    face_index = _choose_weighted_face(face_weights, rng)
+    if face_index is None:
+        return None
+    a, b, c = mesh.face_vertices(face_index)
+    r1 = rng.random()
+    r2 = rng.random()
+    sqrt_r1 = math.sqrt(r1)
+    point = (
+        (1.0 - sqrt_r1) * a[0] + sqrt_r1 * (1.0 - r2) * b[0] + sqrt_r1 * r2 * c[0],
+        (1.0 - sqrt_r1) * a[1] + sqrt_r1 * (1.0 - r2) * b[1] + sqrt_r1 * r2 * c[1],
+        (1.0 - sqrt_r1) * a[2] + sqrt_r1 * (1.0 - r2) * b[2] + sqrt_r1 * r2 * c[2],
+    )
+    normal = emitter.custom_normal if emitter.normal_mode == "custom" and emitter.custom_normal is not None else mesh.normal(face_index)
+    normal = vec_norm(normal)
+    if emitter.normal_flip:
+        normal = vec_mul(normal, -1.0)
+    direction = _sample_emitter_direction(rng, emitter, normal)
+    origin = vec_add(point, vec_mul(normal, epsilon_mm))
+    return origin, direction, face_index
+
+
+def _sample_emitter_direction(rng: random.Random, emitter: EmitterSpec, normal: Vec3) -> Vec3:
+    if emitter.direction_distribution == "isotropic":
+        return random_unit_vector(rng)
+    if emitter.direction_distribution == "gaussian":
+        return _sample_gaussian_cone(rng, normal, emitter.gaussian_sigma_deg)
+    return _sample_cosine_weighted_hemisphere(rng, normal)
+
+
+def _orthonormal_basis(normal: Vec3) -> Tuple[Vec3, Vec3, Vec3]:
+    w = vec_norm(normal)
+    helper = (0.0, 0.0, 1.0)
+    if abs(vec_dot(w, helper)) > 0.95:
+        helper = (0.0, 1.0, 0.0)
+    u = vec_norm(vec_cross(helper, w))
+    v = vec_norm(vec_cross(w, u))
+    return u, v, w
+
+
+def _sample_cosine_weighted_hemisphere(rng: random.Random, normal: Vec3) -> Vec3:
+    u_axis, v_axis, w_axis = _orthonormal_basis(normal)
+    r1 = rng.random()
+    r2 = rng.random()
+    radius = math.sqrt(r1)
+    phi = 2.0 * math.pi * r2
+    x = radius * math.cos(phi)
+    y = radius * math.sin(phi)
+    z = math.sqrt(max(0.0, 1.0 - r1))
+    return vec_norm(
+        vec_add(
+            vec_add(vec_mul(u_axis, x), vec_mul(v_axis, y)),
+            vec_mul(w_axis, z),
+        )
+    )
+
+
+def _sample_gaussian_cone(rng: random.Random, normal: Vec3, sigma_deg: float) -> Vec3:
+    u_axis, v_axis, w_axis = _orthonormal_basis(normal)
+    sigma_rad = math.radians(max(1e-6, sigma_deg))
+    theta = abs(rng.gauss(0.0, sigma_rad))
+    theta = min(theta, math.pi * 0.5)
+    phi = rng.uniform(0.0, 2.0 * math.pi)
+    sin_t = math.sin(theta)
+    direction = vec_add(
+        vec_add(vec_mul(u_axis, sin_t * math.cos(phi)), vec_mul(v_axis, sin_t * math.sin(phi))),
+        vec_mul(w_axis, math.cos(theta)),
+    )
+    return vec_norm(direction)
+
+
+def _first_receiver_hit(
+    origin: Vec3,
+    direction: Vec3,
+    power_lumen: float,
+    source_face: int,
+    receivers: List[ReceiverFrame],
+    grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+) -> Optional[RayHit]:
+    best_hit: Optional[RayHit] = None
+    best_grid_cell: Optional[Tuple[ReceiverGrid, int, int, float]] = None
+    for frame in receivers:
+        receiver = frame.receiver
+        denom = vec_dot(direction, receiver.normal)
+        if abs(denom) < 1e-12:
+            continue
+        t = vec_dot(vec_sub(receiver.center, origin), receiver.normal) / denom
+        if t <= config.epsilon_mm:
+            continue
+        point = vec_add(origin, vec_mul(direction, t))
+        local = vec_sub(point, receiver.center)
+        u = vec_dot(local, frame.u_axis)
+        v = vec_dot(local, frame.v_axis)
+        half_width = receiver.width_mm * 0.5
+        half_height = receiver.height_mm * 0.5
+        if u < -half_width or u > half_width or v < -half_height or v > half_height:
+            continue
+        cos_accept = max(0.0, -vec_dot(direction, receiver.normal))
+        min_cos = math.cos(math.radians(receiver.acceptance_angle_deg))
+        if cos_accept < min_cos:
+            continue
+        if best_hit is not None and t >= best_hit.distance_mm:
+            continue
+        columns, rows = receiver.resolution
+        col = min(columns - 1, max(0, int(((u + half_width) / receiver.width_mm) * columns)))
+        row = min(rows - 1, max(0, int(((v + half_height) / receiver.height_mm) * rows)))
+        received_power = power_lumen * cos_accept
+        best_hit = RayHit(
+            face_index=-1,
+            component_id=None,
+            material_id=None,
+            point=point,
+            normal=receiver.normal,
+            distance_mm=t,
+            incoming_energy_lumen=power_lumen,
+            outgoing_energy_lumen=0.0,
+            depth=0,
+            event_type="receiver",
+            receiver_id=receiver.receiver_id,
+        )
+        best_grid_cell = (grids[receiver.receiver_id], row, col, received_power)
+
+    if best_hit is None or best_grid_cell is None:
+        return None
+    grid, row, col, received_power = best_grid_cell
+    grid.flux_lumen[row][col] += received_power
+    grid.hit_count += 1
+    return best_hit
+
+
+def _build_direct_metrics(grids: List[ReceiverGrid], config: RayTraceConfig) -> Dict[str, Dict[str, float]]:
+    metrics: Dict[str, Dict[str, float]] = {}
+    for grid in grids:
+        values = [value for row in grid.flux_lumen for value in row]
+        bin_area_m2 = grid.bin_area_mm2 * 1e-6
+        nit_values = [
+            config.k_abs * config.k_brdf * (flux / max(bin_area_m2, 1e-18)) / math.pi
+            for flux in values
+        ]
+        sorted_nits = sorted(nit_values)
+        peak = max(nit_values) if nit_values else 0.0
+        mean = sum(nit_values) / float(len(nit_values)) if nit_values else 0.0
+        if sorted_nits:
+            p95_index = min(len(sorted_nits) - 1, int(math.ceil(0.95 * len(sorted_nits))) - 1)
+            p95 = sorted_nits[p95_index]
+        else:
+            p95 = 0.0
+        area_above_zero = sum(1 for value in values if value > 0.0) * grid.bin_area_mm2
+        metrics[grid.receiver_id] = {
+            "peak_nit_est": peak,
+            "mean_nit_est": mean,
+            "p95_nit_est": p95,
+            "total_flux_lumen": sum(values),
+            "hit_count": float(grid.hit_count),
+            "area_above_zero_mm2": area_above_zero,
+        }
+    return metrics
     summary = RunResultSummary(
         run_id=run_id,
         total_rays=total_rays,
