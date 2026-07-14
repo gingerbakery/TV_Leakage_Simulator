@@ -15,3 +15,11 @@
 - Python compile
 - inline JavaScript syntax check
 - HTML 생성 시 `Component tree help`, `Material library help`, `Information` 접이식 메뉴 존재 확인
+
+## 2026-07-14 추가 수정 (`v0.7.8`)
+- Component 메뉴의 `Information`을 제목 바로 아래로 다시 이동했다.
+- Transform manager의 `Information`과 `Advanced`를 제목 바로 아래로 이동했다.
+- Material library의 하위 tree 항목들을 기본 닫힘 상태로 변경했다.
+  - `Base materials`
+  - `Surface properties`
+  - `BSDF assets`

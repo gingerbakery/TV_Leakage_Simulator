@@ -21,7 +21,7 @@ from leakage_simulator.materials import default_material_library
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.7.7"
+WEB_UI_VERSION = "0.7.8"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
@@ -1283,14 +1283,14 @@ def _build_html_form(material_options: str, version: str) -> str:
           <input id=\"gapTiltCombined\" name=\"gap_tilt_xyz\" type=\"hidden\" value=\"0,0,0\" />
           <input name=\"gap_nominal\" type=\"hidden\" value=\"0.0\" />
           <div id=\"gapModeHint\" class=\"move-sub hidden-block\">Transform 방식과 selection mode는 오른쪽 3D viewer popup에서 설정합니다.</div>
-          <label>Component Tree</label>
-          <div id=\"gapObjectList\" class=\"object-list\">
-            <div class=\"small\">Load CAD first</div>
-          </div>
           <details>
             <summary>Information</summary>
             <div id=\"componentSelectionSummary\" class=\"move-summary\">선택된 부품 없음</div>
           </details>
+          <label>Component Tree</label>
+          <div id=\"gapObjectList\" class=\"object-list\">
+            <div class=\"small\">Load CAD first</div>
+          </div>
         </div>
           </div>
           </div>
@@ -1309,6 +1309,19 @@ def _build_html_form(material_options: str, version: str) -> str:
               상세 상태는 아래 <b>Information</b>을 열어 확인하세요.
             </div>
           </div>
+          <details>
+            <summary>Information</summary>
+            <div id=\"transformSelectionSummary\" class=\"move-summary\">Transform rule 없음. Components 탭에서 `Transform`을 눌러 시작하세요.</div>
+            <div class=\"move-summary\" id=\"gapMoveSummary\">선택된 대상 없음</div>
+          </details>
+          <details>
+            <summary>Advanced</summary>
+            <div class=\"grid\" style=\"margin-top: 8px;\">
+              <div class=\"row\"><label>Gap sigma</label><input name=\"gap_sigma\" type=\"number\" step=\"0.01\" value=\"0.03\"></div>
+              <div class=\"row\"><label>Gap transmissive threshold</label><input name=\"gap_transmissive_threshold\" type=\"number\" step=\"0.01\" value=\"0.4\"></div>
+            </div>
+            <div class=\"move-sub\" style=\"margin-top:10px;\">다음 우선순위: Save scenario A/B → Before/After compare</div>
+          </details>
           <div id=\"transformRulePanel\">
             <label>Applied Transform Rules</label>
             <div id=\"transformRuleList\" class=\"object-list manager-list\"></div>
@@ -1324,19 +1337,6 @@ def _build_html_form(material_options: str, version: str) -> str:
             </div>
           </div>
           <label><input id=\"previewOverlayToggle\" type=\"checkbox\" checked> 이동 전/후 preview overlay 표시</label>
-          <details>
-            <summary>Information</summary>
-            <div id=\"transformSelectionSummary\" class=\"move-summary\">Transform rule 없음. Components 탭에서 `Transform`을 눌러 시작하세요.</div>
-            <div class=\"move-summary\" id=\"gapMoveSummary\">선택된 대상 없음</div>
-          </details>
-          <details>
-            <summary>Advanced</summary>
-            <div class=\"grid\" style=\"margin-top: 8px;\">
-              <div class=\"row\"><label>Gap sigma</label><input name=\"gap_sigma\" type=\"number\" step=\"0.01\" value=\"0.03\"></div>
-              <div class=\"row\"><label>Gap transmissive threshold</label><input name=\"gap_transmissive_threshold\" type=\"number\" step=\"0.01\" value=\"0.4\"></div>
-            </div>
-            <div class=\"move-sub\" style=\"margin-top:10px;\">다음 우선순위: Save scenario A/B → Before/After compare</div>
-          </details>
         </div>
           </div>
           </div>
@@ -1359,7 +1359,7 @@ def _build_html_form(material_options: str, version: str) -> str:
               <summary>Information</summary>
               <div id=\"materialTargetSummary\" class=\"move-summary\">선택된 material 대상 부품 없음</div>
             </details>
-            <details class=\"library-tree\" open>
+            <details class=\"library-tree\">
               <summary class=\"library-tree-head\">
                 <div>
                   <div class=\"library-tree-title\">Base materials</div>
@@ -1397,7 +1397,7 @@ def _build_html_form(material_options: str, version: str) -> str:
                 </div>
               </div>
             </details>
-            <details class=\"library-tree\" open>
+            <details class=\"library-tree\">
               <summary class=\"library-tree-head\">
                 <div>
                   <div class=\"library-tree-title\">Surface properties</div>
