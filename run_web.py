@@ -21,10 +21,11 @@ from leakage_simulator.materials import default_material_library
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.6.13"
+WEB_UI_VERSION = "0.7.4"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
+STATIC_DIR = ROOT / "web" / "static"
 SERVER_BOOT_TOKEN = str(time.time_ns())
 
 
@@ -90,6 +91,34 @@ def _safe_output_name(name: str) -> Optional[str]:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         return None
     return name
+
+
+def _safe_static_path(raw_path: str) -> Optional[Path]:
+    normalized = urllib.parse.unquote(raw_path or "").replace("\\", "/").strip("/")
+    if not normalized or ".." in normalized.split("/"):
+        return None
+    candidate = (STATIC_DIR / normalized).resolve()
+    static_root = STATIC_DIR.resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _static_mime(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".js":
+        return "text/javascript; charset=utf-8"
+    if suffix == ".css":
+        return "text/css; charset=utf-8"
+    if suffix == ".json":
+        return "application/json; charset=utf-8"
+    if suffix == ".wasm":
+        return "application/wasm"
+    return "application/octet-stream"
 
 
 def _material_library_options() -> str:
@@ -458,6 +487,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       gap: 4px;
       min-width: 0;
     }}
+    .viewer-tool-group.hidden-block {{
+      display: none;
+    }}
     .viewer-tool-group .tool-title {{
       font-size: 11px;
       color: #94a3b8;
@@ -575,6 +607,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       color: #e2e8f0;
       box-shadow: 0 16px 32px rgba(2, 6, 23, 0.32);
     }}
+    .move-panel.viewer-move-panel-disabled {{
+      display: none !important;
+    }}
     .move-popup {{
       position: absolute;
       z-index: 8;
@@ -611,6 +646,71 @@ def _build_html_form(material_options: str, version: str) -> str:
       color: #93c5fd;
       font-size: 11px;
       margin-bottom: 8px;
+    }}
+    .section-title-with-help {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+    }}
+    .section-title-with-help h2 {{
+      margin-bottom: 6px;
+    }}
+    .help-tip {{
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid #94a3b8;
+      color: #475569;
+      background: #f8fafc;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: help;
+    }}
+    .help-popover {{
+      display: none;
+      position: absolute;
+      left: 0;
+      top: 100%;
+      z-index: 20;
+      width: min(340px, calc(100vw - 40px));
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.28);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: normal;
+    }}
+    .help-tip:hover + .help-popover,
+    .help-tip:focus + .help-popover {{
+      display: block;
+    }}
+    .popup-details {{
+      margin-top: 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(15, 23, 42, 0.58);
+      overflow: hidden;
+    }}
+    .popup-details summary {{
+      padding: 8px 10px;
+      cursor: pointer;
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 700;
+      user-select: none;
+    }}
+    .popup-details .move-summary {{
+      margin: 0;
+      border: 0;
+      border-top: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 0;
     }}
     .move-stack {{
       display: grid;
@@ -1019,6 +1119,24 @@ def _build_html_form(material_options: str, version: str) -> str:
       display: block;
       background: radial-gradient(circle at 20% 20%, #1e293b, #020617);
     }}
+    .three-viewer {{
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      display: none;
+      background: #020617;
+    }}
+    .three-viewer canvas {{
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+    }}
+    .viewer-card.three-active .viewer-canvas {{
+      display: none;
+    }}
+    .viewer-card.three-active .three-viewer {{
+      display: block;
+    }}
     .viewer-stage.mode-full .viewer-card-full {{
       inset: 0;
       z-index: 2;
@@ -1044,7 +1162,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       opacity: 0.98;
     }}
     .kpi {{
-      display: grid;
+      display: none;
       grid-template-columns: repeat(3, 1fr);
       gap: 8px;
       margin-bottom: 8px;
@@ -1149,15 +1267,22 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"side-panel-body\">
           <div class=\"card\">
           <div class=\"step\">Step 3</div>
-          <h2>Assembly / Component Tree</h2>
-          <div class=\"move-sub\">부품 선택과 transform 진입을 한 곳에서 처리합니다. `Transform` 버튼을 누르면 오른쪽 3D viewer 입력창으로 바로 이어집니다.</div>
+          <div class=\"section-title-with-help\">
+            <h2>Assembly / Component Tree</h2>
+            <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Component tree help\">?</span>
+            <div class=\"help-popover\">
+              부품 선택과 transform 진입을 한 곳에서 처리합니다.<br>
+              Component row를 클릭하면 선택/해제되고, <b>Transform</b> 버튼을 누르면 오른쪽 3D viewer의 Transform popup이 열립니다.<br>
+              Transform 방식과 selection mode는 popup 안에서 설정합니다.
+            </div>
+          </div>
           <input id=\"gapMode\" name=\"gap_mode\" type=\"hidden\" value=\"component_move_gap\" />
           <input id=\"gapComponentIds\" name=\"gap_component_ids\" type=\"hidden\" value=\"\" />
           <input id=\"gapFaceIndices\" name=\"gap_face_indices\" type=\"hidden\" value=\"\" />
           <input id=\"gapMoveCombined\" name=\"gap_move_xyz\" type=\"hidden\" value=\"0,0,0\" />
           <input id=\"gapTiltCombined\" name=\"gap_tilt_xyz\" type=\"hidden\" value=\"0,0,0\" />
           <input name=\"gap_nominal\" type=\"hidden\" value=\"0.0\" />
-          <div id=\"gapModeHint\" class=\"move-sub\">Transform 방식과 selection mode는 오른쪽 3D viewer popup에서 설정합니다.</div>
+          <div id=\"gapModeHint\" class=\"move-sub hidden-block\">Transform 방식과 selection mode는 오른쪽 3D viewer popup에서 설정합니다.</div>
           <div id=\"componentSelectionSummary\" class=\"move-summary\">선택된 부품 없음</div>
           <label>Component Tree</label>
           <div id=\"gapObjectList\" class=\"object-list\">
@@ -1435,6 +1560,12 @@ def _build_html_form(material_options: str, version: str) -> str:
               <button type=\"button\" class=\"camera-btn\" data-camera=\"yz_rev\">-YZ</button>
             </div>
           </div>
+          <div class=\"viewer-tool-group hidden-block\" aria-hidden=\"true\">
+            <div class=\"tool-title\">Viewer</div>
+            <div class=\"mode-buttons\" id=\"viewerEngineGroup\">
+              <button type=\"button\" class=\"mode-btn active\" data-viewer-engine=\"three\">Three.js</button>
+            </div>
+          </div>
           <div class=\"viewer-tool-group\">
             <div class=\"tool-title\">Render mode</div>
             <div class=\"mode-buttons\" id=\"renderModeGroup\">
@@ -1452,7 +1583,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           </div>
           <span id=\"renderModeBadge\" class=\"mode-badge\">Wireframe</span>
         </div>
-        <div id=\"viewerTip\" class=\"tip\">Drag = rotate, Wheel = zoom, Click = ROI 선택.</div>
+        <div id=\"viewerTip\" class=\"tip\">Drag = rotate, Wheel = zoom, Camera preset = 정면/측면 보기 고정.</div>
       </div>
       <div class=\"viewer-inner\">
         <div class=\"kpi\">
@@ -1467,6 +1598,7 @@ def _build_html_form(material_options: str, version: str) -> str:
               <span id=\"fullViewHint\" class=\"mini\">Imported model</span>
             </div>
             <canvas id=\"canvas3d\" class=\"viewer-canvas\"></canvas>
+            <div id=\"threeFullViewer\" class=\"three-viewer\"></div>
           </section>
           <section class=\"viewer-card viewer-card-roi\">
             <div class=\"viewer-card-head\">
@@ -1474,13 +1606,14 @@ def _build_html_form(material_options: str, version: str) -> str:
               <span id=\"roiViewHint\" class=\"mini\">ROI preview</span>
             </div>
             <canvas id=\"roiCanvas\" class=\"viewer-canvas\"></canvas>
+            <div id=\"threeRoiViewer\" class=\"three-viewer\"></div>
           </section>
         </div>
         <div class=\"coord-badge\">
           <div class=\"t\">World coordinates</div>
           <div id=\"coordReadout\" class=\"v\">Origin: (0, 0, 0)</div>
         </div>
-        <div id=\"viewerMovePanel\" class=\"move-panel hidden-block\">
+        <div id=\"viewerMovePanel\" class=\"move-panel viewer-move-panel-disabled hidden-block\" aria-hidden=\"true\">
           <div class=\"move-title\">
             <span>Transform preview</span>
             <span id=\"viewerMoveChip\" class=\"move-chip\">No object</span>
@@ -1524,7 +1657,10 @@ def _build_html_form(material_options: str, version: str) -> str:
             <button id=\"cursorResetBtn\" type=\"button\">Reset</button>
             <button id=\"cursorRestoreBtn\" type=\"button\">Restore original</button>
           </div>
-          <div id=\"cursorMoveSummary\" class=\"move-summary\">선택된 객체 없음</div>
+          <details class=\"popup-details\">
+            <summary>Preview / applied details</summary>
+            <div id=\"cursorMoveSummary\" class=\"move-summary\">선택된 객체 없음</div>
+          </details>
         </div>
         <div id=\"cursorMaterialPopup\" class=\"move-popup material-popup hidden-block\">
           <div id=\"cursorMaterialPopupHeader\" class=\"move-title\">
@@ -1571,6 +1707,452 @@ def _build_html_form(material_options: str, version: str) -> str:
     </main>
   </div>
 
+  <script type=\"importmap\">
+    {{
+      \"imports\": {{
+        \"three\": \"/static/vendor/three.module.min.js\"
+      }}
+    }}
+  </script>
+  <script type=\"module\">
+    import * as THREE from 'three';
+    import {{ OrbitControls }} from '/static/vendor/OrbitControls.js';
+
+    function toVector3Array(value, fallback) {{
+      const source = value || fallback || [0, 0, 0];
+      if (Array.isArray(source)) return [Number(source[0]) || 0, Number(source[1]) || 0, Number(source[2]) || 0];
+      return [Number(source.x) || 0, Number(source.y) || 0, Number(source.z) || 0];
+    }}
+
+    function rotatePointForThree(point, pivot, rotationDeg) {{
+      let x = point[0] - pivot[0];
+      let y = point[1] - pivot[1];
+      let z = point[2] - pivot[2];
+      const rx = (Number(rotationDeg?.x) || 0) * Math.PI / 180.0;
+      const ry = (Number(rotationDeg?.y) || 0) * Math.PI / 180.0;
+      const rz = (Number(rotationDeg?.z) || 0) * Math.PI / 180.0;
+      if (Math.abs(rx) > 1e-12) {{
+        const cosX = Math.cos(rx);
+        const sinX = Math.sin(rx);
+        const nextY = y * cosX - z * sinX;
+        const nextZ = y * sinX + z * cosX;
+        y = nextY;
+        z = nextZ;
+      }}
+      if (Math.abs(ry) > 1e-12) {{
+        const cosY = Math.cos(ry);
+        const sinY = Math.sin(ry);
+        const nextX = x * cosY + z * sinY;
+        const nextZ = -x * sinY + z * cosY;
+        x = nextX;
+        z = nextZ;
+      }}
+      if (Math.abs(rz) > 1e-12) {{
+        const cosZ = Math.cos(rz);
+        const sinZ = Math.sin(rz);
+        const nextX = x * cosZ - y * sinZ;
+        const nextY = x * sinZ + y * cosZ;
+        x = nextX;
+        y = nextY;
+      }}
+      return [x + pivot[0], y + pivot[1], z + pivot[2]];
+    }}
+
+    function transformPointForThree(point, transformSpec) {{
+      if (!transformSpec) return point;
+      const pivot = toVector3Array(transformSpec.pivot, [0, 0, 0]);
+      const move = transformSpec.move || {{ x: 0, y: 0, z: 0 }};
+      const tilt = transformSpec.tilt || {{ x: 0, y: 0, z: 0 }};
+      const rotated = rotatePointForThree(point, pivot, tilt);
+      return [
+        rotated[0] + (Number(move.x) || 0),
+        rotated[1] + (Number(move.y) || 0),
+        rotated[2] + (Number(move.z) || 0)
+      ];
+    }}
+
+    function flattenFaces(faces, faceFilter, excludeFaces) {{
+      const indices = [];
+      const sourceFaceIds = [];
+      const allowed = faceFilter ? new Set(faceFilter) : null;
+      const excluded = excludeFaces ? new Set(excludeFaces) : null;
+      for (let faceId = 0; faceId < faces.length; faceId++) {{
+        if (allowed && !allowed.has(faceId)) continue;
+        if (excluded && excluded.has(faceId)) continue;
+        const tri = faces[faceId];
+        indices.push(tri[0], tri[1], tri[2]);
+        sourceFaceIds.push(faceId);
+      }}
+      return {{ indices, sourceFaceIds }};
+    }}
+
+    function buildBufferGeometry(mesh, faceFilter, options) {{
+      const geometryOptions = options || {{}};
+      const positions = new Float32Array(mesh.vertices.length * 3);
+      for (let i = 0; i < mesh.vertices.length; i++) {{
+        const v = mesh.vertices[i];
+        const next = geometryOptions.transformSpec ? transformPointForThree(v, geometryOptions.transformSpec) : v;
+        positions[i * 3] = next[0];
+        positions[i * 3 + 1] = next[1];
+        positions[i * 3 + 2] = next[2];
+      }}
+      const flat = flattenFaces(mesh.faces, faceFilter, geometryOptions.excludeFaces);
+      const IndexArray = mesh.vertices.length > 65535 ? Uint32Array : Uint16Array;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setIndex(new THREE.BufferAttribute(new IndexArray(flat.indices), 1));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      geometry.userData.sourceFaceIds = flat.sourceFaceIds;
+      return geometry;
+    }}
+
+    function bboxCenterAndSize(mesh) {{
+      if (!mesh || !mesh.vertices || !mesh.vertices.length) {{
+        return {{ center: new THREE.Vector3(0, 0, 0), size: 1 }};
+      }}
+      const box = new THREE.Box3();
+      for (const v of mesh.vertices) {{
+        box.expandByPoint(new THREE.Vector3(v[0], v[1], v[2]));
+      }}
+      const center = new THREE.Vector3();
+      const sizeVec = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(sizeVec);
+      return {{ center, size: Math.max(sizeVec.x, sizeVec.y, sizeVec.z, 1) }};
+    }}
+
+    function makeAxisLabel(text, color) {{
+      const canvas = document.createElement('canvas');
+      canvas.width = 96;
+      canvas.height = 96;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = '800 52px Segoe UI, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.95)';
+      ctx.strokeText(text, 48, 47);
+      ctx.fillStyle = color;
+      ctx.fillText(text, 48, 47);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const material = new THREE.SpriteMaterial({{ map: texture, transparent: true, depthTest: false }});
+      const sprite = new THREE.Sprite(material);
+      sprite.userData.axisLabel = true;
+      return sprite;
+    }}
+
+    function makeAxisLine(points, color) {{
+      const start = points[0];
+      const end = points[1];
+      const direction = end.clone().sub(start);
+      const length = Math.max(direction.length(), 0.001);
+      direction.normalize();
+      const geometry = new THREE.CylinderGeometry(0.018, 0.018, length, 18);
+      const material = new THREE.MeshBasicMaterial({{ color, depthTest: false }});
+      const shaft = new THREE.Mesh(geometry, material);
+      shaft.position.copy(start).add(end).multiplyScalar(0.5);
+      shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+      shaft.renderOrder = 60;
+      return shaft;
+    }}
+
+    function makeAxisHead(color) {{
+      const geometry = new THREE.ConeGeometry(0.045, 0.16, 20);
+      const material = new THREE.MeshBasicMaterial({{ color, depthTest: false }});
+      const head = new THREE.Mesh(geometry, material);
+      head.renderOrder = 61;
+      return head;
+    }}
+
+    function buildAxisTriad() {{
+      const group = new THREE.Group();
+      group.renderOrder = 50;
+      const axes = [
+        {{ name: 'X', color: '#ef4444', hex: 0xef4444, dir: new THREE.Vector3(1, 0, 0), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI / 2)) }},
+        {{ name: 'Y', color: '#22c55e', hex: 0x22c55e, dir: new THREE.Vector3(0, 1, 0), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0)) }},
+        {{ name: 'Z', color: '#3b82f6', hex: 0x3b82f6, dir: new THREE.Vector3(0, 0, 1), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)) }},
+      ];
+      for (const axis of axes) {{
+        const end = axis.dir.clone();
+        const line = makeAxisLine([new THREE.Vector3(0, 0, 0), end], axis.hex);
+        line.name = 'axis_' + axis.name + '_line';
+        group.add(line);
+        const head = makeAxisHead(axis.hex);
+        head.name = 'axis_' + axis.name + '_head';
+        head.position.copy(end);
+        head.quaternion.copy(axis.quat);
+        group.add(head);
+        const label = makeAxisLabel(axis.name, axis.color);
+        label.name = 'axis_' + axis.name + '_label';
+        label.position.copy(axis.dir.clone().multiplyScalar(1.22));
+        group.add(label);
+      }}
+      return group;
+    }}
+
+    class LeakageThreeViewer {{
+      constructor(container, mode) {{
+        this.container = container;
+        this.mode = mode;
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x020617);
+        this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
+        this.renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false }});
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.renderer.setSize(1, 1);
+        this.container.appendChild(this.renderer.domElement);
+
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.08;
+
+        this.root = new THREE.Group();
+        this.scene.add(this.root);
+        this.overlayRoot = new THREE.Group();
+        this.scene.add(this.overlayRoot);
+        this.axis = buildAxisTriad();
+        this.scene.add(this.axis);
+        this.scene.add(new THREE.HemisphereLight(0xffffff, 0x334155, 2.2));
+        const light = new THREE.DirectionalLight(0xffffff, 2.4);
+        light.position.set(1, -2, 3);
+        this.scene.add(light);
+
+        this.mesh = null;
+        this.center = new THREE.Vector3(0, 0, 0);
+        this.size = 1;
+        this.renderMode = 'wireframe';
+        this.axisScalePercent = 100;
+        this.lastMeshRef = null;
+        this.resizeObserver = new ResizeObserver(() => this.resize());
+        this.resizeObserver.observe(this.container);
+        this.animate = this.animate.bind(this);
+        requestAnimationFrame(this.animate);
+      }}
+
+      clearRoot() {{
+        this.clearGroup(this.root);
+      }}
+
+      clearOverlays() {{
+        this.clearGroup(this.overlayRoot);
+      }}
+
+      clearGroup(group) {{
+        while (group.children.length) {{
+          const child = group.children.pop();
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) {{
+            if (Array.isArray(child.material)) {{
+              child.material.forEach((mat) => mat.dispose());
+            }} else {{
+              child.material.dispose();
+            }}
+          }}
+        }}
+      }}
+
+      visibleOverlayFaces(overlay, selectedFaces) {{
+        const sourceFaces = overlay?.faceIndices || [];
+        if (this.mode !== 'roi' || !selectedFaces || !selectedFaces.length) return sourceFaces;
+        const allowed = new Set(selectedFaces);
+        return sourceFaces.filter((faceId) => allowed.has(faceId));
+      }}
+
+      updateOverlays(meshRef, options) {{
+        this.clearOverlays();
+        const overlays = options?.overlays || [];
+        const selectedFaces = options?.selectedFaces || [];
+        for (const overlay of overlays) {{
+          const faceIndices = this.visibleOverlayFaces(overlay, selectedFaces);
+          if (!faceIndices.length) continue;
+          const geometry = buildBufferGeometry(meshRef, faceIndices, {{ transformSpec: overlay }});
+          const surface = new THREE.Mesh(
+            geometry,
+            new THREE.MeshStandardMaterial({{
+              color: overlay.color || 0xef4444,
+              roughness: 0.72,
+              metalness: 0.02,
+              transparent: true,
+              opacity: overlay.opacity ?? 0.48,
+              side: THREE.DoubleSide,
+              depthTest: true,
+              depthWrite: false,
+            }})
+          );
+          surface.name = 'transform_' + (overlay.kind || 'overlay');
+          this.overlayRoot.add(surface);
+
+          const edges = new THREE.LineSegments(
+            new THREE.EdgesGeometry(geometry, 18),
+            new THREE.LineBasicMaterial({{
+              color: overlay.edgeColor || overlay.color || 0xf87171,
+              transparent: true,
+              opacity: overlay.edgeOpacity ?? 0.95,
+              depthTest: true,
+            }})
+          );
+          edges.name = 'transform_edges_' + (overlay.kind || 'overlay');
+          this.overlayRoot.add(edges);
+        }}
+      }}
+
+      setScene(payload, options) {{
+        if (!payload || !payload.mesh) return;
+        const selectedFaces = options?.selectedFaces || [];
+        const hiddenFaces = options?.hiddenFaces || [];
+        const roiFaces = this.mode === 'roi' && selectedFaces.length ? selectedFaces : null;
+        const meshRef = payload.mesh;
+        const roiKey = JSON.stringify(roiFaces || []);
+        const hiddenKey = JSON.stringify(hiddenFaces || []);
+        const meshChanged = this.lastMeshRef !== meshRef;
+        const roiChanged = this.lastRoiKey !== roiKey;
+        const hiddenChanged = this.lastHiddenKey !== hiddenKey;
+        const needsRebuild = meshChanged || roiChanged || hiddenChanged;
+        this.renderMode = options?.renderMode || 'wireframe';
+        if (needsRebuild) {{
+          this.clearRoot();
+          const geometry = buildBufferGeometry(meshRef, roiFaces, {{ excludeFaces: hiddenFaces }});
+          const surface = new THREE.Mesh(
+            geometry,
+            new THREE.MeshStandardMaterial({{
+              color: 0x8fb3c7,
+              roughness: 0.72,
+              metalness: 0.04,
+              transparent: true,
+              opacity: 0.72,
+              side: THREE.DoubleSide,
+            }})
+          );
+          surface.name = 'surface';
+          this.root.add(surface);
+
+          const edgeGeometry = new THREE.EdgesGeometry(geometry, 18);
+          const edges = new THREE.LineSegments(
+            edgeGeometry,
+            new THREE.LineBasicMaterial({{ color: 0xdbeafe, transparent: true, opacity: 0.46 }})
+          );
+          edges.name = 'edges';
+          this.root.add(edges);
+
+          this.lastMeshRef = meshRef;
+          this.lastRoiKey = roiKey;
+          this.lastHiddenKey = hiddenKey;
+          const bounds = bboxCenterAndSize(meshRef);
+          this.center = bounds.center;
+          this.size = bounds.size;
+          this.updateAxisScale(options?.axisScalePercent);
+          if (meshChanged || roiChanged) {{
+            this.fit();
+          }}
+        }}
+        this.updateAxisScale(options?.axisScalePercent);
+        this.applyRenderMode();
+        this.updateOverlays(meshRef, options || {{}});
+        this.resize();
+      }}
+
+      updateAxisScale(axisScalePercent) {{
+        this.axisScalePercent = Number(axisScalePercent) || this.axisScalePercent || 100;
+        const manualScale = Math.max(0.45, Math.min(1.75, this.axisScalePercent / 100.0));
+        const axisSize = Math.max(this.size * 0.18 * manualScale, 1.0);
+        this.axis.scale.setScalar(axisSize);
+        this.axis.position.copy(this.center);
+        for (const child of this.axis.children) {{
+          if (child.userData && child.userData.axisLabel) {{
+            child.scale.setScalar(Math.max(0.22, 0.18 * manualScale));
+          }}
+        }}
+      }}
+
+      applyRenderMode() {{
+        const surface = this.root.getObjectByName('surface');
+        const edges = this.root.getObjectByName('edges');
+        if (!surface || !edges) return;
+        if (this.renderMode === 'wireframe') {{
+          surface.material.opacity = 0.10;
+          surface.material.transparent = true;
+          edges.visible = true;
+          edges.material.opacity = 0.72;
+        }} else if (this.renderMode === 'surface') {{
+          surface.material.opacity = 0.66;
+          surface.material.transparent = true;
+          edges.visible = false;
+        }} else {{
+          surface.material.opacity = 0.88;
+          surface.material.transparent = false;
+          edges.visible = true;
+          edges.material.opacity = 0.62;
+        }}
+        surface.material.needsUpdate = true;
+        edges.material.needsUpdate = true;
+      }}
+
+      fit() {{
+        const distance = Math.max(this.size * 2.15, 10);
+        this.camera.position.set(this.center.x + distance, this.center.y - distance, this.center.z + distance * 0.72);
+        this.camera.up.set(0, 0, 1);
+        this.camera.near = Math.max(distance / 1000, 0.01);
+        this.camera.far = Math.max(distance * 20, 1000);
+        this.camera.updateProjectionMatrix();
+        this.controls.target.copy(this.center);
+        this.controls.update();
+      }}
+
+      applyCameraPreset(preset) {{
+        const distance = Math.max(this.size * 2.2, 10);
+        const c = this.center;
+        const presets = {{
+          fit: {{ position: [c.x + distance, c.y - distance, c.z + distance * 0.72], up: [0, 0, 1] }},
+          iso: {{ position: [c.x + distance, c.y - distance, c.z + distance * 0.72], up: [0, 0, 1] }},
+          xy: {{ position: [c.x, c.y, c.z + distance], up: [0, 1, 0] }},
+          xy_rev: {{ position: [c.x, c.y, c.z - distance], up: [0, 1, 0] }},
+          xz: {{ position: [c.x, c.y - distance, c.z], up: [0, 0, 1] }},
+          xz_rev: {{ position: [c.x, c.y + distance, c.z], up: [0, 0, 1] }},
+          yz: {{ position: [c.x + distance, c.y, c.z], up: [0, 0, 1] }},
+          yz_rev: {{ position: [c.x - distance, c.y, c.z], up: [0, 0, 1] }},
+        }};
+        const selected = presets[preset] || presets.iso;
+        const p = selected.position;
+        const up = selected.up;
+        const dampingWasEnabled = this.controls.enableDamping;
+        this.controls.enableDamping = false;
+        this.camera.position.set(p[0], p[1], p[2]);
+        this.camera.up.set(up[0], up[1], up[2]);
+        this.controls.target.copy(c);
+        this.camera.lookAt(c);
+        this.controls.update();
+        this.controls.enableDamping = dampingWasEnabled;
+        this.renderer.render(this.scene, this.camera);
+      }}
+
+      resize() {{
+        const rect = this.container.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(rect.width));
+        const h = Math.max(1, Math.floor(rect.height));
+        this.camera.aspect = w / h;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(w, h, true);
+      }}
+
+      animate() {{
+        this.controls.update();
+        this.renderer.render(this.scene, this.camera);
+        requestAnimationFrame(this.animate);
+      }}
+    }}
+
+    window.LeakageThreeViewer = {{
+      create(container, mode) {{
+        return new LeakageThreeViewer(container, mode);
+      }}
+    }};
+    window.dispatchEvent(new Event('leakage-three-ready'));
+  </script>
+
   <script>
     const initialBootToken = {json.dumps(SERVER_BOOT_TOKEN)};
     const demoCadPath = {json.dumps(str(DEMO_CAD_PATH))};
@@ -1591,6 +2173,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       roiSelectionMode: 'none',
       gapTargetMode: 'component_move_gap',
       gapSelectionMethod: 'click',
+      viewerEngine: 'three',
       renderMode: 'wireframe',
       axisScalePercent: 100,
       inspectedFaceIndex: null,
@@ -1714,6 +2297,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     const gapTiltZ = document.getElementById('gapTiltZ');
     const gapMoveSummary = document.getElementById('gapMoveSummary');
     const previewOverlayToggle = document.getElementById('previewOverlayToggle');
+    const viewerEngineGroup = document.getElementById('viewerEngineGroup');
     const renderModeGroup = document.getElementById('renderModeGroup');
     const cameraPresetGroup = document.getElementById('cameraPresetGroup');
     const renderModeBadge = document.getElementById('renderModeBadge');
@@ -1722,7 +2306,11 @@ def _build_html_form(material_options: str, version: str) -> str:
     const coordReadout = document.getElementById('coordReadout');
     const fullCanvas = document.getElementById('canvas3d');
     const roiCanvas = document.getElementById('roiCanvas');
+    const threeFullViewer = document.getElementById('threeFullViewer');
+    const threeRoiViewer = document.getElementById('threeRoiViewer');
     const viewerStage = document.getElementById('viewerStage');
+    const fullViewerCard = document.querySelector('.viewer-card-full');
+    const roiViewerCard = document.querySelector('.viewer-card-roi');
     const fullViewHint = document.getElementById('fullViewHint');
     const roiViewHint = document.getElementById('roiViewHint');
     const viewerTip = document.getElementById('viewerTip');
@@ -1762,6 +2350,10 @@ def _build_html_form(material_options: str, version: str) -> str:
     const materialPopupProfileSelect = document.getElementById('materialPopupProfileSelect');
     const materialApplyBtn = document.getElementById('materialApplyBtn');
     const materialApplyFacesBtn = document.getElementById('materialApplyFacesBtn');
+
+    let threeFullRenderer = null;
+    let threeRoiRenderer = null;
+    let pendingThreeCameraPreset = null;
     const materialSaveProfileBtn = document.getElementById('materialSaveProfileBtn');
     const cursorMoveClose = document.getElementById('cursorMoveClose');
     const viewerWrap = document.querySelector('.viewer-wrap');
@@ -2498,7 +3090,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         roiModeHint.textContent = '현재는 Local face move 선택 모드입니다. ROI는 선택사항이며, 3D viewer 클릭은 local face target 선택으로 동작합니다.';
         viewerTip.textContent = dragSelect
           ? 'Drag = local face 박스 선택, Ctrl+Drag = add/remove, Shift+Drag = rotate, Wheel = zoom.'
-          : 'Drag = rotate, Wheel = zoom, Click = local cluster, Ctrl+Click = add/remove.';
+          : 'Drag = rotate, Wheel = zoom. 선택 모드에서만 Click 선택.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
         return;
@@ -2507,21 +3099,21 @@ def _build_html_form(material_options: str, version: str) -> str:
         roiModeHint.textContent = '3D view에서 선택: 지금부터 3D viewer 클릭이 ROI 선택으로 동작합니다.';
         viewerTip.textContent = dragSelect
           ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Shift+Drag = rotate, Wheel = zoom.'
-          : 'Drag = rotate, Wheel = zoom, Click = ROI 선택.';
+          : 'Drag = rotate, Wheel = zoom. ROI 모드에서만 Click 선택.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
       }} else if (mode === 'panel') {{
         roiModeHint.textContent = 'Component 선택: component 체크 또는 face index 입력으로 ROI를 선택합니다.';
         viewerTip.textContent = dragSelect
           ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Shift+Drag = rotate, Wheel = zoom.'
-          : 'Drag = rotate, Wheel = zoom, Click = 보기용 하이라이트.';
+          : 'Drag = rotate, Wheel = zoom, Camera preset = 정면/측면 보기 고정.';
         componentSelectBlock.classList.remove('hidden-block');
         faceIndexBlock.classList.remove('hidden-block');
       }} else {{
         roiModeHint.textContent = 'ROI 선택 방식이 아직 정해지지 않았습니다. 현재 3D viewer 클릭은 하이라이트만 동작합니다.';
         viewerTip.textContent = dragSelect
           ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Shift+Drag = rotate, Wheel = zoom.'
-          : 'Drag = rotate, Wheel = zoom, Click = 보기용 하이라이트.';
+          : 'Drag = rotate, Wheel = zoom, Camera preset = 정면/측면 보기 고정.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
       }}
@@ -2596,6 +3188,127 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
       renderModeBadge.textContent = renderModeLabel(state.renderMode);
       fullViewHint.textContent = 'Imported model / ' + renderModeLabel(state.renderMode);
+    }}
+
+    function updateViewerEngineUI() {{
+      const buttons = viewerEngineGroup.querySelectorAll('.mode-btn');
+      for (const button of buttons) {{
+        const active = button.getAttribute('data-viewer-engine') === state.viewerEngine;
+        button.classList.toggle('active', active);
+      }}
+      const useThree = state.viewerEngine === 'three' && !!window.LeakageThreeViewer;
+      fullViewerCard.classList.toggle('three-active', useThree);
+      roiViewerCard.classList.toggle('three-active', useThree);
+      if (state.viewerEngine === 'three' && !window.LeakageThreeViewer) {{
+        fullViewHint.textContent = 'Three.js viewer loading...';
+      }} else if (useThree) {{
+        fullViewHint.textContent = 'Imported model / Three.js / ' + renderModeLabel(state.renderMode);
+      }}
+    }}
+
+    function ensureThreeRenderers() {{
+      if (!window.LeakageThreeViewer) return false;
+      if (!threeFullRenderer) {{
+        threeFullRenderer = window.LeakageThreeViewer.create(threeFullViewer, 'full');
+      }}
+      if (!threeRoiRenderer) {{
+        threeRoiRenderer = window.LeakageThreeViewer.create(threeRoiViewer, 'roi');
+      }}
+      return true;
+    }}
+
+    function syncThreeViewer() {{
+      if (state.viewerEngine !== 'three') return;
+      if (!state.mesh) {{
+        updateViewerEngineUI();
+        return;
+      }}
+      if (!ensureThreeRenderers()) {{
+        updateViewerEngineUI();
+        return;
+      }}
+      const payload = {{ mesh: state.mesh }};
+      const options = {{
+        renderMode: state.renderMode,
+        selectedFaces: uniqueSorted(Array.from(state.selectedFaces)),
+        hiddenFaces: getThreeHiddenTransformFaces(),
+        overlays: buildThreeTransformOverlays(),
+        axisScalePercent: state.axisScalePercent,
+      }};
+      threeFullRenderer.setScene(payload, options);
+      threeRoiRenderer.setScene(payload, options);
+      if (pendingThreeCameraPreset) {{
+        threeFullRenderer.applyCameraPreset(pendingThreeCameraPreset);
+        threeRoiRenderer.applyCameraPreset(pendingThreeCameraPreset);
+        pendingThreeCameraPreset = null;
+      }}
+      updateViewerEngineUI();
+    }}
+
+    function getThreeHiddenTransformFaces() {{
+      if (state.gapTargetMode !== 'component_move_gap') return [];
+      return uniqueSorted(Array.from(getCommittedTransformFaceSet()));
+    }}
+
+    function buildThreeTransformOverlays() {{
+      const overlays = [];
+      if (!state.mesh) return overlays;
+      if (state.gapTargetMode === 'component_move_gap') {{
+        for (const rule of state.transformRules) {{
+          if (!rule.enabled || rule.target_type !== 'component' || !transformRuleHasAppliedTransform(rule)) continue;
+          const object = state.objectsById.get(rule.object_id);
+          if (!object || !object.face_indices || !object.face_indices.length) continue;
+          overlays.push({{
+            kind: rule.rule_id === state.activeTransformRuleId ? 'applied_active' : 'applied',
+            faceIndices: object.face_indices,
+            pivot: computePivotForFaceIndices(object.face_indices),
+            move: cloneVector(rule.move),
+            tilt: cloneVector(rule.tilt),
+            color: rule.rule_id === state.activeTransformRuleId ? 0xef4444 : 0xdc2626,
+            edgeColor: 0xfca5a5,
+            opacity: rule.rule_id === state.activeTransformRuleId ? 0.52 : 0.42,
+            edgeOpacity: 0.98
+          }});
+        }}
+        const rule = activeTransformRule();
+        const object = rule ? state.objectsById.get(rule.object_id) : null;
+        if (
+          state.previewOverlayEnabled
+          && rule
+          && object
+          && object.face_indices
+          && object.face_indices.length
+          && activeEditorDiffersFromRule()
+        ) {{
+          overlays.push({{
+            kind: 'draft',
+            faceIndices: object.face_indices,
+            pivot: computePivotForFaceIndices(object.face_indices),
+            move: cloneVector(state.gapMove),
+            tilt: cloneVector(state.gapTilt),
+            color: 0xfacc15,
+            edgeColor: 0xfef08a,
+            opacity: 0.32,
+            edgeOpacity: 0.95
+          }});
+        }}
+      }} else if (state.previewOverlayEnabled) {{
+        const faceIndices = getActivePreviewFaceIndices();
+        if (faceIndices.length && (currentMoveMagnitude() > 1e-9 || currentTiltMagnitude() > 1e-9)) {{
+          overlays.push({{
+            kind: 'draft_face',
+            faceIndices,
+            pivot: computePivotForFaceIndices(faceIndices),
+            move: cloneVector(state.gapMove),
+            tilt: cloneVector(state.gapTilt),
+            color: 0xfacc15,
+            edgeColor: 0xfef08a,
+            opacity: 0.32,
+            edgeOpacity: 0.95
+          }});
+        }}
+      }}
+      return overlays;
     }}
 
     function buildFaceAdjacency() {{
@@ -4038,10 +4751,16 @@ def _build_html_form(material_options: str, version: str) -> str:
         state.transform.pitch = 0.0;
         state.transform.distance = defaultDistance;
       }}
+      pendingThreeCameraPreset = preset;
       drawViewer();
     }}
 
     function drawViewer() {{
+      updateViewerEngineUI();
+      if (state.viewerEngine === 'three' && window.LeakageThreeViewer) {{
+        syncThreeViewer();
+        return;
+      }}
       drawViewerOn(fullCanvas, 'full');
       drawViewerOn(roiCanvas, 'roi');
     }}
@@ -4231,6 +4950,13 @@ def _build_html_form(material_options: str, version: str) -> str:
       updateGapSelectionStats();
       drawViewer();
     }});
+    viewerEngineGroup.addEventListener('click', function (ev) {{
+      const target = ev.target.closest('[data-viewer-engine]');
+      if (!target) return;
+      state.viewerEngine = target.getAttribute('data-viewer-engine');
+      updateViewerEngineUI();
+      drawViewer();
+    }});
     renderModeGroup.addEventListener('click', function (ev) {{
       const target = ev.target.closest('[data-render-mode]');
       if (!target) return;
@@ -4410,6 +5136,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       axisScaleValue.textContent = state.axisScalePercent + '%';
       drawViewer();
     }});
+    window.addEventListener('leakage-three-ready', function () {{
+      updateViewerEngineUI();
+      drawViewer();
+    }});
     emitterType.addEventListener('change', updateEmitterPanel);
     runForm.addEventListener('keydown', function (ev) {{
       if (ev.key !== 'Enter') return;
@@ -4548,6 +5278,15 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/_ping":
             self._send_plain(200, "pong")
+            return
+
+        if parsed.path.startswith("/static/"):
+            rel = parsed.path[len("/static/") :]
+            path = _safe_static_path(rel)
+            if path is None:
+                self._send_plain(404, "Not found")
+                return
+            self._send_file(path, _static_mime(path))
             return
 
         if parsed.path.startswith("/outputs/"):

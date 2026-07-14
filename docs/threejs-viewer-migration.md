@@ -64,6 +64,15 @@
   - fit/front/top/right/reverse camera preset
   - surface / edge / surface+edge mode
 - 이 단계에서는 ROI 선택 로직을 아직 옮기지 않는다.
+- 2026-07-14 적용:
+  - `run_web.py`에 Three.js 기반 read-only viewer를 추가했다.
+  - `web/static/vendor/`에 local vendor 방식으로 Three.js와 OrbitControls를 포함했다.
+  - 기존 Canvas viewer는 fallback으로 유지하고, UI에서 `Three.js` / `Canvas`를 전환할 수 있게 했다.
+  - 현재 Three.js viewer는 표시/카메라 조작 중심이며, face/component picking은 다음 Phase에서 연결한다.
+- 2026-07-14 추가 적용:
+  - Canvas 전환 UI를 숨기고 Three.js viewer를 기본 viewer로 고정했다.
+  - XYZ axis triad 시인성을 개선했다.
+  - camera preset 적용 시 첫 클릭부터 position/up/target이 고정되도록 안정화했다.
 
 ### Phase 3: Picking 연결
 - 목표:
@@ -81,6 +90,10 @@
   - transform preview overlay
   - applied transform overlay
   - material assignment highlight
+- 2026-07-14 부분 적용:
+  - Three.js transform preview/applied overlay를 추가했다.
+  - Apply된 component의 원래 face를 기본 mesh에서 숨기고, 이동/tilt된 위치를 빨간 overlay로 표시한다.
+  - ROI highlight, material assignment highlight는 아직 기존 로직과 분리되어 있으며 다음 단계에서 이관한다.
 
 ### Phase 5: Ray result overlay
 - 목표:
@@ -123,8 +136,8 @@
 - ID 계약을 깨는 CAD import 변경은 반드시 `docs/viewer-data-contract.md`를 함께 갱신한다.
 
 ## 다음 구현 후보
-1. local Three.js vendor 파일 확보 방식 결정
-2. `run_web.py`에 Three.js viewer container 추가
-3. `mesh-scene.v1` payload를 Three.js `BufferGeometry`로 변환
-4. 기존 Canvas viewer와 Three.js viewer를 toggle 가능하게 연결
-5. read-only 렌더링 검증 후 picking으로 확장
+1. Three.js raycaster 기반 face picking 연결
+2. component picking과 component tree 선택 상태 동기화
+3. ROI highlight / transform preview / material assignment overlay를 Three.js로 이관
+4. Canvas fallback 유지 범위와 제거 시점 결정
+5. ray path / heatmap / before-after overlay를 Three.js layer로 확장
