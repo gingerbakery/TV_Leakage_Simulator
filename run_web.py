@@ -21,7 +21,7 @@ from leakage_simulator.materials import default_material_library
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.7.15"
+WEB_UI_VERSION = "0.7.19"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
@@ -969,6 +969,143 @@ def _build_html_form(material_options: str, version: str) -> str:
     .material-actions button.primary:hover {{
       background: linear-gradient(135deg, #0f8b80, #14b8a6);
     }}
+    .emitter-toolbar {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }}
+    .emitter-toolbar button {{
+      min-height: 38px;
+      border-radius: 10px;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #334155;
+      font-weight: 800;
+      cursor: pointer;
+    }}
+    .emitter-toolbar button.primary {{
+      border-color: #f59e0b;
+      background: linear-gradient(135deg, #f59e0b, #ea580c);
+      color: #fff7ed;
+    }}
+    .emitter-toolbar button:disabled {{ opacity: 0.48; cursor: default; }}
+    .emitter-method-row {{
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }}
+    .emitter-method-row .help-tip {{
+      width: 28px;
+      height: 28px;
+      flex: 0 0 28px;
+    }}
+    .emitter-method-row .help-popover {{
+      left: 0;
+      top: calc(100% + 4px);
+      width: min(330px, calc(100vw - 48px));
+    }}
+    .emitter-method-row button {{ text-align: left; }}
+    .emitter-method-row button.primary {{
+      border-color: #f59e0b;
+      background: linear-gradient(135deg, #f59e0b, #ea580c);
+      color: #fff7ed;
+    }}
+    .emitter-method-row button.secondary {{
+      border-color: #fdba74;
+      background: #fff7ed;
+      color: #9a3412;
+    }}
+    .emitter-cancel-btn {{ width: 100%; margin-top: 8px; }}
+    .emitter-selection-banner {{
+      margin-top: 10px;
+      padding: 10px 11px;
+      border-radius: 10px;
+      border: 1px solid #fed7aa;
+      background: #fff7ed;
+      color: #9a3412;
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .emitter-selection-banner.active {{
+      border-color: #f59e0b;
+      background: #fffbeb;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.12);
+    }}
+    .emitter-list {{ display: grid; gap: 7px; margin-top: 10px; }}
+    .emitter-list-row {{
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 9px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #fff;
+      cursor: pointer;
+    }}
+    .emitter-list-row:hover,
+    .emitter-list-row.active {{ border-color: #f59e0b; background: #fffbeb; }}
+    .emitter-list-dot {{
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      background: #f97316;
+      box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.14);
+    }}
+    .emitter-list-name {{ color: #0f172a; font-size: 12px; font-weight: 800; }}
+    .emitter-list-meta {{ margin-top: 2px; color: #64748b; font-size: 10px; }}
+    .emitter-list-power {{ color: #c2410c; font-size: 11px; font-weight: 800; }}
+    .emitter-popup {{
+      width: 382px;
+      max-height: calc(100% - 28px);
+      overflow-y: auto;
+      border-color: rgba(249, 115, 22, 0.58);
+      background: rgba(30, 19, 10, 0.98);
+    }}
+    .emitter-popup .move-sub {{ color: #fdba74; }}
+    .emitter-popup .move-chip {{
+      border-color: rgba(249, 115, 22, 0.52);
+      background: rgba(249, 115, 22, 0.15);
+      color: #fed7aa;
+    }}
+    .emitter-popup .move-stack select,
+    .emitter-popup .move-stack input {{
+      width: 100%;
+      margin-top: 4px;
+      background: #1c120b;
+      color: #fff7ed;
+      border-color: #7c2d12;
+    }}
+    .emitter-popup .move-grid input {{ background: #1c120b; color: #fff7ed; border-color: #7c2d12; }}
+    .emitter-popup .move-actions button.primary {{
+      background: linear-gradient(135deg, #f59e0b, #ea580c);
+      border-color: #fb923c;
+    }}
+    .emitter-check {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 9px;
+      color: #fed7aa;
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .emitter-check input {{ width: auto; margin: 0; }}
+    .emitter-geometry-section {{
+      margin-top: 9px;
+      padding-top: 9px;
+      border-top: 1px solid rgba(251, 146, 60, 0.22);
+    }}
+    .emitter-geometry-section.hidden-block {{ display: none; }}
+    .emitter-popup .field-note {{
+      margin-top: 5px;
+      color: #fdba74;
+      font-size: 10px;
+      line-height: 1.4;
+    }}
     .library-tree {{
       margin-top: 12px;
       border: 1px solid #dbe4f0;
@@ -1570,50 +1707,85 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"side-panel-body\">
           <div class=\"card\">
             <div class=\"step\">Step 6</div>
-            <h2>Emitter</h2>
-            <label>Type</label>
-            <select id=\"emitterType\" name=\"emitter_type\">
-              <option value=\"\" selected>Default (imported emitters)</option>
-              <option value=\"face\">Face emitter</option>
-              <option value=\"volume_box\">Volume box emitter</option>
-              <option value=\"volume_sphere\">Volume sphere emitter</option>
-            </select>
-            <div class=\"grid\" style=\"margin-top: 6px;\">
-              <label>Strength</label><input name=\"emitter_strength\" type=\"number\" step=\"0.1\" value=\"1.0\">
-              <label>Direction distribution</label><input name=\"emitter_direction_distribution\" value=\"isotropic\">
-            </div>
-            <div class=\"grid\" style=\"margin-top: 6px;\">
-              <label>Face index</label><input id=\"emitterFace\" name=\"emitter_face_index\" placeholder=\"ex: 0\">
-              <label>Normal hint x,y,z</label><input id=\"emitterNormal\" name=\"emitter_normal_hint\" placeholder=\"ex: 0,0,1\">
-            </div>
-            <div class=\"grid\" style=\"margin-top: 6px;\">
-              <label>Box min x,y,z</label><input name=\"emitter_box_min\" value=\"470,120,25\">
-              <label>Box max x,y,z</label><input name=\"emitter_box_max\" value=\"520,180,45\">
-            </div>
-            <div class=\"grid\" style=\"margin-top: 6px;\">
-              <label>Sphere center</label><input name=\"emitter_sphere_center\" value=\"250,150,40\">
-              <label>Sphere radius</label><input name=\"emitter_sphere_radius\" type=\"number\" step=\"0.1\" value=\"20\">
-            </div>
-            <label><input id=\"includeImportEmitters\" type=\"checkbox\" name=\"include_import_emitters\" value=\"1\" checked> Include imported emitters</label>
-          </div>
-
-          <div class=\"card\">
-            <div class=\"step\">Tracing setup</div>
-            <h2>Ray tracing setup</h2>
-            <div class=\"move-sub\">현재는 Run simulation을 잠시 꺼둔 상태입니다. Enter를 누르면 입력값만 반영됩니다.</div>
-            <div class=\"grid\">
-              <label>Ray count<input name=\"rays\" type=\"number\" value=\"4000\"></label>
-              <label>Max depth<input name=\"max_depth\" type=\"number\" value=\"2\"></label>
-              <label>Output folder<input name=\"output_dir\" value=\"outputs\"></label>
-              <label>Seed<input name=\"seed\" type=\"number\" value=\"42\"></label>
+            <div class=\"section-title-with-help\">
+              <h2>Ray tracing</h2>
+              <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Ray tracing help\">?</span>
+              <div class=\"help-popover\">Emitter와 Receiver를 각각 설정한 뒤 ray tracing을 실행합니다. V1 Emitter는 3D viewer에서 방출 면을 직접 선택하는 방식입니다.</div>
             </div>
             <details>
+              <summary>Information</summary>
+              <div class=\"move-summary\">Emitter: 광선이 시작되는 면과 power, 방향 분포를 정의합니다.\nReceiver: 광선이 도달하는 관측 위치와 크기를 정의합니다.</div>
+            </details>
+            <details>
               <summary>Advanced</summary>
-              <div class=\"grid\" style=\"margin-top: 6px;\">
+              <div class=\"move-sub\" style=\"margin-top:8px;\">전역 ray tracing 계산 조건입니다.</div>
+              <div class=\"grid\">
+                <label>Ray count<input name=\"rays\" type=\"number\" value=\"4000\"></label>
+                <label>Max depth<input name=\"max_depth\" type=\"number\" value=\"2\"></label>
+                <label>Output folder<input name=\"output_dir\" value=\"outputs\"></label>
+                <label>Seed<input name=\"seed\" type=\"number\" value=\"42\"></label>
                 <label>k_abs<input name=\"k_abs\" type=\"number\" step=\"0.01\" value=\"0.12\"></label>
                 <label>k_brdf<input name=\"k_brdf\" type=\"number\" step=\"0.1\" value=\"1.0\"></label>
               </div>
             </details>
+            <details class=\"library-tree\">
+              <summary class=\"library-tree-head\">
+                <div>
+                  <div class=\"library-tree-title\">Emitter</div>
+                  <div class=\"library-tree-sub\">광원 면 · power · 방출 방향</div>
+                </div>
+                <div class=\"library-tree-actions\"><span class=\"library-caret\">›</span></div>
+              </summary>
+              <div class=\"library-tree-body\">
+                <div class=\"emitter-toolbar\">
+                  <div class=\"emitter-method-row\">
+                    <button id=\"addFaceEmitterBtn\" type=\"button\" class=\"primary\">+ CAD surface emitter</button>
+                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"CAD surface emitter help\">?</span>
+                    <div class=\"help-popover\">실제 CAD 부품의 surface를 발광면으로 지정합니다. 3D viewer에서 면을 클릭하고 Ctrl+클릭으로 여러 surface를 묶을 수 있습니다.</div>
+                  </div>
+                  <div class=\"emitter-method-row\">
+                    <button id=\"addDatumEmitterBtn\" type=\"button\" class=\"secondary\">+ Datum plane emitter</button>
+                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Datum plane emitter help\">?</span>
+                    <div class=\"help-popover\">CAD 형상과 관계없이 빈 공간에 중심 좌표, 크기, 회전각을 입력하여 가상의 사각 발광면을 만듭니다.</div>
+                  </div>
+                  <div class=\"emitter-method-row\">
+                    <button id=\"addReferenceEmitterBtn\" type=\"button\" class=\"secondary\">+ Reference geometry emitter</button>
+                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Reference geometry emitter help\">?</span>
+                    <div class=\"help-popover\">CAD의 꼭지점 3개 또는 모서리 2개를 선택해 그 사이 빈 공간에 가상의 발광면을 생성합니다.</div>
+                  </div>
+                </div>
+                <button id=\"cancelEmitterSelectionBtn\" type=\"button\" class=\"emitter-cancel-btn\" disabled>Cancel selection</button>
+                <div id=\"emitterSelectionBanner\" class=\"emitter-selection-banner\">광원이 없습니다. Add face emitter로 시작하세요.</div>
+                <div id=\"emitterList\" class=\"emitter-list\"></div>
+                <div id=\"emitterEmpty\" class=\"manager-empty\">등록된 emitter가 없습니다.</div>
+                <input id=\"emitterSpecsJson\" name=\"emitter_specs_json\" type=\"hidden\" value=\"[]\">
+                <input id=\"emitterType\" name=\"emitter_type\" type=\"hidden\" value=\"\">
+                <input name=\"emitter_strength\" type=\"hidden\" value=\"1.0\">
+                <input id=\"emitterDirectionDistribution\" name=\"emitter_direction_distribution\" type=\"hidden\" value=\"lambertian\">
+                <input id=\"emitterFace\" name=\"emitter_face_index\" type=\"hidden\" value=\"\">
+                <input id=\"emitterNormal\" name=\"emitter_normal_hint\" type=\"hidden\" value=\"\">
+                <input name=\"emitter_box_min\" type=\"hidden\" value=\"\">
+                <input name=\"emitter_box_max\" type=\"hidden\" value=\"\">
+                <input name=\"emitter_sphere_center\" type=\"hidden\" value=\"\">
+                <input name=\"emitter_sphere_radius\" type=\"hidden\" value=\"\">
+                <input id=\"includeImportEmitters\" type=\"hidden\" name=\"include_import_emitters\" value=\"0\">
+                <div class=\"small\">등록된 emitter를 클릭하면 형상, power, 방출 분포를 다시 편집할 수 있습니다.</div>
+              </div>
+            </details>
+            <details class=\"library-tree\">
+              <summary class=\"library-tree-head\">
+                <div>
+                  <div class=\"library-tree-title\">Receiver</div>
+                  <div class=\"library-tree-sub\">관측 위치 · 방향 · 크기</div>
+                </div>
+                <div class=\"library-tree-actions\"><span class=\"library-caret\">›</span></div>
+              </summary>
+              <div class=\"library-tree-body\">
+                <div class=\"manager-empty\">Receiver의 CAD식 배치 UI는 다음 구현 단계에서 연결됩니다.</div>
+                <button type=\"button\" class=\"run-btn\" disabled>+ Add receiver (next phase)</button>
+              </div>
+            </details>
+            <div class=\"move-sub\" style=\"margin-top:10px;\">현재는 Run simulation을 잠시 꺼둔 상태입니다.</div>
             <button id=\"runBtn\" class=\"run-btn\" type=\"button\" disabled>Run simulation (temporarily off)</button>
           </div>
           </div>
@@ -1797,6 +1969,85 @@ def _build_html_form(material_options: str, version: str) -> str:
           </div>
           <div id=\"cursorMaterialSummary\" class=\"move-summary\">선택된 material 대상 없음</div>
         </div>
+        <div id=\"cursorEmitterPopup\" class=\"move-popup emitter-popup hidden-block\">
+          <div id=\"cursorEmitterPopupHeader\" class=\"move-title\">
+            <span>Emitter properties</span>
+            <button id=\"cursorEmitterClose\" type=\"button\" class=\"move-close\">Close</button>
+          </div>
+          <div id=\"cursorEmitterNameHint\" class=\"move-sub\">3D viewer에서 방출 면을 선택하세요.</div>
+          <div class=\"material-popup-target\">
+            <span id=\"cursorEmitterChip\" class=\"move-chip\">New emitter</span>
+            <button id=\"emitterReselectFacesBtn\" type=\"button\" class=\"move-close\">Select geometry</button>
+          </div>
+          <div class=\"move-stack\">
+            <label>Name<input id=\"emitterNameInput\" type=\"text\" value=\"Emitter 1\"></label>
+          </div>
+          <div class=\"move-stack\">
+            <label>Power mode
+              <select id=\"emitterPowerModeSelect\">
+                <option value=\"total\" selected>Total power</option>
+                <option value=\"power_per_area\">Power per area</option>
+              </select>
+            </label>
+          </div>
+          <div class=\"move-grid\">
+            <label id=\"emitterTotalPowerLabel\">Total power (lm)<input id=\"emitterPowerInput\" type=\"text\" inputmode=\"decimal\" value=\"1.0\"></label>
+            <label id=\"emitterPowerDensityLabel\" class=\"hidden-block\">Power / area (lm/m²)<input id=\"emitterPowerDensityInput\" type=\"text\" inputmode=\"decimal\" value=\"100\"></label>
+            <label>Rays<input id=\"emitterRayCountInput\" type=\"number\" min=\"1\" step=\"1000\" value=\"10000\"></label>
+            <label>Targets<input id=\"emitterFaceCountInput\" type=\"text\" value=\"0\" readonly></label>
+          </div>
+          <div id=\"emitterDatumSection\" class=\"emitter-geometry-section hidden-block\">
+            <div class=\"move-sub\">Datum plane geometry</div>
+            <div class=\"move-grid\">
+              <label>Center X<input id=\"emitterCenterX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Center Y<input id=\"emitterCenterY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Center Z<input id=\"emitterCenterZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+            <div class=\"move-grid\">
+              <label>Width (mm)<input id=\"emitterWidthInput\" type=\"text\" inputmode=\"decimal\" value=\"20\"></label>
+              <label>Height (mm)<input id=\"emitterHeightInput\" type=\"text\" inputmode=\"decimal\" value=\"20\"></label>
+              <label>Area (mm²)<input id=\"emitterAreaInput\" type=\"text\" value=\"400\" readonly></label>
+            </div>
+            <div class=\"move-grid\">
+              <label>Rx (deg)<input id=\"emitterRotationX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Ry (deg)<input id=\"emitterRotationY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Rz (deg)<input id=\"emitterRotationZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+          </div>
+          <div id=\"emitterReferenceSection\" class=\"emitter-geometry-section hidden-block\">
+            <div class=\"move-stack\">
+              <label>Reference method
+                <select id=\"emitterReferenceModeSelect\">
+                  <option value=\"three_vertices\" selected>3 vertices</option>
+                  <option value=\"two_edges\">2 edges</option>
+                </select>
+              </label>
+            </div>
+            <div id=\"emitterReferenceHint\" class=\"field-note\">3D viewer에서 꼭지점이 있는 면을 차례로 3번 클릭하세요.</div>
+          </div>
+          <div class=\"move-stack\">
+            <label>Direction distribution
+              <select id=\"emitterDistributionSelect\">
+                <option value=\"lambertian\" selected>Lambertian (default)</option>
+                <option value=\"isotropic\">Isotropic</option>
+                <option value=\"gaussian\">Gaussian</option>
+              </select>
+            </label>
+            <label id=\"emitterGaussianSigmaLabel\" class=\"hidden-block\">Gaussian sigma (deg)
+              <input id=\"emitterGaussianSigmaInput\" type=\"number\" min=\"0.1\" step=\"0.5\" value=\"12.0\">
+            </label>
+          </div>
+          <label class=\"emitter-check\"><input id=\"emitterNormalFlipInput\" type=\"checkbox\"> Flip normal direction</label>
+          <div class=\"move-actions\">
+            <button id=\"emitterApplyBtn\" type=\"button\" class=\"primary\">Apply</button>
+            <button id=\"emitterResetBtn\" type=\"button\">Reset</button>
+            <button id=\"emitterDeleteBtn\" type=\"button\">Delete</button>
+          </div>
+          <details class=\"popup-details\">
+            <summary>Geometry details</summary>
+            <div id=\"emitterGeometrySummary\" class=\"move-summary\">선택 면 없음</div>
+          </details>
+        </div>
       </div>
     </main>
   </div>
@@ -1899,6 +2150,28 @@ def _build_html_form(material_options: str, version: str) -> str:
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
       geometry.userData.sourceFaceIds = flat.sourceFaceIds;
+      return geometry;
+    }}
+
+    function buildVirtualPlaneGeometry(plane) {{
+      const center = new THREE.Vector3(...toVector3Array(plane.center, [0, 0, 0]));
+      const uAxis = new THREE.Vector3(...toVector3Array(plane.uAxis, [1, 0, 0])).normalize();
+      const rawV = new THREE.Vector3(...toVector3Array(plane.vAxis, [0, 1, 0]));
+      const vAxis = rawV.addScaledVector(uAxis, -rawV.dot(uAxis)).normalize();
+      const halfWidth = Math.max(Number(plane.widthMm) || 1, 0.001) * 0.5;
+      const halfHeight = Math.max(Number(plane.heightMm) || 1, 0.001) * 0.5;
+      const corners = [
+        center.clone().addScaledVector(uAxis, -halfWidth).addScaledVector(vAxis, -halfHeight),
+        center.clone().addScaledVector(uAxis, halfWidth).addScaledVector(vAxis, -halfHeight),
+        center.clone().addScaledVector(uAxis, halfWidth).addScaledVector(vAxis, halfHeight),
+        center.clone().addScaledVector(uAxis, -halfWidth).addScaledVector(vAxis, halfHeight),
+      ];
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(corners.flatMap((point) => point.toArray()), 3));
+      geometry.setIndex([0, 1, 2, 0, 2, 3]);
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
       return geometry;
     }}
 
@@ -2104,11 +2377,14 @@ def _build_html_form(material_options: str, version: str) -> str:
         const move = Math.abs(ev.clientX - this.pointerDown.x) + Math.abs(ev.clientY - this.pointerDown.y);
         const isPrimaryClick = this.pointerDown.button === 0 && ev.button === 0;
         if (isPrimaryClick && move <= 6) {{
-          const faceIndex = this.pickFace(ev);
+          const pick = this.pickGeometry(ev);
           this.container.dispatchEvent(new CustomEvent('leakage-three-pick', {{
             bubbles: true,
             detail: {{
-              faceIndex,
+              faceIndex: pick ? pick.faceIndex : null,
+              point: pick ? pick.point : null,
+              vertexIndex: pick ? pick.vertexIndex : null,
+              edgeVertexIndices: pick ? pick.edgeVertexIndices : null,
               mode: this.mode,
               clientX: ev.clientX,
               clientY: ev.clientY,
@@ -2158,7 +2434,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.controls.update();
       }}
 
-      pickFace(ev) {{
+      pickGeometry(ev) {{
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.pointer.x = ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
         this.pointer.y = -((ev.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1;
@@ -2167,7 +2443,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         const surface = this.root.getObjectByName('surface');
         if (surface) candidates.push(surface);
         for (const child of this.overlayRoot.children) {{
-          if (child.isMesh) candidates.push(child);
+          if (!child.isMesh) continue;
+          const overlayKind = child.userData ? String(child.userData.overlayKind || '') : '';
+          if (this.pickBaseOnly && overlayKind.startsWith('emitter_')) continue;
+          candidates.push(child);
         }}
         const hits = this.raycaster.intersectObjects(candidates, false);
         if (!hits.length) return null;
@@ -2177,7 +2456,44 @@ def _build_html_form(material_options: str, version: str) -> str:
             : null;
           if (!sourceFaceIds || hit.faceIndex === null || hit.faceIndex === undefined) continue;
           const sourceFace = sourceFaceIds[hit.faceIndex];
-          if (sourceFace !== null && sourceFace !== undefined) return sourceFace;
+          if (sourceFace === null || sourceFace === undefined) continue;
+          const meshRef = this.lastMeshRef;
+          const triangle = meshRef && meshRef.faces ? meshRef.faces[sourceFace] : null;
+          if (!triangle) return {{ faceIndex: sourceFace, point: hit.point.toArray(), vertexIndex: null, edgeVertexIndices: null }};
+          let nearestVertex = triangle[0];
+          let nearestVertexDistance = Infinity;
+          for (const vertexIndex of triangle) {{
+            const vertex = meshRef.vertices[vertexIndex];
+            const distance = hit.point.distanceTo(new THREE.Vector3(vertex[0], vertex[1], vertex[2]));
+            if (distance < nearestVertexDistance) {{
+              nearestVertexDistance = distance;
+              nearestVertex = vertexIndex;
+            }}
+          }}
+          const edges = [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]];
+          let nearestEdge = edges[0];
+          let nearestEdgeDistance = Infinity;
+          for (const edge of edges) {{
+            const startValue = meshRef.vertices[edge[0]];
+            const endValue = meshRef.vertices[edge[1]];
+            const start = new THREE.Vector3(startValue[0], startValue[1], startValue[2]);
+            const end = new THREE.Vector3(endValue[0], endValue[1], endValue[2]);
+            const segment = end.clone().sub(start);
+            const lengthSq = Math.max(segment.lengthSq(), 1e-12);
+            const factor = Math.max(0, Math.min(1, hit.point.clone().sub(start).dot(segment) / lengthSq));
+            const closest = start.clone().add(segment.multiplyScalar(factor));
+            const distance = closest.distanceTo(hit.point);
+            if (distance < nearestEdgeDistance) {{
+              nearestEdgeDistance = distance;
+              nearestEdge = edge;
+            }}
+          }}
+          return {{
+            faceIndex: sourceFace,
+            point: hit.point.toArray(),
+            vertexIndex: nearestVertex,
+            edgeVertexIndices: nearestEdge
+          }};
         }}
         return null;
       }}
@@ -2193,14 +2509,13 @@ def _build_html_form(material_options: str, version: str) -> str:
       clearGroup(group) {{
         while (group.children.length) {{
           const child = group.children.pop();
-          if (child.geometry) child.geometry.dispose();
-          if (child.material) {{
-            if (Array.isArray(child.material)) {{
-              child.material.forEach((mat) => mat.dispose());
-            }} else {{
-              child.material.dispose();
+          child.traverse((node) => {{
+            if (node.geometry) node.geometry.dispose();
+            if (node.material) {{
+              if (Array.isArray(node.material)) node.material.forEach((mat) => mat.dispose());
+              else node.material.dispose();
             }}
-          }}
+          }});
         }}
       }}
 
@@ -2217,35 +2532,87 @@ def _build_html_form(material_options: str, version: str) -> str:
         const selectedFaces = options?.selectedFaces || [];
         for (const overlay of overlays) {{
           const faceIndices = this.visibleOverlayFaces(overlay, selectedFaces);
-          if (!faceIndices.length) continue;
-          const geometry = buildBufferGeometry(meshRef, faceIndices, {{ transformSpec: overlay }});
-          const surface = new THREE.Mesh(
-            geometry,
-            new THREE.MeshStandardMaterial({{
-              color: overlay.color || 0xef4444,
-              roughness: 0.72,
-              metalness: 0.02,
-              transparent: true,
-              opacity: overlay.opacity ?? 0.48,
-              side: THREE.DoubleSide,
-              depthTest: true,
-              depthWrite: false,
-            }})
-          );
-          surface.name = 'transform_' + (overlay.kind || 'overlay');
-          this.overlayRoot.add(surface);
+          const geometry = overlay.virtualPlane
+            ? buildVirtualPlaneGeometry(overlay.virtualPlane)
+            : (faceIndices.length ? buildBufferGeometry(meshRef, faceIndices, {{ transformSpec: overlay }}) : null);
+          if (geometry) {{
+            const surface = new THREE.Mesh(
+              geometry,
+              new THREE.MeshStandardMaterial({{
+                color: overlay.color || 0xef4444,
+                roughness: 0.72,
+                metalness: 0.02,
+                transparent: true,
+                opacity: overlay.opacity ?? 0.48,
+                side: THREE.DoubleSide,
+                depthTest: true,
+                depthWrite: false,
+              }})
+            );
+            surface.name = 'transform_' + (overlay.kind || 'overlay');
+            surface.userData.overlayKind = overlay.kind || 'overlay';
+            this.overlayRoot.add(surface);
 
-          const edges = new THREE.LineSegments(
-            new THREE.EdgesGeometry(geometry, 18),
-            new THREE.LineBasicMaterial({{
-              color: overlay.edgeColor || overlay.color || 0xf87171,
-              transparent: true,
-              opacity: overlay.edgeOpacity ?? 0.95,
-              depthTest: true,
-            }})
-          );
-          edges.name = 'transform_edges_' + (overlay.kind || 'overlay');
-          this.overlayRoot.add(edges);
+            const edges = new THREE.LineSegments(
+              new THREE.EdgesGeometry(geometry, 18),
+              new THREE.LineBasicMaterial({{
+                color: overlay.edgeColor || overlay.color || 0xf87171,
+                transparent: true,
+                opacity: overlay.edgeOpacity ?? 0.95,
+                depthTest: false,
+              }})
+            );
+            edges.name = 'transform_edges_' + (overlay.kind || 'overlay');
+            this.overlayRoot.add(edges);
+          }}
+          if (overlay.referencePoints && overlay.referencePoints.length) {{
+            for (const pointValue of overlay.referencePoints) {{
+              const marker = new THREE.Mesh(
+                new THREE.SphereGeometry(Math.max(this.size * 0.008, 0.25), 16, 12),
+                new THREE.MeshBasicMaterial({{ color: 0x22d3ee, depthTest: false }})
+              );
+              marker.position.set(...toVector3Array(pointValue, [0, 0, 0]));
+              marker.renderOrder = 85;
+              this.overlayRoot.add(marker);
+            }}
+          }}
+          if (overlay.referenceSegments && overlay.referenceSegments.length) {{
+            for (const segment of overlay.referenceSegments) {{
+              const segmentGeometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(...toVector3Array(segment[0], [0, 0, 0])),
+                new THREE.Vector3(...toVector3Array(segment[1], [0, 0, 0]))
+              ]);
+              const segmentLine = new THREE.Line(
+                segmentGeometry,
+                new THREE.LineBasicMaterial({{ color: 0x22d3ee, depthTest: false }})
+              );
+              segmentLine.renderOrder = 84;
+              this.overlayRoot.add(segmentLine);
+            }}
+          }}
+          if (overlay.arrowOrigin && overlay.arrowDirection) {{
+            const origin = new THREE.Vector3(...toVector3Array(overlay.arrowOrigin, [0, 0, 0]));
+            const direction = new THREE.Vector3(...toVector3Array(overlay.arrowDirection, [0, 0, 1])).normalize();
+            const length = Math.max(Number(overlay.arrowLength) || 1, 0.001);
+            const arrow = new THREE.ArrowHelper(
+              direction,
+              origin,
+              length,
+              overlay.arrowColor || 0xfbbf24,
+              Math.max(length * 0.22, 0.2),
+              Math.max(length * 0.10, 0.08)
+            );
+            arrow.name = 'emitter_direction_' + (overlay.kind || 'overlay');
+            arrow.renderOrder = 80;
+            arrow.traverse((node) => {{
+              if (node.material) {{
+                node.material.depthTest = false;
+                node.material.transparent = true;
+                node.material.opacity = 0.98;
+              }}
+            }});
+            this.overlayRoot.add(arrow);
+          }}
         }}
       }}
 
@@ -2262,6 +2629,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         const hiddenChanged = this.lastHiddenKey !== hiddenKey;
         const needsRebuild = meshChanged || roiChanged || hiddenChanged;
         this.renderMode = options?.renderMode || 'wireframe';
+        this.pickBaseOnly = !!options?.pickBaseOnly;
         if (needsRebuild) {{
           this.clearRoot();
           const geometry = buildBufferGeometry(meshRef, roiFaces, {{ excludeFaces: hiddenFaces }});
@@ -2438,7 +2806,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       renderScenes: {{ full: null, roi: null }},
       transform: {{ yaw: 0.7, pitch: 0.4, distance: 1.8 }},
       sidebarLayout: 'vertical',
-      activeSideTab: 'roi',
+      activeSideTab: null,
       openSidePanels: new Set(),
       selectedMaterialObjectId: null,
       materialTargetMode: 'part',
@@ -2453,6 +2821,16 @@ def _build_html_form(material_options: str, version: str) -> str:
         profile_id: '',
         bsdf_asset_id: ''
       }},
+      emitters: [],
+      activeEmitterId: null,
+      emitterDraftType: 'face',
+      emitterDraftFaces: new Set(),
+      emitterReferenceVertices: [],
+      emitterReferenceEdges: [],
+      emitterSelectionActive: false,
+      emitterSequence: 1,
+      emitterPopupPosition: null,
+      emitterPopupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
       popupPosition: null,
       popupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
       materialPopupPosition: null,
@@ -2517,6 +2895,15 @@ def _build_html_form(material_options: str, version: str) -> str:
     const emitterType = document.getElementById('emitterType');
     const emitterFace = document.getElementById('emitterFace');
     const emitterNormal = document.getElementById('emitterNormal');
+    const emitterDirectionDistribution = document.getElementById('emitterDirectionDistribution');
+    const emitterSpecsJson = document.getElementById('emitterSpecsJson');
+    const addFaceEmitterBtn = document.getElementById('addFaceEmitterBtn');
+    const addDatumEmitterBtn = document.getElementById('addDatumEmitterBtn');
+    const addReferenceEmitterBtn = document.getElementById('addReferenceEmitterBtn');
+    const cancelEmitterSelectionBtn = document.getElementById('cancelEmitterSelectionBtn');
+    const emitterSelectionBanner = document.getElementById('emitterSelectionBanner');
+    const emitterList = document.getElementById('emitterList');
+    const emitterEmpty = document.getElementById('emitterEmpty');
     const emitterBoxMin = document.querySelector('input[name=\"emitter_box_min\"]');
     const emitterBoxMax = document.querySelector('input[name=\"emitter_box_max\"]');
     const emitterCenter = document.querySelector('input[name=\"emitter_sphere_center\"]');
@@ -2606,6 +2993,41 @@ def _build_html_form(material_options: str, version: str) -> str:
     let pendingThreeCameraPreset = null;
     const materialSaveProfileBtn = document.getElementById('materialSaveProfileBtn');
     const cursorMoveClose = document.getElementById('cursorMoveClose');
+    const cursorEmitterPopup = document.getElementById('cursorEmitterPopup');
+    const cursorEmitterPopupHeader = document.getElementById('cursorEmitterPopupHeader');
+    const cursorEmitterClose = document.getElementById('cursorEmitterClose');
+    const cursorEmitterNameHint = document.getElementById('cursorEmitterNameHint');
+    const cursorEmitterChip = document.getElementById('cursorEmitterChip');
+    const emitterReselectFacesBtn = document.getElementById('emitterReselectFacesBtn');
+    const emitterNameInput = document.getElementById('emitterNameInput');
+    const emitterPowerModeSelect = document.getElementById('emitterPowerModeSelect');
+    const emitterTotalPowerLabel = document.getElementById('emitterTotalPowerLabel');
+    const emitterPowerDensityLabel = document.getElementById('emitterPowerDensityLabel');
+    const emitterPowerInput = document.getElementById('emitterPowerInput');
+    const emitterPowerDensityInput = document.getElementById('emitterPowerDensityInput');
+    const emitterRayCountInput = document.getElementById('emitterRayCountInput');
+    const emitterFaceCountInput = document.getElementById('emitterFaceCountInput');
+    const emitterDistributionSelect = document.getElementById('emitterDistributionSelect');
+    const emitterGaussianSigmaLabel = document.getElementById('emitterGaussianSigmaLabel');
+    const emitterGaussianSigmaInput = document.getElementById('emitterGaussianSigmaInput');
+    const emitterNormalFlipInput = document.getElementById('emitterNormalFlipInput');
+    const emitterDatumSection = document.getElementById('emitterDatumSection');
+    const emitterReferenceSection = document.getElementById('emitterReferenceSection');
+    const emitterCenterX = document.getElementById('emitterCenterX');
+    const emitterCenterY = document.getElementById('emitterCenterY');
+    const emitterCenterZ = document.getElementById('emitterCenterZ');
+    const emitterWidthInput = document.getElementById('emitterWidthInput');
+    const emitterHeightInput = document.getElementById('emitterHeightInput');
+    const emitterAreaInput = document.getElementById('emitterAreaInput');
+    const emitterRotationX = document.getElementById('emitterRotationX');
+    const emitterRotationY = document.getElementById('emitterRotationY');
+    const emitterRotationZ = document.getElementById('emitterRotationZ');
+    const emitterReferenceModeSelect = document.getElementById('emitterReferenceModeSelect');
+    const emitterReferenceHint = document.getElementById('emitterReferenceHint');
+    const emitterApplyBtn = document.getElementById('emitterApplyBtn');
+    const emitterResetBtn = document.getElementById('emitterResetBtn');
+    const emitterDeleteBtn = document.getElementById('emitterDeleteBtn');
+    const emitterGeometrySummary = document.getElementById('emitterGeometrySummary');
     const viewerWrap = document.querySelector('.viewer-wrap');
 
     function cloneVector(vector) {{
@@ -2641,13 +3063,15 @@ def _build_html_form(material_options: str, version: str) -> str:
       return !vectorEquals(state.gapMove, rule.move) || !vectorEquals(state.gapTilt, rule.tilt);
     }}
 
-    function setResultMessage(text) {{
+    function setResultMessage(text, options) {{
       if (resultPlaceholder) {{
         resultPlaceholder.style.display = 'none';
       }}
       resultPanel.style.display = 'block';
       resultPanel.innerHTML = text;
-      switchSideTab('result', {{ forceOpen: true }});
+      if (options && options.openResult) {{
+        switchSideTab('result', {{ forceOpen: true }});
+      }}
     }}
 
     function syncSidePanels() {{
@@ -3571,6 +3995,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         hiddenFaces: getThreeHiddenTransformFaces(),
         overlays: buildThreeTransformOverlays(),
         axisScalePercent: state.axisScalePercent,
+        pickBaseOnly: state.emitterSelectionActive,
       }};
       threeFullRenderer.setScene(payload, options);
       threeRoiRenderer.setScene(payload, options);
@@ -3586,9 +4011,214 @@ def _build_html_form(material_options: str, version: str) -> str:
       return uniqueSorted(Array.from(getCommittedTransformFaceSet()));
     }}
 
+    function modelSpanMm() {{
+      if (!state.mesh || !state.mesh.vertices || !state.mesh.vertices.length) return 10;
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (const vertex of state.mesh.vertices) {{
+        minX = Math.min(minX, vertex[0]); maxX = Math.max(maxX, vertex[0]);
+        minY = Math.min(minY, vertex[1]); maxY = Math.max(maxY, vertex[1]);
+        minZ = Math.min(minZ, vertex[2]); maxZ = Math.max(maxZ, vertex[2]);
+      }}
+      return Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1);
+    }}
+
+    function modelCenterMm() {{
+      if (!state.mesh || !state.mesh.vertices || !state.mesh.vertices.length) return [0, 0, 0];
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (const vertex of state.mesh.vertices) {{
+        minX = Math.min(minX, vertex[0]); maxX = Math.max(maxX, vertex[0]);
+        minY = Math.min(minY, vertex[1]); maxY = Math.max(maxY, vertex[1]);
+        minZ = Math.min(minZ, vertex[2]); maxZ = Math.max(maxZ, vertex[2]);
+      }}
+      return [(minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5];
+    }}
+
+    function emitterOverlayTransform(faceIndices, normalFlip) {{
+      const firstFace = faceIndices.length ? faceIndices[0] : null;
+      const objectId = firstFace === null ? null : state.faceToObjectId.get(firstFace);
+      const object = objectId === null || objectId === undefined ? null : state.objectsById.get(objectId);
+      const rule = object ? getTransformRuleByObjectId(objectId) : null;
+      const hasApplied = rule && rule.enabled && transformRuleHasAppliedTransform(rule);
+      const move = hasApplied ? cloneVector(rule.move) : {{ x: 0, y: 0, z: 0 }};
+      const tilt = hasApplied ? cloneVector(rule.tilt) : {{ x: 0, y: 0, z: 0 }};
+      const pivot = object && object.face_indices ? computePivotForFaceIndices(object.face_indices) : computePivotForFaceIndices(faceIndices);
+      const sourceOrigin = computePivotForFaceIndices(faceIndices);
+      const arrowOrigin = transformPoint(sourceOrigin, pivot, move, tilt);
+      let arrowDirection = rotateDirection(averageFaceNormal(faceIndices), tilt);
+      if (normalFlip) arrowDirection = arrowDirection.map((value) => -value);
+      return {{ pivot, move, tilt, arrowOrigin, arrowDirection }};
+    }}
+
+    function normalizeArray3(vector) {{
+      const length = Math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+      if (length <= 1e-9) return null;
+      return [vector[0] / length, vector[1] / length, vector[2] / length];
+    }}
+
+    function subtractArray3(a, b) {{ return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }}
+    function addArray3(a, b) {{ return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }}
+    function scaleArray3(vector, scale) {{ return [vector[0] * scale, vector[1] * scale, vector[2] * scale]; }}
+    function dotArray3(a, b) {{ return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }}
+    function crossArray3(a, b) {{
+      return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    }}
+
+    function datumPlaneFromInputs() {{
+      const center = [parseMoveFieldValue(emitterCenterX.value), parseMoveFieldValue(emitterCenterY.value), parseMoveFieldValue(emitterCenterZ.value)];
+      const rotation = {{
+        x: parseMoveFieldValue(emitterRotationX.value),
+        y: parseMoveFieldValue(emitterRotationY.value),
+        z: parseMoveFieldValue(emitterRotationZ.value)
+      }};
+      const uAxis = rotateDirection([1, 0, 0], rotation);
+      const vAxis = rotateDirection([0, 1, 0], rotation);
+      return {{
+        center,
+        uAxis,
+        vAxis,
+        normal: normalizeArray3(crossArray3(uAxis, vAxis)) || [0, 0, 1],
+        widthMm: Math.max(0.001, Math.abs(parseMoveFieldValue(emitterWidthInput.value))),
+        heightMm: Math.max(0.001, Math.abs(parseMoveFieldValue(emitterHeightInput.value))),
+        referencePoints: [],
+        referenceSegments: []
+      }};
+    }}
+
+    function referencePlaneFromState() {{
+      if (!state.mesh) return null;
+      const mode = emitterReferenceModeSelect.value || 'three_vertices';
+      let points = [];
+      let referenceSegments = [];
+      let origin = null;
+      let uTarget = null;
+      let vTarget = null;
+      if (mode === 'two_edges') {{
+        if (!state.emitterReferenceEdges.length) return {{ referencePoints: [], referenceSegments: [] }};
+        referenceSegments = state.emitterReferenceEdges.map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]);
+        points = referenceSegments.flat();
+        if (state.emitterReferenceEdges.length < 2) return {{ referencePoints: points, referenceSegments }};
+        const first = referenceSegments[0];
+        const second = referenceSegments[1];
+        origin = first[0];
+        uTarget = first[1];
+        const firstMid = scaleArray3(addArray3(first[0], first[1]), 0.5);
+        const secondMid = scaleArray3(addArray3(second[0], second[1]), 0.5);
+        vTarget = addArray3(origin, subtractArray3(secondMid, firstMid));
+      }} else {{
+        points = state.emitterReferenceVertices.map((index) => state.mesh.vertices[index]);
+        if (points.length < 3) return {{ referencePoints: points, referenceSegments: [] }};
+        origin = points[0];
+        uTarget = points[1];
+        vTarget = points[2];
+      }}
+      const uAxis = normalizeArray3(subtractArray3(uTarget, origin));
+      if (!uAxis) return {{ referencePoints: points, referenceSegments }};
+      const vRaw = subtractArray3(vTarget, origin);
+      const vProjected = subtractArray3(vRaw, scaleArray3(uAxis, dotArray3(vRaw, uAxis)));
+      const vAxis = normalizeArray3(vProjected);
+      if (!vAxis) return {{ referencePoints: points, referenceSegments }};
+      const uCoordinates = points.map((point) => dotArray3(subtractArray3(point, origin), uAxis));
+      const vCoordinates = points.map((point) => dotArray3(subtractArray3(point, origin), vAxis));
+      const minU = Math.min(...uCoordinates);
+      const maxU = Math.max(...uCoordinates);
+      const minV = Math.min(...vCoordinates);
+      const maxV = Math.max(...vCoordinates);
+      const widthMm = Math.max(maxU - minU, 0.001);
+      const heightMm = Math.max(maxV - minV, 0.001);
+      const center = addArray3(origin, addArray3(scaleArray3(uAxis, (minU + maxU) * 0.5), scaleArray3(vAxis, (minV + maxV) * 0.5)));
+      return {{
+        center,
+        uAxis,
+        vAxis,
+        normal: normalizeArray3(crossArray3(uAxis, vAxis)) || [0, 0, 1],
+        widthMm,
+        heightMm,
+        referencePoints: points,
+        referenceSegments
+      }};
+    }}
+
+    function emitterPlaneFromSpec(emitter) {{
+      if (!emitter || emitter.emitter_type === 'face') return null;
+      return {{
+        center: emitter.center || [0, 0, 0],
+        uAxis: emitter.u_axis || [1, 0, 0],
+        vAxis: emitter.v_axis || [0, 1, 0],
+        normal: normalizeArray3(crossArray3(emitter.u_axis || [1, 0, 0], emitter.v_axis || [0, 1, 0])) || [0, 0, 1],
+        widthMm: Number(emitter.width_mm) || 1,
+        heightMm: Number(emitter.height_mm) || 1,
+        referencePoints: (emitter.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: (emitter.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1])
+      }};
+    }}
+
+    function currentDraftEmitterPlane() {{
+      if (state.emitterDraftType === 'datum_plane') return datumPlaneFromInputs();
+      if (state.emitterDraftType === 'reference_plane') return referencePlaneFromState();
+      return null;
+    }}
+
     function buildThreeTransformOverlays() {{
       const overlays = [];
       if (!state.mesh) return overlays;
+      const arrowLength = Math.max(2, modelSpanMm() * 0.075);
+      const emitterEditorVisible = !cursorEmitterPopup.classList.contains('hidden-block');
+      for (const emitter of state.emitters) {{
+        if (emitter.enabled === false) continue;
+        if (emitterEditorVisible && emitter.emitter_id === state.activeEmitterId) continue;
+        const isFaceEmitter = emitter.emitter_type === 'face';
+        if (isFaceEmitter && (!emitter.face_indices || !emitter.face_indices.length)) continue;
+        const faceGeometry = isFaceEmitter ? emitterOverlayTransform(emitter.face_indices, emitter.normal_flip) : null;
+        const virtualPlane = isFaceEmitter ? null : emitterPlaneFromSpec(emitter);
+        if (!isFaceEmitter && (!virtualPlane || !virtualPlane.center)) continue;
+        let arrowDirection = isFaceEmitter ? faceGeometry.arrowDirection : virtualPlane.normal;
+        if (!isFaceEmitter && emitter.normal_flip) arrowDirection = arrowDirection.map((value) => -value);
+        overlays.push({{
+          kind: 'emitter_' + emitter.emitter_id,
+          faceIndices: isFaceEmitter ? emitter.face_indices : [],
+          pivot: faceGeometry ? faceGeometry.pivot : [0, 0, 0],
+          move: faceGeometry ? faceGeometry.move : {{ x: 0, y: 0, z: 0 }},
+          tilt: faceGeometry ? faceGeometry.tilt : {{ x: 0, y: 0, z: 0 }},
+          virtualPlane,
+          referencePoints: virtualPlane ? virtualPlane.referencePoints : [],
+          referenceSegments: virtualPlane ? virtualPlane.referenceSegments : [],
+          color: emitter.emitter_id === state.activeEmitterId ? 0xfb923c : 0xf97316,
+          edgeColor: 0xffedd5,
+          opacity: emitter.emitter_id === state.activeEmitterId ? 0.56 : 0.42,
+          edgeOpacity: 1.0,
+          arrowOrigin: faceGeometry ? faceGeometry.arrowOrigin : virtualPlane.center,
+          arrowDirection,
+          arrowLength,
+          arrowColor: 0xfbbf24
+        }});
+      }}
+      const draftEmitterFaces = uniqueSorted(Array.from(state.emitterDraftFaces));
+      const draftVirtualPlane = emitterEditorVisible ? currentDraftEmitterPlane() : null;
+      if ((draftEmitterFaces.length || draftVirtualPlane) && emitterEditorVisible) {{
+        const geometry = draftEmitterFaces.length ? emitterOverlayTransform(draftEmitterFaces, !!emitterNormalFlipInput.checked) : null;
+        let draftDirection = geometry ? geometry.arrowDirection : (draftVirtualPlane && draftVirtualPlane.normal ? draftVirtualPlane.normal : null);
+        if (!geometry && draftDirection && emitterNormalFlipInput.checked) draftDirection = draftDirection.map((value) => -value);
+        overlays.push({{
+          kind: 'emitter_draft',
+          faceIndices: draftEmitterFaces,
+          pivot: geometry ? geometry.pivot : [0, 0, 0],
+          move: geometry ? geometry.move : {{ x: 0, y: 0, z: 0 }},
+          tilt: geometry ? geometry.tilt : {{ x: 0, y: 0, z: 0 }},
+          virtualPlane: draftVirtualPlane && draftVirtualPlane.center ? draftVirtualPlane : null,
+          referencePoints: draftVirtualPlane ? draftVirtualPlane.referencePoints : [],
+          referenceSegments: draftVirtualPlane ? draftVirtualPlane.referenceSegments : [],
+          color: 0xfacc15,
+          edgeColor: 0xfef3c7,
+          opacity: 0.62,
+          edgeOpacity: 1.0,
+          arrowOrigin: geometry ? geometry.arrowOrigin : (draftVirtualPlane ? draftVirtualPlane.center : null),
+          arrowDirection: draftDirection,
+          arrowLength,
+          arrowColor: 0xfde047
+        }});
+      }}
       for (const objectId of uniqueSorted(Array.from(state.selectedGapObjectIds))) {{
         const object = state.objectsById.get(objectId);
         if (!object || !object.face_indices || !object.face_indices.length) continue;
@@ -3961,6 +4591,47 @@ def _build_html_form(material_options: str, version: str) -> str:
       return [sx * inv, sy * inv, sz * inv];
     }}
 
+    function faceAreaMm2(faceIndex) {{
+      const tri = state.mesh && state.mesh.faces ? state.mesh.faces[faceIndex] : null;
+      if (!tri) return 0;
+      const a = state.mesh.vertices[tri[0]];
+      const b = state.mesh.vertices[tri[1]];
+      const c = state.mesh.vertices[tri[2]];
+      const ux = b[0] - a[0];
+      const uy = b[1] - a[1];
+      const uz = b[2] - a[2];
+      const vx = c[0] - a[0];
+      const vy = c[1] - a[1];
+      const vz = c[2] - a[2];
+      const cx = uy * vz - uz * vy;
+      const cy = uz * vx - ux * vz;
+      const cz = ux * vy - uy * vx;
+      return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+    }}
+
+    function averageFaceNormal(faceIndices) {{
+      if (!faceIndices || !faceIndices.length) return [0, 0, 1];
+      let nx = 0;
+      let ny = 0;
+      let nz = 0;
+      for (const faceIndex of faceIndices) {{
+        const normal = faceNormal(faceIndex);
+        const weight = Math.max(faceAreaMm2(faceIndex), 1e-9);
+        nx += normal[0] * weight;
+        ny += normal[1] * weight;
+        nz += normal[2] * weight;
+      }}
+      const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (length <= 1e-9) return faceNormal(faceIndices[0]);
+      return [nx / length, ny / length, nz / length];
+    }}
+
+    function rotateDirection(direction, rotationDeg) {{
+      const rotated = rotatePoint(direction, [0, 0, 0], rotationDeg || {{ x: 0, y: 0, z: 0 }});
+      const length = Math.max(1e-9, Math.sqrt(rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2]));
+      return [rotated[0] / length, rotated[1] / length, rotated[2] / length];
+    }}
+
     function rotatePoint(point, pivot, rotationDeg) {{
       let x = point[0] - pivot[0];
       let y = point[1] - pivot[1];
@@ -4135,16 +4806,6 @@ def _build_html_form(material_options: str, version: str) -> str:
       return null;
     }}
 
-    function updateEmitterPanel() {{
-      const t = emitterType.value;
-      emitterFace.disabled = t !== 'face';
-      emitterNormal.disabled = (t !== 'face' && t !== 'volume_box' && t !== 'volume_sphere');
-      emitterBoxMin.disabled = t !== 'volume_box';
-      emitterBoxMax.disabled = t !== 'volume_box';
-      emitterCenter.disabled = t !== 'volume_sphere';
-      emitterRadius.disabled = t !== 'volume_sphere';
-    }}
-
     function currentMoveMagnitude() {{
       return vectorMagnitude(state.gapMove);
     }}
@@ -4228,7 +4889,9 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function handleViewerPickFace(faceIndex, mode, pickEvent) {{
       const additive = !!(pickEvent && (pickEvent.ctrlKey || pickEvent.metaKey));
-      if (state.gapTargetMode === 'face_gap') {{
+      if (state.emitterSelectionActive) {{
+        handleEmitterGeometryPick(faceIndex, pickEvent || null);
+      }} else if (state.gapTargetMode === 'face_gap') {{
         if (state.gapSelectionMethod === 'drag_box') {{
           setInspectedFace(faceIndex);
           return;
@@ -4835,6 +5498,505 @@ def _build_html_form(material_options: str, version: str) -> str:
       cursorMaterialPopup.classList.remove('is-dragging');
     }}
 
+    function emitterById(emitterId) {{
+      return state.emitters.find((item) => item.emitter_id === emitterId) || null;
+    }}
+
+    function currentEmitter() {{
+      return state.activeEmitterId ? emitterById(state.activeEmitterId) : null;
+    }}
+
+    function emitterSpecPayload(emitter) {{
+      return {{
+        emitter_id: emitter.emitter_id,
+        emitter_type: emitter.emitter_type || 'face',
+        face_indices: uniqueSorted(emitter.face_indices || []),
+        normal_mode: emitter.emitter_type === 'face' ? 'face_normal' : 'custom',
+        normal_flip: !!emitter.normal_flip,
+        custom_normal: emitter.emitter_type === 'face' ? null : (emitter.normal || null),
+        direction_distribution: emitter.direction_distribution || 'lambertian',
+        gaussian_sigma_deg: Number(emitter.gaussian_sigma_deg) || 12.0,
+        power_mode: emitter.power_mode || 'total',
+        power_lumen: Math.max(0, Number(emitter.power_lumen) || 0),
+        power_density_lm_per_m2: Math.max(0, Number(emitter.power_density_lm_per_m2) || 0),
+        center: emitter.center || null,
+        u_axis: emitter.u_axis || null,
+        v_axis: emitter.v_axis || null,
+        width_mm: emitter.width_mm ?? null,
+        height_mm: emitter.height_mm ?? null,
+        reference_mode: emitter.reference_mode || null,
+        reference_vertex_indices: emitter.reference_vertex_indices || [],
+        reference_edge_vertex_indices: emitter.reference_edge_vertex_indices || [],
+        ray_count: Math.max(1, parseInt(emitter.ray_count, 10) || 10000),
+        seed: null,
+        enabled: emitter.enabled !== false
+      }};
+    }}
+
+    function syncEmitterFormPayload() {{
+      const payload = state.emitters.map(emitterSpecPayload);
+      emitterSpecsJson.value = JSON.stringify(payload);
+      const first = state.emitters.find((item) => item.enabled !== false) || null;
+      const legacyStrength = document.querySelector('input[name="emitter_strength"]');
+      if (!first) {{
+        emitterType.value = '';
+        emitterFace.value = '';
+        emitterNormal.value = '';
+        emitterDirectionDistribution.value = 'lambertian';
+        if (legacyStrength) legacyStrength.value = '1.0';
+        return;
+      }}
+      const firstIsFace = first.emitter_type === 'face';
+      const normal = firstIsFace ? averageFaceNormal(first.face_indices || []) : (first.normal || [0, 0, 1]);
+      const direction = first.normal_flip ? normal.map((value) => -value) : normal;
+      emitterType.value = firstIsFace ? 'face' : '';
+      emitterFace.value = firstIsFace ? String((first.face_indices || [])[0] ?? '') : '';
+      emitterNormal.value = direction.map((value) => value.toFixed(6)).join(',');
+      emitterDirectionDistribution.value = first.direction_distribution || 'lambertian';
+      if (legacyStrength) legacyStrength.value = String(emitterEffectivePowerLm(first));
+    }}
+
+    function emitterTypeLabel(emitterTypeValue) {{
+      if (emitterTypeValue === 'datum_plane') return 'Datum plane';
+      if (emitterTypeValue === 'reference_plane') return 'Reference geometry';
+      return 'CAD surface';
+    }}
+
+    function emitterAreaMm2(emitter) {{
+      if (!emitter) return 0;
+      if ((emitter.emitter_type || 'face') === 'face') {{
+        return (emitter.face_indices || []).reduce((sum, faceIndex) => sum + faceAreaMm2(faceIndex), 0);
+      }}
+      return Math.max(0, Number(emitter.width_mm) || 0) * Math.max(0, Number(emitter.height_mm) || 0);
+    }}
+
+    function emitterEffectivePowerLm(emitter) {{
+      if (!emitter) return 0;
+      if ((emitter.power_mode || 'total') === 'power_per_area') {{
+        return Math.max(0, Number(emitter.power_density_lm_per_m2) || 0) * emitterAreaMm2(emitter) * 1e-6;
+      }}
+      return Math.max(0, Number(emitter.power_lumen) || 0);
+    }}
+
+    function emitterPowerLabel(emitter) {{
+      if ((emitter.power_mode || 'total') === 'power_per_area') {{
+        return String(emitter.power_density_lm_per_m2) + ' lm/m²';
+      }}
+      return String(emitter.power_lumen) + ' lm';
+    }}
+
+    function renderEmitterList() {{
+      emitterList.innerHTML = '';
+      emitterEmpty.style.display = state.emitters.length ? 'none' : 'block';
+      for (const emitter of state.emitters) {{
+        const row = document.createElement('div');
+        row.className = 'emitter-list-row' + (emitter.emitter_id === state.activeEmitterId ? ' active' : '');
+        row.setAttribute('data-emitter-id', emitter.emitter_id);
+        const dot = document.createElement('span');
+        dot.className = 'emitter-list-dot';
+        const body = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'emitter-list-name';
+        name.textContent = emitter.display_name || emitter.emitter_id;
+        const meta = document.createElement('div');
+        meta.className = 'emitter-list-meta';
+        const geometryMeta = (emitter.emitter_type || 'face') === 'face'
+          ? ((emitter.face_indices || []).length + ' faces')
+          : ((Number(emitter.width_mm) || 0).toFixed(2) + ' × ' + (Number(emitter.height_mm) || 0).toFixed(2) + ' mm');
+        meta.textContent = emitterTypeLabel(emitter.emitter_type) + ' · ' + geometryMeta + ' · ' + (emitter.direction_distribution || 'lambertian');
+        body.appendChild(name);
+        body.appendChild(meta);
+        const power = document.createElement('span');
+        power.className = 'emitter-list-power';
+        power.textContent = emitterPowerLabel(emitter);
+        row.appendChild(dot);
+        row.appendChild(body);
+        row.appendChild(power);
+        row.addEventListener('click', function (ev) {{
+          editEmitter(emitter.emitter_id, ev);
+        }});
+        emitterList.appendChild(row);
+      }}
+      syncEmitterFormPayload();
+      updateEmitterSelectionUI();
+    }}
+
+    function updateEmitterDistributionUI() {{
+      const isGaussian = emitterDistributionSelect.value === 'gaussian';
+      emitterGaussianSigmaLabel.classList.toggle('hidden-block', !isGaussian);
+    }}
+
+    function updateEmitterPowerUI() {{
+      const densityMode = emitterPowerModeSelect.value === 'power_per_area';
+      emitterTotalPowerLabel.classList.toggle('hidden-block', densityMode);
+      emitterPowerDensityLabel.classList.toggle('hidden-block', !densityMode);
+    }}
+
+    function updateEmitterGeometryUI() {{
+      const emitterTypeValue = state.emitterDraftType || 'face';
+      emitterDatumSection.classList.toggle('hidden-block', emitterTypeValue !== 'datum_plane');
+      emitterReferenceSection.classList.toggle('hidden-block', emitterTypeValue !== 'reference_plane');
+      emitterReselectFacesBtn.disabled = emitterTypeValue === 'datum_plane';
+      emitterReselectFacesBtn.textContent = emitterTypeValue === 'datum_plane' ? 'Numeric geometry' : 'Select geometry';
+      if (emitterTypeValue === 'reference_plane') {{
+        emitterReferenceHint.textContent = emitterReferenceModeSelect.value === 'two_edges'
+          ? '3D viewer에서 모서리가 있는 면을 2번 클릭하세요. 클릭 지점에서 가장 가까운 edge가 선택됩니다.'
+          : '3D viewer에서 꼭지점이 있는 면을 3번 클릭하세요. 클릭 지점에서 가장 가까운 vertex가 선택됩니다.';
+      }}
+    }}
+
+    function updateEmitterDraftSummary() {{
+      const emitterTypeValue = state.emitterDraftType || 'face';
+      let count = 0;
+      let area = 0;
+      let normal = [0, 0, 1];
+      let summary = '';
+      if (emitterTypeValue === 'face') {{
+        const faces = uniqueSorted(Array.from(state.emitterDraftFaces));
+        count = faces.length;
+        normal = averageFaceNormal(faces);
+        area = faces.reduce((sum, faceIndex) => sum + faceAreaMm2(faceIndex), 0);
+        summary = faces.length
+          ? ('Type: CAD surface\\nFaces: ' + faces.join(', ') + '\\nArea: ' + area.toFixed(3) + ' mm²')
+          : 'Type: CAD surface\\n선택 면 없음';
+        cursorEmitterNameHint.textContent = faces.length
+          ? '선택 surface가 주황색으로 표시됩니다. 화살표가 광 방출 normal입니다.'
+          : '3D viewer에서 실제 CAD surface를 선택하세요.';
+      }} else {{
+        const plane = currentDraftEmitterPlane();
+        normal = plane && plane.normal ? plane.normal : [0, 0, 1];
+        if (emitterTypeValue === 'datum_plane') {{
+          count = plane && plane.center ? 1 : 0;
+          area = plane && plane.center ? plane.widthMm * plane.heightMm : 0;
+          emitterAreaInput.value = area.toFixed(3);
+          summary = plane && plane.center
+            ? ('Type: Datum plane\\nCenter: (' + plane.center.map((value) => value.toFixed(3)).join(', ') + ') mm\\nSize: ' + plane.widthMm.toFixed(3) + ' × ' + plane.heightMm.toFixed(3) + ' mm')
+            : 'Type: Datum plane\\n형상 입력 필요';
+          cursorEmitterNameHint.textContent = '좌표·크기·회전각으로 빈 공간의 가상 발광면을 정의합니다.';
+        }} else {{
+          const mode = emitterReferenceModeSelect.value || 'three_vertices';
+          count = mode === 'two_edges' ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+          area = plane && plane.center ? plane.widthMm * plane.heightMm : 0;
+          summary = 'Type: Reference geometry\\n' + (mode === 'two_edges' ? 'Edges: ' + count + ' / 2' : 'Vertices: ' + count + ' / 3');
+          if (plane && plane.center) summary += '\\nSize: ' + plane.widthMm.toFixed(3) + ' × ' + plane.heightMm.toFixed(3) + ' mm';
+          cursorEmitterNameHint.textContent = plane && plane.center
+            ? '선택한 CAD reference 사이에 가상 발광면이 생성되었습니다.'
+            : (mode === 'two_edges' ? '3D viewer에서 기준 edge 2개를 선택하세요.' : '3D viewer에서 기준 vertex 3개를 선택하세요.');
+        }}
+      }}
+      const shownNormal = emitterNormalFlipInput.checked ? normal.map((value) => -value) : normal;
+      emitterFaceCountInput.value = String(count);
+      emitterGeometrySummary.textContent = summary + '\\nArea: ' + area.toFixed(3) + ' mm²\\nNormal: (' + shownNormal.map((value) => value.toFixed(4)).join(', ') + ')';
+      cursorEmitterChip.textContent = currentEmitter() ? 'Edit ' + emitterTypeLabel(emitterTypeValue) : 'New ' + emitterTypeLabel(emitterTypeValue);
+      updateEmitterPowerUI();
+      updateEmitterGeometryUI();
+    }}
+
+    function updateEmitterSelectionUI() {{
+      const emitterTypeValue = state.emitterDraftType || 'face';
+      const isFaceSelecting = state.emitterSelectionActive && emitterTypeValue === 'face';
+      const isReferenceSelecting = state.emitterSelectionActive && emitterTypeValue === 'reference_plane';
+      addFaceEmitterBtn.textContent = isFaceSelecting ? 'Selecting CAD surfaces…' : '+ CAD surface emitter';
+      addDatumEmitterBtn.textContent = '+ Datum plane emitter';
+      addReferenceEmitterBtn.textContent = isReferenceSelecting ? 'Selecting references…' : '+ Reference geometry emitter';
+      addFaceEmitterBtn.disabled = state.emitterSelectionActive;
+      addDatumEmitterBtn.disabled = state.emitterSelectionActive;
+      addReferenceEmitterBtn.disabled = state.emitterSelectionActive;
+      cancelEmitterSelectionBtn.disabled = !state.emitterSelectionActive;
+      emitterSelectionBanner.classList.toggle('active', state.emitterSelectionActive);
+      if (isFaceSelecting) {{
+        const faceCount = state.emitterDraftFaces.size;
+        emitterSelectionBanner.textContent = faceCount
+          ? ('선택 중: ' + faceCount + ' surfaces · Ctrl+클릭으로 추가/제외 · Apply로 확정')
+          : '3D viewer에서 실제 방출 surface를 클릭하세요. Ctrl+클릭으로 여러 surface를 묶을 수 있습니다.';
+        viewerTip.textContent = 'Emitter: Click CAD surface, Ctrl+click = add/remove, Apply = save.';
+      }} else if (isReferenceSelecting) {{
+        const isEdges = emitterReferenceModeSelect.value === 'two_edges';
+        const selectedCount = isEdges ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+        emitterSelectionBanner.textContent = isEdges
+          ? ('Reference edge 선택: ' + selectedCount + ' / 2 · Apply로 확정')
+          : ('Reference vertex 선택: ' + selectedCount + ' / 3 · Apply로 확정');
+        viewerTip.textContent = isEdges ? 'Emitter: Click near two CAD edges.' : 'Emitter: Click near three CAD vertices.';
+      }} else if (state.emitters.length) {{
+        emitterSelectionBanner.textContent = state.emitters.length + ' emitter(s) registered. 목록을 클릭하면 다시 편집합니다.';
+        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+      }} else {{
+        emitterSelectionBanner.textContent = '광원이 없습니다. 위의 세 생성 방식 중 하나를 선택하세요.';
+        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+      }}
+    }}
+
+    function resetEmitterEditorValues() {{
+      const emitter = currentEmitter();
+      const center = emitter && emitter.center ? emitter.center : modelCenterMm();
+      const rotation = emitter && emitter.rotation_deg ? emitter.rotation_deg : {{ x: 0, y: 0, z: 0 }};
+      emitterNameInput.value = emitter ? emitter.display_name : ('Emitter ' + state.emitterSequence);
+      emitterPowerModeSelect.value = emitter ? (emitter.power_mode || 'total') : 'total';
+      emitterPowerInput.value = emitter ? String(emitter.power_lumen ?? 1.0) : '1.0';
+      emitterPowerDensityInput.value = emitter ? String(emitter.power_density_lm_per_m2 ?? 100) : '100';
+      emitterRayCountInput.value = emitter ? String(emitter.ray_count) : '10000';
+      emitterDistributionSelect.value = emitter ? emitter.direction_distribution : 'lambertian';
+      emitterGaussianSigmaInput.value = emitter ? String(emitter.gaussian_sigma_deg) : '12.0';
+      emitterNormalFlipInput.checked = emitter ? !!emitter.normal_flip : false;
+      emitterCenterX.value = String(center[0] ?? 0);
+      emitterCenterY.value = String(center[1] ?? 0);
+      emitterCenterZ.value = String(center[2] ?? 0);
+      emitterWidthInput.value = emitter ? String(emitter.width_mm ?? 20) : '20';
+      emitterHeightInput.value = emitter ? String(emitter.height_mm ?? 20) : '20';
+      emitterRotationX.value = String(rotation.x ?? 0);
+      emitterRotationY.value = String(rotation.y ?? 0);
+      emitterRotationZ.value = String(rotation.z ?? 0);
+      emitterReferenceModeSelect.value = emitter ? (emitter.reference_mode || 'three_vertices') : 'three_vertices';
+      emitterDeleteBtn.disabled = !emitter;
+      updateEmitterDistributionUI();
+      updateEmitterPowerUI();
+      updateEmitterGeometryUI();
+      updateEmitterDraftSummary();
+    }}
+
+    function clampEmitterPopupPosition(left, top) {{
+      const rect = viewerWrap.getBoundingClientRect();
+      const popupWidth = cursorEmitterPopup.offsetWidth || 382;
+      const popupHeight = cursorEmitterPopup.offsetHeight || 620;
+      return {{
+        left: Math.min(Math.max(14, rect.width - popupWidth - 14), Math.max(14, left)),
+        top: Math.min(Math.max(24, rect.height - popupHeight - 14), Math.max(24, top))
+      }};
+    }}
+
+    function applyEmitterPopupPosition(left, top) {{
+      const next = clampEmitterPopupPosition(left, top);
+      cursorEmitterPopup.style.left = next.left + 'px';
+      cursorEmitterPopup.style.top = next.top + 'px';
+      state.emitterPopupPosition = next;
+    }}
+
+    function showEmitterPopupAt(clientX, clientY) {{
+      cursorEmitterPopup.classList.remove('hidden-block');
+      if (clientX !== null && clientX !== undefined && clientY !== null && clientY !== undefined) {{
+        const rect = viewerWrap.getBoundingClientRect();
+        applyEmitterPopupPosition(clientX - rect.left + 14, clientY - rect.top + 14);
+      }} else if (state.emitterPopupPosition) {{
+        applyEmitterPopupPosition(state.emitterPopupPosition.left, state.emitterPopupPosition.top);
+      }} else {{
+        const rect = viewerWrap.getBoundingClientRect();
+        applyEmitterPopupPosition(rect.width - (cursorEmitterPopup.offsetWidth || 382) - 18, 42);
+      }}
+    }}
+
+    function hideEmitterPopup() {{
+      cursorEmitterPopup.classList.add('hidden-block');
+    }}
+
+    function startEmitterPopupDrag(ev) {{
+      if (ev.target && ev.target.closest('button')) return;
+      const popupRect = cursorEmitterPopup.getBoundingClientRect();
+      state.emitterPopupDrag.active = true;
+      state.emitterPopupDrag.offsetX = ev.clientX - popupRect.left;
+      state.emitterPopupDrag.offsetY = ev.clientY - popupRect.top;
+      cursorEmitterPopup.classList.add('is-dragging');
+      ev.preventDefault();
+    }}
+
+    function moveEmitterPopupDrag(ev) {{
+      if (!state.emitterPopupDrag.active) return;
+      const rect = viewerWrap.getBoundingClientRect();
+      applyEmitterPopupPosition(
+        ev.clientX - rect.left - state.emitterPopupDrag.offsetX,
+        ev.clientY - rect.top - state.emitterPopupDrag.offsetY
+      );
+    }}
+
+    function stopEmitterPopupDrag() {{
+      if (!state.emitterPopupDrag.active) return;
+      state.emitterPopupDrag.active = false;
+      cursorEmitterPopup.classList.remove('is-dragging');
+    }}
+
+    function beginEmitterCreation(emitterTypeValue) {{
+      state.activeEmitterId = null;
+      state.emitterDraftType = emitterTypeValue;
+      state.emitterDraftFaces = new Set();
+      state.emitterReferenceVertices = [];
+      state.emitterReferenceEdges = [];
+      state.emitterSelectionActive = emitterTypeValue !== 'datum_plane';
+      resetEmitterEditorValues();
+      switchSideTab('raytracing', {{ forceOpen: true }});
+      showEmitterPopupAt(null, null);
+      renderEmitterList();
+      drawViewer();
+    }}
+
+    function beginFaceEmitterSelection() {{ beginEmitterCreation('face'); }}
+    function beginDatumEmitterCreation() {{ beginEmitterCreation('datum_plane'); }}
+    function beginReferenceEmitterSelection() {{ beginEmitterCreation('reference_plane'); }}
+
+    function editEmitter(emitterId, popupPosition) {{
+      const emitter = emitterById(emitterId);
+      if (!emitter) return;
+      state.activeEmitterId = emitterId;
+      state.emitterDraftType = emitter.emitter_type || 'face';
+      state.emitterDraftFaces = new Set(emitter.face_indices || []);
+      state.emitterReferenceVertices = Array.from(emitter.reference_vertex_indices || []);
+      state.emitterReferenceEdges = (emitter.reference_edge_vertex_indices || []).map((edge) => Array.from(edge));
+      state.emitterSelectionActive = false;
+      resetEmitterEditorValues();
+      showEmitterPopupAt(
+        popupPosition && popupPosition.clientX !== undefined ? popupPosition.clientX : null,
+        popupPosition && popupPosition.clientY !== undefined ? popupPosition.clientY : null
+      );
+      renderEmitterList();
+      drawViewer();
+    }}
+
+    function reselectEmitterGeometry() {{
+      if (state.emitterDraftType === 'datum_plane') return;
+      state.emitterSelectionActive = true;
+      updateEmitterSelectionUI();
+      drawViewer();
+    }}
+
+    function cancelEmitterSelection() {{
+      state.emitterSelectionActive = false;
+      if (!currentEmitter()) {{
+        state.emitterDraftFaces = new Set();
+        state.emitterReferenceVertices = [];
+        state.emitterReferenceEdges = [];
+        hideEmitterPopup();
+      }}
+      updateEmitterSelectionUI();
+      drawViewer();
+    }}
+
+    function handleEmitterGeometryPick(faceIndex, pickEvent) {{
+      if (faceIndex === null || faceIndex === undefined) return;
+      if (state.emitterDraftType === 'reference_plane') {{
+        if ((emitterReferenceModeSelect.value || 'three_vertices') === 'two_edges') {{
+          const edge = pickEvent && Array.isArray(pickEvent.edgeVertexIndices) ? pickEvent.edgeVertexIndices.map(Number).sort((a, b) => a - b) : [];
+          if (edge.length !== 2 || edge.some((value) => !Number.isInteger(value))) return;
+          const signature = edge.join(':');
+          const existing = state.emitterReferenceEdges.findIndex((item) => item.slice().sort((a, b) => a - b).join(':') === signature);
+          if (existing >= 0) state.emitterReferenceEdges.splice(existing, 1);
+          else if (state.emitterReferenceEdges.length < 2) state.emitterReferenceEdges.push(edge);
+          else state.emitterReferenceEdges = [state.emitterReferenceEdges[1], edge];
+        }} else {{
+          const vertexIndex = Number(pickEvent && pickEvent.vertexIndex);
+          if (!Number.isInteger(vertexIndex) || vertexIndex < 0) return;
+          const existing = state.emitterReferenceVertices.indexOf(vertexIndex);
+          if (existing >= 0) state.emitterReferenceVertices.splice(existing, 1);
+          else if (state.emitterReferenceVertices.length < 3) state.emitterReferenceVertices.push(vertexIndex);
+          else state.emitterReferenceVertices = [state.emitterReferenceVertices[1], state.emitterReferenceVertices[2], vertexIndex];
+        }}
+        updateEmitterDraftSummary();
+        updateEmitterSelectionUI();
+        if (cursorEmitterPopup.classList.contains('hidden-block')) {{
+          showEmitterPopupAt(null, null);
+        }}
+        drawViewer();
+        return;
+      }}
+      const additive = !!(pickEvent && (pickEvent.ctrlKey || pickEvent.metaKey));
+      const cluster = getSurfaceCluster(faceIndex);
+      const next = additive ? new Set(state.emitterDraftFaces) : new Set();
+      const removeCluster = additive && cluster.every((member) => next.has(member));
+      for (const member of cluster) {{
+        if (removeCluster) next.delete(member);
+        else next.add(member);
+      }}
+      state.emitterDraftFaces = new Set(uniqueSorted(Array.from(next)));
+      updateEmitterDraftSummary();
+      updateEmitterSelectionUI();
+      showEmitterPopupAt(pickEvent?.clientX, pickEvent?.clientY);
+      drawViewer();
+    }}
+
+    function applyEmitterEditor() {{
+      const emitterTypeValue = state.emitterDraftType || 'face';
+      const faces = uniqueSorted(Array.from(state.emitterDraftFaces));
+      const plane = emitterTypeValue === 'face' ? null : currentDraftEmitterPlane();
+      if (emitterTypeValue === 'face' && !faces.length) {{
+        emitterSelectionBanner.textContent = '먼저 3D viewer에서 emitter 면을 선택하세요.';
+        emitterSelectionBanner.classList.add('active');
+        return;
+      }}
+      if (emitterTypeValue === 'reference_plane' && (!plane || !plane.center)) {{
+        emitterSelectionBanner.textContent = emitterReferenceModeSelect.value === 'two_edges'
+          ? 'Reference emitter를 만들려면 서로 다른 edge 2개를 선택하세요.'
+          : 'Reference emitter를 만들려면 서로 다른 vertex 3개를 선택하세요.';
+        emitterSelectionBanner.classList.add('active');
+        return;
+      }}
+      const power = Math.max(0, parseMoveFieldValue(emitterPowerInput.value));
+      const powerDensity = Math.max(0, parseMoveFieldValue(emitterPowerDensityInput.value));
+      const rayCount = Math.max(1, parseInt(emitterRayCountInput.value, 10) || 10000);
+      const sigma = Math.max(0.1, parseFloat(emitterGaussianSigmaInput.value) || 12.0);
+      let emitter = currentEmitter();
+      if (!emitter) {{
+        emitter = {{ emitter_id: 'emitter_' + String(state.emitterSequence).padStart(3, '0') }};
+        state.emitterSequence += 1;
+        state.emitters.push(emitter);
+      }}
+      emitter.display_name = emitterNameInput.value.trim() || ('Emitter ' + state.emitterSequence);
+      emitter.emitter_type = emitterTypeValue;
+      emitter.face_indices = emitterTypeValue === 'face' ? faces : [];
+      emitter.normal_mode = emitterTypeValue === 'face' ? 'face_normal' : 'custom';
+      emitter.normal_flip = !!emitterNormalFlipInput.checked;
+      emitter.direction_distribution = emitterDistributionSelect.value || 'lambertian';
+      emitter.gaussian_sigma_deg = sigma;
+      emitter.power_mode = emitterPowerModeSelect.value || 'total';
+      emitter.power_lumen = power;
+      emitter.power_density_lm_per_m2 = powerDensity;
+      emitter.ray_count = rayCount;
+      emitter.enabled = true;
+      emitter.center = plane && plane.center ? Array.from(plane.center) : null;
+      emitter.u_axis = plane && plane.uAxis ? Array.from(plane.uAxis) : null;
+      emitter.v_axis = plane && plane.vAxis ? Array.from(plane.vAxis) : null;
+      emitter.normal = plane && plane.normal ? Array.from(plane.normal) : null;
+      emitter.width_mm = plane && plane.widthMm ? plane.widthMm : null;
+      emitter.height_mm = plane && plane.heightMm ? plane.heightMm : null;
+      emitter.reference_mode = emitterTypeValue === 'reference_plane' ? (emitterReferenceModeSelect.value || 'three_vertices') : null;
+      emitter.reference_vertex_indices = emitterTypeValue === 'reference_plane' ? Array.from(state.emitterReferenceVertices) : [];
+      emitter.reference_edge_vertex_indices = emitterTypeValue === 'reference_plane' ? state.emitterReferenceEdges.map((edge) => Array.from(edge)) : [];
+      emitter.rotation_deg = emitterTypeValue === 'datum_plane' ? {{
+        x: parseMoveFieldValue(emitterRotationX.value),
+        y: parseMoveFieldValue(emitterRotationY.value),
+        z: parseMoveFieldValue(emitterRotationZ.value)
+      }} : {{ x: 0, y: 0, z: 0 }};
+      state.activeEmitterId = emitter.emitter_id;
+      state.emitterSelectionActive = false;
+      resetEmitterEditorValues();
+      renderEmitterList();
+      drawViewer();
+    }}
+
+    function deleteCurrentEmitter() {{
+      if (state.activeEmitterId) {{
+        state.emitters = state.emitters.filter((item) => item.emitter_id !== state.activeEmitterId);
+      }}
+      state.activeEmitterId = null;
+      state.emitterDraftType = 'face';
+      state.emitterDraftFaces = new Set();
+      state.emitterReferenceVertices = [];
+      state.emitterReferenceEdges = [];
+      state.emitterSelectionActive = false;
+      hideEmitterPopup();
+      renderEmitterList();
+      drawViewer();
+    }}
+
+    function resetEmittersForScene() {{
+      state.emitters = [];
+      state.activeEmitterId = null;
+      state.emitterDraftType = 'face';
+      state.emitterDraftFaces = new Set();
+      state.emitterReferenceVertices = [];
+      state.emitterReferenceEdges = [];
+      state.emitterSelectionActive = false;
+      state.emitterSequence = 1;
+      hideEmitterPopup();
+      renderEmitterList();
+    }}
+
     function resetGapSelection() {{
       state.selectedGapObjectId = null;
       state.selectedGapObjectIds = new Set();
@@ -4909,6 +6071,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         gapObjectList.innerHTML = '';
         resetRoiSelection();
         resetGapSelection();
+        resetEmittersForScene();
 
         if (!payload.objects.length) {{
           objectList.innerHTML = '<div class=\"small\">No object split detected. You can input faces manually.</div>';
@@ -5423,12 +6586,18 @@ def _build_html_form(material_options: str, version: str) -> str:
     if (cursorMaterialPopupHeader) {{
       cursorMaterialPopupHeader.addEventListener('mousedown', startMaterialPopupDrag);
     }}
+    if (cursorEmitterPopupHeader) {{
+      cursorEmitterPopupHeader.addEventListener('mousedown', startEmitterPopupDrag);
+    }}
     window.addEventListener('mousemove', movePopupDrag);
     window.addEventListener('mousemove', moveMaterialPopupDrag);
+    window.addEventListener('mousemove', moveEmitterPopupDrag);
     window.addEventListener('mouseup', stopPopupDrag);
     window.addEventListener('mouseup', stopMaterialPopupDrag);
+    window.addEventListener('mouseup', stopEmitterPopupDrag);
     window.addEventListener('mouseleave', stopPopupDrag);
     window.addEventListener('mouseleave', stopMaterialPopupDrag);
+    window.addEventListener('mouseleave', stopEmitterPopupDrag);
     previewOverlayToggle.addEventListener('change', function () {{
       state.previewOverlayEnabled = !!previewOverlayToggle.checked;
       drawViewer();
@@ -5540,6 +6709,50 @@ def _build_html_form(material_options: str, version: str) -> str:
     if (cancelNewBsdfBtn) {{
       cancelNewBsdfBtn.addEventListener('click', hideMaterialLibraryForms);
     }}
+    addFaceEmitterBtn.addEventListener('click', beginFaceEmitterSelection);
+    addDatumEmitterBtn.addEventListener('click', beginDatumEmitterCreation);
+    addReferenceEmitterBtn.addEventListener('click', beginReferenceEmitterSelection);
+    cancelEmitterSelectionBtn.addEventListener('click', cancelEmitterSelection);
+    cursorEmitterClose.addEventListener('click', function () {{
+      state.emitterSelectionActive = false;
+      hideEmitterPopup();
+      updateEmitterSelectionUI();
+      drawViewer();
+    }});
+    emitterReselectFacesBtn.addEventListener('click', reselectEmitterGeometry);
+    emitterApplyBtn.addEventListener('click', applyEmitterEditor);
+    emitterResetBtn.addEventListener('click', resetEmitterEditorValues);
+    emitterDeleteBtn.addEventListener('click', deleteCurrentEmitter);
+    emitterDistributionSelect.addEventListener('change', function () {{
+      updateEmitterDistributionUI();
+      drawViewer();
+    }});
+    emitterPowerModeSelect.addEventListener('change', function () {{
+      updateEmitterPowerUI();
+      updateEmitterDraftSummary();
+    }});
+    emitterReferenceModeSelect.addEventListener('change', function () {{
+      state.emitterReferenceVertices = [];
+      state.emitterReferenceEdges = [];
+      state.emitterSelectionActive = true;
+      updateEmitterDraftSummary();
+      updateEmitterSelectionUI();
+      drawViewer();
+    }});
+    for (const input of [
+      emitterCenterX, emitterCenterY, emitterCenterZ,
+      emitterWidthInput, emitterHeightInput,
+      emitterRotationX, emitterRotationY, emitterRotationZ
+    ]) {{
+      input.addEventListener('input', function () {{
+        updateEmitterDraftSummary();
+        drawViewer();
+      }});
+    }}
+    emitterNormalFlipInput.addEventListener('change', function () {{
+      updateEmitterDraftSummary();
+      drawViewer();
+    }});
     axisScale.addEventListener('input', function () {{
       state.axisScalePercent = parseInt(axisScale.value, 10) || 100;
       axisScaleValue.textContent = state.axisScalePercent + '%';
@@ -5549,7 +6762,6 @@ def _build_html_form(material_options: str, version: str) -> str:
       updateViewerEngineUI();
       drawViewer();
     }});
-    emitterType.addEventListener('change', updateEmitterPanel);
     runForm.addEventListener('keydown', function (ev) {{
       if (ev.key === 'F2') {{
         if (state.selectedGapObjectId !== null && state.selectedGapObjectId !== undefined) {{
@@ -5562,6 +6774,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       const target = ev.target;
       if (!target || target.tagName === 'TEXTAREA') return;
       ev.preventDefault();
+      if (target.closest && target.closest('#cursorEmitterPopup')) {{
+        applyEmitterEditor();
+        return;
+      }}
       if (target.closest && target.closest('#cursorMaterialPopup')) {{
         applyMaterialAssignment(state.materialTargetMode);
         return;
@@ -5589,7 +6805,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     }});
 
     window.addEventListener('resize', drawViewer);
-    updateEmitterPanel();
+    renderEmitterList();
     setSidebarLayout('vertical');
     ensureMaterialLibraryState();
     renderMaterialLibrary();

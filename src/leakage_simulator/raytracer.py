@@ -147,11 +147,28 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
         if not emitter.enabled:
             continue
         emitter_rng = random.Random(emitter.seed if emitter.seed is not None else rng.randint(0, 2**31 - 1))
-        face_weights = _build_emitter_face_weights(trace_input.mesh, emitter.face_indices)
-        ray_power = emitter.power_lumen / float(emitter.ray_count)
+        face_weights = _build_emitter_face_weights(trace_input.mesh, emitter.face_indices) if emitter.emitter_type == "face" else []
+        if emitter.emitter_type == "face":
+            emitter_area_mm2 = sum(
+                trace_input.mesh.area(face_index)
+                for face_index in emitter.face_indices
+                if 0 <= face_index < len(trace_input.mesh.faces)
+            )
+        else:
+            emitter_area_mm2 = float(emitter.width_mm or 0.0) * float(emitter.height_mm or 0.0)
+        ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
         for _ in range(emitter.ray_count):
             total_rays += 1
-            ray = _sample_face_emitter_ray(trace_input.mesh, emitter, face_weights, emitter_rng, trace_input.config.epsilon_mm)
+            if emitter.emitter_type == "face":
+                ray = _sample_face_emitter_ray(
+                    trace_input.mesh,
+                    emitter,
+                    face_weights,
+                    emitter_rng,
+                    trace_input.config.epsilon_mm,
+                )
+            else:
+                ray = _sample_virtual_plane_emitter_ray(emitter, emitter_rng, trace_input.config.epsilon_mm)
             if ray is None:
                 terminated_ray_count += 1
                 continue
@@ -253,6 +270,38 @@ def _sample_face_emitter_ray(
     direction = _sample_emitter_direction(rng, emitter, normal)
     origin = vec_add(point, vec_mul(normal, epsilon_mm))
     return origin, direction, face_index
+
+
+def _sample_virtual_plane_emitter_ray(
+    emitter: EmitterSpec,
+    rng: random.Random,
+    epsilon_mm: float,
+) -> Optional[Tuple[Vec3, Vec3, int]]:
+    if (
+        emitter.center is None
+        or emitter.u_axis is None
+        or emitter.v_axis is None
+        or emitter.width_mm is None
+        or emitter.height_mm is None
+    ):
+        return None
+    u_axis = vec_norm(emitter.u_axis)
+    raw_v = vec_add(emitter.v_axis, vec_mul(u_axis, -vec_dot(emitter.v_axis, u_axis)))
+    if math.sqrt(vec_dot(raw_v, raw_v)) <= 1e-12:
+        return None
+    v_axis = vec_norm(raw_v)
+    normal = vec_norm(vec_cross(u_axis, v_axis))
+    if emitter.normal_flip:
+        normal = vec_mul(normal, -1.0)
+    u_offset = (rng.random() - 0.5) * emitter.width_mm
+    v_offset = (rng.random() - 0.5) * emitter.height_mm
+    point = vec_add(
+        emitter.center,
+        vec_add(vec_mul(u_axis, u_offset), vec_mul(v_axis, v_offset)),
+    )
+    direction = _sample_emitter_direction(rng, emitter, normal)
+    origin = vec_add(point, vec_mul(normal, epsilon_mm))
+    return origin, direction, -1
 
 
 def _sample_emitter_direction(rng: random.Random, emitter: EmitterSpec, normal: Vec3) -> Vec3:

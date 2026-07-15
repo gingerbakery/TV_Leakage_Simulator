@@ -79,9 +79,10 @@ def require_positive_int(value: int, field_name: str) -> int:
     return value
 
 
-EMITTER_TYPES = ("face",)
+EMITTER_TYPES = ("face", "datum_plane", "reference_plane")
 EMITTER_NORMAL_MODES = ("face_normal", "custom")
 EMITTER_DISTRIBUTIONS = ("lambertian", "isotropic", "gaussian")
+EMITTER_POWER_MODES = ("total", "power_per_area")
 RECEIVER_TYPES = ("rectangle",)
 SCATTER_MODELS = ("none", "lambertian", "gaussian")
 TERMINATION_MODES = ("threshold", "russian_roulette")
@@ -156,7 +157,17 @@ class EmitterSpec:
     custom_normal: Optional[Vec3] = None
     direction_distribution: str = "lambertian"
     gaussian_sigma_deg: float = 12.0
+    power_mode: str = "total"
     power_lumen: float = 1.0
+    power_density_lm_per_m2: float = 100.0
+    center: Optional[Vec3] = None
+    u_axis: Optional[Vec3] = None
+    v_axis: Optional[Vec3] = None
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
+    reference_mode: Optional[str] = None
+    reference_vertex_indices: List[int] = field(default_factory=list)
+    reference_edge_vertex_indices: List[Tuple[int, int]] = field(default_factory=list)
     ray_count: int = 10000
     seed: Optional[int] = None
     enabled: bool = True
@@ -169,16 +180,45 @@ class EmitterSpec:
             "direction_distribution",
             EMITTER_DISTRIBUTIONS,
         )
+        self.power_mode = require_choice(self.power_mode, "power_mode", EMITTER_POWER_MODES)
         self.face_indices = [int(face_index) for face_index in self.face_indices]
         if self.emitter_type == "face" and not self.face_indices:
             raise ValueError("face emitter requires at least one face index")
+        if self.emitter_type in ("datum_plane", "reference_plane"):
+            if self.center is None or self.u_axis is None or self.v_axis is None:
+                raise ValueError("virtual plane emitter requires center, u_axis and v_axis")
+            self.center = vec3_from(self.center, "center")
+            self.u_axis = normalize_vec3(self.u_axis, "u_axis")
+            self.v_axis = normalize_vec3(self.v_axis, "v_axis")
+            cross = (
+                self.u_axis[1] * self.v_axis[2] - self.u_axis[2] * self.v_axis[1],
+                self.u_axis[2] * self.v_axis[0] - self.u_axis[0] * self.v_axis[2],
+                self.u_axis[0] * self.v_axis[1] - self.u_axis[1] * self.v_axis[0],
+            )
+            if math.sqrt(sum(value * value for value in cross)) <= 1e-9:
+                raise ValueError("u_axis and v_axis must not be parallel")
+            self.width_mm = require_positive(self.width_mm, "width_mm")
+            self.height_mm = require_positive(self.height_mm, "height_mm")
         if self.normal_mode == "custom":
             if self.custom_normal is None:
                 raise ValueError("custom normal mode requires custom_normal")
             self.custom_normal = normalize_vec3(self.custom_normal, "custom_normal")
         self.gaussian_sigma_deg = require_positive(self.gaussian_sigma_deg, "gaussian_sigma_deg")
         self.power_lumen = require_non_negative(self.power_lumen, "power_lumen")
+        self.power_density_lm_per_m2 = require_non_negative(
+            self.power_density_lm_per_m2,
+            "power_density_lm_per_m2",
+        )
+        self.reference_vertex_indices = [int(index) for index in self.reference_vertex_indices]
+        self.reference_edge_vertex_indices = [
+            (int(edge[0]), int(edge[1])) for edge in self.reference_edge_vertex_indices
+        ]
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
+
+    def effective_power_lumen(self, area_mm2: float) -> float:
+        if self.power_mode == "power_per_area":
+            return self.power_density_lm_per_m2 * max(0.0, float(area_mm2)) * 1e-6
+        return self.power_lumen
 
     def to_dict(self) -> Dict:
         return asdict(self)
