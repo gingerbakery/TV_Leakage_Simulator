@@ -22,9 +22,10 @@
 
 ### Reference geometry emitter
 
-- CAD 꼭지점 3개 또는 모서리 2개를 기준으로 빈 공간의 사각 발광면을 만든다.
+- CAD 꼭지점 3~6개 또는 모서리 2개를 기준으로 빈 공간의 발광면을 만든다.
 - 선택한 vertex/edge ID는 편집 이력과 추후 연동을 위해 저장한다.
 - 현재 V1은 등록 시 계산된 중심과 U/V 축을 ray tracer에 전달한다.
+- Vertex 방식은 `rectangular_fit`과 `polygon_auto` 두 생성 방식을 지원한다.
 
 ## 공통 JSON 구조
 
@@ -47,6 +48,8 @@
   "width_mm": 20.0,
   "height_mm": 20.0,
   "reference_mode": null,
+  "surface_construction": "rectangular_fit",
+  "polygon_vertices": [],
   "reference_vertex_indices": [],
   "reference_edge_vertex_indices": [],
   "ray_count": 10000,
@@ -78,14 +81,33 @@
 
 ## Reference 선택 규칙
 
-- `three_vertices`: 서로 다른 vertex 3개를 선택한다.
+- `three_vertices`: 호환성을 위해 유지하는 계약 이름이며, UI에서는 서로 다른 vertex 3~6개를 선택한다.
 - `two_edges`: 서로 다른 edge 2개를 선택한다.
+- vertex는 3개부터 평면 preview를 생성하고 최대 6개까지 선택한다.
+- 선택점이 6개이면 추가 선택을 자동 교체하지 않는다. 기존 점을 다시 클릭해 제외하거나 `Clear selected points`로 명시적으로 초기화한다.
 - 3D viewer는 클릭한 triangle에서 클릭점과 가장 가까운 vertex 또는 edge ID를 반환한다.
 - Emitter 선택 중에는 기존 emitter overlay가 picking을 가로막지 않도록 원본/이동 CAD 형상을 우선한다.
+
+## Reference 면 생성 규칙
+
+### Plane containing vertices
+
+- 계약값은 `surface_construction="rectangular_fit"`이다.
+- 선택점을 포함하도록 로컬 U/V 좌표의 최소·최대 범위를 계산해 사각 발광면을 만든다.
+- 발광 면적과 `power_per_area` 계산에는 `width_mm × height_mm`를 사용한다.
+
+### Polygon – Auto closed boundary
+
+- 계약값은 `surface_construction="polygon_auto"`이다.
+- 선택 순서와 무관하게 점을 계산 평면에 투영하고 2D convex hull로 외곽 폐곡선을 자동 생성한다.
+- 외곽선 내부에 있는 선택점과 같은 선 위의 중간점은 polygon 꼭지점에서 제외될 수 있으며 UI에 제외 개수를 표시한다.
+- 선택점의 계산 평면 이탈 오차가 `0.05 mm`를 넘으면 UI에서 Apply를 차단한다.
+- 저장되는 `polygon_vertices`는 자동 정렬되고 계산 평면 위로 투영된 3D 좌표이다.
+- ray tracer는 convex polygon을 삼각형 fan으로 나누고 면적 가중 방식으로 선택한 삼각형 내부에서 ray 시작점을 균일 샘플링한다.
+- 발광 면적과 `power_per_area` 계산에는 bounding rectangle이 아니라 실제 polygon 면적을 사용한다.
 
 ## 현재 제한
 
 - Reference emitter는 등록 시 계산된 평면을 저장한다. 이후 기준 component가 다시 transform될 때 자동 추종하는 associativity는 후속 기능이다.
 - Datum plane은 숫자 입력 기반이다. 3D gizmo를 이용한 직접 이동·회전은 후속 기능이다.
-- V1 ray tracer는 가상 사각 평면 내부를 균일하게 sampling하며 분광과 색도는 사용하지 않는다.
-
+- V1 ray tracer는 사각 또는 convex polygon 발광면 내부를 균일하게 sampling하며 분광과 색도는 사용하지 않는다.

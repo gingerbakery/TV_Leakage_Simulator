@@ -18,15 +18,27 @@ sys.path.append(str(ROOT / "src"))
 
 from leakage_simulator.engine import execute_run
 from leakage_simulator.materials import default_material_library
+from leakage_simulator.raytrace_bridge import build_direct_trace_input
+from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.7.19"
+WEB_UI_VERSION = "0.9.10"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
+SCENE_MESH_CACHE: Dict[str, Dict] = {}
 UPLOAD_DIR = ROOT / "_uploads"
-DEMO_CAD_PATH = ROOT / "samples" / "demo_tv_frame.obj"
+DEMO_CAD_PATH = ROOT / "samples" / "tv_leakage_full_assembled_no_gap.stp"
 STATIC_DIR = ROOT / "web" / "static"
 SERVER_BOOT_TOKEN = str(time.time_ns())
+
+
+def _cache_scene_mesh(scene_payload: Dict) -> str:
+    scene_token = "scene_{}".format(time.time_ns())
+    SCENE_MESH_CACHE[scene_token] = scene_payload["mesh"]
+    while len(SCENE_MESH_CACHE) > 3:
+        oldest_token = next(iter(SCENE_MESH_CACHE))
+        SCENE_MESH_CACHE.pop(oldest_token, None)
+    return scene_token
 
 
 def _safe_upload_filename(raw_name: str) -> Optional[str]:
@@ -197,6 +209,17 @@ def _build_html_form(material_options: str, version: str) -> str:
       color: #64748b;
       font-weight: 600;
     }}
+    .sidebar-nav-shell {{
+      display: flex;
+      flex-direction: column;
+    }}
+    #sideTabBar {{ order: 0; }}
+    .side-tab-panel[data-side-panel='roi'] {{ order: 1; }}
+    .side-tab-panel[data-side-panel='components'] {{ order: 2; }}
+    .side-tab-panel[data-side-panel='raytracing'] {{ order: 3; }}
+    .side-tab-panel[data-side-panel='result'] {{ order: 4; }}
+    .side-tab-panel[data-side-panel='transform_manager'] {{ order: 5; }}
+    .side-tab-panel[data-side-panel='material'] {{ order: 6; }}
     .sidebar-layout-toggle {{
       display: inline-flex;
       gap: 6px;
@@ -985,9 +1008,14 @@ def _build_html_form(material_options: str, version: str) -> str:
       cursor: pointer;
     }}
     .emitter-toolbar button.primary {{
-      border-color: #f59e0b;
-      background: linear-gradient(135deg, #f59e0b, #ea580c);
-      color: #fff7ed;
+      border-color: #cbd5e1;
+      background: #ffffff;
+      color: #334155;
+    }}
+    .emitter-toolbar button:hover:not(:disabled) {{
+      border-color: #93c5fd;
+      background: #eff6ff;
+      color: #1d4ed8;
     }}
     .emitter-toolbar button:disabled {{ opacity: 0.48; cursor: default; }}
     .emitter-method-row {{
@@ -1009,87 +1037,90 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
     .emitter-method-row button {{ text-align: left; }}
     .emitter-method-row button.primary {{
-      border-color: #f59e0b;
-      background: linear-gradient(135deg, #f59e0b, #ea580c);
-      color: #fff7ed;
+      border-color: #cbd5e1;
+      background: #ffffff;
+      color: #334155;
     }}
     .emitter-method-row button.secondary {{
-      border-color: #fdba74;
-      background: #fff7ed;
-      color: #9a3412;
+      border-color: #cbd5e1;
+      background: #ffffff;
+      color: #334155;
     }}
-    .emitter-cancel-btn {{ width: 100%; margin-top: 8px; }}
     .emitter-selection-banner {{
       margin-top: 10px;
       padding: 10px 11px;
       border-radius: 10px;
-      border: 1px solid #fed7aa;
-      background: #fff7ed;
-      color: #9a3412;
+      border: 1px solid #dbe4f0;
+      background: #f8fafc;
+      color: #475569;
       font-size: 12px;
       line-height: 1.45;
     }}
     .emitter-selection-banner.active {{
-      border-color: #f59e0b;
-      background: #fffbeb;
-      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.12);
+      border-color: #93c5fd;
+      background: #eff6ff;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.08);
     }}
     .emitter-list {{ display: grid; gap: 7px; margin-top: 10px; }}
     .emitter-list-row {{
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
       gap: 9px;
       align-items: center;
       padding: 9px 10px;
       border: 1px solid #e2e8f0;
       border-radius: 10px;
       background: #fff;
-      cursor: pointer;
+      cursor: default;
     }}
     .emitter-list-row:hover,
-    .emitter-list-row.active {{ border-color: #f59e0b; background: #fffbeb; }}
+    .emitter-list-row.active {{ border-color: #93c5fd; background: #eff6ff; }}
     .emitter-list-dot {{
       width: 11px;
       height: 11px;
       border-radius: 999px;
-      background: #f97316;
-      box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.14);
+      background: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
     }}
     .emitter-list-name {{ color: #0f172a; font-size: 12px; font-weight: 800; }}
     .emitter-list-meta {{ margin-top: 2px; color: #64748b; font-size: 10px; }}
-    .emitter-list-power {{ color: #c2410c; font-size: 11px; font-weight: 800; }}
+    .emitter-list-power {{ color: #475569; font-size: 11px; font-weight: 800; }}
+    .tree-row-actions {{ display: flex; align-items: center; gap: 4px; }}
+    .tree-action-btn {{ min-height: 28px; padding: 5px 8px; border-radius: 7px; border: 1px solid #cbd5e1; background: #fff; color: #334155; font-size: 10px; font-weight: 700; }}
+    .tree-action-btn:hover {{ border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }}
+    .tree-action-btn.delete:hover {{ border-color: #fca5a5; background: #fff1f2; color: #be123c; }}
     .emitter-popup {{
       width: 382px;
       max-height: calc(100% - 28px);
       overflow-y: auto;
-      border-color: rgba(249, 115, 22, 0.58);
-      background: rgba(30, 19, 10, 0.98);
+      border-color: rgba(96, 165, 250, 0.50);
+      background: rgba(15, 23, 42, 0.98);
     }}
-    .emitter-popup .move-sub {{ color: #fdba74; }}
+    .emitter-popup .move-sub {{ color: #93c5fd; }}
     .emitter-popup .move-chip {{
-      border-color: rgba(249, 115, 22, 0.52);
-      background: rgba(249, 115, 22, 0.15);
-      color: #fed7aa;
+      border-color: rgba(96, 165, 250, 0.45);
+      background: rgba(59, 130, 246, 0.14);
+      color: #bfdbfe;
     }}
     .emitter-popup .move-stack select,
     .emitter-popup .move-stack input {{
       width: 100%;
       margin-top: 4px;
-      background: #1c120b;
-      color: #fff7ed;
-      border-color: #7c2d12;
+      background: #0b1220;
+      color: #f8fafc;
+      border-color: #334155;
     }}
-    .emitter-popup .move-grid input {{ background: #1c120b; color: #fff7ed; border-color: #7c2d12; }}
+    .emitter-popup .move-grid input {{ background: #0b1220; color: #f8fafc; border-color: #334155; }}
     .emitter-popup .move-actions button.primary {{
-      background: linear-gradient(135deg, #f59e0b, #ea580c);
-      border-color: #fb923c;
+      background: #2563eb;
+      border-color: #60a5fa;
     }}
     .emitter-check {{
       display: flex;
       align-items: center;
       gap: 8px;
       margin-top: 9px;
-      color: #fed7aa;
+      color: #cbd5e1;
       font-size: 12px;
       font-weight: 700;
     }}
@@ -1097,15 +1128,79 @@ def _build_html_form(material_options: str, version: str) -> str:
     .emitter-geometry-section {{
       margin-top: 9px;
       padding-top: 9px;
-      border-top: 1px solid rgba(251, 146, 60, 0.22);
+      border-top: 1px solid rgba(148, 163, 184, 0.22);
     }}
     .emitter-geometry-section.hidden-block {{ display: none; }}
+    .reference-selection-tools {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+    }}
+    .reference-clear-btn {{
+      width: auto;
+      min-width: 148px;
+      padding: 7px 10px;
+      border: 1px solid #475569;
+      background: rgba(71, 85, 105, 0.18);
+      color: #e2e8f0;
+      font-size: 11px;
+      font-weight: 700;
+    }}
+    .receiver-popup .reference-clear-btn {{
+      border-color: #64748b;
+      background: rgba(71, 85, 105, 0.18);
+      color: #e2e8f0;
+    }}
+    .reference-clear-btn:disabled {{
+      opacity: 0.42;
+      cursor: default;
+    }}
+    .reference-count {{
+      color: #cbd5e1;
+      font-size: 10px;
+      font-weight: 700;
+      text-align: right;
+    }}
     .emitter-popup .field-note {{
       margin-top: 5px;
-      color: #fdba74;
+      color: #93c5fd;
       font-size: 10px;
       line-height: 1.4;
     }}
+    .receiver-popup {{
+      width: 382px;
+      max-height: calc(100% - 28px);
+      overflow-y: auto;
+      border-color: rgba(96, 165, 250, 0.50);
+      background: rgba(15, 23, 42, 0.98);
+    }}
+    .receiver-popup .move-sub {{ color: #93c5fd; }}
+    .receiver-popup .move-chip {{
+      border-color: rgba(96, 165, 250, 0.45);
+      background: rgba(59, 130, 246, 0.14);
+      color: #bfdbfe;
+    }}
+    .receiver-popup .move-stack select,
+    .receiver-popup .move-stack input,
+    .receiver-popup .move-grid input {{
+      background: #0b1220;
+      color: #f8fafc;
+      border-color: #334155;
+    }}
+    .receiver-popup .move-actions button.primary {{
+      background: #2563eb;
+      border-color: #60a5fa;
+    }}
+    .receiver-popup .field-note {{
+      margin-top: 5px;
+      color: #93c5fd;
+      font-size: 10px;
+      line-height: 1.4;
+    }}
+    .receiver-list .emitter-list-dot {{ background: #64748b; box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.14); }}
+    .receiver-list .emitter-list-power {{ color: #475569; }}
     .library-tree {{
       margin-top: 12px;
       border: 1px solid #dbe4f0;
@@ -1135,6 +1230,53 @@ def _build_html_form(material_options: str, version: str) -> str:
     .library-tree[open] .library-tree-head {{
       border-bottom: 1px solid #e2e8f0;
     }}
+    .rt-subtree {{
+      margin-top: 8px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #ffffff;
+      overflow: hidden;
+    }}
+    .rt-subtree summary {{ list-style: none; }}
+    .rt-subtree summary::-webkit-details-marker {{ display: none; }}
+    .rt-subtree-head {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 10px;
+      cursor: pointer;
+      user-select: none;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .rt-subtree-head::after {{ content: '›'; color: #94a3b8; transition: transform 0.18s ease; }}
+    .rt-subtree[open] .rt-subtree-head {{ background: #f8fafc; border-bottom: 1px solid #e2e8f0; }}
+    .rt-subtree[open] .rt-subtree-head::after {{ transform: rotate(90deg); color: #475569; }}
+    .rt-subtree-body {{ padding: 10px; }}
+    .panel-meta-details {{
+      margin-top: 10px;
+      border-top: 1px solid #e2e8f0;
+      background: transparent;
+    }}
+    .panel-meta-details summary {{
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 2px 4px;
+      color: #64748b;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }}
+    .panel-meta-details summary::-webkit-details-marker {{ display: none; }}
+    .panel-meta-details summary::before {{ content: '›'; color: #94a3b8; transition: transform 0.18s ease; }}
+    .panel-meta-details[open] summary::before {{ transform: rotate(90deg); }}
+    .panel-meta-details .move-summary {{ margin-top: 5px; background: #f8fafc; color: #475569; border-color: #e2e8f0; }}
+    .panel-meta-details .emitter-check {{ color: #475569; }}
     .library-tree-title {{
       font-size: 13px;
       font-weight: 800;
@@ -1387,6 +1529,20 @@ def _build_html_form(material_options: str, version: str) -> str:
       color: #1e3a8a;
       padding: 10px;
     }}
+    .rt-mode-note {{ border: 1px solid #bfdbfe; background: #eff6ff; color: #1e40af; border-radius: 9px; padding: 9px 10px; font-size: 12px; line-height: 1.45; margin-top: 8px; }}
+    .rt-ready-status {{ margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #f8fafc; color: #475569; font-size: 12px; }}
+    .rt-ready-status.ready {{ background: #ecfdf5; color: #047857; }}
+    .rt-result-kpis {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }}
+    .rt-result-kpi {{ background: #ffffff; border: 1px solid #dbeafe; border-radius: 8px; padding: 8px; }}
+    .rt-result-kpi span {{ display: block; font-size: 10px; color: #64748b; }}
+    .rt-result-kpi strong {{ display: block; margin-top: 2px; font-size: 15px; color: #0f172a; }}
+    .rt-receiver-result {{ border-top: 1px solid #bfdbfe; padding-top: 10px; margin-top: 10px; }}
+    .rt-receiver-title {{ font-weight: 700; color: #0f172a; margin-bottom: 7px; }}
+    .rt-metric-row {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-bottom: 8px; }}
+    .rt-metric-row div {{ background: #fff; border-radius: 7px; padding: 6px; font-size: 10px; color: #64748b; }}
+    .rt-metric-row b {{ display: block; color: #1e293b; font-size: 12px; margin-top: 2px; }}
+    .rt-heatmap {{ display: block; width: 100%; height: 150px; border-radius: 8px; border: 1px solid #1e293b; background: #020617; image-rendering: pixelated; }}
+    .rt-result-note {{ font-size: 11px; color: #64748b; margin-top: 7px; line-height: 1.45; }}
   </style>
 </head>
 <body>
@@ -1426,10 +1582,10 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"sidebar-tabs\" id=\"sideTabBar\">
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"roi\">ROI 설정</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"components\">Components</button>
-            <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"transform_manager\">Transform manager</button>
-            <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"material\">Material library</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"raytracing\">Ray tracing</button>
             <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"result\">Result</button>
+            <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"transform_manager\">Transform manager</button>
+            <button type=\"button\" class=\"side-tab-btn\" data-side-tab=\"material\">Material library</button>
           </div>
 
           <div class=\"side-tab-panel\" data-side-panel=\"roi\">
@@ -1488,14 +1644,14 @@ def _build_html_form(material_options: str, version: str) -> str:
           <input id=\"gapTiltCombined\" name=\"gap_tilt_xyz\" type=\"hidden\" value=\"0,0,0\" />
           <input name=\"gap_nominal\" type=\"hidden\" value=\"0.0\" />
           <div id=\"gapModeHint\" class=\"move-sub hidden-block\">Transform 방식과 selection mode는 오른쪽 3D viewer popup에서 설정합니다.</div>
-          <details>
-            <summary>Information</summary>
-            <div id=\"componentSelectionSummary\" class=\"move-summary\">선택된 부품 없음</div>
-          </details>
           <label>Component Tree</label>
           <div id=\"gapObjectList\" class=\"object-list\">
             <div class=\"small\">Load CAD first</div>
           </div>
+          <details class=\"panel-meta-details\">
+            <summary>Information</summary>
+            <div id=\"componentSelectionSummary\" class=\"move-summary\">선택된 부품 없음</div>
+          </details>
         </div>
           </div>
           </div>
@@ -1504,7 +1660,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           <button type=\"button\" class=\"accordion-btn\" data-side-tab=\"transform_manager\">Transform manager</button>
           <div class=\"side-panel-body\">
           <div class=\"card\">
-          <div class=\"step\">Step 4</div>
+          <div class=\"step\">Reference</div>
           <div class=\"section-title-with-help\">
             <h2>Transform Manager</h2>
             <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Transform manager help\">?</span>
@@ -1514,19 +1670,6 @@ def _build_html_form(material_options: str, version: str) -> str:
               상세 상태는 아래 <b>Information</b>을 열어 확인하세요.
             </div>
           </div>
-          <details>
-            <summary>Information</summary>
-            <div id=\"transformSelectionSummary\" class=\"move-summary\">Transform rule 없음. Components 탭에서 `Transform`을 눌러 시작하세요.</div>
-            <div class=\"move-summary\" id=\"gapMoveSummary\">선택된 대상 없음</div>
-          </details>
-          <details>
-            <summary>Advanced</summary>
-            <div class=\"grid\" style=\"margin-top: 8px;\">
-              <div class=\"row\"><label>Gap sigma</label><input name=\"gap_sigma\" type=\"number\" step=\"0.01\" value=\"0.03\"></div>
-              <div class=\"row\"><label>Gap transmissive threshold</label><input name=\"gap_transmissive_threshold\" type=\"number\" step=\"0.01\" value=\"0.4\"></div>
-            </div>
-            <div class=\"move-sub\" style=\"margin-top:10px;\">다음 우선순위: Save scenario A/B → Before/After compare</div>
-          </details>
           <div id=\"transformRulePanel\">
             <label>Applied Transform Rules</label>
             <div id=\"transformRuleList\" class=\"object-list manager-list\"></div>
@@ -1542,6 +1685,19 @@ def _build_html_form(material_options: str, version: str) -> str:
             </div>
           </div>
           <label><input id=\"previewOverlayToggle\" type=\"checkbox\" checked> 이동 전/후 preview overlay 표시</label>
+          <details class=\"panel-meta-details\">
+            <summary>Information</summary>
+            <div id=\"transformSelectionSummary\" class=\"move-summary\">Transform rule 없음. Components 탭에서 `Transform`을 눌러 시작하세요.</div>
+            <div class=\"move-summary\" id=\"gapMoveSummary\">선택된 대상 없음</div>
+          </details>
+          <details class=\"panel-meta-details\">
+            <summary>Advanced</summary>
+            <div class=\"grid\" style=\"margin-top: 8px;\">
+              <div class=\"row\"><label>Gap sigma</label><input name=\"gap_sigma\" type=\"number\" step=\"0.01\" value=\"0.03\"></div>
+              <div class=\"row\"><label>Gap transmissive threshold</label><input name=\"gap_transmissive_threshold\" type=\"number\" step=\"0.01\" value=\"0.4\"></div>
+            </div>
+            <div class=\"move-sub\" style=\"margin-top:10px;\">다음 우선순위: Save scenario A/B → Before/After compare</div>
+          </details>
         </div>
           </div>
           </div>
@@ -1550,7 +1706,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           <button type=\"button\" class=\"accordion-btn\" data-side-tab=\"material\">Material library</button>
           <div class=\"side-panel-body\">
           <div class=\"card\">
-            <div class=\"step\">Step 5</div>
+            <div class=\"step\">Reference</div>
             <div class=\"section-title-with-help\">
               <h2>Material Library</h2>
               <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Material library help\">?</span>
@@ -1560,10 +1716,6 @@ def _build_html_form(material_options: str, version: str) -> str:
                 선택 대상과 적용 상태는 아래 <b>Information</b>을 열어 확인하세요.
               </div>
             </div>
-            <details>
-              <summary>Information</summary>
-              <div id=\"materialTargetSummary\" class=\"move-summary\">선택된 material 대상 부품 없음</div>
-            </details>
             <details class=\"library-tree\">
               <summary class=\"library-tree-head\">
                 <div>
@@ -1591,6 +1743,7 @@ def _build_html_form(material_options: str, version: str) -> str:
                         <option value=\"foam\">Foam</option>
                       </select>
                     </label>
+                    <label>Total reflectance<input id=\"newMaterialReflectance\" type=\"number\" min=\"0\" max=\"1\" step=\"0.01\" value=\"0.08\"></label>
                     <label>Default surface
                       <select id=\"newMaterialDefaultSurface\"></select>
                     </label>
@@ -1629,8 +1782,9 @@ def _build_html_form(material_options: str, version: str) -> str:
                         <option value=\"mixed\">Mixed</option>
                       </select>
                     </label>
-                    <label>Reflectance<input id=\"customSurfaceReflectance\" type=\"number\" min=\"0\" max=\"1\" step=\"0.01\" value=\"0.12\"></label>
-                    <label>Absorption<input id=\"customSurfaceAbsorption\" type=\"number\" min=\"0\" max=\"1\" step=\"0.01\" value=\"0.10\"></label>
+                    <label>Reflectance multiplier<input id=\"customSurfaceReflectance\" type=\"number\" min=\"0\" max=\"5\" step=\"0.05\" value=\"1.00\"></label>
+                    <label>Specular ratio<input id=\"customSurfaceSpecular\" type=\"number\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.15\"></label>
+                    <label>Diffuse / scatter ratio<input id=\"customSurfaceDiffuse\" type=\"number\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.85\"></label>
                     <label>Roughness<input id=\"customSurfaceRoughness\" type=\"number\" min=\"0\" max=\"1\" step=\"0.01\" value=\"0.70\"></label>
                     <label>Scatter width (deg)<input id=\"customSurfaceScatterWidth\" type=\"number\" min=\"0\" step=\"1\" value=\"18\"></label>
                   </div>
@@ -1698,6 +1852,10 @@ def _build_html_form(material_options: str, version: str) -> str:
                 <div id=\"materialAssignmentEmpty\" class=\"assignment-empty\">아직 적용된 material assignment가 없습니다.</div>
               </div>
             </details>
+            <details class=\"panel-meta-details\">
+              <summary>Information</summary>
+              <div id=\"materialTargetSummary\" class=\"move-summary\">선택된 material 대상 부품 없음</div>
+            </details>
           </div>
           </div>
           </div>
@@ -1706,28 +1864,12 @@ def _build_html_form(material_options: str, version: str) -> str:
           <button type=\"button\" class=\"accordion-btn\" data-side-tab=\"raytracing\">Ray tracing</button>
           <div class=\"side-panel-body\">
           <div class=\"card\">
-            <div class=\"step\">Step 6</div>
+            <div class=\"step\">Step 4</div>
             <div class=\"section-title-with-help\">
               <h2>Ray tracing</h2>
               <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Ray tracing help\">?</span>
               <div class=\"help-popover\">Emitter와 Receiver를 각각 설정한 뒤 ray tracing을 실행합니다. V1 Emitter는 3D viewer에서 방출 면을 직접 선택하는 방식입니다.</div>
             </div>
-            <details>
-              <summary>Information</summary>
-              <div class=\"move-summary\">Emitter: 광선이 시작되는 면과 power, 방향 분포를 정의합니다.\nReceiver: 광선이 도달하는 관측 위치와 크기를 정의합니다.</div>
-            </details>
-            <details>
-              <summary>Advanced</summary>
-              <div class=\"move-sub\" style=\"margin-top:8px;\">전역 ray tracing 계산 조건입니다.</div>
-              <div class=\"grid\">
-                <label>Ray count<input name=\"rays\" type=\"number\" value=\"4000\"></label>
-                <label>Max depth<input name=\"max_depth\" type=\"number\" value=\"2\"></label>
-                <label>Output folder<input name=\"output_dir\" value=\"outputs\"></label>
-                <label>Seed<input name=\"seed\" type=\"number\" value=\"42\"></label>
-                <label>k_abs<input name=\"k_abs\" type=\"number\" step=\"0.01\" value=\"0.12\"></label>
-                <label>k_brdf<input name=\"k_brdf\" type=\"number\" step=\"0.1\" value=\"1.0\"></label>
-              </div>
-            </details>
             <details class=\"library-tree\">
               <summary class=\"library-tree-head\">
                 <div>
@@ -1737,27 +1879,37 @@ def _build_html_form(material_options: str, version: str) -> str:
                 <div class=\"library-tree-actions\"><span class=\"library-caret\">›</span></div>
               </summary>
               <div class=\"library-tree-body\">
-                <div class=\"emitter-toolbar\">
-                  <div class=\"emitter-method-row\">
-                    <button id=\"addFaceEmitterBtn\" type=\"button\" class=\"primary\">+ CAD surface emitter</button>
-                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"CAD surface emitter help\">?</span>
-                    <div class=\"help-popover\">실제 CAD 부품의 surface를 발광면으로 지정합니다. 3D viewer에서 면을 클릭하고 Ctrl+클릭으로 여러 surface를 묶을 수 있습니다.</div>
+                <details id=\"emitterAddSection\" class=\"rt-subtree\">
+                  <summary class=\"rt-subtree-head\">Add</summary>
+                  <div class=\"rt-subtree-body\">
+                    <div class=\"emitter-toolbar\">
+                      <div class=\"emitter-method-row\">
+                        <button id=\"addFaceEmitterBtn\" type=\"button\" class=\"primary\">CAD surface</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"CAD surface emitter help\">?</span>
+                        <div class=\"help-popover\">실제 CAD 부품의 surface를 발광면으로 지정합니다. 3D viewer에서 면을 클릭하고 Ctrl+클릭으로 여러 surface를 묶을 수 있습니다.</div>
+                      </div>
+                      <div class=\"emitter-method-row\">
+                        <button id=\"addDatumEmitterBtn\" type=\"button\" class=\"secondary\">Datum plane</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Datum plane emitter help\">?</span>
+                        <div class=\"help-popover\">CAD 형상과 관계없이 빈 공간에 중심 좌표, 크기, 회전각을 입력하여 가상의 사각 발광면을 만듭니다.</div>
+                      </div>
+                      <div class=\"emitter-method-row\">
+                        <button id=\"addReferenceEmitterBtn\" type=\"button\" class=\"secondary\">Reference geometry</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Reference geometry emitter help\">?</span>
+                        <div class=\"help-popover\">CAD의 꼭지점 3~6개 또는 모서리 2개를 선택해 그 사이 빈 공간에 가상의 발광면을 생성합니다.</div>
+                      </div>
+                    </div>
+                    <div id=\"emitterSelectionBanner\" class=\"emitter-selection-banner\">광원이 없습니다. Add에서 생성 방식을 선택하세요.</div>
                   </div>
-                  <div class=\"emitter-method-row\">
-                    <button id=\"addDatumEmitterBtn\" type=\"button\" class=\"secondary\">+ Datum plane emitter</button>
-                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Datum plane emitter help\">?</span>
-                    <div class=\"help-popover\">CAD 형상과 관계없이 빈 공간에 중심 좌표, 크기, 회전각을 입력하여 가상의 사각 발광면을 만듭니다.</div>
+                </details>
+                <details class=\"rt-subtree\">
+                  <summary class=\"rt-subtree-head\">List</summary>
+                  <div class=\"rt-subtree-body\">
+                    <div id=\"emitterList\" class=\"emitter-list\"></div>
+                    <div id=\"emitterEmpty\" class=\"manager-empty\">등록된 emitter가 없습니다.</div>
+                    <div class=\"small\">각 emitter의 Settings 또는 Delete 버튼으로 개별 관리합니다.</div>
                   </div>
-                  <div class=\"emitter-method-row\">
-                    <button id=\"addReferenceEmitterBtn\" type=\"button\" class=\"secondary\">+ Reference geometry emitter</button>
-                    <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Reference geometry emitter help\">?</span>
-                    <div class=\"help-popover\">CAD의 꼭지점 3개 또는 모서리 2개를 선택해 그 사이 빈 공간에 가상의 발광면을 생성합니다.</div>
-                  </div>
-                </div>
-                <button id=\"cancelEmitterSelectionBtn\" type=\"button\" class=\"emitter-cancel-btn\" disabled>Cancel selection</button>
-                <div id=\"emitterSelectionBanner\" class=\"emitter-selection-banner\">광원이 없습니다. Add face emitter로 시작하세요.</div>
-                <div id=\"emitterList\" class=\"emitter-list\"></div>
-                <div id=\"emitterEmpty\" class=\"manager-empty\">등록된 emitter가 없습니다.</div>
+                </details>
                 <input id=\"emitterSpecsJson\" name=\"emitter_specs_json\" type=\"hidden\" value=\"[]\">
                 <input id=\"emitterType\" name=\"emitter_type\" type=\"hidden\" value=\"\">
                 <input name=\"emitter_strength\" type=\"hidden\" value=\"1.0\">
@@ -1769,7 +1921,6 @@ def _build_html_form(material_options: str, version: str) -> str:
                 <input name=\"emitter_sphere_center\" type=\"hidden\" value=\"\">
                 <input name=\"emitter_sphere_radius\" type=\"hidden\" value=\"\">
                 <input id=\"includeImportEmitters\" type=\"hidden\" name=\"include_import_emitters\" value=\"0\">
-                <div class=\"small\">등록된 emitter를 클릭하면 형상, power, 방출 분포를 다시 편집할 수 있습니다.</div>
               </div>
             </details>
             <details class=\"library-tree\">
@@ -1781,12 +1932,58 @@ def _build_html_form(material_options: str, version: str) -> str:
                 <div class=\"library-tree-actions\"><span class=\"library-caret\">›</span></div>
               </summary>
               <div class=\"library-tree-body\">
-                <div class=\"manager-empty\">Receiver의 CAD식 배치 UI는 다음 구현 단계에서 연결됩니다.</div>
-                <button type=\"button\" class=\"run-btn\" disabled>+ Add receiver (next phase)</button>
+                <details id=\"receiverAddSection\" class=\"rt-subtree\">
+                  <summary class=\"rt-subtree-head\">Add</summary>
+                  <div class=\"rt-subtree-body\">
+                    <div class=\"emitter-toolbar\">
+                      <div class=\"emitter-method-row receiver-method-row\">
+                        <button id=\"addDatumReceiverBtn\" type=\"button\" class=\"primary\">Datum plane</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Datum plane receiver help\">?</span>
+                        <div class=\"help-popover\">빈 공간에 중심 좌표, 크기, 회전각을 입력해 직사각형 측정면을 배치합니다. 휘도계 또는 사용자 관측 위치를 수치로 정의할 때 사용합니다.</div>
+                      </div>
+                      <div class=\"emitter-method-row receiver-method-row\">
+                        <button id=\"addReferenceReceiverBtn\" type=\"button\" class=\"secondary\">Reference geometry</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Reference geometry receiver help\">?</span>
+                        <div class=\"help-popover\">CAD 꼭지점 3~6개 또는 모서리 2개를 선택해 제품 형상과 정렬된 가상 측정면을 생성합니다.</div>
+                      </div>
+                      <div class=\"emitter-method-row receiver-method-row\">
+                        <button id=\"addCurrentViewReceiverBtn\" type=\"button\" class=\"secondary\">Current view</button>
+                        <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Current view receiver help\">?</span>
+                        <div class=\"help-popover\">현재 3D 카메라가 바라보는 방향을 수광 normal로 사용합니다. 현재 보이는 각도에서 빛샘을 빠르게 측정할 때 사용합니다.</div>
+                      </div>
+                    </div>
+                    <div id=\"receiverSelectionBanner\" class=\"emitter-selection-banner\">Receiver가 없습니다. Add에서 배치 방식을 선택하세요.</div>
+                  </div>
+                </details>
+                <details class=\"rt-subtree\">
+                  <summary class=\"rt-subtree-head\">List</summary>
+                  <div class=\"rt-subtree-body\">
+                    <div id=\"receiverList\" class=\"emitter-list receiver-list\"></div>
+                    <div id=\"receiverEmpty\" class=\"emitter-empty\">등록된 receiver가 없습니다.</div>
+                    <div class=\"small\">각 receiver의 Settings 또는 Delete 버튼으로 개별 관리합니다.</div>
+                  </div>
+                </details>
+                <input id=\"receiverSpecsJson\" name=\"receiver_specs_json\" type=\"hidden\" value=\"[]\">
               </div>
             </details>
-            <div class=\"move-sub\" style=\"margin-top:10px;\">현재는 Run simulation을 잠시 꺼둔 상태입니다.</div>
-            <button id=\"runBtn\" class=\"run-btn\" type=\"button\" disabled>Run simulation (temporarily off)</button>
+            <div id=\"directRunHint\" class=\"rt-ready-status\">Emitter와 Receiver를 각각 1개 이상 등록하세요.</div>
+            <button id=\"runBtn\" class=\"run-btn\" type=\"submit\" disabled>Run ray tracing</button>
+            <details class=\"panel-meta-details\">
+              <summary>Information</summary>
+              <div class=\"move-summary\">Emitter: 광선이 시작되는 면과 power, 방향 분포를 정의합니다.\nReceiver: 광선이 도달하는 관측 위치와 크기를 정의합니다.</div>
+            </details>
+            <details class=\"panel-meta-details\">
+              <summary>Advanced</summary>
+              <div class=\"rt-mode-note\"><b>RT-2C one-bounce reflection</b><br>최초 충돌 face의 optical profile을 조회한 뒤 Specular, Gaussian, Lambertian 방향으로 한 번 반사하고, 반사 후 CAD 차폐와 Receiver 도달을 다시 판정합니다.</div>
+              <div class=\"grid\">
+                <label>Seed<input id=\"rtSeedInput\" name=\"seed\" type=\"number\" value=\"42\"></label>
+                <label>Saved ray paths<input id=\"rtMaxPathsInput\" type=\"number\" min=\"0\" max=\"1000\" value=\"200\"></label>
+                <label>Brightness scale (k_abs)<input id=\"rtKAbsInput\" name=\"k_abs\" type=\"number\" step=\"0.01\" value=\"0.12\"></label>
+                <label>BRDF scale (k_brdf)<input id=\"rtKBrdfInput\" name=\"k_brdf\" type=\"number\" step=\"0.1\" value=\"1.0\"></label>
+              </div>
+              <label class=\"emitter-check\"><input id=\"rtStorePathsInput\" type=\"checkbox\" checked> Show hit ray paths in 3D viewer</label>
+              <div class=\"small\">Ray 수는 각 Emitter properties의 Rays 값을 사용하며 전체 ray 수는 emitter별 값의 합입니다.</div>
+            </details>
           </div>
           </div>
           </div>
@@ -1795,9 +1992,9 @@ def _build_html_form(material_options: str, version: str) -> str:
           <button type=\"button\" class=\"accordion-btn\" data-side-tab=\"result\">Result</button>
           <div class=\"side-panel-body\">
           <div class=\"card\">
-            <div class=\"step\">Step 7</div>
+            <div class=\"step\">Step 5</div>
             <h2>Result</h2>
-            <div id=\"resultPlaceholder\" class=\"manager-empty\">Run simulation이 다시 활성화되면 결과 요약, before/after 비교, 리포트 링크가 이 구간에 표시됩니다.</div>
+            <div id=\"resultPlaceholder\" class=\"manager-empty\">Ray tracing 실행 후 direct/반사 밝기 지표와 Receiver heatmap이 표시됩니다.</div>
             <div id=\"resultPanel\" class=\"result-card\" style=\"display:none;\"></div>
           </div>
           </div>
@@ -2018,12 +2215,22 @@ def _build_html_form(material_options: str, version: str) -> str:
             <div class=\"move-stack\">
               <label>Reference method
                 <select id=\"emitterReferenceModeSelect\">
-                  <option value=\"three_vertices\" selected>3 vertices</option>
+                  <option value=\"three_vertices\" selected>3–6 vertices</option>
                   <option value=\"two_edges\">2 edges</option>
                 </select>
               </label>
+              <label id=\"emitterReferenceSurfaceWrap\">Surface construction
+                <select id=\"emitterReferenceSurfaceSelect\">
+                  <option value=\"rectangular_fit\" selected>Plane containing vertices</option>
+                  <option value=\"polygon_auto\">Polygon – Auto closed boundary</option>
+                </select>
+              </label>
             </div>
-            <div id=\"emitterReferenceHint\" class=\"field-note\">3D viewer에서 꼭지점이 있는 면을 차례로 3번 클릭하세요.</div>
+            <div id=\"emitterReferenceHint\" class=\"field-note\">3개 이상 선택하면 평면이 생성되며 최대 6개까지 선택할 수 있습니다.</div>
+            <div class=\"reference-selection-tools\">
+              <button id=\"emitterClearReferencesBtn\" type=\"button\" class=\"reference-clear-btn\">Clear selected points</button>
+              <span id=\"emitterReferenceCount\" class=\"reference-count\">0 / 6 selected</span>
+            </div>
           </div>
           <div class=\"move-stack\">
             <label>Direction distribution
@@ -2040,12 +2247,95 @@ def _build_html_form(material_options: str, version: str) -> str:
           <label class=\"emitter-check\"><input id=\"emitterNormalFlipInput\" type=\"checkbox\"> Flip normal direction</label>
           <div class=\"move-actions\">
             <button id=\"emitterApplyBtn\" type=\"button\" class=\"primary\">Apply</button>
-            <button id=\"emitterResetBtn\" type=\"button\">Reset</button>
+            <button id=\"emitterResetBtn\" type=\"button\" title=\"Power, size and direction fields only\">Reset properties</button>
             <button id=\"emitterDeleteBtn\" type=\"button\">Delete</button>
           </div>
           <details class=\"popup-details\">
             <summary>Geometry details</summary>
             <div id=\"emitterGeometrySummary\" class=\"move-summary\">선택 면 없음</div>
+          </details>
+        </div>
+        <div id=\"cursorReceiverPopup\" class=\"move-popup receiver-popup hidden-block\">
+          <div id=\"cursorReceiverPopupHeader\" class=\"move-title\">
+            <span>Receiver properties</span>
+            <button id=\"cursorReceiverClose\" type=\"button\" class=\"move-close\">Close</button>
+          </div>
+          <div id=\"cursorReceiverNameHint\" class=\"move-sub\">가상 측정면의 위치와 방향을 정의합니다.</div>
+          <div class=\"material-popup-target\">
+            <span id=\"cursorReceiverChip\" class=\"move-chip\">New receiver</span>
+            <button id=\"receiverReselectGeometryBtn\" type=\"button\" class=\"move-close\">Select geometry</button>
+          </div>
+          <div class=\"move-stack\">
+            <label>Name<input id=\"receiverNameInput\" type=\"text\" value=\"Receiver 1\"></label>
+          </div>
+          <div class=\"move-grid\">
+            <label>Width (mm)<input id=\"receiverWidthInput\" type=\"text\" inputmode=\"decimal\" value=\"100\"></label>
+            <label>Height (mm)<input id=\"receiverHeightInput\" type=\"text\" inputmode=\"decimal\" value=\"30\"></label>
+            <label>Area (mm²)<input id=\"receiverAreaInput\" type=\"text\" value=\"3000\" readonly></label>
+          </div>
+          <div id=\"receiverDatumSection\" class=\"emitter-geometry-section hidden-block\">
+            <div class=\"move-sub\">Datum plane geometry</div>
+            <div class=\"move-grid\">
+              <label>Center X<input id=\"receiverCenterX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Center Y<input id=\"receiverCenterY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Center Z<input id=\"receiverCenterZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+            <div class=\"move-grid\">
+              <label>Rx (deg)<input id=\"receiverRotationX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Ry (deg)<input id=\"receiverRotationY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Rz (deg)<input id=\"receiverRotationZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+          </div>
+          <div id=\"receiverReferenceSection\" class=\"emitter-geometry-section hidden-block\">
+            <div class=\"move-stack\">
+              <label>Reference method
+                <select id=\"receiverReferenceModeSelect\">
+                  <option value=\"three_vertices\" selected>3–6 vertices</option>
+                  <option value=\"two_edges\">2 edges</option>
+                </select>
+              </label>
+            </div>
+            <div id=\"receiverReferenceHint\" class=\"field-note\">3개 이상 선택하면 평면이 생성되며 최대 6개까지 선택할 수 있습니다.</div>
+            <div class=\"reference-selection-tools\">
+              <button id=\"receiverClearReferencesBtn\" type=\"button\" class=\"reference-clear-btn\">Clear selected points</button>
+              <span id=\"receiverReferenceCount\" class=\"reference-count\">0 / 6 selected</span>
+            </div>
+          </div>
+          <div id=\"receiverCurrentViewSection\" class=\"emitter-geometry-section hidden-block\">
+            <div class=\"move-grid\">
+              <label>View distance (mm)<input id=\"receiverViewDistanceInput\" type=\"text\" inputmode=\"decimal\" value=\"100\"></label>
+              <button id=\"receiverCaptureViewBtn\" type=\"button\">Update from current view</button>
+            </div>
+            <div class=\"field-note\">현재 Full CAD View 카메라 방향과 화면 수평 방향을 Receiver 축으로 저장합니다.</div>
+          </div>
+          <details id=\"receiverAdjustmentSection\" class=\"popup-details hidden-block\">
+            <summary>Position / Tilt adjustment</summary>
+            <div class=\"move-sub\">기준면 생성 후 월드 좌표계 기준으로 추가 이동·회전합니다.</div>
+            <div class=\"move-grid\">
+              <label>Offset X (mm)<input id=\"receiverOffsetX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Offset Y (mm)<input id=\"receiverOffsetY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Offset Z (mm)<input id=\"receiverOffsetZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+            <div class=\"move-grid\">
+              <label>Tilt X (deg)<input id=\"receiverTiltX\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Tilt Y (deg)<input id=\"receiverTiltY\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+              <label>Tilt Z (deg)<input id=\"receiverTiltZ\" type=\"text\" inputmode=\"decimal\" value=\"0\"></label>
+            </div>
+          </details>
+          <div class=\"move-grid\">
+            <label>Resolution X<input id=\"receiverResolutionX\" type=\"number\" min=\"1\" step=\"1\" value=\"80\"></label>
+            <label>Resolution Y<input id=\"receiverResolutionY\" type=\"number\" min=\"1\" step=\"1\" value=\"24\"></label>
+            <label>Acceptance (deg)<input id=\"receiverAcceptanceInput\" type=\"number\" min=\"0.1\" max=\"180\" step=\"1\" value=\"90\"></label>
+          </div>
+          <label class=\"emitter-check\"><input id=\"receiverNormalFlipInput\" type=\"checkbox\"> Flip receiving normal</label>
+          <div class=\"move-actions\">
+            <button id=\"receiverApplyBtn\" type=\"button\" class=\"primary\">Apply</button>
+            <button id=\"receiverResetBtn\" type=\"button\" title=\"Size, resolution and acceptance fields only\">Reset properties</button>
+            <button id=\"receiverDeleteBtn\" type=\"button\">Delete</button>
+          </div>
+          <details class=\"popup-details\">
+            <summary>Geometry details</summary>
+            <div id=\"receiverGeometrySummary\" class=\"move-summary\">Receiver geometry not set</div>
           </details>
         </div>
       </div>
@@ -2154,6 +2444,23 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function buildVirtualPlaneGeometry(plane) {{
+      const polygonPoints = Array.isArray(plane.polygonPoints) ? plane.polygonPoints : [];
+      if (polygonPoints.length >= 3) {{
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(
+          polygonPoints.flatMap((point) => toVector3Array(point, [0, 0, 0])),
+          3
+        ));
+        const indices = [];
+        for (let index = 1; index < polygonPoints.length - 1; index += 1) {{
+          indices.push(0, index, index + 1);
+        }}
+        geometry.setIndex(indices);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        return geometry;
+      }}
       const center = new THREE.Vector3(...toVector3Array(plane.center, [0, 0, 0]));
       const uAxis = new THREE.Vector3(...toVector3Array(plane.uAxis, [1, 0, 0])).normalize();
       const rawV = new THREE.Vector3(...toVector3Array(plane.vAxis, [0, 1, 0]));
@@ -2445,7 +2752,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         for (const child of this.overlayRoot.children) {{
           if (!child.isMesh) continue;
           const overlayKind = child.userData ? String(child.userData.overlayKind || '') : '';
-          if (this.pickBaseOnly && overlayKind.startsWith('emitter_')) continue;
+          if (this.pickBaseOnly && (overlayKind.startsWith('emitter_') || overlayKind.startsWith('receiver_'))) continue;
           candidates.push(child);
         }}
         const hits = this.raycaster.intersectObjects(candidates, false);
@@ -2584,7 +2891,7 @@ def _build_html_form(material_options: str, version: str) -> str:
               ]);
               const segmentLine = new THREE.Line(
                 segmentGeometry,
-                new THREE.LineBasicMaterial({{ color: 0x22d3ee, depthTest: false }})
+                new THREE.LineBasicMaterial({{ color: overlay.segmentColor || 0x22d3ee, depthTest: false }})
               );
               segmentLine.renderOrder = 84;
               this.overlayRoot.add(segmentLine);
@@ -2746,6 +3053,24 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.renderer.render(this.scene, this.camera);
       }}
 
+      getCameraFrame(distanceMm) {{
+        this.camera.updateMatrixWorld(true);
+        const normal = new THREE.Vector3();
+        this.camera.getWorldDirection(normal).normalize();
+        const uAxis = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+        const vAxis = new THREE.Vector3().crossVectors(normal, uAxis).normalize();
+        const distance = Math.max(Number(distanceMm) || this.size * 0.25, 0.001);
+        const target = this.controls.target.clone();
+        const center = target.clone().addScaledVector(normal, -distance);
+        return {{
+          center: center.toArray(),
+          normal: normal.toArray(),
+          uAxis: uAxis.toArray(),
+          vAxis: vAxis.toArray(),
+          distanceMm: distance
+        }};
+      }}
+
       resize() {{
         const rect = this.container.getBoundingClientRect();
         const w = Math.max(1, Math.floor(rect.width));
@@ -2773,8 +3098,12 @@ def _build_html_form(material_options: str, version: str) -> str:
   <script>
     const initialBootToken = {json.dumps(SERVER_BOOT_TOKEN)};
     const demoCadPath = {json.dumps(str(DEMO_CAD_PATH))};
+    const demoCadName = {json.dumps(DEMO_CAD_PATH.name)};
     const state = {{
       mesh: null,
+      sceneToken: null,
+      rayTraceResult: null,
+      rayTraceRunning: false,
       selectedFaces: new Set(),
       clickedFaces: new Set(),
       panelFaces: new Set(),
@@ -2831,6 +3160,16 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitterSequence: 1,
       emitterPopupPosition: null,
       emitterPopupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
+      receivers: [],
+      activeReceiverId: null,
+      receiverDraftType: 'datum_plane',
+      receiverReferenceVertices: [],
+      receiverReferenceEdges: [],
+      receiverCurrentViewPlane: null,
+      receiverSelectionActive: false,
+      receiverSequence: 1,
+      receiverPopupPosition: null,
+      receiverPopupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
       popupPosition: null,
       popupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
       materialPopupPosition: null,
@@ -2862,6 +3201,12 @@ def _build_html_form(material_options: str, version: str) -> str:
     const runBtn = document.getElementById('runBtn');
     const resultPanel = document.getElementById('resultPanel');
     const resultPlaceholder = document.getElementById('resultPlaceholder');
+    const directRunHint = document.getElementById('directRunHint');
+    const rtSeedInput = document.getElementById('rtSeedInput');
+    const rtMaxPathsInput = document.getElementById('rtMaxPathsInput');
+    const rtKAbsInput = document.getElementById('rtKAbsInput');
+    const rtKBrdfInput = document.getElementById('rtKBrdfInput');
+    const rtStorePathsInput = document.getElementById('rtStorePathsInput');
     const materialTargetSummary = document.getElementById('materialTargetSummary');
     const materialBaseList = document.getElementById('materialBaseList');
     const materialSurfaceList = document.getElementById('materialSurfaceList');
@@ -2872,6 +3217,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     const newMaterialForm = document.getElementById('newMaterialForm');
     const newMaterialName = document.getElementById('newMaterialName');
     const newMaterialCategory = document.getElementById('newMaterialCategory');
+    const newMaterialReflectance = document.getElementById('newMaterialReflectance');
     const newMaterialDefaultSurface = document.getElementById('newMaterialDefaultSurface');
     const saveNewMaterialBtn = document.getElementById('saveNewMaterialBtn');
     const cancelNewMaterialBtn = document.getElementById('cancelNewMaterialBtn');
@@ -2884,7 +3230,8 @@ def _build_html_form(material_options: str, version: str) -> str:
     const customSurfaceName = document.getElementById('customSurfaceName');
     const customSurfaceScatter = document.getElementById('customSurfaceScatter');
     const customSurfaceReflectance = document.getElementById('customSurfaceReflectance');
-    const customSurfaceAbsorption = document.getElementById('customSurfaceAbsorption');
+    const customSurfaceSpecular = document.getElementById('customSurfaceSpecular');
+    const customSurfaceDiffuse = document.getElementById('customSurfaceDiffuse');
     const customSurfaceRoughness = document.getElementById('customSurfaceRoughness');
     const customSurfaceScatterWidth = document.getElementById('customSurfaceScatterWidth');
     const registerCustomSurfaceBtn = document.getElementById('registerCustomSurfaceBtn');
@@ -2900,7 +3247,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     const addFaceEmitterBtn = document.getElementById('addFaceEmitterBtn');
     const addDatumEmitterBtn = document.getElementById('addDatumEmitterBtn');
     const addReferenceEmitterBtn = document.getElementById('addReferenceEmitterBtn');
-    const cancelEmitterSelectionBtn = document.getElementById('cancelEmitterSelectionBtn');
+    const emitterAddSection = document.getElementById('emitterAddSection');
     const emitterSelectionBanner = document.getElementById('emitterSelectionBanner');
     const emitterList = document.getElementById('emitterList');
     const emitterEmpty = document.getElementById('emitterEmpty');
@@ -3023,11 +3370,63 @@ def _build_html_form(material_options: str, version: str) -> str:
     const emitterRotationY = document.getElementById('emitterRotationY');
     const emitterRotationZ = document.getElementById('emitterRotationZ');
     const emitterReferenceModeSelect = document.getElementById('emitterReferenceModeSelect');
+    const emitterReferenceSurfaceWrap = document.getElementById('emitterReferenceSurfaceWrap');
+    const emitterReferenceSurfaceSelect = document.getElementById('emitterReferenceSurfaceSelect');
     const emitterReferenceHint = document.getElementById('emitterReferenceHint');
+    const emitterClearReferencesBtn = document.getElementById('emitterClearReferencesBtn');
+    const emitterReferenceCount = document.getElementById('emitterReferenceCount');
     const emitterApplyBtn = document.getElementById('emitterApplyBtn');
     const emitterResetBtn = document.getElementById('emitterResetBtn');
     const emitterDeleteBtn = document.getElementById('emitterDeleteBtn');
     const emitterGeometrySummary = document.getElementById('emitterGeometrySummary');
+    const addDatumReceiverBtn = document.getElementById('addDatumReceiverBtn');
+    const addReferenceReceiverBtn = document.getElementById('addReferenceReceiverBtn');
+    const addCurrentViewReceiverBtn = document.getElementById('addCurrentViewReceiverBtn');
+    const receiverAddSection = document.getElementById('receiverAddSection');
+    const receiverSelectionBanner = document.getElementById('receiverSelectionBanner');
+    const receiverList = document.getElementById('receiverList');
+    const receiverEmpty = document.getElementById('receiverEmpty');
+    const receiverSpecsJson = document.getElementById('receiverSpecsJson');
+    const cursorReceiverPopup = document.getElementById('cursorReceiverPopup');
+    const cursorReceiverPopupHeader = document.getElementById('cursorReceiverPopupHeader');
+    const cursorReceiverClose = document.getElementById('cursorReceiverClose');
+    const cursorReceiverNameHint = document.getElementById('cursorReceiverNameHint');
+    const cursorReceiverChip = document.getElementById('cursorReceiverChip');
+    const receiverReselectGeometryBtn = document.getElementById('receiverReselectGeometryBtn');
+    const receiverNameInput = document.getElementById('receiverNameInput');
+    const receiverWidthInput = document.getElementById('receiverWidthInput');
+    const receiverHeightInput = document.getElementById('receiverHeightInput');
+    const receiverAreaInput = document.getElementById('receiverAreaInput');
+    const receiverDatumSection = document.getElementById('receiverDatumSection');
+    const receiverReferenceSection = document.getElementById('receiverReferenceSection');
+    const receiverCurrentViewSection = document.getElementById('receiverCurrentViewSection');
+    const receiverAdjustmentSection = document.getElementById('receiverAdjustmentSection');
+    const receiverOffsetX = document.getElementById('receiverOffsetX');
+    const receiverOffsetY = document.getElementById('receiverOffsetY');
+    const receiverOffsetZ = document.getElementById('receiverOffsetZ');
+    const receiverTiltX = document.getElementById('receiverTiltX');
+    const receiverTiltY = document.getElementById('receiverTiltY');
+    const receiverTiltZ = document.getElementById('receiverTiltZ');
+    const receiverCenterX = document.getElementById('receiverCenterX');
+    const receiverCenterY = document.getElementById('receiverCenterY');
+    const receiverCenterZ = document.getElementById('receiverCenterZ');
+    const receiverRotationX = document.getElementById('receiverRotationX');
+    const receiverRotationY = document.getElementById('receiverRotationY');
+    const receiverRotationZ = document.getElementById('receiverRotationZ');
+    const receiverReferenceModeSelect = document.getElementById('receiverReferenceModeSelect');
+    const receiverReferenceHint = document.getElementById('receiverReferenceHint');
+    const receiverClearReferencesBtn = document.getElementById('receiverClearReferencesBtn');
+    const receiverReferenceCount = document.getElementById('receiverReferenceCount');
+    const receiverViewDistanceInput = document.getElementById('receiverViewDistanceInput');
+    const receiverCaptureViewBtn = document.getElementById('receiverCaptureViewBtn');
+    const receiverResolutionX = document.getElementById('receiverResolutionX');
+    const receiverResolutionY = document.getElementById('receiverResolutionY');
+    const receiverAcceptanceInput = document.getElementById('receiverAcceptanceInput');
+    const receiverNormalFlipInput = document.getElementById('receiverNormalFlipInput');
+    const receiverApplyBtn = document.getElementById('receiverApplyBtn');
+    const receiverResetBtn = document.getElementById('receiverResetBtn');
+    const receiverDeleteBtn = document.getElementById('receiverDeleteBtn');
+    const receiverGeometrySummary = document.getElementById('receiverGeometrySummary');
     const viewerWrap = document.querySelector('.viewer-wrap');
 
     function cloneVector(vector) {{
@@ -3071,6 +3470,241 @@ def _build_html_form(material_options: str, version: str) -> str:
       resultPanel.innerHTML = text;
       if (options && options.openResult) {{
         switchSideTab('result', {{ forceOpen: true }});
+      }}
+    }}
+
+    function escapeHtml(value) {{
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }}
+
+    function formatRayMetric(value) {{
+      const numeric = Number(value) || 0;
+      const magnitude = Math.abs(numeric);
+      if (magnitude > 0 && (magnitude >= 10000 || magnitude < 0.001)) return numeric.toExponential(3);
+      return numeric.toFixed(3);
+    }}
+
+    function updateRayTraceRunState() {{
+      const emitterCount = state.emitters.filter((item) => item.enabled !== false).length;
+      const receiverCount = state.receivers.filter((item) => item.enabled !== false).length;
+      const ready = !!state.mesh && !!state.sceneToken && emitterCount > 0 && receiverCount > 0 && !state.rayTraceRunning;
+      runBtn.disabled = !ready;
+      runBtn.textContent = state.rayTraceRunning ? 'Tracing rays…' : 'Run ray tracing';
+      directRunHint.classList.toggle('ready', ready || state.rayTraceRunning);
+      if (state.rayTraceRunning) {{
+        directRunHint.textContent = 'Emitter → Receiver direct ray를 계산하고 있습니다.';
+      }} else if (!state.mesh || !state.sceneToken) {{
+        directRunHint.textContent = '먼저 CAD model을 불러오세요.';
+      }} else if (!emitterCount || !receiverCount) {{
+        directRunHint.textContent = 'Emitter ' + emitterCount + '개 · Receiver ' + receiverCount + '개 — 각각 1개 이상 필요합니다.';
+      }} else {{
+        const rayCount = state.emitters
+          .filter((item) => item.enabled !== false)
+          .reduce((sum, item) => sum + Math.max(1, Number(item.ray_count) || 1), 0);
+        directRunHint.textContent = 'Ready · Emitter ' + emitterCount + ' · Receiver ' + receiverCount + ' · Total rays ' + rayCount.toLocaleString();
+      }}
+    }}
+
+    function drawReceiverHeatmaps(result) {{
+      for (const grid of result.receiver_grids || []) {{
+        const canvas = resultPanel.querySelector('[data-receiver-heatmap="' + grid.receiver_id + '"]');
+        if (!canvas) continue;
+        const columns = Math.max(1, Number(grid.resolution?.[0]) || 1);
+        const rows = Math.max(1, Number(grid.resolution?.[1]) || 1);
+        canvas.width = columns;
+        canvas.height = rows;
+        const context = canvas.getContext('2d');
+        const image = context.createImageData(columns, rows);
+        const values = (grid.flux_lumen || []).flat().map((value) => Math.max(0, Number(value) || 0));
+        const peak = Math.max(...values, 0);
+        for (let index = 0; index < columns * rows; index += 1) {{
+          const normalized = peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0;
+          let red = 2;
+          let green = 6;
+          let blue = 23;
+          if (normalized > 0) {{
+            if (normalized < 0.35) {{
+              const scale = normalized / 0.35;
+              red = 2 + 28 * scale; green = 6 + 58 * scale; blue = 23 + 152 * scale;
+            }} else if (normalized < 0.7) {{
+              const scale = (normalized - 0.35) / 0.35;
+              red = 30 - 24 * scale; green = 64 + 118 * scale; blue = 175 + 37 * scale;
+            }} else {{
+              const scale = (normalized - 0.7) / 0.3;
+              red = 6 + 249 * scale; green = 182 + 73 * scale; blue = 212 - 191 * scale;
+            }}
+          }}
+          const pixelIndex = index * 4;
+          image.data[pixelIndex] = Math.round(red);
+          image.data[pixelIndex + 1] = Math.round(green);
+          image.data[pixelIndex + 2] = Math.round(blue);
+          image.data[pixelIndex + 3] = 255;
+        }}
+        context.putImageData(image, 0, 0);
+      }}
+    }}
+
+    function renderDirectRayTraceResult(result) {{
+      const totalRays = Math.max(0, Number(result.total_rays) || 0);
+      const hitCount = Math.max(0, Number(result.receiver_hit_count) || 0);
+      const surfaceInteractionCount = Math.max(0, Number(result.surface_hit_count) || 0);
+      const reflectionSummary = result.metrics?._reflection_summary || {{}};
+      const performanceSummary = result.metrics?._performance_summary || {{}};
+      const intersectionBackend = String(performanceSummary.intersection_backend || 'brute_force');
+      const primarySurfaceCount = Math.max(0, Number(reflectionSummary.primary_surface_hit_count) || 0);
+      const hitRatio = totalRays > 0 ? hitCount / totalRays : 0;
+      const primarySurfaceRatio = totalRays > 0 ? primarySurfaceCount / totalRays : 0;
+      let receiverHtml = '';
+      for (const receiver of result.receivers || []) {{
+        const metrics = result.metrics?.[receiver.receiver_id] || {{}};
+        const grid = (result.receiver_grids || []).find((item) => item.receiver_id === receiver.receiver_id);
+        receiverHtml += '<div class="rt-receiver-result">'
+          + '<div class="rt-receiver-title">' + escapeHtml(receiver.display_name || receiver.receiver_id) + '</div>'
+          + '<div class="rt-metric-row">'
+          + '<div>Peak nit_est<b>' + formatRayMetric(metrics.peak_nit_est) + '</b></div>'
+          + '<div>Mean nit_est<b>' + formatRayMetric(metrics.mean_nit_est) + '</b></div>'
+          + '<div>P95 nit_est<b>' + formatRayMetric(metrics.p95_nit_est) + '</b></div>'
+          + '</div>'
+          + '<div class="rt-metric-row">'
+          + '<div>Hits<b>' + Math.round(Number(metrics.hit_count) || 0).toLocaleString() + '</b></div>'
+          + '<div>Flux (lm)<b>' + formatRayMetric(metrics.total_flux_lumen) + '</b></div>'
+          + '<div>Lit area<b>' + formatRayMetric(metrics.area_above_zero_mm2) + ' mm²</b></div>'
+          + '</div>'
+          + (grid ? '<canvas class="rt-heatmap" data-receiver-heatmap="' + escapeHtml(receiver.receiver_id) + '"></canvas>' : '')
+          + '<div class="rt-result-note">Heatmap은 Receiver grid에 누적된 direct + 1회 반사 flux의 상대 분포입니다.</div>'
+          + '</div>';
+      }}
+      const pathCount = Array.isArray(result.stored_paths) ? result.stored_paths.length : 0;
+      const opticalSummary = result.metrics?._optical_summary || {{}};
+      const opticalProfiles = Object.values(opticalSummary.profile_hits || {{}})
+        .sort((left, right) => Number(right.hit_count || 0) - Number(left.hit_count || 0));
+      const unassignedCount = Math.max(0, Number(opticalSummary.unassigned_surface_hit_count) || 0);
+      let opticalHtml = '<div class="rt-receiver-result">'
+        + '<div class="rt-receiver-title">Surface optical property lookup</div>'
+        + '<div class="rt-metric-row">'
+        + '<div>Surface hits<b>' + Math.round(Number(opticalSummary.surface_hit_count) || 0).toLocaleString() + '</b></div>'
+        + '<div>Resolved<b>' + Math.max(0, Math.round((Number(opticalSummary.surface_hit_count) || 0) - unassignedCount)).toLocaleString() + '</b></div>'
+        + '<div>Unassigned<b>' + unassignedCount.toLocaleString() + '</b></div>'
+        + '</div>'
+        + opticalProfiles.slice(0, 8).map(item =>
+          '<div class="library-row"><div class="name">' + escapeHtml(item.profile_id || '-') + '</div>'
+          + '<div class="meta">source: ' + escapeHtml(item.source || '-')
+          + '\\nhits: ' + Math.round(Number(item.hit_count) || 0).toLocaleString()
+          + ' / R: ' + Number(item.reflectance || 0).toFixed(3)
+          + '\\nmodel: ' + escapeHtml(item.scatter_model || '-')
+          + ' / spec: ' + Number(item.specular_ratio || 0).toFixed(2)
+          + ' / diffuse: ' + Number(item.diffuse_ratio || 0).toFixed(2)
+          + '\\npotential reflected flux: ' + formatRayMetric(item.potential_reflected_flux_lumen) + ' lm</div></div>'
+        ).join('')
+        + '<div class="rt-result-note">Potential reflected flux는 R × 입사 flux이며 RT-2C 반사 ray의 시작 광량으로 사용됩니다.</div>'
+        + '</div>';
+      const reflectionLobes = reflectionSummary.lobes || {{}};
+      const reflectionHtml = '<div class="rt-receiver-result">'
+        + '<div class="rt-receiver-title">One-bounce reflection</div>'
+        + '<div class="rt-metric-row">'
+        + '<div>Emitted<b>' + Math.round(Number(reflectionSummary.reflection_emitted_count) || 0).toLocaleString() + '</b></div>'
+        + '<div>Receiver hits<b>' + Math.round(Number(reflectionSummary.reflection_receiver_hit_count) || 0).toLocaleString() + '</b></div>'
+        + '<div>Blocked<b>' + Math.round(Number(reflectionSummary.reflection_blocked_count) || 0).toLocaleString() + '</b></div>'
+        + '</div>'
+        + '<div class="rt-metric-row">'
+        + '<div>Escaped<b>' + Math.round(Number(reflectionSummary.reflection_escaped_count) || 0).toLocaleString() + '</b></div>'
+        + '<div>Direct flux<b>' + formatRayMetric(reflectionSummary.direct_receiver_flux_lumen) + ' lm</b></div>'
+        + '<div>Reflected flux<b>' + formatRayMetric(reflectionSummary.reflected_receiver_flux_lumen) + ' lm</b></div>'
+        + '</div>'
+        + ['specular', 'gaussian', 'lambertian'].map(rayKind => {{
+          const item = reflectionLobes[rayKind] || {{}};
+          return '<div class="library-row"><div class="name">' + rayKind + '</div>'
+            + '<div class="meta">emitted: ' + Math.round(Number(item.emitted_count) || 0).toLocaleString()
+            + ' / receiver: ' + Math.round(Number(item.receiver_hit_count) || 0).toLocaleString()
+            + '\\nemitted flux: ' + formatRayMetric(item.emitted_flux_lumen) + ' lm'
+            + ' / received: ' + formatRayMetric(item.receiver_flux_lumen) + ' lm'
+            + '\\nblocked: ' + Math.round(Number(item.blocked_count) || 0).toLocaleString()
+            + ' / escaped: ' + Math.round(Number(item.escaped_count) || 0).toLocaleString()
+            + '</div></div>';
+        }}).join('')
+        + '<div class="rt-result-note">파란색은 최초 진행 경로, 주황색은 Specular, 청록색은 Gaussian, 보라색은 Lambertian 반사 경로입니다.</div>'
+        + '</div>';
+      const resultHtml = '<div class="rt-result-kpis">'
+        + '<div class="rt-result-kpi"><span>Total rays</span><strong>' + totalRays.toLocaleString() + '</strong></div>'
+        + '<div class="rt-result-kpi"><span>Receiver hits</span><strong>' + hitCount.toLocaleString() + '</strong></div>'
+        + '<div class="rt-result-kpi"><span>Surface interactions</span><strong>' + surfaceInteractionCount.toLocaleString() + '</strong></div>'
+        + '<div class="rt-result-kpi"><span>Hit ratio</span><strong>' + (hitRatio * 100).toFixed(3) + '%</strong></div>'
+        + '<div class="rt-result-kpi"><span>Primary surface ratio</span><strong>' + (primarySurfaceRatio * 100).toFixed(3) + '%</strong></div>'
+        + '<div class="rt-result-kpi"><span>Runtime</span><strong>' + (Number(result.runtime_sec) || 0).toFixed(3) + ' s</strong></div>'
+        + '<div class="rt-result-kpi"><span>Ray rate</span><strong>' + Math.round(Number(performanceSummary.rays_per_sec) || 0).toLocaleString() + ' /s</strong></div>'
+        + '<div class="rt-result-kpi"><span>CAD intersection</span><strong>' + escapeHtml(intersectionBackend.toUpperCase()) + '</strong></div>'
+        + '</div>'
+        + '<div class="rt-result-note">RT-2C · PERF-2 CAD intersection · '
+        + escapeHtml(intersectionBackend.toUpperCase())
+        + ' · BVH build ' + (Number(performanceSummary.bvh_build_sec) || 0).toFixed(3)
+        + ' s · 3D path ' + pathCount + '개 표시</div>'
+        + opticalHtml
+        + reflectionHtml
+        + receiverHtml;
+      setResultMessage(resultHtml, {{ openResult: true }});
+      drawReceiverHeatmaps(result);
+    }}
+
+    function invalidateDirectRayTraceResult() {{
+      if (!state.rayTraceResult) return;
+      state.rayTraceResult = null;
+      setResultMessage('<div>Emitter, Receiver 또는 Transform 설정이 변경되었습니다. Ray tracing을 다시 실행하세요.</div>');
+    }}
+
+    async function runDirectRayTrace() {{
+      updateRayTraceRunState();
+      if (runBtn.disabled || state.rayTraceRunning) return;
+      state.rayTraceRunning = true;
+      updateRayTraceRunState();
+      setResultMessage('<div>Direct + one-bounce ray tracing 실행 중…</div>', {{ openResult: true }});
+      try {{
+        const totalRayCount = state.emitters
+          .filter((item) => item.enabled !== false)
+          .reduce((sum, item) => sum + Math.max(1, Number(item.ray_count) || 1), 0);
+        const opticalPayload = buildRayTraceOpticalPayload();
+        const requestPayload = {{
+          scene_token: state.sceneToken,
+          project_name: 'TV-Leakage-Direct',
+          emitters: state.emitters.filter((item) => item.enabled !== false).map(emitterSpecPayload),
+          receivers: state.receivers.filter((item) => item.enabled !== false).map(receiverSpecPayload),
+          optical_profiles: opticalPayload.profiles,
+          optical_assignments: opticalPayload.assignments,
+          transform_rules: state.transformRules.filter((rule) => rule.enabled !== false),
+          config: {{
+            ray_count: Math.max(1, totalRayCount),
+            max_depth: 1,
+            seed: parseInt(rtSeedInput.value, 10) || 42,
+            min_energy: 1e-9,
+            epsilon_mm: 1e-4,
+            k_abs: Math.max(0, Number(rtKAbsInput.value) || 0),
+            k_brdf: Math.max(0, Number(rtKBrdfInput.value) || 0),
+            termination_mode: 'threshold',
+            store_ray_paths: !!rtStorePathsInput.checked,
+            max_stored_paths: Math.max(0, Math.min(1000, parseInt(rtMaxPathsInput.value, 10) || 0))
+          }}
+        }};
+        const response = await fetch('/api/raytrace/direct', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(requestPayload)
+        }});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Ray tracing failed');
+        state.rayTraceResult = result;
+        renderDirectRayTraceResult(result);
+        drawViewer();
+      }} catch (error) {{
+        state.rayTraceResult = null;
+        setResultMessage('<div><b>Ray tracing failed:</b> ' + escapeHtml(error.message) + '</div>', {{ openResult: true }});
+        drawViewer();
+      }} finally {{
+        state.rayTraceRunning = false;
+        updateRayTraceRunState();
       }}
     }}
 
@@ -3317,27 +3951,27 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function buildInitialMaterialBaseLibrary() {{
       return [
-        {{ material_id: 'black_powder_coated_aluminum', name: 'Black powder coated aluminum', category: 'metal', default_surface_id: 'black_powder_coat_fine' }},
-        {{ material_id: 'black_pc_resin', name: 'Black PC resin', category: 'resin', default_surface_id: 'matte_black_resin' }},
-        {{ material_id: 'anodized_aluminum', name: 'Anodized aluminum', category: 'metal', default_surface_id: 'anodized_matte' }},
-        {{ material_id: 'matte_black_abs', name: 'Matte black ABS', category: 'resin', default_surface_id: 'matte_black_resin' }},
-        {{ material_id: 'black_tape_general', name: 'Black tape', category: 'tape', default_surface_id: 'tape_black_matte' }},
-        {{ material_id: 'foam_absorber_general', name: 'Foam absorber', category: 'foam', default_surface_id: 'foam_low_reflect' }}
+        {{ material_id: 'black_powder_coated_aluminum', name: 'Black powder coated aluminum', category: 'metal', reflectance_total: 0.12, default_surface_id: 'black_powder_coat_fine' }},
+        {{ material_id: 'black_pc_resin', name: 'Black PC resin', category: 'resin', reflectance_total: 0.08, default_surface_id: 'matte_black_resin' }},
+        {{ material_id: 'anodized_aluminum', name: 'Anodized aluminum', category: 'metal', reflectance_total: 0.18, default_surface_id: 'anodized_matte' }},
+        {{ material_id: 'matte_black_abs', name: 'Matte black ABS', category: 'resin', reflectance_total: 0.08, default_surface_id: 'matte_black_resin' }},
+        {{ material_id: 'black_tape_general', name: 'Black tape', category: 'tape', reflectance_total: 0.05, default_surface_id: 'tape_black_matte' }},
+        {{ material_id: 'foam_absorber_general', name: 'Foam absorber', category: 'foam', reflectance_total: 0.03, default_surface_id: 'foam_low_reflect' }}
       ];
     }}
 
     function buildInitialMaterialSurfaceLibrary() {{
       return [
-        {{ surface_id: 'black_powder_coat_fine', name: 'Black powder coat - fine', scatter_model: 'gaussian', reflectance_total: 0.12, absorption_ratio: 0.10, roughness: 0.70, scatter_sigma_deg: 18 }},
-        {{ surface_id: 'black_powder_coat_coarse', name: 'Black powder coat - coarse', scatter_model: 'gaussian', reflectance_total: 0.16, absorption_ratio: 0.08, roughness: 0.82, scatter_sigma_deg: 28 }},
-        {{ surface_id: 'matte_black_resin', name: 'Matte black resin', scatter_model: 'lambertian', reflectance_total: 0.08, absorption_ratio: 0.18, roughness: 0.88, scatter_sigma_deg: 32 }},
-        {{ surface_id: 'semi_gloss_black_resin', name: 'Semi-gloss black resin', scatter_model: 'mixed', reflectance_total: 0.10, absorption_ratio: 0.14, roughness: 0.45, scatter_sigma_deg: 14 }},
-        {{ surface_id: 'anodized_matte', name: 'Anodized matte', scatter_model: 'mixed', reflectance_total: 0.18, absorption_ratio: 0.05, roughness: 0.50, scatter_sigma_deg: 12 }},
-        {{ surface_id: 'tape_black_matte', name: 'Black tape matte', scatter_model: 'lambertian', reflectance_total: 0.05, absorption_ratio: 0.25, roughness: 0.92, scatter_sigma_deg: 38 }},
-        {{ surface_id: 'foam_low_reflect', name: 'Foam low reflect', scatter_model: 'lambertian', reflectance_total: 0.03, absorption_ratio: 0.40, roughness: 0.98, scatter_sigma_deg: 45 }},
-        {{ surface_id: 'corrosion_light', name: 'Corrosion - light', scatter_model: 'gaussian', reflectance_total: 0.14, absorption_ratio: 0.08, roughness: 0.76, scatter_sigma_deg: 24 }},
-        {{ surface_id: 'corrosion_medium', name: 'Corrosion - medium', scatter_model: 'gaussian', reflectance_total: 0.18, absorption_ratio: 0.07, roughness: 0.84, scatter_sigma_deg: 34 }},
-        {{ surface_id: 'corrosion_heavy', name: 'Corrosion - heavy', scatter_model: 'gaussian', reflectance_total: 0.22, absorption_ratio: 0.06, roughness: 0.94, scatter_sigma_deg: 46 }}
+        {{ surface_id: 'black_powder_coat_fine', name: 'Black powder coat - fine', scatter_model: 'gaussian', reflectance_scale: 1.00, specular_ratio: 0.15, diffuse_ratio: 0.85, roughness: 0.70, scatter_sigma_deg: 18 }},
+        {{ surface_id: 'black_powder_coat_coarse', name: 'Black powder coat - coarse', scatter_model: 'gaussian', reflectance_scale: 1.33, specular_ratio: 0.05, diffuse_ratio: 0.95, roughness: 0.82, scatter_sigma_deg: 28 }},
+        {{ surface_id: 'matte_black_resin', name: 'Matte black resin', scatter_model: 'lambertian', reflectance_scale: 1.00, specular_ratio: 0.0, diffuse_ratio: 1.0, roughness: 0.88, scatter_sigma_deg: 32 }},
+        {{ surface_id: 'semi_gloss_black_resin', name: 'Semi-gloss black resin', scatter_model: 'mixed', reflectance_scale: 1.25, specular_ratio: 0.40, diffuse_ratio: 0.60, roughness: 0.45, scatter_sigma_deg: 14 }},
+        {{ surface_id: 'anodized_matte', name: 'Anodized matte', scatter_model: 'mixed', reflectance_scale: 1.00, specular_ratio: 0.45, diffuse_ratio: 0.55, roughness: 0.50, scatter_sigma_deg: 12 }},
+        {{ surface_id: 'tape_black_matte', name: 'Black tape matte', scatter_model: 'lambertian', reflectance_scale: 1.00, specular_ratio: 0.0, diffuse_ratio: 1.0, roughness: 0.92, scatter_sigma_deg: 38 }},
+        {{ surface_id: 'foam_low_reflect', name: 'Foam low reflect', scatter_model: 'lambertian', reflectance_scale: 1.00, specular_ratio: 0.0, diffuse_ratio: 1.0, roughness: 0.98, scatter_sigma_deg: 45 }},
+        {{ surface_id: 'corrosion_light', name: 'Corrosion - light', scatter_model: 'gaussian', reflectance_scale: 1.17, specular_ratio: 0.10, diffuse_ratio: 0.90, roughness: 0.76, scatter_sigma_deg: 24 }},
+        {{ surface_id: 'corrosion_medium', name: 'Corrosion - medium', scatter_model: 'gaussian', reflectance_scale: 1.50, specular_ratio: 0.05, diffuse_ratio: 0.95, roughness: 0.84, scatter_sigma_deg: 34 }},
+        {{ surface_id: 'corrosion_heavy', name: 'Corrosion - heavy', scatter_model: 'gaussian', reflectance_scale: 1.83, specular_ratio: 0.02, diffuse_ratio: 0.98, roughness: 0.94, scatter_sigma_deg: 46 }}
       ];
     }}
 
@@ -3374,6 +4008,100 @@ def _build_html_form(material_options: str, version: str) -> str:
     function getMaterialProfileById(profileId) {{
       ensureMaterialLibraryState();
       return state.materialOpticalProfiles.find(item => item.profile_id === profileId) || null;
+    }}
+
+    function normalizedOpticalRatios(surface) {{
+      let specular = Math.max(0, Number(surface?.specular_ratio) || 0);
+      let diffuse = Math.max(0, Number(surface?.diffuse_ratio) || 0);
+      if (specular + diffuse <= 0) {{
+        const model = String(surface?.scatter_model || 'lambertian');
+        if (model === 'specular') {{ specular = 1; diffuse = 0; }}
+        else {{ specular = 0; diffuse = 1; }}
+      }}
+      const total = specular + diffuse;
+      return {{ specular: specular / total, diffuse: diffuse / total }};
+    }}
+
+    function compileRayTraceOpticalProfile(profileId, baseId, surfaceId, notes) {{
+      ensureMaterialLibraryState();
+      const base = state.materialBaseLibrary.find(item => item.material_id === baseId) || null;
+      const surface = state.materialSurfaceLibrary.find(item => item.surface_id === surfaceId) || null;
+      if (!base || !surface) return null;
+      const baseReflectance = Number(base.reflectance_total);
+      const rawReflectanceScale = Number(surface.reflectance_scale);
+      const reflectanceScale = Math.max(0, Number.isFinite(rawReflectanceScale) ? rawReflectanceScale : 1);
+      const reflectance = Math.max(0, Math.min(1,
+        (Number.isFinite(baseReflectance) ? baseReflectance : 0) * reflectanceScale
+      ));
+      const ratios = normalizedOpticalRatios(surface);
+      return {{
+        profile_id: profileId,
+        reflectance: reflectance,
+        absorption: 1 - reflectance,
+        specular_ratio: ratios.specular,
+        diffuse_ratio: ratios.diffuse,
+        scatter_model: String(surface.scatter_model || 'lambertian'),
+        roughness: Math.max(0, Math.min(1, Number(surface.roughness) || 0)),
+        gaussian_sigma_deg: Math.max(0.001, Number(surface.scatter_sigma_deg) || 18),
+        bsdf_asset_id: '',
+        notes: notes || (base.name + ' / ' + surface.name)
+      }};
+    }}
+
+    function buildRayTraceOpticalPayload() {{
+      ensureMaterialLibraryState();
+      const profilesById = new Map();
+      for (const base of state.materialBaseLibrary) {{
+        const profile = compileRayTraceOpticalProfile(
+          base.material_id,
+          base.material_id,
+          base.default_surface_id,
+          'Mesh material fallback: ' + base.name
+        );
+        if (profile) profilesById.set(profile.profile_id, profile);
+      }}
+      for (const saved of state.materialOpticalProfiles) {{
+        const profile = compileRayTraceOpticalProfile(
+          saved.profile_id,
+          saved.base_material_id,
+          saved.surface_id,
+          'Saved optical profile: ' + saved.name
+        );
+        if (profile) {{
+          profile.bsdf_asset_id = saved.bsdf_asset_id || '';
+          profilesById.set(profile.profile_id, profile);
+        }}
+      }}
+      const assignments = [];
+      state.materialAssignments.forEach((assignment, index) => {{
+        let profileId = assignment.profile_id || ('assignment_profile_' + assignment.assignment_id);
+        if (!profilesById.has(profileId)) {{
+          const profile = compileRayTraceOpticalProfile(
+            profileId,
+            assignment.base_material_id,
+            assignment.surface_id,
+            'Assignment: ' + assignment.target_name
+          );
+          if (profile) {{
+            profile.bsdf_asset_id = assignment.bsdf_asset_id || '';
+            profilesById.set(profile.profile_id, profile);
+          }}
+        }}
+        if (!profilesById.has(profileId)) return;
+        assignments.push({{
+          assignment_id: assignment.assignment_id,
+          target_type: assignment.target_type,
+          component_id: assignment.object_id,
+          profile_id: profileId,
+          face_indices: assignment.face_indices || [],
+          priority: index,
+          enabled: true
+        }});
+      }});
+      return {{
+        profiles: Array.from(profilesById.values()),
+        assignments: assignments
+      }};
     }}
 
     function currentMaterialObject() {{
@@ -3497,7 +4225,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         materialBaseList.innerHTML = state.materialBaseLibrary.map(item =>
           '<div class=\"library-row' + (item.material_id === state.materialDraft.base_material_id ? ' active' : '') + '\">'
           + '<div class=\"name\">' + item.name + '</div>'
-          + '<div class=\"meta\">category: ' + item.category + '\\ndefault surface: ' + item.default_surface_id + '</div>'
+          + '<div class=\"meta\">category: ' + item.category + '\\nreflectance: ' + Number(item.reflectance_total || 0).toFixed(3) + '\\ndefault surface: ' + item.default_surface_id + '</div>'
           + '<div class=\"library-actions-inline\"><button type=\"button\" data-material-base=\"' + item.material_id + '\">Use in popup</button></div>'
           + '</div>'
         ).join('');
@@ -3518,7 +4246,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         materialSurfaceList.innerHTML = state.materialSurfaceLibrary.map(item =>
           '<div class=\"library-row' + (item.surface_id === state.materialDraft.surface_id ? ' active' : '') + '\">'
           + '<div class=\"name\">' + item.name + '</div>'
-          + '<div class=\"meta\">scatter: ' + item.scatter_model + '\\nreflectance: ' + Number(item.reflectance_total).toFixed(2) + ' / roughness: ' + Number(item.roughness).toFixed(2) + '</div>'
+          + '<div class=\"meta\">scatter: ' + item.scatter_model + '\\nR multiplier: ' + Number(Number.isFinite(Number(item.reflectance_scale)) ? item.reflectance_scale : 1).toFixed(2) + ' / roughness: ' + Number(item.roughness).toFixed(2) + '</div>'
           + '<div class=\"library-actions-inline\"><button type=\"button\" data-material-surface=\"' + item.surface_id + '\">Use in popup</button></div>'
           + '</div>'
         ).join('');
@@ -3659,6 +4387,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       }} else {{
         state.materialAssignments.push(assignment);
       }}
+      invalidateDirectRayTraceResult();
       renderMaterialLibrary();
       updateMaterialTargetSummary();
       drawViewer();
@@ -3688,18 +4417,21 @@ def _build_html_form(material_options: str, version: str) -> str:
       const name = String(newMaterialName.value || '').trim();
       if (!name) return;
       const category = String(newMaterialCategory.value || 'resin').trim();
+      const reflectance = Math.max(0, Math.min(1, Number(newMaterialReflectance.value) || 0));
       const defaultSurfaceId = String(newMaterialDefaultSurface.value || '').trim() || 'matte_black_resin';
       const materialId = 'material_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_') + '_' + Date.now();
       state.materialBaseLibrary.unshift({{
         material_id: materialId,
         name: name,
         category: category,
+        reflectance_total: reflectance,
         default_surface_id: defaultSurfaceId
       }});
       state.materialDraft.base_material_id = materialId;
       state.materialDraft.surface_id = defaultSurfaceId;
       state.materialDraft.profile_id = '';
       newMaterialName.value = '';
+      if (newMaterialReflectance) newMaterialReflectance.value = '0.08';
       if (newMaterialCategory) newMaterialCategory.value = 'resin';
       hideMaterialLibraryForms();
       renderMaterialLibrary();
@@ -3714,8 +4446,9 @@ def _build_html_form(material_options: str, version: str) -> str:
         surface_id: 'surface_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_') + '_' + Date.now(),
         name: name,
         scatter_model: customSurfaceScatter.value || 'gaussian',
-        reflectance_total: parseFloat(customSurfaceReflectance.value || '0') || 0,
-        absorption_ratio: parseFloat(customSurfaceAbsorption.value || '0') || 0,
+        reflectance_scale: parseFloat(customSurfaceReflectance.value || '1') || 1,
+        specular_ratio: parseFloat(customSurfaceSpecular.value || '0') || 0,
+        diffuse_ratio: parseFloat(customSurfaceDiffuse.value || '0') || 0,
         roughness: parseFloat(customSurfaceRoughness.value || '0') || 0,
         scatter_sigma_deg: parseFloat(customSurfaceScatterWidth.value || '0') || 0
       }};
@@ -3995,7 +4728,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         hiddenFaces: getThreeHiddenTransformFaces(),
         overlays: buildThreeTransformOverlays(),
         axisScalePercent: state.axisScalePercent,
-        pickBaseOnly: state.emitterSelectionActive,
+        pickBaseOnly: state.emitterSelectionActive || state.receiverSelectionActive,
       }};
       threeFullRenderer.setScene(payload, options);
       threeRoiRenderer.setScene(payload, options);
@@ -4065,6 +4798,141 @@ def _build_html_form(material_options: str, version: str) -> str:
       return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     }}
 
+    function polygonAreaMm2FromPoints(points) {{
+      if (!Array.isArray(points) || points.length < 3) return 0;
+      const origin = points[0];
+      let area = 0;
+      for (let index = 1; index < points.length - 1; index += 1) {{
+        const first = subtractArray3(points[index], origin);
+        const second = subtractArray3(points[index + 1], origin);
+        const cross = crossArray3(first, second);
+        area += 0.5 * Math.sqrt(dotArray3(cross, cross));
+      }}
+      return area;
+    }}
+
+    const REFERENCE_PLANARITY_TOLERANCE_MM = 0.05;
+
+    function referencePlaneFromVertexPoints(rawPoints) {{
+      const points = (rawPoints || []).filter(Boolean).slice(0, 6);
+      if (points.length < 3) return {{ referencePoints: points, referenceSegments: [] }};
+      const centroid = points.reduce((sum, point) => addArray3(sum, point), [0, 0, 0]).map((value) => value / points.length);
+      let farthestPair = null;
+      let farthestDistanceSquared = -1;
+      for (let firstIndex = 0; firstIndex < points.length; firstIndex += 1) {{
+        for (let secondIndex = firstIndex + 1; secondIndex < points.length; secondIndex += 1) {{
+          const delta = subtractArray3(points[secondIndex], points[firstIndex]);
+          const distanceSquared = dotArray3(delta, delta);
+          if (distanceSquared > farthestDistanceSquared) {{
+            farthestDistanceSquared = distanceSquared;
+            farthestPair = [points[firstIndex], points[secondIndex]];
+          }}
+        }}
+      }}
+      if (!farthestPair || farthestDistanceSquared <= 1e-12) return {{ referencePoints: points, referenceSegments: [] }};
+      const uAxis = normalizeArray3(subtractArray3(farthestPair[1], farthestPair[0]));
+      if (!uAxis) return {{ referencePoints: points, referenceSegments: [] }};
+      let bestVRaw = null;
+      let bestPerpendicularSquared = -1;
+      for (const point of points) {{
+        const relative = subtractArray3(point, centroid);
+        const perpendicular = subtractArray3(relative, scaleArray3(uAxis, dotArray3(relative, uAxis)));
+        const perpendicularSquared = dotArray3(perpendicular, perpendicular);
+        if (perpendicularSquared > bestPerpendicularSquared) {{
+          bestPerpendicularSquared = perpendicularSquared;
+          bestVRaw = perpendicular;
+        }}
+      }}
+      if (!bestVRaw || bestPerpendicularSquared <= 1e-12) return {{ referencePoints: points, referenceSegments: [] }};
+      const vAxis = normalizeArray3(bestVRaw);
+      if (!vAxis) return {{ referencePoints: points, referenceSegments: [] }};
+      const normal = normalizeArray3(crossArray3(uAxis, vAxis));
+      if (!normal) return {{ referencePoints: points, referenceSegments: [] }};
+      const uCoordinates = points.map((point) => dotArray3(subtractArray3(point, centroid), uAxis));
+      const vCoordinates = points.map((point) => dotArray3(subtractArray3(point, centroid), vAxis));
+      const minU = Math.min(...uCoordinates);
+      const maxU = Math.max(...uCoordinates);
+      const minV = Math.min(...vCoordinates);
+      const maxV = Math.max(...vCoordinates);
+      const center = addArray3(centroid, addArray3(scaleArray3(uAxis, (minU + maxU) * 0.5), scaleArray3(vAxis, (minV + maxV) * 0.5)));
+      const planarityErrorMm = Math.max(...points.map((point) => Math.abs(dotArray3(subtractArray3(point, center), normal))));
+      return {{
+        center,
+        uAxis,
+        vAxis,
+        normal,
+        widthMm: Math.max(maxU - minU, 0.001),
+        heightMm: Math.max(maxV - minV, 0.001),
+        surfaceConstruction: 'rectangular_fit',
+        polygonPoints: [],
+        polygonAreaMm2: null,
+        referencePoints: points,
+        referenceSegments: [],
+        planarityErrorMm
+      }};
+    }}
+
+    function convexHull2d(points) {{
+      const unique = [];
+      const signatures = new Set();
+      for (const point of points || []) {{
+        const signature = point.x.toFixed(9) + ':' + point.y.toFixed(9);
+        if (signatures.has(signature)) continue;
+        signatures.add(signature);
+        unique.push(point);
+      }}
+      unique.sort((first, second) => first.x - second.x || first.y - second.y);
+      if (unique.length <= 2) return unique;
+      const cross2d = (origin, first, second) =>
+        (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x);
+      const lower = [];
+      for (const point of unique) {{
+        while (lower.length >= 2 && cross2d(lower[lower.length - 2], lower[lower.length - 1], point) <= 1e-12) lower.pop();
+        lower.push(point);
+      }}
+      const upper = [];
+      for (let index = unique.length - 1; index >= 0; index -= 1) {{
+        const point = unique[index];
+        while (upper.length >= 2 && cross2d(upper[upper.length - 2], upper[upper.length - 1], point) <= 1e-12) upper.pop();
+        upper.push(point);
+      }}
+      lower.pop();
+      upper.pop();
+      return lower.concat(upper);
+    }}
+
+    function polygonPlaneFromVertexPoints(rawPoints) {{
+      const base = referencePlaneFromVertexPoints(rawPoints);
+      if (!base || !base.center || !base.uAxis || !base.vAxis) return base;
+      const projected = (base.referencePoints || []).map((point, index) => {{
+        const relative = subtractArray3(point, base.center);
+        return {{
+          x: dotArray3(relative, base.uAxis),
+          y: dotArray3(relative, base.vAxis),
+          sourceIndex: index
+        }};
+      }});
+      const hull = convexHull2d(projected);
+      if (hull.length < 3) return {{ ...base, surfaceConstruction: 'polygon_auto', polygonPoints: [], polygonAreaMm2: 0 }};
+      const polygonPoints = hull.map((point) => addArray3(
+        base.center,
+        addArray3(scaleArray3(base.uAxis, point.x), scaleArray3(base.vAxis, point.y))
+      ));
+      let twiceArea = 0;
+      for (let index = 0; index < hull.length; index += 1) {{
+        const next = hull[(index + 1) % hull.length];
+        twiceArea += hull[index].x * next.y - next.x * hull[index].y;
+      }}
+      return {{
+        ...base,
+        surfaceConstruction: 'polygon_auto',
+        polygonPoints,
+        polygonAreaMm2: Math.abs(twiceArea) * 0.5,
+        boundaryVertexCount: hull.length,
+        interiorPointCount: Math.max(0, projected.length - hull.length)
+      }};
+    }}
+
     function datumPlaneFromInputs() {{
       const center = [parseMoveFieldValue(emitterCenterX.value), parseMoveFieldValue(emitterCenterY.value), parseMoveFieldValue(emitterCenterZ.value)];
       const rotation = {{
@@ -4107,11 +4975,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         const secondMid = scaleArray3(addArray3(second[0], second[1]), 0.5);
         vTarget = addArray3(origin, subtractArray3(secondMid, firstMid));
       }} else {{
-        points = state.emitterReferenceVertices.map((index) => state.mesh.vertices[index]);
-        if (points.length < 3) return {{ referencePoints: points, referenceSegments: [] }};
-        origin = points[0];
-        uTarget = points[1];
-        vTarget = points[2];
+        points = state.emitterReferenceVertices.map((index) => state.mesh.vertices[index]).filter(Boolean);
+        return emitterReferenceSurfaceSelect.value === 'polygon_auto'
+          ? polygonPlaneFromVertexPoints(points)
+          : referencePlaneFromVertexPoints(points);
       }}
       const uAxis = normalizeArray3(subtractArray3(uTarget, origin));
       if (!uAxis) return {{ referencePoints: points, referenceSegments }};
@@ -4142,6 +5009,7 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function emitterPlaneFromSpec(emitter) {{
       if (!emitter || emitter.emitter_type === 'face') return null;
+      const polygonPoints = Array.isArray(emitter.polygon_vertices) ? emitter.polygon_vertices : [];
       return {{
         center: emitter.center || [0, 0, 0],
         uAxis: emitter.u_axis || [1, 0, 0],
@@ -4149,6 +5017,9 @@ def _build_html_form(material_options: str, version: str) -> str:
         normal: normalizeArray3(crossArray3(emitter.u_axis || [1, 0, 0], emitter.v_axis || [0, 1, 0])) || [0, 0, 1],
         widthMm: Number(emitter.width_mm) || 1,
         heightMm: Number(emitter.height_mm) || 1,
+        surfaceConstruction: emitter.surface_construction || 'rectangular_fit',
+        polygonPoints,
+        polygonAreaMm2: Number(emitter.polygon_area_mm2) || polygonAreaMm2FromPoints(polygonPoints) || null,
         referencePoints: (emitter.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
         referenceSegments: (emitter.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1])
       }};
@@ -4158,6 +5029,188 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (state.emitterDraftType === 'datum_plane') return datumPlaneFromInputs();
       if (state.emitterDraftType === 'reference_plane') return referencePlaneFromState();
       return null;
+    }}
+
+    function receiverById(receiverId) {{
+      return state.receivers.find((item) => item.receiver_id === receiverId) || null;
+    }}
+
+    function currentReceiver() {{
+      return state.activeReceiverId ? receiverById(state.activeReceiverId) : null;
+    }}
+
+    function receiverDatumPlaneFromInputs() {{
+      const center = [parseMoveFieldValue(receiverCenterX.value), parseMoveFieldValue(receiverCenterY.value), parseMoveFieldValue(receiverCenterZ.value)];
+      const rotation = {{
+        x: parseMoveFieldValue(receiverRotationX.value),
+        y: parseMoveFieldValue(receiverRotationY.value),
+        z: parseMoveFieldValue(receiverRotationZ.value)
+      }};
+      const uAxis = rotateDirection([1, 0, 0], rotation);
+      const vAxis = rotateDirection([0, 1, 0], rotation);
+      return {{
+        center,
+        uAxis,
+        vAxis,
+        normal: normalizeArray3(crossArray3(uAxis, vAxis)) || [0, 0, 1],
+        widthMm: Math.max(0.001, Math.abs(parseMoveFieldValue(receiverWidthInput.value))),
+        heightMm: Math.max(0.001, Math.abs(parseMoveFieldValue(receiverHeightInput.value))),
+        referencePoints: [],
+        referenceSegments: []
+      }};
+    }}
+
+    function receiverReferencePlaneFromState() {{
+      if (!state.mesh) return null;
+      const mode = receiverReferenceModeSelect.value || 'three_vertices';
+      let points = [];
+      let referenceSegments = [];
+      let origin = null;
+      let uTarget = null;
+      let vTarget = null;
+      if (mode === 'two_edges') {{
+        if (!state.receiverReferenceEdges.length) return {{ referencePoints: [], referenceSegments: [] }};
+        referenceSegments = state.receiverReferenceEdges.map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]);
+        points = referenceSegments.flat();
+        if (state.receiverReferenceEdges.length < 2) return {{ referencePoints: points, referenceSegments }};
+        const first = referenceSegments[0];
+        const second = referenceSegments[1];
+        origin = first[0];
+        uTarget = first[1];
+        const firstMid = scaleArray3(addArray3(first[0], first[1]), 0.5);
+        const secondMid = scaleArray3(addArray3(second[0], second[1]), 0.5);
+        vTarget = addArray3(origin, subtractArray3(secondMid, firstMid));
+      }} else {{
+        points = state.receiverReferenceVertices.map((index) => state.mesh.vertices[index]).filter(Boolean);
+        return referencePlaneFromVertexPoints(points);
+      }}
+      const uAxis = normalizeArray3(subtractArray3(uTarget, origin));
+      if (!uAxis) return {{ referencePoints: points, referenceSegments }};
+      const vRaw = subtractArray3(vTarget, origin);
+      const vProjected = subtractArray3(vRaw, scaleArray3(uAxis, dotArray3(vRaw, uAxis)));
+      const vAxis = normalizeArray3(vProjected);
+      if (!vAxis) return {{ referencePoints: points, referenceSegments }};
+      const uCoordinates = points.map((point) => dotArray3(subtractArray3(point, origin), uAxis));
+      const vCoordinates = points.map((point) => dotArray3(subtractArray3(point, origin), vAxis));
+      const minU = Math.min(...uCoordinates);
+      const maxU = Math.max(...uCoordinates);
+      const minV = Math.min(...vCoordinates);
+      const maxV = Math.max(...vCoordinates);
+      const widthMm = Math.max(maxU - minU, 0.001);
+      const heightMm = Math.max(maxV - minV, 0.001);
+      const center = addArray3(origin, addArray3(scaleArray3(uAxis, (minU + maxU) * 0.5), scaleArray3(vAxis, (minV + maxV) * 0.5)));
+      return {{
+        center,
+        uAxis,
+        vAxis,
+        normal: normalizeArray3(crossArray3(uAxis, vAxis)) || [0, 0, 1],
+        widthMm,
+        heightMm,
+        referencePoints: points,
+        referenceSegments
+      }};
+    }}
+
+    function captureCurrentViewReceiverPlane() {{
+      if (!ensureThreeRenderers() || !threeFullRenderer || typeof threeFullRenderer.getCameraFrame !== 'function') return null;
+      const distanceMm = Math.max(0.001, Math.abs(parseMoveFieldValue(receiverViewDistanceInput.value)) || Math.max(50, modelSpanMm() * 0.25));
+      const frame = threeFullRenderer.getCameraFrame(distanceMm);
+      if (!frame || !frame.center) return null;
+      state.receiverCurrentViewPlane = {{
+        center: frame.center,
+        uAxis: frame.uAxis,
+        vAxis: frame.vAxis,
+        normal: frame.normal,
+        widthMm: Math.max(0.001, Math.abs(parseMoveFieldValue(receiverWidthInput.value))),
+        heightMm: Math.max(0.001, Math.abs(parseMoveFieldValue(receiverHeightInput.value))),
+        referencePoints: [],
+        referenceSegments: [],
+        distanceMm: frame.distanceMm
+      }};
+      return state.receiverCurrentViewPlane;
+    }}
+
+    function receiverPlaneFromSpec(receiver) {{
+      if (!receiver) return null;
+      return {{
+        center: receiver.center || [0, 0, 0],
+        uAxis: receiver.u_axis || [1, 0, 0],
+        vAxis: receiver.v_axis || [0, 1, 0],
+        normal: receiver.normal || normalizeArray3(crossArray3(receiver.u_axis || [1, 0, 0], receiver.v_axis || [0, 1, 0])) || [0, 0, 1],
+        widthMm: Number(receiver.width_mm) || 1,
+        heightMm: Number(receiver.height_mm) || 1,
+        referencePoints: (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
+        distanceMm: receiver.view_distance_mm || null
+      }};
+    }}
+
+    function receiverBasePlaneFromSpec(receiver) {{
+      if (!receiver) return null;
+      const hasStoredBase = Array.isArray(receiver.base_center)
+        && Array.isArray(receiver.base_u_axis)
+        && Array.isArray(receiver.base_v_axis);
+      if (!hasStoredBase) return receiverPlaneFromSpec(receiver);
+      const baseU = receiver.base_u_axis || [1, 0, 0];
+      const baseV = receiver.base_v_axis || [0, 1, 0];
+      return {{
+        center: receiver.base_center,
+        uAxis: baseU,
+        vAxis: baseV,
+        normal: receiver.base_normal || normalizeArray3(crossArray3(baseU, baseV)) || [0, 0, 1],
+        widthMm: Number(receiver.width_mm) || 1,
+        heightMm: Number(receiver.height_mm) || 1,
+        referencePoints: (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
+        distanceMm: receiver.view_distance_mm || null
+      }};
+    }}
+
+    function receiverAdjustmentFromInputs() {{
+      return {{
+        offset: [
+          parseMoveFieldValue(receiverOffsetX.value),
+          parseMoveFieldValue(receiverOffsetY.value),
+          parseMoveFieldValue(receiverOffsetZ.value)
+        ],
+        tilt: {{
+          x: parseMoveFieldValue(receiverTiltX.value),
+          y: parseMoveFieldValue(receiverTiltY.value),
+          z: parseMoveFieldValue(receiverTiltZ.value)
+        }}
+      }};
+    }}
+
+    function applyReceiverAdjustment(basePlane) {{
+      if (!basePlane || !basePlane.center) return basePlane;
+      const adjustment = receiverAdjustmentFromInputs();
+      const uAxis = rotateDirection(basePlane.uAxis || [1, 0, 0], adjustment.tilt);
+      const vAxis = rotateDirection(basePlane.vAxis || [0, 1, 0], adjustment.tilt);
+      return {{
+        ...basePlane,
+        center: addArray3(basePlane.center, adjustment.offset),
+        uAxis,
+        vAxis,
+        normal: normalizeArray3(crossArray3(uAxis, vAxis)) || [0, 0, 1]
+      }};
+    }}
+
+    function currentBaseDraftReceiverPlane() {{
+      if (state.receiverDraftType === 'reference_plane') return receiverReferencePlaneFromState();
+      if (state.receiverDraftType === 'current_view') {{
+        if (state.receiverCurrentViewPlane) {{
+          state.receiverCurrentViewPlane.widthMm = Math.max(0.001, Math.abs(parseMoveFieldValue(receiverWidthInput.value)));
+          state.receiverCurrentViewPlane.heightMm = Math.max(0.001, Math.abs(parseMoveFieldValue(receiverHeightInput.value)));
+        }}
+        return state.receiverCurrentViewPlane;
+      }}
+      return receiverDatumPlaneFromInputs();
+    }}
+
+    function currentDraftReceiverPlane() {{
+      const basePlane = currentBaseDraftReceiverPlane();
+      if (state.receiverDraftType === 'datum_plane') return basePlane;
+      return applyReceiverAdjustment(basePlane);
     }}
 
     function buildThreeTransformOverlays() {{
@@ -4217,6 +5270,56 @@ def _build_html_form(material_options: str, version: str) -> str:
           arrowDirection: draftDirection,
           arrowLength,
           arrowColor: 0xfde047
+        }});
+      }}
+      const receiverEditorVisible = !cursorReceiverPopup.classList.contains('hidden-block');
+      for (const receiver of state.receivers) {{
+        if (receiver.enabled === false) continue;
+        if (receiverEditorVisible && receiver.receiver_id === state.activeReceiverId) continue;
+        const receiverPlane = receiverPlaneFromSpec(receiver);
+        if (!receiverPlane || !receiverPlane.center) continue;
+        let receiverDirection = receiverPlane.normal || [0, 0, 1];
+        if (receiver.normal_flip) receiverDirection = receiverDirection.map((value) => -value);
+        overlays.push({{
+          kind: 'receiver_' + receiver.receiver_id,
+          faceIndices: [],
+          pivot: [0, 0, 0],
+          move: {{ x: 0, y: 0, z: 0 }},
+          tilt: {{ x: 0, y: 0, z: 0 }},
+          virtualPlane: receiverPlane,
+          referencePoints: receiverPlane.referencePoints || [],
+          referenceSegments: receiverPlane.referenceSegments || [],
+          color: receiver.receiver_id === state.activeReceiverId ? 0xc084fc : 0xa855f7,
+          edgeColor: 0xf3e8ff,
+          opacity: receiver.receiver_id === state.activeReceiverId ? 0.50 : 0.34,
+          edgeOpacity: 1.0,
+          arrowOrigin: receiverPlane.center,
+          arrowDirection: receiverDirection,
+          arrowLength,
+          arrowColor: 0xd8b4fe
+        }});
+      }}
+      const draftReceiverPlane = receiverEditorVisible ? currentDraftReceiverPlane() : null;
+      if (draftReceiverPlane && receiverEditorVisible) {{
+        let draftReceiverDirection = draftReceiverPlane.normal || null;
+        if (draftReceiverDirection && receiverNormalFlipInput.checked) draftReceiverDirection = draftReceiverDirection.map((value) => -value);
+        overlays.push({{
+          kind: 'receiver_draft',
+          faceIndices: [],
+          pivot: [0, 0, 0],
+          move: {{ x: 0, y: 0, z: 0 }},
+          tilt: {{ x: 0, y: 0, z: 0 }},
+          virtualPlane: draftReceiverPlane.center ? draftReceiverPlane : null,
+          referencePoints: draftReceiverPlane.referencePoints || [],
+          referenceSegments: draftReceiverPlane.referenceSegments || [],
+          color: 0xc084fc,
+          edgeColor: 0xf3e8ff,
+          opacity: 0.56,
+          edgeOpacity: 1.0,
+          arrowOrigin: draftReceiverPlane.center || null,
+          arrowDirection: draftReceiverDirection,
+          arrowLength,
+          arrowColor: 0xe9d5ff
         }});
       }}
       for (const objectId of uniqueSorted(Array.from(state.selectedGapObjectIds))) {{
@@ -4308,6 +5411,81 @@ def _build_html_form(material_options: str, version: str) -> str:
             edgeOpacity: 0.95
           }});
         }}
+      }}
+      const directPaths = state.rayTraceResult && Array.isArray(state.rayTraceResult.stored_paths)
+        ? state.rayTraceResult.stored_paths
+        : [];
+      const visiblePaths = directPaths
+        .filter((path) => Array.isArray(path) && path.length >= 2 && path[0].point && path[path.length - 1].point)
+        .slice(0, 500);
+      const directReceiverSegments = [];
+      const primarySurfaceSegments = [];
+      const reflectedSegments = {{
+        specular: [],
+        lambertian: [],
+        gaussian: []
+      }};
+      for (const path of visiblePaths) {{
+        for (let index = 1; index < path.length; index++) {{
+          const startEvent = path[index - 1];
+          const endEvent = path[index];
+          if (!startEvent?.point || !endEvent?.point) continue;
+          const segment = [startEvent.point, endEvent.point];
+          if (index === 1) {{
+            if (path.length === 2 && endEvent.event_type === 'receiver') {{
+              directReceiverSegments.push(segment);
+            }} else {{
+              primarySurfaceSegments.push(segment);
+            }}
+            continue;
+          }}
+          const rayKind = String(endEvent.ray_kind || startEvent.ray_kind || 'gaussian');
+          if (reflectedSegments[rayKind]) reflectedSegments[rayKind].push(segment);
+        }}
+      }}
+      if (directReceiverSegments.length) {{
+        overlays.push({{
+          kind: 'direct_ray_paths',
+          faceIndices: [],
+          referencePoints: [],
+          referenceSegments: directReceiverSegments,
+          segmentColor: 0x4ade80
+        }});
+      }}
+      if (primarySurfaceSegments.length) {{
+        overlays.push({{
+          kind: 'primary_surface_paths',
+          faceIndices: [],
+          referencePoints: [],
+          referenceSegments: primarySurfaceSegments,
+          segmentColor: 0x60a5fa
+        }});
+      }}
+      const reflectionColors = {{
+        specular: 0xfb923c,
+        lambertian: 0xc084fc,
+        gaussian: 0x22d3ee
+      }};
+      for (const rayKind of Object.keys(reflectedSegments)) {{
+        if (!reflectedSegments[rayKind].length) continue;
+        overlays.push({{
+          kind: 'reflected_' + rayKind + '_paths',
+          faceIndices: [],
+          referencePoints: [],
+          referenceSegments: reflectedSegments[rayKind],
+          segmentColor: reflectionColors[rayKind]
+        }});
+      }}
+      if (!directReceiverSegments.length && !primarySurfaceSegments.length
+          && !reflectedSegments.specular.length && !reflectedSegments.lambertian.length
+          && !reflectedSegments.gaussian.length && visiblePaths.length) {{
+        overlays.push({{
+          kind: 'fallback_ray_paths',
+          faceIndices: [],
+          referencePoints: [],
+          referenceSegments: visiblePaths.map((path) => [path[0].point, path[path.length - 1].point]),
+          segmentColor: 0xfb923c
+        }});
       }}
       return overlays;
     }}
@@ -4891,6 +6069,8 @@ def _build_html_form(material_options: str, version: str) -> str:
       const additive = !!(pickEvent && (pickEvent.ctrlKey || pickEvent.metaKey));
       if (state.emitterSelectionActive) {{
         handleEmitterGeometryPick(faceIndex, pickEvent || null);
+      }} else if (state.receiverSelectionActive) {{
+        handleReceiverGeometryPick(faceIndex, pickEvent || null);
       }} else if (state.gapTargetMode === 'face_gap') {{
         if (state.gapSelectionMethod === 'drag_box') {{
           setInspectedFace(faceIndex);
@@ -5102,6 +6282,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (!rule) return;
       rule.move = cloneVector(state.gapMove);
       rule.tilt = cloneVector(state.gapTilt);
+      invalidateDirectRayTraceResult();
       renderTransformRules();
       updateGapSelectionStats();
       drawViewer();
@@ -5123,6 +6304,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         if (rule) {{
           rule.move = {{ x: 0, y: 0, z: 0 }};
           rule.tilt = {{ x: 0, y: 0, z: 0 }};
+          invalidateDirectRayTraceResult();
           syncEditorFromActiveRule();
           renderTransformRules();
           updateGapSelectionStats();
@@ -5525,6 +6707,8 @@ def _build_html_form(material_options: str, version: str) -> str:
         width_mm: emitter.width_mm ?? null,
         height_mm: emitter.height_mm ?? null,
         reference_mode: emitter.reference_mode || null,
+        surface_construction: emitter.surface_construction || 'rectangular_fit',
+        polygon_vertices: Array.isArray(emitter.polygon_vertices) ? emitter.polygon_vertices : [],
         reference_vertex_indices: emitter.reference_vertex_indices || [],
         reference_edge_vertex_indices: emitter.reference_edge_vertex_indices || [],
         ray_count: Math.max(1, parseInt(emitter.ray_count, 10) || 10000),
@@ -5567,6 +6751,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       if ((emitter.emitter_type || 'face') === 'face') {{
         return (emitter.face_indices || []).reduce((sum, faceIndex) => sum + faceAreaMm2(faceIndex), 0);
       }}
+      if ((emitter.surface_construction || 'rectangular_fit') === 'polygon_auto') {{
+        return Math.max(0, Number(emitter.polygon_area_mm2) || polygonAreaMm2FromPoints(emitter.polygon_vertices || []));
+      }}
       return Math.max(0, Number(emitter.width_mm) || 0) * Math.max(0, Number(emitter.height_mm) || 0);
     }}
 
@@ -5602,23 +6789,43 @@ def _build_html_form(material_options: str, version: str) -> str:
         meta.className = 'emitter-list-meta';
         const geometryMeta = (emitter.emitter_type || 'face') === 'face'
           ? ((emitter.face_indices || []).length + ' faces')
-          : ((Number(emitter.width_mm) || 0).toFixed(2) + ' × ' + (Number(emitter.height_mm) || 0).toFixed(2) + ' mm');
+          : ((emitter.surface_construction || 'rectangular_fit') === 'polygon_auto'
+            ? ((emitter.polygon_vertices || []).length + '-vertex polygon · ' + emitterAreaMm2(emitter).toFixed(2) + ' mm²')
+            : ((Number(emitter.width_mm) || 0).toFixed(2) + ' × ' + (Number(emitter.height_mm) || 0).toFixed(2) + ' mm'));
         meta.textContent = emitterTypeLabel(emitter.emitter_type) + ' · ' + geometryMeta + ' · ' + (emitter.direction_distribution || 'lambertian');
         body.appendChild(name);
         body.appendChild(meta);
         const power = document.createElement('span');
         power.className = 'emitter-list-power';
         power.textContent = emitterPowerLabel(emitter);
+        const actions = document.createElement('div');
+        actions.className = 'tree-row-actions';
+        const settingsButton = document.createElement('button');
+        settingsButton.type = 'button';
+        settingsButton.className = 'tree-action-btn';
+        settingsButton.textContent = 'Settings';
+        settingsButton.addEventListener('click', function (ev) {{
+          editEmitter(emitter.emitter_id, ev);
+        }});
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'tree-action-btn delete';
+        deleteButton.textContent = 'Delete';
+        deleteButton.addEventListener('click', function (ev) {{
+          ev.stopPropagation();
+          deleteEmitterById(emitter.emitter_id);
+        }});
+        actions.appendChild(settingsButton);
+        actions.appendChild(deleteButton);
         row.appendChild(dot);
         row.appendChild(body);
         row.appendChild(power);
-        row.addEventListener('click', function (ev) {{
-          editEmitter(emitter.emitter_id, ev);
-        }});
+        row.appendChild(actions);
         emitterList.appendChild(row);
       }}
       syncEmitterFormPayload();
       updateEmitterSelectionUI();
+      updateRayTraceRunState();
     }}
 
     function updateEmitterDistributionUI() {{
@@ -5639,9 +6846,18 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitterReselectFacesBtn.disabled = emitterTypeValue === 'datum_plane';
       emitterReselectFacesBtn.textContent = emitterTypeValue === 'datum_plane' ? 'Numeric geometry' : 'Select geometry';
       if (emitterTypeValue === 'reference_plane') {{
-        emitterReferenceHint.textContent = emitterReferenceModeSelect.value === 'two_edges'
-          ? '3D viewer에서 모서리가 있는 면을 2번 클릭하세요. 클릭 지점에서 가장 가까운 edge가 선택됩니다.'
-          : '3D viewer에서 꼭지점이 있는 면을 3번 클릭하세요. 클릭 지점에서 가장 가까운 vertex가 선택됩니다.';
+        const isEdges = emitterReferenceModeSelect.value === 'two_edges';
+        emitterReferenceSurfaceWrap.classList.toggle('hidden-block', isEdges);
+        if (isEdges) emitterReferenceSurfaceSelect.value = 'rectangular_fit';
+        const selectedCount = isEdges ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+        emitterReferenceHint.textContent = isEdges
+          ? '서로 다른 edge 2개를 선택합니다. 잘못 선택했으면 아래 Clear selected edges를 누르세요.'
+          : (emitterReferenceSurfaceSelect.value === 'polygon_auto'
+            ? '선택 순서와 무관하게 점을 평면에 투영한 뒤 외곽점을 자동 폐곡선으로 연결합니다. 내부점은 꼭지점에서 제외될 수 있습니다.'
+            : '선택한 vertex를 모두 포함하는 사각 평면을 생성합니다. 최대 6개까지 선택하며 같은 점을 다시 누르면 제외됩니다.');
+        emitterClearReferencesBtn.textContent = isEdges ? 'Clear selected edges' : 'Clear selected points';
+        emitterClearReferencesBtn.disabled = selectedCount === 0;
+        emitterReferenceCount.textContent = isEdges ? (selectedCount + ' / 2 selected') : (selectedCount + ' / 6 selected · minimum 3');
       }}
     }}
 
@@ -5676,12 +6892,24 @@ def _build_html_form(material_options: str, version: str) -> str:
         }} else {{
           const mode = emitterReferenceModeSelect.value || 'three_vertices';
           count = mode === 'two_edges' ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
-          area = plane && plane.center ? plane.widthMm * plane.heightMm : 0;
-          summary = 'Type: Reference geometry\\n' + (mode === 'two_edges' ? 'Edges: ' + count + ' / 2' : 'Vertices: ' + count + ' / 3');
-          if (plane && plane.center) summary += '\\nSize: ' + plane.widthMm.toFixed(3) + ' × ' + plane.heightMm.toFixed(3) + ' mm';
+          const polygonMode = mode !== 'two_edges' && emitterReferenceSurfaceSelect.value === 'polygon_auto';
+          area = plane && plane.center
+            ? (polygonMode ? Math.max(0, Number(plane.polygonAreaMm2) || 0) : plane.widthMm * plane.heightMm)
+            : 0;
+          summary = 'Type: Reference geometry\\n' + (mode === 'two_edges' ? 'Edges: ' + count + ' / 2' : 'Vertices: ' + count + ' / 3–6');
+          if (plane && plane.center && polygonMode) {{
+            summary += '\\nConstruction: Polygon – Auto closed boundary';
+            summary += '\\nBoundary vertices: ' + String(plane.boundaryVertexCount || 0);
+            if (Number(plane.interiorPointCount) > 0) summary += '\\nInterior points excluded from boundary: ' + String(plane.interiorPointCount);
+          }} else if (plane && plane.center) {{
+            summary += '\\nConstruction: Plane containing vertices';
+            summary += '\\nSize: ' + plane.widthMm.toFixed(3) + ' × ' + plane.heightMm.toFixed(3) + ' mm';
+          }}
+          if (plane && Number(plane.planarityErrorMm) > 0.001) summary += '\\nPlanarity deviation: ' + plane.planarityErrorMm.toFixed(4) + ' mm';
+          if (plane && Number(plane.planarityErrorMm) > REFERENCE_PLANARITY_TOLERANCE_MM) summary += '\\nWARNING: exceeds 0.05 mm tolerance';
           cursorEmitterNameHint.textContent = plane && plane.center
             ? '선택한 CAD reference 사이에 가상 발광면이 생성되었습니다.'
-            : (mode === 'two_edges' ? '3D viewer에서 기준 edge 2개를 선택하세요.' : '3D viewer에서 기준 vertex 3개를 선택하세요.');
+            : (mode === 'two_edges' ? '3D viewer에서 기준 edge 2개를 선택하세요.' : '서로 일직선이 아닌 vertex를 최소 3개 선택하세요.');
         }}
       }}
       const shownNormal = emitterNormalFlipInput.checked ? normal.map((value) => -value) : normal;
@@ -5702,7 +6930,6 @@ def _build_html_form(material_options: str, version: str) -> str:
       addFaceEmitterBtn.disabled = state.emitterSelectionActive;
       addDatumEmitterBtn.disabled = state.emitterSelectionActive;
       addReferenceEmitterBtn.disabled = state.emitterSelectionActive;
-      cancelEmitterSelectionBtn.disabled = !state.emitterSelectionActive;
       emitterSelectionBanner.classList.toggle('active', state.emitterSelectionActive);
       if (isFaceSelecting) {{
         const faceCount = state.emitterDraftFaces.size;
@@ -5715,13 +6942,13 @@ def _build_html_form(material_options: str, version: str) -> str:
         const selectedCount = isEdges ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
         emitterSelectionBanner.textContent = isEdges
           ? ('Reference edge 선택: ' + selectedCount + ' / 2 · Apply로 확정')
-          : ('Reference vertex 선택: ' + selectedCount + ' / 3 · Apply로 확정');
-        viewerTip.textContent = isEdges ? 'Emitter: Click near two CAD edges.' : 'Emitter: Click near three CAD vertices.';
+          : ('Reference vertex 선택: ' + selectedCount + ' / 3–6 · 최소 3개 선택 후 Apply');
+        viewerTip.textContent = isEdges ? 'Emitter: Click near two CAD edges.' : 'Emitter: Select 3 to 6 CAD vertices. Click again to remove.';
       }} else if (state.emitters.length) {{
-        emitterSelectionBanner.textContent = state.emitters.length + ' emitter(s) registered. 목록을 클릭하면 다시 편집합니다.';
+        emitterSelectionBanner.textContent = state.emitters.length + ' emitter(s) registered. List의 Settings에서 편집합니다.';
         viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
       }} else {{
-        emitterSelectionBanner.textContent = '광원이 없습니다. 위의 세 생성 방식 중 하나를 선택하세요.';
+        emitterSelectionBanner.textContent = '광원이 없습니다. Add에서 생성 방식을 선택하세요.';
         viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
       }}
     }}
@@ -5747,7 +6974,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitterRotationY.value = String(rotation.y ?? 0);
       emitterRotationZ.value = String(rotation.z ?? 0);
       emitterReferenceModeSelect.value = emitter ? (emitter.reference_mode || 'three_vertices') : 'three_vertices';
-      emitterDeleteBtn.disabled = !emitter;
+      emitterReferenceSurfaceSelect.value = emitter ? (emitter.surface_construction || 'rectangular_fit') : 'rectangular_fit';
+      emitterDeleteBtn.disabled = false;
+      emitterDeleteBtn.textContent = emitter ? 'Delete emitter' : 'Discard draft';
       updateEmitterDistributionUI();
       updateEmitterPowerUI();
       updateEmitterGeometryUI();
@@ -5814,6 +7043,9 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function beginEmitterCreation(emitterTypeValue) {{
+      state.receiverSelectionActive = false;
+      hideReceiverPopup();
+      updateReceiverSelectionUI();
       state.activeEmitterId = null;
       state.emitterDraftType = emitterTypeValue;
       state.emitterDraftFaces = new Set();
@@ -5837,7 +7069,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.activeEmitterId = emitterId;
       state.emitterDraftType = emitter.emitter_type || 'face';
       state.emitterDraftFaces = new Set(emitter.face_indices || []);
-      state.emitterReferenceVertices = Array.from(emitter.reference_vertex_indices || []);
+      state.emitterReferenceVertices = Array.from(emitter.reference_vertex_indices || []).slice(0, 6);
       state.emitterReferenceEdges = (emitter.reference_edge_vertex_indices || []).map((edge) => Array.from(edge));
       state.emitterSelectionActive = false;
       resetEmitterEditorValues();
@@ -5868,9 +7100,19 @@ def _build_html_form(material_options: str, version: str) -> str:
       drawViewer();
     }}
 
+    function clearEmitterReferenceSelection() {{
+      state.emitterReferenceVertices = [];
+      state.emitterReferenceEdges = [];
+      state.emitterSelectionActive = state.emitterDraftType === 'reference_plane';
+      updateEmitterDraftSummary();
+      updateEmitterSelectionUI();
+      drawViewer();
+    }}
+
     function handleEmitterGeometryPick(faceIndex, pickEvent) {{
       if (faceIndex === null || faceIndex === undefined) return;
       if (state.emitterDraftType === 'reference_plane') {{
+        let maximumReached = false;
         if ((emitterReferenceModeSelect.value || 'three_vertices') === 'two_edges') {{
           const edge = pickEvent && Array.isArray(pickEvent.edgeVertexIndices) ? pickEvent.edgeVertexIndices.map(Number).sort((a, b) => a - b) : [];
           if (edge.length !== 2 || edge.some((value) => !Number.isInteger(value))) return;
@@ -5884,11 +7126,14 @@ def _build_html_form(material_options: str, version: str) -> str:
           if (!Number.isInteger(vertexIndex) || vertexIndex < 0) return;
           const existing = state.emitterReferenceVertices.indexOf(vertexIndex);
           if (existing >= 0) state.emitterReferenceVertices.splice(existing, 1);
-          else if (state.emitterReferenceVertices.length < 3) state.emitterReferenceVertices.push(vertexIndex);
-          else state.emitterReferenceVertices = [state.emitterReferenceVertices[1], state.emitterReferenceVertices[2], vertexIndex];
+          else if (state.emitterReferenceVertices.length < 6) state.emitterReferenceVertices.push(vertexIndex);
+          else maximumReached = true;
         }}
         updateEmitterDraftSummary();
         updateEmitterSelectionUI();
+        if (maximumReached) {{
+          emitterSelectionBanner.textContent = 'vertex는 최대 6개까지 선택할 수 있습니다. 다른 점으로 바꾸려면 기존 점을 다시 클릭하거나 Clear selected points를 누르세요.';
+        }}
         if (cursorEmitterPopup.classList.contains('hidden-block')) {{
           showEmitterPopupAt(null, null);
         }}
@@ -5922,9 +7167,25 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (emitterTypeValue === 'reference_plane' && (!plane || !plane.center)) {{
         emitterSelectionBanner.textContent = emitterReferenceModeSelect.value === 'two_edges'
           ? 'Reference emitter를 만들려면 서로 다른 edge 2개를 선택하세요.'
-          : 'Reference emitter를 만들려면 서로 다른 vertex 3개를 선택하세요.';
+          : 'Reference emitter를 만들려면 서로 일직선이 아닌 vertex를 3~6개 선택하세요.';
         emitterSelectionBanner.classList.add('active');
         return;
+      }}
+      if (
+        emitterTypeValue === 'reference_plane'
+        && emitterReferenceModeSelect.value !== 'two_edges'
+        && emitterReferenceSurfaceSelect.value === 'polygon_auto'
+      ) {{
+        if (!plane.polygonPoints || plane.polygonPoints.length < 3 || Number(plane.polygonAreaMm2) <= 1e-9) {{
+          emitterSelectionBanner.textContent = 'Polygon 경계를 만들 수 없습니다. 서로 일직선이 아닌 vertex를 3개 이상 선택하세요.';
+          emitterSelectionBanner.classList.add('active');
+          return;
+        }}
+        if (Number(plane.planarityErrorMm) > REFERENCE_PLANARITY_TOLERANCE_MM) {{
+          emitterSelectionBanner.textContent = '선택점의 평면 오차가 0.05 mm를 초과합니다. 더 평탄한 vertex를 다시 선택하세요.';
+          emitterSelectionBanner.classList.add('active');
+          return;
+        }}
       }}
       const power = Math.max(0, parseMoveFieldValue(emitterPowerInput.value));
       const powerDensity = Math.max(0, parseMoveFieldValue(emitterPowerDensityInput.value));
@@ -5955,6 +7216,15 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitter.width_mm = plane && plane.widthMm ? plane.widthMm : null;
       emitter.height_mm = plane && plane.heightMm ? plane.heightMm : null;
       emitter.reference_mode = emitterTypeValue === 'reference_plane' ? (emitterReferenceModeSelect.value || 'three_vertices') : null;
+      emitter.surface_construction = emitterTypeValue === 'reference_plane'
+        ? (emitterReferenceModeSelect.value === 'two_edges' ? 'rectangular_fit' : (emitterReferenceSurfaceSelect.value || 'rectangular_fit'))
+        : 'rectangular_fit';
+      emitter.polygon_vertices = emitter.surface_construction === 'polygon_auto' && plane && plane.polygonPoints
+        ? plane.polygonPoints.map((point) => Array.from(point))
+        : [];
+      emitter.polygon_area_mm2 = emitter.surface_construction === 'polygon_auto' && plane
+        ? Math.max(0, Number(plane.polygonAreaMm2) || 0)
+        : null;
       emitter.reference_vertex_indices = emitterTypeValue === 'reference_plane' ? Array.from(state.emitterReferenceVertices) : [];
       emitter.reference_edge_vertex_indices = emitterTypeValue === 'reference_plane' ? state.emitterReferenceEdges.map((edge) => Array.from(edge)) : [];
       emitter.rotation_deg = emitterTypeValue === 'datum_plane' ? {{
@@ -5964,24 +7234,49 @@ def _build_html_form(material_options: str, version: str) -> str:
       }} : {{ x: 0, y: 0, z: 0 }};
       state.activeEmitterId = emitter.emitter_id;
       state.emitterSelectionActive = false;
+      invalidateDirectRayTraceResult();
       resetEmitterEditorValues();
       renderEmitterList();
       drawViewer();
     }}
 
+    function resetEmitterProperties() {{
+      const savedEmitter = currentEmitter();
+      const referenceMode = emitterReferenceModeSelect.value;
+      const surfaceConstruction = emitterReferenceSurfaceSelect.value;
+      resetEmitterEditorValues();
+      emitterReferenceModeSelect.value = referenceMode;
+      emitterReferenceSurfaceSelect.value = surfaceConstruction;
+      updateEmitterGeometryUI();
+      updateEmitterDraftSummary();
+      emitterSelectionBanner.textContent = savedEmitter
+        ? '저장된 emitter 속성값으로 되돌렸습니다. 선택 geometry는 유지됩니다.'
+        : 'Emitter 속성값을 기본값으로 초기화했습니다. 선택 geometry는 유지됩니다.';
+      emitterSelectionBanner.classList.add('active');
+      drawViewer();
+    }}
+
     function deleteCurrentEmitter() {{
-      if (state.activeEmitterId) {{
-        state.emitters = state.emitters.filter((item) => item.emitter_id !== state.activeEmitterId);
-      }}
+      const deletedSavedEmitter = !!state.activeEmitterId;
+      if (deletedSavedEmitter) state.emitters = state.emitters.filter((item) => item.emitter_id !== state.activeEmitterId);
       state.activeEmitterId = null;
       state.emitterDraftType = 'face';
       state.emitterDraftFaces = new Set();
       state.emitterReferenceVertices = [];
       state.emitterReferenceEdges = [];
       state.emitterSelectionActive = false;
+      invalidateDirectRayTraceResult();
       hideEmitterPopup();
       renderEmitterList();
       drawViewer();
+      emitterSelectionBanner.textContent = deletedSavedEmitter ? 'Emitter를 삭제했습니다.' : '생성 중인 emitter preview를 삭제했습니다.';
+      emitterSelectionBanner.classList.add('active');
+    }}
+
+    function deleteEmitterById(emitterId) {{
+      if (!emitterById(emitterId)) return;
+      state.activeEmitterId = emitterId;
+      deleteCurrentEmitter();
     }}
 
     function resetEmittersForScene() {{
@@ -5995,6 +7290,483 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.emitterSequence = 1;
       hideEmitterPopup();
       renderEmitterList();
+    }}
+
+    function receiverPlacementLabel(placementMode) {{
+      if (placementMode === 'reference_plane') return 'Reference geometry';
+      if (placementMode === 'current_view') return 'Current view';
+      return 'Datum plane';
+    }}
+
+    function receiverSpecPayload(receiver) {{
+      const baseNormal = normalizeArray3(receiver.normal || [0, 0, 1]) || [0, 0, 1];
+      const effectiveNormal = receiver.normal_flip ? baseNormal.map((value) => -value) : baseNormal;
+      return {{
+        receiver_id: receiver.receiver_id,
+        receiver_type: 'rectangle',
+        display_name: receiver.display_name || receiver.receiver_id,
+        placement_mode: receiver.placement_mode || 'datum_plane',
+        center: receiver.center || [0, 0, 0],
+        normal: effectiveNormal,
+        u_axis: receiver.u_axis || [1, 0, 0],
+        v_axis: receiver.v_axis || [0, 1, 0],
+        width_mm: Math.max(0.001, Number(receiver.width_mm) || 1),
+        height_mm: Math.max(0.001, Number(receiver.height_mm) || 1),
+        resolution: [
+          Math.max(1, parseInt(receiver.resolution_x, 10) || 80),
+          Math.max(1, parseInt(receiver.resolution_y, 10) || 24)
+        ],
+        acceptance_angle_deg: Math.min(180, Math.max(0.1, Number(receiver.acceptance_angle_deg) || 90)),
+        normal_flip: !!receiver.normal_flip,
+        reference_mode: receiver.reference_mode || null,
+        reference_vertex_indices: receiver.reference_vertex_indices || [],
+        reference_edge_vertex_indices: receiver.reference_edge_vertex_indices || [],
+        view_distance_mm: receiver.view_distance_mm ?? null,
+        base_center: receiver.base_center || null,
+        base_u_axis: receiver.base_u_axis || null,
+        base_v_axis: receiver.base_v_axis || null,
+        base_normal: receiver.base_normal || null,
+        position_offset_mm: receiver.position_offset_mm || [0, 0, 0],
+        tilt_xyz_deg: receiver.tilt_xyz_deg || [0, 0, 0],
+        enabled: receiver.enabled !== false
+      }};
+    }}
+
+    function syncReceiverFormPayload() {{
+      receiverSpecsJson.value = JSON.stringify(state.receivers.map(receiverSpecPayload));
+    }}
+
+    function renderReceiverList() {{
+      receiverList.innerHTML = '';
+      receiverEmpty.style.display = state.receivers.length ? 'none' : 'block';
+      for (const receiver of state.receivers) {{
+        const row = document.createElement('div');
+        row.className = 'emitter-list-row' + (receiver.receiver_id === state.activeReceiverId ? ' active' : '');
+        row.setAttribute('data-receiver-id', receiver.receiver_id);
+        const dot = document.createElement('span');
+        dot.className = 'emitter-list-dot';
+        const body = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'emitter-list-name';
+        name.textContent = receiver.display_name || receiver.receiver_id;
+        const meta = document.createElement('div');
+        meta.className = 'emitter-list-meta';
+        meta.textContent = receiverPlacementLabel(receiver.placement_mode)
+          + ' · ' + (Number(receiver.width_mm) || 0).toFixed(2)
+          + ' × ' + (Number(receiver.height_mm) || 0).toFixed(2) + ' mm';
+        body.appendChild(name);
+        body.appendChild(meta);
+        const acceptance = document.createElement('span');
+        acceptance.className = 'emitter-list-power';
+        acceptance.textContent = String(receiver.acceptance_angle_deg || 90) + '°';
+        const actions = document.createElement('div');
+        actions.className = 'tree-row-actions';
+        const settingsButton = document.createElement('button');
+        settingsButton.type = 'button';
+        settingsButton.className = 'tree-action-btn';
+        settingsButton.textContent = 'Settings';
+        settingsButton.addEventListener('click', function (ev) {{
+          editReceiver(receiver.receiver_id, ev);
+        }});
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'tree-action-btn delete';
+        deleteButton.textContent = 'Delete';
+        deleteButton.addEventListener('click', function (ev) {{
+          ev.stopPropagation();
+          deleteReceiverById(receiver.receiver_id);
+        }});
+        actions.appendChild(settingsButton);
+        actions.appendChild(deleteButton);
+        row.appendChild(dot);
+        row.appendChild(body);
+        row.appendChild(acceptance);
+        row.appendChild(actions);
+        receiverList.appendChild(row);
+      }}
+      syncReceiverFormPayload();
+      updateReceiverSelectionUI();
+      updateRayTraceRunState();
+    }}
+
+    function updateReceiverGeometryUI() {{
+      const placementMode = state.receiverDraftType || 'datum_plane';
+      const isReference = placementMode === 'reference_plane';
+      const isCurrentView = placementMode === 'current_view';
+      receiverDatumSection.classList.toggle('hidden-block', placementMode !== 'datum_plane');
+      receiverReferenceSection.classList.toggle('hidden-block', !isReference);
+      receiverCurrentViewSection.classList.toggle('hidden-block', !isCurrentView);
+      receiverAdjustmentSection.classList.toggle('hidden-block', !(isReference || isCurrentView));
+      receiverReselectGeometryBtn.disabled = !isReference;
+      receiverReselectGeometryBtn.textContent = isReference ? 'Select geometry' : (isCurrentView ? 'Camera geometry' : 'Numeric geometry');
+      receiverWidthInput.disabled = isReference;
+      receiverHeightInput.disabled = isReference;
+      if (isReference) {{
+        const isEdges = receiverReferenceModeSelect.value === 'two_edges';
+        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        receiverReferenceHint.textContent = isEdges
+          ? '서로 다른 edge 2개를 선택합니다. 잘못 선택했으면 아래 Clear selected edges를 누르세요.'
+          : 'vertex 3개 이상 선택 시 평면 preview가 생성됩니다. 최대 6개까지 선택하며 같은 점을 다시 누르면 제외됩니다.';
+        receiverClearReferencesBtn.textContent = isEdges ? 'Clear selected edges' : 'Clear selected points';
+        receiverClearReferencesBtn.disabled = selectedCount === 0;
+        receiverReferenceCount.textContent = isEdges ? (selectedCount + ' / 2 selected') : (selectedCount + ' / 6 selected · minimum 3');
+      }}
+    }}
+
+    function updateReceiverDraftSummary() {{
+      const placementMode = state.receiverDraftType || 'datum_plane';
+      const plane = currentDraftReceiverPlane();
+      let summary = 'Receiver geometry not set';
+      let area = 0;
+      let normal = [0, 0, 1];
+      if (plane && plane.center) {{
+        area = Math.max(0, plane.widthMm * plane.heightMm);
+        normal = plane.normal || normal;
+        if (placementMode === 'reference_plane') {{
+          receiverWidthInput.value = plane.widthMm.toFixed(6);
+          receiverHeightInput.value = plane.heightMm.toFixed(6);
+        }}
+        summary = 'Type: ' + receiverPlacementLabel(placementMode)
+          + '\\nCenter: (' + plane.center.map((value) => Number(value).toFixed(3)).join(', ') + ') mm'
+          + '\\nSize: ' + plane.widthMm.toFixed(3) + ' × ' + plane.heightMm.toFixed(3) + ' mm';
+        if (placementMode === 'reference_plane' && Number(plane.planarityErrorMm) > 0.001) {{
+          summary += '\\nPlanarity deviation: ' + plane.planarityErrorMm.toFixed(4) + ' mm';
+        }}
+      }} else if (placementMode === 'reference_plane') {{
+        const isEdges = receiverReferenceModeSelect.value === 'two_edges';
+        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        summary = 'Type: Reference geometry\\n' + (isEdges ? 'Edges: ' + selectedCount + ' / 2' : 'Vertices: ' + selectedCount + ' / 3–6');
+      }}
+      const shownNormal = receiverNormalFlipInput.checked ? normal.map((value) => -value) : normal;
+      receiverAreaInput.value = area.toFixed(3);
+      receiverGeometrySummary.textContent = summary
+        + '\\nArea: ' + area.toFixed(3) + ' mm²'
+        + '\\nReceiving normal: (' + shownNormal.map((value) => Number(value).toFixed(4)).join(', ') + ')';
+      cursorReceiverChip.textContent = currentReceiver()
+        ? 'Edit ' + receiverPlacementLabel(placementMode)
+        : 'New ' + receiverPlacementLabel(placementMode);
+      if (placementMode === 'datum_plane') {{
+        cursorReceiverNameHint.textContent = '좌표·크기·회전각으로 빈 공간의 가상 측정면을 정의합니다.';
+      }} else if (placementMode === 'current_view') {{
+        cursorReceiverNameHint.textContent = '현재 카메라가 바라보는 방향을 수광 normal로 저장합니다.';
+      }} else {{
+        cursorReceiverNameHint.textContent = plane && plane.center
+          ? '선택한 CAD reference 사이에 가상 측정면이 생성되었습니다.'
+          : '3D viewer에서 기준 geometry를 선택하세요.';
+      }}
+      updateReceiverGeometryUI();
+    }}
+
+    function updateReceiverSelectionUI() {{
+      const placementMode = state.receiverDraftType || 'datum_plane';
+      const isReferenceSelecting = state.receiverSelectionActive && placementMode === 'reference_plane';
+      addDatumReceiverBtn.textContent = '+ Datum plane receiver';
+      addReferenceReceiverBtn.textContent = isReferenceSelecting ? 'Selecting references…' : '+ Reference geometry receiver';
+      addCurrentViewReceiverBtn.textContent = '+ Current view receiver';
+      addDatumReceiverBtn.disabled = state.receiverSelectionActive;
+      addReferenceReceiverBtn.disabled = state.receiverSelectionActive;
+      addCurrentViewReceiverBtn.disabled = state.receiverSelectionActive;
+      receiverSelectionBanner.classList.toggle('active', state.receiverSelectionActive);
+      if (isReferenceSelecting) {{
+        const isEdges = receiverReferenceModeSelect.value === 'two_edges';
+        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        receiverSelectionBanner.textContent = isEdges
+          ? ('Reference edge 선택: ' + selectedCount + ' / 2 · Apply로 확정')
+          : ('Reference vertex 선택: ' + selectedCount + ' / 3–6 · 최소 3개 선택 후 Apply');
+        viewerTip.textContent = isEdges ? 'Receiver: Click near two CAD edges.' : 'Receiver: Select 3 to 6 CAD vertices. Click again to remove.';
+      }} else if (state.receivers.length) {{
+        receiverSelectionBanner.textContent = state.receivers.length + ' receiver(s) registered. List의 Settings에서 편집합니다.';
+        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+      }} else {{
+        receiverSelectionBanner.textContent = 'Receiver가 없습니다. Add에서 배치 방식을 선택하세요.';
+        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+      }}
+    }}
+
+    function resetReceiverEditorValues() {{
+      const receiver = currentReceiver();
+      const center = receiver && receiver.center ? receiver.center : modelCenterMm();
+      const rotation = receiver && receiver.rotation_deg ? receiver.rotation_deg : {{ x: 0, y: 0, z: 0 }};
+      const positionOffset = receiver && Array.isArray(receiver.position_offset_mm) ? receiver.position_offset_mm : [0, 0, 0];
+      const tiltAdjustment = receiver && Array.isArray(receiver.tilt_xyz_deg) ? receiver.tilt_xyz_deg : [0, 0, 0];
+      receiverNameInput.value = receiver ? receiver.display_name : ('Receiver ' + state.receiverSequence);
+      receiverWidthInput.value = receiver ? String(receiver.width_mm ?? 100) : '100';
+      receiverHeightInput.value = receiver ? String(receiver.height_mm ?? 30) : '30';
+      receiverCenterX.value = String(center[0] ?? 0);
+      receiverCenterY.value = String(center[1] ?? 0);
+      receiverCenterZ.value = String(center[2] ?? 0);
+      receiverRotationX.value = String(rotation.x ?? 0);
+      receiverRotationY.value = String(rotation.y ?? 0);
+      receiverRotationZ.value = String(rotation.z ?? 0);
+      receiverOffsetX.value = String(positionOffset[0] ?? 0);
+      receiverOffsetY.value = String(positionOffset[1] ?? 0);
+      receiverOffsetZ.value = String(positionOffset[2] ?? 0);
+      receiverTiltX.value = String(tiltAdjustment[0] ?? 0);
+      receiverTiltY.value = String(tiltAdjustment[1] ?? 0);
+      receiverTiltZ.value = String(tiltAdjustment[2] ?? 0);
+      receiverReferenceModeSelect.value = receiver ? (receiver.reference_mode || 'three_vertices') : 'three_vertices';
+      receiverViewDistanceInput.value = receiver ? String(receiver.view_distance_mm ?? Math.max(50, modelSpanMm() * 0.25)) : String(Math.max(50, modelSpanMm() * 0.25));
+      receiverResolutionX.value = receiver ? String(receiver.resolution_x ?? 80) : '80';
+      receiverResolutionY.value = receiver ? String(receiver.resolution_y ?? 24) : '24';
+      receiverAcceptanceInput.value = receiver ? String(receiver.acceptance_angle_deg ?? 90) : '90';
+      receiverNormalFlipInput.checked = receiver ? !!receiver.normal_flip : false;
+      receiverDeleteBtn.disabled = false;
+      receiverDeleteBtn.textContent = receiver ? 'Delete receiver' : 'Discard draft';
+      if (receiver && receiver.placement_mode === 'current_view') {{
+        state.receiverCurrentViewPlane = receiverBasePlaneFromSpec(receiver);
+      }}
+      updateReceiverGeometryUI();
+      updateReceiverDraftSummary();
+    }}
+
+    function clampReceiverPopupPosition(left, top) {{
+      const rect = viewerWrap.getBoundingClientRect();
+      const popupWidth = cursorReceiverPopup.offsetWidth || 382;
+      const popupHeight = cursorReceiverPopup.offsetHeight || 620;
+      return {{
+        left: Math.min(Math.max(14, rect.width - popupWidth - 14), Math.max(14, left)),
+        top: Math.min(Math.max(24, rect.height - popupHeight - 14), Math.max(24, top))
+      }};
+    }}
+
+    function applyReceiverPopupPosition(left, top) {{
+      const next = clampReceiverPopupPosition(left, top);
+      cursorReceiverPopup.style.left = next.left + 'px';
+      cursorReceiverPopup.style.top = next.top + 'px';
+      state.receiverPopupPosition = next;
+    }}
+
+    function showReceiverPopupAt(clientX, clientY) {{
+      cursorReceiverPopup.classList.remove('hidden-block');
+      if (clientX !== null && clientX !== undefined && clientY !== null && clientY !== undefined) {{
+        const rect = viewerWrap.getBoundingClientRect();
+        applyReceiverPopupPosition(clientX - rect.left + 14, clientY - rect.top + 14);
+      }} else if (state.receiverPopupPosition) {{
+        applyReceiverPopupPosition(state.receiverPopupPosition.left, state.receiverPopupPosition.top);
+      }} else {{
+        const rect = viewerWrap.getBoundingClientRect();
+        applyReceiverPopupPosition(rect.width - (cursorReceiverPopup.offsetWidth || 382) - 18, 42);
+      }}
+    }}
+
+    function hideReceiverPopup() {{
+      cursorReceiverPopup.classList.add('hidden-block');
+    }}
+
+    function startReceiverPopupDrag(ev) {{
+      if (ev.target && ev.target.closest('button')) return;
+      const popupRect = cursorReceiverPopup.getBoundingClientRect();
+      state.receiverPopupDrag.active = true;
+      state.receiverPopupDrag.offsetX = ev.clientX - popupRect.left;
+      state.receiverPopupDrag.offsetY = ev.clientY - popupRect.top;
+      cursorReceiverPopup.classList.add('is-dragging');
+      ev.preventDefault();
+    }}
+
+    function moveReceiverPopupDrag(ev) {{
+      if (!state.receiverPopupDrag.active) return;
+      const rect = viewerWrap.getBoundingClientRect();
+      applyReceiverPopupPosition(
+        ev.clientX - rect.left - state.receiverPopupDrag.offsetX,
+        ev.clientY - rect.top - state.receiverPopupDrag.offsetY
+      );
+    }}
+
+    function stopReceiverPopupDrag() {{
+      if (!state.receiverPopupDrag.active) return;
+      state.receiverPopupDrag.active = false;
+      cursorReceiverPopup.classList.remove('is-dragging');
+    }}
+
+    function beginReceiverCreation(placementMode) {{
+      state.emitterSelectionActive = false;
+      hideEmitterPopup();
+      updateEmitterSelectionUI();
+      state.activeReceiverId = null;
+      state.receiverDraftType = placementMode;
+      state.receiverReferenceVertices = [];
+      state.receiverReferenceEdges = [];
+      state.receiverCurrentViewPlane = null;
+      state.receiverSelectionActive = placementMode === 'reference_plane';
+      resetReceiverEditorValues();
+      switchSideTab('raytracing', {{ forceOpen: true }});
+      showReceiverPopupAt(null, null);
+      renderReceiverList();
+      drawViewer();
+      if (placementMode === 'current_view') {{
+        captureCurrentViewReceiverPlane();
+        updateReceiverDraftSummary();
+        drawViewer();
+      }}
+    }}
+
+    function editReceiver(receiverId, popupPosition) {{
+      const receiver = receiverById(receiverId);
+      if (!receiver) return;
+      state.activeReceiverId = receiverId;
+      state.receiverDraftType = receiver.placement_mode || 'datum_plane';
+      state.receiverReferenceVertices = Array.from(receiver.reference_vertex_indices || []).slice(0, 6);
+      state.receiverReferenceEdges = (receiver.reference_edge_vertex_indices || []).map((edge) => Array.from(edge));
+      state.receiverSelectionActive = false;
+      state.receiverCurrentViewPlane = state.receiverDraftType === 'current_view' ? receiverBasePlaneFromSpec(receiver) : null;
+      resetReceiverEditorValues();
+      showReceiverPopupAt(
+        popupPosition && popupPosition.clientX !== undefined ? popupPosition.clientX : null,
+        popupPosition && popupPosition.clientY !== undefined ? popupPosition.clientY : null
+      );
+      renderReceiverList();
+      drawViewer();
+    }}
+
+    function reselectReceiverGeometry() {{
+      if (state.receiverDraftType !== 'reference_plane') return;
+      state.receiverSelectionActive = true;
+      updateReceiverSelectionUI();
+      drawViewer();
+    }}
+
+    function cancelReceiverSelection() {{
+      state.receiverSelectionActive = false;
+      if (!currentReceiver()) {{
+        state.receiverReferenceVertices = [];
+        state.receiverReferenceEdges = [];
+        hideReceiverPopup();
+      }}
+      updateReceiverSelectionUI();
+      drawViewer();
+    }}
+
+    function clearReceiverReferenceSelection() {{
+      state.receiverReferenceVertices = [];
+      state.receiverReferenceEdges = [];
+      state.receiverSelectionActive = state.receiverDraftType === 'reference_plane';
+      updateReceiverDraftSummary();
+      updateReceiverSelectionUI();
+      drawViewer();
+    }}
+
+    function handleReceiverGeometryPick(faceIndex, pickEvent) {{
+      if (faceIndex === null || faceIndex === undefined || state.receiverDraftType !== 'reference_plane') return;
+      let maximumReached = false;
+      if ((receiverReferenceModeSelect.value || 'three_vertices') === 'two_edges') {{
+        const edge = pickEvent && Array.isArray(pickEvent.edgeVertexIndices) ? pickEvent.edgeVertexIndices.map(Number).sort((a, b) => a - b) : [];
+        if (edge.length !== 2 || edge.some((value) => !Number.isInteger(value))) return;
+        const signature = edge.join(':');
+        const existing = state.receiverReferenceEdges.findIndex((item) => item.slice().sort((a, b) => a - b).join(':') === signature);
+        if (existing >= 0) state.receiverReferenceEdges.splice(existing, 1);
+        else if (state.receiverReferenceEdges.length < 2) state.receiverReferenceEdges.push(edge);
+        else state.receiverReferenceEdges = [state.receiverReferenceEdges[1], edge];
+      }} else {{
+        const vertexIndex = Number(pickEvent && pickEvent.vertexIndex);
+        if (!Number.isInteger(vertexIndex) || vertexIndex < 0) return;
+        const existing = state.receiverReferenceVertices.indexOf(vertexIndex);
+        if (existing >= 0) state.receiverReferenceVertices.splice(existing, 1);
+        else if (state.receiverReferenceVertices.length < 6) state.receiverReferenceVertices.push(vertexIndex);
+        else maximumReached = true;
+      }}
+      updateReceiverDraftSummary();
+      updateReceiverSelectionUI();
+      if (maximumReached) {{
+        receiverSelectionBanner.textContent = 'vertex는 최대 6개까지 선택할 수 있습니다. 다른 점으로 바꾸려면 기존 점을 다시 클릭하거나 Clear selected points를 누르세요.';
+      }}
+      if (cursorReceiverPopup.classList.contains('hidden-block')) showReceiverPopupAt(null, null);
+      drawViewer();
+    }}
+
+    function applyReceiverEditor() {{
+      const placementMode = state.receiverDraftType || 'datum_plane';
+      if (placementMode === 'current_view' && !state.receiverCurrentViewPlane) captureCurrentViewReceiverPlane();
+      const basePlane = currentBaseDraftReceiverPlane();
+      const plane = placementMode === 'datum_plane' ? basePlane : applyReceiverAdjustment(basePlane);
+      if (!plane || !plane.center) {{
+        receiverSelectionBanner.textContent = receiverReferenceModeSelect.value === 'two_edges'
+          ? 'Receiver를 만들려면 서로 다른 edge 2개를 선택하세요.'
+          : 'Receiver를 만들려면 서로 일직선이 아닌 vertex를 3~6개 선택하세요.';
+        receiverSelectionBanner.classList.add('active');
+        return;
+      }}
+      let receiver = currentReceiver();
+      if (!receiver) {{
+        receiver = {{ receiver_id: 'receiver_' + String(state.receiverSequence).padStart(3, '0') }};
+        state.receiverSequence += 1;
+        state.receivers.push(receiver);
+      }}
+      receiver.display_name = receiverNameInput.value.trim() || receiver.receiver_id;
+      receiver.receiver_type = 'rectangle';
+      receiver.placement_mode = placementMode;
+      receiver.center = Array.from(plane.center);
+      receiver.u_axis = Array.from(plane.uAxis || [1, 0, 0]);
+      receiver.v_axis = Array.from(plane.vAxis || [0, 1, 0]);
+      receiver.normal = Array.from(plane.normal || [0, 0, 1]);
+      receiver.width_mm = Math.max(0.001, Number(plane.widthMm) || 1);
+      receiver.height_mm = Math.max(0.001, Number(plane.heightMm) || 1);
+      receiver.resolution_x = Math.max(1, parseInt(receiverResolutionX.value, 10) || 80);
+      receiver.resolution_y = Math.max(1, parseInt(receiverResolutionY.value, 10) || 24);
+      receiver.acceptance_angle_deg = Math.min(180, Math.max(0.1, parseFloat(receiverAcceptanceInput.value) || 90));
+      receiver.normal_flip = !!receiverNormalFlipInput.checked;
+      receiver.reference_mode = placementMode === 'reference_plane' ? (receiverReferenceModeSelect.value || 'three_vertices') : null;
+      receiver.reference_vertex_indices = placementMode === 'reference_plane' ? Array.from(state.receiverReferenceVertices) : [];
+      receiver.reference_edge_vertex_indices = placementMode === 'reference_plane' ? state.receiverReferenceEdges.map((edge) => Array.from(edge)) : [];
+      receiver.view_distance_mm = placementMode === 'current_view' ? Math.max(0.001, parseMoveFieldValue(receiverViewDistanceInput.value)) : null;
+      const adjustment = receiverAdjustmentFromInputs();
+      receiver.base_center = placementMode === 'datum_plane' || !basePlane ? null : Array.from(basePlane.center || [0, 0, 0]);
+      receiver.base_u_axis = placementMode === 'datum_plane' || !basePlane ? null : Array.from(basePlane.uAxis || [1, 0, 0]);
+      receiver.base_v_axis = placementMode === 'datum_plane' || !basePlane ? null : Array.from(basePlane.vAxis || [0, 1, 0]);
+      receiver.base_normal = placementMode === 'datum_plane' || !basePlane ? null : Array.from(basePlane.normal || [0, 0, 1]);
+      receiver.position_offset_mm = placementMode === 'datum_plane' ? [0, 0, 0] : Array.from(adjustment.offset);
+      receiver.tilt_xyz_deg = placementMode === 'datum_plane'
+        ? [0, 0, 0]
+        : [adjustment.tilt.x, adjustment.tilt.y, adjustment.tilt.z];
+      receiver.rotation_deg = placementMode === 'datum_plane' ? {{
+        x: parseMoveFieldValue(receiverRotationX.value),
+        y: parseMoveFieldValue(receiverRotationY.value),
+        z: parseMoveFieldValue(receiverRotationZ.value)
+      }} : {{ x: 0, y: 0, z: 0 }};
+      receiver.enabled = true;
+      state.activeReceiverId = receiver.receiver_id;
+      state.receiverSelectionActive = false;
+      invalidateDirectRayTraceResult();
+      resetReceiverEditorValues();
+      renderReceiverList();
+      drawViewer();
+    }}
+
+    function deleteCurrentReceiver() {{
+      const deletedSavedReceiver = !!state.activeReceiverId;
+      if (deletedSavedReceiver) {{
+        state.receivers = state.receivers.filter((item) => item.receiver_id !== state.activeReceiverId);
+      }}
+      state.activeReceiverId = null;
+      state.receiverDraftType = 'datum_plane';
+      state.receiverReferenceVertices = [];
+      state.receiverReferenceEdges = [];
+      state.receiverCurrentViewPlane = null;
+      state.receiverSelectionActive = false;
+      invalidateDirectRayTraceResult();
+      hideReceiverPopup();
+      renderReceiverList();
+      drawViewer();
+      receiverSelectionBanner.textContent = deletedSavedReceiver ? 'Receiver를 삭제했습니다.' : '생성 중인 receiver preview를 삭제했습니다.';
+      receiverSelectionBanner.classList.add('active');
+    }}
+
+    function deleteReceiverById(receiverId) {{
+      if (!receiverById(receiverId)) return;
+      state.activeReceiverId = receiverId;
+      deleteCurrentReceiver();
+    }}
+
+    function resetReceiversForScene() {{
+      state.receivers = [];
+      state.activeReceiverId = null;
+      state.receiverDraftType = 'datum_plane';
+      state.receiverReferenceVertices = [];
+      state.receiverReferenceEdges = [];
+      state.receiverCurrentViewPlane = null;
+      state.receiverSelectionActive = false;
+      state.receiverSequence = 1;
+      hideReceiverPopup();
+      renderReceiverList();
     }}
 
     function resetGapSelection() {{
@@ -6046,9 +7818,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       }} catch (err) {{
         setResultMessage('<div><b>Upload failed:</b> ' + err.message + '</div>');
       }} finally {{
-        runBtn.disabled = true;
         importCadBtn.disabled = false;
         useSampleBtn.disabled = false;
+        updateRayTraceRunState();
       }}
     }}
 
@@ -6061,9 +7833,22 @@ def _build_html_form(material_options: str, version: str) -> str:
       const endpoint = '/api/scene?cad=' + encodeURIComponent(cad);
       try {{
         const res = await fetch(endpoint);
-        if (!res.ok) throw new Error('API error');
+        if (!res.ok) {{
+          const errorText = await res.text();
+          throw new Error(errorText || ('Scene API error (' + res.status + ')'));
+        }}
         const payload = await res.json();
+        if (!payload || !payload.mesh || !Array.isArray(payload.mesh.vertices) || !Array.isArray(payload.mesh.faces)) {{
+          throw new Error('CAD scene response does not contain a valid triangle mesh');
+        }}
+        if (!payload.mesh.vertices.length || !payload.mesh.faces.length) {{
+          throw new Error('CAD tessellation produced an empty triangle mesh');
+        }}
         state.mesh = payload.mesh;
+        state.sceneToken = payload.metadata?.scene_token || null;
+        state.rayTraceResult = null;
+        pendingThreeCameraPreset = 'fit';
+        drawViewer();
         state.objectsById.clear();
         state.faceToObjectId.clear();
         buildFaceAdjacency();
@@ -6072,6 +7857,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         resetRoiSelection();
         resetGapSelection();
         resetEmittersForScene();
+        resetReceiversForScene();
 
         if (!payload.objects.length) {{
           objectList.innerHTML = '<div class=\"small\">No object split detected. You can input faces manually.</div>';
@@ -6155,21 +7941,32 @@ def _build_html_form(material_options: str, version: str) -> str:
         if (!cad) {{
           cadFileName.value = 'Sample geometry (no CAD file)';
         }}
-        cadMeta.textContent = 'Loaded: ' + (payload.metadata.source_file || 'sample geometry') + ' / ' + payload.metadata.import_note;
+        cadMeta.textContent = 'Loaded: ' + (payload.metadata.source_file || 'sample geometry')
+          + ' / ' + payload.metadata.face_count + ' faces'
+          + ' / ' + payload.metadata.component_count + ' components'
+          + ' / ' + payload.metadata.import_note;
         syncComponentSelectionSummary();
         renderMaterialLibrary();
         updateMaterialTargetSummary();
         renderTransformRules();
         updateViewerMode();
         updateGapSelectionStats();
+        pendingThreeCameraPreset = 'fit';
         drawViewer();
+        const loadedMesh = state.mesh;
+        window.requestAnimationFrame(function () {{
+          if (state.mesh !== loadedMesh) return;
+          pendingThreeCameraPreset = 'fit';
+          drawViewer();
+        }});
       }} catch (err) {{
+        state.sceneToken = null;
+        cadMeta.textContent = 'Load failed: ' + err.message;
         setResultMessage('<div><b>Load failed:</b> ' + err.message + '</div>');
       }} finally {{
-        runBtn.disabled = true;
         importCadBtn.disabled = false;
         useSampleBtn.disabled = false;
-        runBtn.textContent = 'Run simulation (temporarily off)';
+        updateRayTraceRunState();
       }}
     }}
 
@@ -6483,7 +8280,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     }});
     loadDemoCadBtn.addEventListener('click', function () {{
       cadInput.value = demoCadPath;
-      cadFileName.value = 'demo_tv_frame.obj';
+      cadFileName.value = demoCadName;
       cadMeta.textContent = 'Demo CAD selected.';
       loadScene();
     }});
@@ -6589,15 +8386,21 @@ def _build_html_form(material_options: str, version: str) -> str:
     if (cursorEmitterPopupHeader) {{
       cursorEmitterPopupHeader.addEventListener('mousedown', startEmitterPopupDrag);
     }}
+    if (cursorReceiverPopupHeader) {{
+      cursorReceiverPopupHeader.addEventListener('mousedown', startReceiverPopupDrag);
+    }}
     window.addEventListener('mousemove', movePopupDrag);
     window.addEventListener('mousemove', moveMaterialPopupDrag);
     window.addEventListener('mousemove', moveEmitterPopupDrag);
+    window.addEventListener('mousemove', moveReceiverPopupDrag);
     window.addEventListener('mouseup', stopPopupDrag);
     window.addEventListener('mouseup', stopMaterialPopupDrag);
     window.addEventListener('mouseup', stopEmitterPopupDrag);
+    window.addEventListener('mouseup', stopReceiverPopupDrag);
     window.addEventListener('mouseleave', stopPopupDrag);
     window.addEventListener('mouseleave', stopMaterialPopupDrag);
     window.addEventListener('mouseleave', stopEmitterPopupDrag);
+    window.addEventListener('mouseleave', stopReceiverPopupDrag);
     previewOverlayToggle.addEventListener('change', function () {{
       state.previewOverlayEnabled = !!previewOverlayToggle.checked;
       drawViewer();
@@ -6712,17 +8515,21 @@ def _build_html_form(material_options: str, version: str) -> str:
     addFaceEmitterBtn.addEventListener('click', beginFaceEmitterSelection);
     addDatumEmitterBtn.addEventListener('click', beginDatumEmitterCreation);
     addReferenceEmitterBtn.addEventListener('click', beginReferenceEmitterSelection);
-    cancelEmitterSelectionBtn.addEventListener('click', cancelEmitterSelection);
+    emitterAddSection.addEventListener('toggle', function () {{
+      const hasUnsavedDraft = !currentEmitter() && !cursorEmitterPopup.classList.contains('hidden-block');
+      if (!emitterAddSection.open && (state.emitterSelectionActive || hasUnsavedDraft)) {{
+        cancelEmitterSelection();
+      }}
+    }});
     cursorEmitterClose.addEventListener('click', function () {{
-      state.emitterSelectionActive = false;
+      cancelEmitterSelection();
       hideEmitterPopup();
-      updateEmitterSelectionUI();
-      drawViewer();
     }});
     emitterReselectFacesBtn.addEventListener('click', reselectEmitterGeometry);
     emitterApplyBtn.addEventListener('click', applyEmitterEditor);
-    emitterResetBtn.addEventListener('click', resetEmitterEditorValues);
+    emitterResetBtn.addEventListener('click', resetEmitterProperties);
     emitterDeleteBtn.addEventListener('click', deleteCurrentEmitter);
+    emitterClearReferencesBtn.addEventListener('click', clearEmitterReferenceSelection);
     emitterDistributionSelect.addEventListener('change', function () {{
       updateEmitterDistributionUI();
       drawViewer();
@@ -6732,9 +8539,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       updateEmitterDraftSummary();
     }});
     emitterReferenceModeSelect.addEventListener('change', function () {{
-      state.emitterReferenceVertices = [];
-      state.emitterReferenceEdges = [];
-      state.emitterSelectionActive = true;
+      clearEmitterReferenceSelection();
+    }});
+    emitterReferenceSurfaceSelect.addEventListener('change', function () {{
       updateEmitterDraftSummary();
       updateEmitterSelectionUI();
       drawViewer();
@@ -6751,6 +8558,53 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
     emitterNormalFlipInput.addEventListener('change', function () {{
       updateEmitterDraftSummary();
+      drawViewer();
+    }});
+    addDatumReceiverBtn.addEventListener('click', function () {{ beginReceiverCreation('datum_plane'); }});
+    addReferenceReceiverBtn.addEventListener('click', function () {{ beginReceiverCreation('reference_plane'); }});
+    addCurrentViewReceiverBtn.addEventListener('click', function () {{ beginReceiverCreation('current_view'); }});
+    receiverAddSection.addEventListener('toggle', function () {{
+      const hasUnsavedDraft = !currentReceiver() && !cursorReceiverPopup.classList.contains('hidden-block');
+      if (!receiverAddSection.open && (state.receiverSelectionActive || hasUnsavedDraft)) {{
+        cancelReceiverSelection();
+      }}
+    }});
+    cursorReceiverClose.addEventListener('click', function () {{
+      cancelReceiverSelection();
+      hideReceiverPopup();
+    }});
+    receiverReselectGeometryBtn.addEventListener('click', reselectReceiverGeometry);
+    receiverApplyBtn.addEventListener('click', applyReceiverEditor);
+    receiverResetBtn.addEventListener('click', resetReceiverEditorValues);
+    receiverDeleteBtn.addEventListener('click', deleteCurrentReceiver);
+    receiverClearReferencesBtn.addEventListener('click', clearReceiverReferenceSelection);
+    receiverReferenceModeSelect.addEventListener('change', function () {{
+      clearReceiverReferenceSelection();
+    }});
+    receiverCaptureViewBtn.addEventListener('click', function () {{
+      captureCurrentViewReceiverPlane();
+      updateReceiverDraftSummary();
+      drawViewer();
+    }});
+    for (const input of [
+      receiverCenterX, receiverCenterY, receiverCenterZ,
+      receiverWidthInput, receiverHeightInput,
+      receiverRotationX, receiverRotationY, receiverRotationZ,
+      receiverOffsetX, receiverOffsetY, receiverOffsetZ,
+      receiverTiltX, receiverTiltY, receiverTiltZ,
+      receiverViewDistanceInput, receiverResolutionX, receiverResolutionY,
+      receiverAcceptanceInput
+    ]) {{
+      input.addEventListener('input', function () {{
+        if (input === receiverViewDistanceInput && state.receiverDraftType === 'current_view') {{
+          captureCurrentViewReceiverPlane();
+        }}
+        updateReceiverDraftSummary();
+        drawViewer();
+      }});
+    }}
+    receiverNormalFlipInput.addEventListener('change', function () {{
+      updateReceiverDraftSummary();
       drawViewer();
     }});
     axisScale.addEventListener('input', function () {{
@@ -6778,6 +8632,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         applyEmitterEditor();
         return;
       }}
+      if (target.closest && target.closest('#cursorReceiverPopup')) {{
+        applyReceiverEditor();
+        return;
+      }}
       if (target.closest && target.closest('#cursorMaterialPopup')) {{
         applyMaterialAssignment(state.materialTargetMode);
         return;
@@ -6799,13 +8657,12 @@ def _build_html_form(material_options: str, version: str) -> str:
     }});
     runForm.addEventListener('submit', async function (ev) {{
       ev.preventDefault();
-      setResultMessage('<div>Run simulation은 현재 잠시 꺼져 있습니다. 입력한 move / tilt / ROI 값만 반영됩니다.</div>');
-      updateGapSelectionStats();
-      drawViewer();
+      await runDirectRayTrace();
     }});
 
     window.addEventListener('resize', drawViewer);
     renderEmitterList();
+    renderReceiverList();
     setSidebarLayout('vertical');
     ensureMaterialLibraryState();
     renderMaterialLibrary();
@@ -6815,8 +8672,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     syncTransformInputs();
     updateGapSelectionStats();
     updateMaterialTargetSummary();
-    runBtn.disabled = true;
-    runBtn.textContent = 'Run simulation (temporarily off)';
+    updateRayTraceRunState();
     state.renderMode = 'wireframe';
     state.axisScalePercent = parseInt(axisScale.value, 10) || 100;
     state.previewOverlayEnabled = !!previewOverlayToggle.checked;
@@ -6888,6 +8744,7 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
             cad = params.get("cad", [""])[0]
             try:
                 payload = build_scene_payload(cad)
+                payload.setdefault("metadata", {})["scene_token"] = _cache_scene_mesh(payload)
                 self._send_json(200, payload)
             except Exception as exc:
                 self._send_json(500, {{"error": str(exc)}})
@@ -6952,6 +8809,25 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+
+        if parsed.path == "/api/raytrace/direct":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise ValueError("Direct ray tracing request is empty")
+                request_payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                scene_token = str(request_payload.get("scene_token") or "")
+                scene_mesh = SCENE_MESH_CACHE.get(scene_token)
+                if scene_mesh is None:
+                    raise ValueError("CAD scene cache expired. Reload the CAD model and run again")
+                trace_input = build_direct_trace_input(scene_mesh, request_payload)
+                result = run_direct_ray_trace(trace_input)
+                self._send_json(200, result.to_dict())
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"error": str(exc)})
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
 
         if parsed.path == "/api/upload":
             params = urllib.parse.parse_qs(parsed.query)

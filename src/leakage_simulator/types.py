@@ -83,9 +83,14 @@ EMITTER_TYPES = ("face", "datum_plane", "reference_plane")
 EMITTER_NORMAL_MODES = ("face_normal", "custom")
 EMITTER_DISTRIBUTIONS = ("lambertian", "isotropic", "gaussian")
 EMITTER_POWER_MODES = ("total", "power_per_area")
+EMITTER_SURFACE_CONSTRUCTIONS = ("rectangular_fit", "polygon_auto")
+REFERENCE_PLANARITY_TOLERANCE_MM = 0.05
 RECEIVER_TYPES = ("rectangle",)
-SCATTER_MODELS = ("none", "lambertian", "gaussian")
+RECEIVER_PLACEMENT_MODES = ("datum_plane", "reference_plane", "current_view")
+SCATTER_MODELS = ("none", "specular", "lambertian", "gaussian", "mixed")
+OPTICAL_ASSIGNMENT_TARGET_TYPES = ("part", "faces")
 TERMINATION_MODES = ("threshold", "russian_roulette")
+INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
 
 
 @dataclass
@@ -166,6 +171,8 @@ class EmitterSpec:
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
     reference_mode: Optional[str] = None
+    surface_construction: str = "rectangular_fit"
+    polygon_vertices: List[Vec3] = field(default_factory=list)
     reference_vertex_indices: List[int] = field(default_factory=list)
     reference_edge_vertex_indices: List[Tuple[int, int]] = field(default_factory=list)
     ray_count: int = 10000
@@ -181,6 +188,11 @@ class EmitterSpec:
             EMITTER_DISTRIBUTIONS,
         )
         self.power_mode = require_choice(self.power_mode, "power_mode", EMITTER_POWER_MODES)
+        self.surface_construction = require_choice(
+            self.surface_construction,
+            "surface_construction",
+            EMITTER_SURFACE_CONSTRUCTIONS,
+        )
         self.face_indices = [int(face_index) for face_index in self.face_indices]
         if self.emitter_type == "face" and not self.face_indices:
             raise ValueError("face emitter requires at least one face index")
@@ -199,6 +211,32 @@ class EmitterSpec:
                 raise ValueError("u_axis and v_axis must not be parallel")
             self.width_mm = require_positive(self.width_mm, "width_mm")
             self.height_mm = require_positive(self.height_mm, "height_mm")
+        self.polygon_vertices = [
+            vec3_from(vertex, "polygon_vertices") for vertex in self.polygon_vertices
+        ]
+        if self.surface_construction == "polygon_auto":
+            if self.emitter_type != "reference_plane":
+                raise ValueError("polygon_auto is only valid for reference_plane emitters")
+            if len(self.polygon_vertices) < 3:
+                raise ValueError("polygon_auto requires at least three polygon_vertices")
+            if self.virtual_area_mm2() <= 1e-9:
+                raise ValueError("polygon_auto requires a non-degenerate polygon")
+            normal = normalize_vec3(
+                (
+                    self.u_axis[1] * self.v_axis[2] - self.u_axis[2] * self.v_axis[1],
+                    self.u_axis[2] * self.v_axis[0] - self.u_axis[0] * self.v_axis[2],
+                    self.u_axis[0] * self.v_axis[1] - self.u_axis[1] * self.v_axis[0],
+                ),
+                "polygon_normal",
+            )
+            planarity_error_mm = max(
+                abs(sum((vertex[axis] - self.center[axis]) * normal[axis] for axis in range(3)))
+                for vertex in self.polygon_vertices
+            )
+            if planarity_error_mm > REFERENCE_PLANARITY_TOLERANCE_MM:
+                raise ValueError(
+                    "polygon_vertices exceed the 0.05 mm planarity tolerance"
+                )
         if self.normal_mode == "custom":
             if self.custom_normal is None:
                 raise ValueError("custom normal mode requires custom_normal")
@@ -220,6 +258,22 @@ class EmitterSpec:
             return self.power_density_lm_per_m2 * max(0.0, float(area_mm2)) * 1e-6
         return self.power_lumen
 
+    def virtual_area_mm2(self) -> float:
+        if self.surface_construction != "polygon_auto" or len(self.polygon_vertices) < 3:
+            return max(0.0, float(self.width_mm or 0.0)) * max(0.0, float(self.height_mm or 0.0))
+        origin = self.polygon_vertices[0]
+        area = 0.0
+        for index in range(1, len(self.polygon_vertices) - 1):
+            first = tuple(self.polygon_vertices[index][axis] - origin[axis] for axis in range(3))
+            second = tuple(self.polygon_vertices[index + 1][axis] - origin[axis] for axis in range(3))
+            cross = (
+                first[1] * second[2] - first[2] * second[1],
+                first[2] * second[0] - first[0] * second[2],
+                first[0] * second[1] - first[1] * second[0],
+            )
+            area += 0.5 * math.sqrt(sum(value * value for value in cross))
+        return area
+
     def to_dict(self) -> Dict:
         return asdict(self)
 
@@ -232,18 +286,58 @@ class EmitterSpec:
 class ReceiverSpec:
     receiver_id: str
     receiver_type: str = "rectangle"
+    display_name: str = "Receiver"
+    placement_mode: str = "datum_plane"
     center: Vec3 = (0.0, 0.0, 0.0)
     normal: Vec3 = (0.0, 0.0, 1.0)
+    u_axis: Optional[Vec3] = None
+    v_axis: Optional[Vec3] = None
     width_mm: float = 100.0
     height_mm: float = 30.0
     resolution: Tuple[int, int] = (80, 24)
     acceptance_angle_deg: float = 90.0
+    normal_flip: bool = False
+    reference_mode: Optional[str] = None
+    reference_vertex_indices: List[int] = field(default_factory=list)
+    reference_edge_vertex_indices: List[Tuple[int, int]] = field(default_factory=list)
+    view_distance_mm: Optional[float] = None
+    base_center: Optional[Vec3] = None
+    base_u_axis: Optional[Vec3] = None
+    base_v_axis: Optional[Vec3] = None
+    base_normal: Optional[Vec3] = None
+    position_offset_mm: Vec3 = (0.0, 0.0, 0.0)
+    tilt_xyz_deg: Vec3 = (0.0, 0.0, 0.0)
     enabled: bool = True
 
     def __post_init__(self) -> None:
         self.receiver_type = require_choice(self.receiver_type, "receiver_type", RECEIVER_TYPES)
+        self.placement_mode = require_choice(
+            self.placement_mode,
+            "placement_mode",
+            RECEIVER_PLACEMENT_MODES,
+        )
+        self.display_name = str(self.display_name or self.receiver_id)
         self.center = vec3_from(self.center, "center")
         self.normal = normalize_vec3(self.normal, "normal")
+        if (self.u_axis is None) != (self.v_axis is None):
+            raise ValueError("u_axis and v_axis must be provided together")
+        if self.u_axis is not None and self.v_axis is not None:
+            self.u_axis = normalize_vec3(self.u_axis, "u_axis")
+            raw_v = vec3_from(self.v_axis, "v_axis")
+            projection = sum(self.u_axis[index] * raw_v[index] for index in range(3))
+            orthogonal_v = tuple(
+                raw_v[index] - self.u_axis[index] * projection for index in range(3)
+            )
+            self.v_axis = normalize_vec3(orthogonal_v, "v_axis")
+            plane_normal = (
+                self.u_axis[1] * self.v_axis[2] - self.u_axis[2] * self.v_axis[1],
+                self.u_axis[2] * self.v_axis[0] - self.u_axis[0] * self.v_axis[2],
+                self.u_axis[0] * self.v_axis[1] - self.u_axis[1] * self.v_axis[0],
+            )
+            if sum(plane_normal[index] * self.normal[index] for index in range(3)) < 0.0:
+                self.v_axis = tuple(-value for value in self.v_axis)
+                plane_normal = tuple(-value for value in plane_normal)
+            self.normal = normalize_vec3(plane_normal, "normal")
         self.width_mm = require_positive(self.width_mm, "width_mm")
         self.height_mm = require_positive(self.height_mm, "height_mm")
         self.resolution = int_pair_from(self.resolution, "resolution")
@@ -252,6 +346,22 @@ class ReceiverSpec:
         self.acceptance_angle_deg = float(self.acceptance_angle_deg)
         if self.acceptance_angle_deg <= 0.0 or self.acceptance_angle_deg > 180.0:
             raise ValueError("acceptance_angle_deg must be within (0, 180]")
+        self.reference_vertex_indices = [int(index) for index in self.reference_vertex_indices]
+        self.reference_edge_vertex_indices = [
+            (int(edge[0]), int(edge[1])) for edge in self.reference_edge_vertex_indices
+        ]
+        if self.view_distance_mm is not None:
+            self.view_distance_mm = require_positive(self.view_distance_mm, "view_distance_mm")
+        if self.base_center is not None:
+            self.base_center = vec3_from(self.base_center, "base_center")
+        if self.base_u_axis is not None:
+            self.base_u_axis = normalize_vec3(self.base_u_axis, "base_u_axis")
+        if self.base_v_axis is not None:
+            self.base_v_axis = normalize_vec3(self.base_v_axis, "base_v_axis")
+        if self.base_normal is not None:
+            self.base_normal = normalize_vec3(self.base_normal, "base_normal")
+        self.position_offset_mm = vec3_from(self.position_offset_mm, "position_offset_mm")
+        self.tilt_xyz_deg = vec3_from(self.tilt_xyz_deg, "tilt_xyz_deg")
 
     def bin_area_mm2(self) -> float:
         column_count, row_count = self.resolution
@@ -280,13 +390,11 @@ class OpticalProfile:
 
     def __post_init__(self) -> None:
         self.reflectance = clamp(float(self.reflectance), 0.0, 1.0)
-        if self.absorption is None:
-            self.absorption = 1.0 - self.reflectance
-        self.absorption = clamp(float(self.absorption), 0.0, 1.0)
-        self.specular_ratio = clamp(float(self.specular_ratio), 0.0, 1.0)
-        self.diffuse_ratio = clamp(float(self.diffuse_ratio), 0.0, 1.0)
+        self.absorption = 1.0 - self.reflectance
+        self.specular_ratio = max(0.0, float(self.specular_ratio))
+        self.diffuse_ratio = max(0.0, float(self.diffuse_ratio))
         ratio_sum = self.specular_ratio + self.diffuse_ratio
-        if ratio_sum > 1.0:
+        if ratio_sum > 0.0:
             self.specular_ratio = self.specular_ratio / ratio_sum
             self.diffuse_ratio = self.diffuse_ratio / ratio_sum
         self.scatter_model = require_choice(self.scatter_model, "scatter_model", SCATTER_MODELS)
@@ -302,6 +410,45 @@ class OpticalProfile:
 
 
 @dataclass
+class OpticalAssignment:
+    assignment_id: str
+    target_type: str
+    component_id: int
+    profile_id: str
+    face_indices: List[int] = field(default_factory=list)
+    priority: int = 0
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.target_type = require_choice(
+            str(self.target_type),
+            "target_type",
+            OPTICAL_ASSIGNMENT_TARGET_TYPES,
+        )
+        self.component_id = int(self.component_id)
+        self.profile_id = str(self.profile_id).strip()
+        if not self.profile_id:
+            raise ValueError("profile_id must not be empty")
+        self.face_indices = sorted({int(value) for value in self.face_indices})
+        self.priority = int(self.priority)
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Dict) -> "OpticalAssignment":
+        normalized = dict(payload)
+        if "component_id" not in normalized and "object_id" in normalized:
+            normalized["component_id"] = normalized.pop("object_id")
+        target_type = normalized.get("target_type")
+        if target_type == "component":
+            normalized["target_type"] = "part"
+        elif target_type == "face_override":
+            normalized["target_type"] = "faces"
+        return cls(**normalized)
+
+
+@dataclass
 class RayTraceConfig:
     ray_count: int = 10000
     max_depth: int = 1
@@ -311,6 +458,7 @@ class RayTraceConfig:
     k_abs: float = 0.12
     k_brdf: float = 1.0
     termination_mode: str = "threshold"
+    intersection_backend: str = "auto"
     store_ray_paths: bool = False
     max_stored_paths: int = 500
 
@@ -325,6 +473,11 @@ class RayTraceConfig:
         self.k_abs = require_non_negative(self.k_abs, "k_abs")
         self.k_brdf = require_non_negative(self.k_brdf, "k_brdf")
         self.termination_mode = require_choice(self.termination_mode, "termination_mode", TERMINATION_MODES)
+        self.intersection_backend = require_choice(
+            self.intersection_backend,
+            "intersection_backend",
+            INTERSECTION_BACKENDS,
+        )
         self.max_stored_paths = int(self.max_stored_paths)
         if self.max_stored_paths < 0:
             raise ValueError("max_stored_paths must be non-negative")
@@ -350,6 +503,11 @@ class RayHit:
     depth: int
     event_type: str = "surface"
     receiver_id: Optional[str] = None
+    optical_profile_id: Optional[str] = None
+    reflectance: Optional[float] = None
+    scatter_model: Optional[str] = None
+    optical_assignment_source: Optional[str] = None
+    ray_kind: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.face_index = int(self.face_index)
@@ -369,6 +527,10 @@ class RayHit:
         self.depth = int(self.depth)
         if self.depth < 0:
             raise ValueError("depth must be non-negative")
+        if self.reflectance is not None:
+            self.reflectance = clamp(float(self.reflectance), 0.0, 1.0)
+        if self.scatter_model is not None:
+            self.scatter_model = require_choice(self.scatter_model, "scatter_model", SCATTER_MODELS)
 
     def to_dict(self) -> Dict:
         return asdict(self)

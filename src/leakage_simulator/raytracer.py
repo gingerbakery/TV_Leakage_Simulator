@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import math
 import random
@@ -19,9 +19,15 @@ from .geometry import (
     clamp01,
 )
 from .types import EmitterConfig, GapRule, MaterialProfile, ReceiverMetrics, RunConfig, ReceiverPatchConfig, Vec3, fresh_run_id
-from .types import EmitterSpec, OpticalProfile, RayHit, RayTraceConfig, RayTraceResult, ReceiverGrid, ReceiverSpec
+from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayHit, RayTraceConfig, RayTraceResult, ReceiverGrid, ReceiverSpec
 from .types import SimulationOutput, RunResultSummary, random_unit_vector
 from .gap import GapSample, sample_gap_profiles
+from .optics import OpticalPropertyResolver, UNASSIGNED_PROFILE_ID
+from .reflection import ReflectionSample, sample_reflection_direction
+from .fast_sampling import (
+    iter_virtual_plane_ray_batches,
+    supports_fast_virtual_plane_sampling,
+)
 
 
 @dataclass
@@ -54,14 +60,53 @@ class DirectRayTraceInput:
     receivers: List[ReceiverSpec]
     optical_profiles: List[OpticalProfile]
     config: RayTraceConfig
-    project_name: str = "TV-Leakage-RT1"
+    project_name: str = "TV-Leakage-RT2C"
+    optical_assignments: List[OpticalAssignment] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True)
 class ReceiverFrame:
     receiver: ReceiverSpec
     u_axis: Vec3
     v_axis: Vec3
+    half_width: float
+    half_height: float
+    inverse_width: float
+    inverse_height: float
+    minimum_acceptance_cosine: float
+    columns: int
+    rows: int
+
+
+@dataclass(slots=True)
+class ReceiverHitCandidate:
+    grid: ReceiverGrid
+    row: int
+    column: int
+    received_power_lumen: float
+    point: Vec3
+    normal: Vec3
+    distance_mm: float
+    incoming_power_lumen: float
+    receiver_id: str
+    depth: int
+    ray_kind: str
+
+    def to_ray_hit(self) -> RayHit:
+        return RayHit(
+            face_index=-1,
+            component_id=None,
+            material_id=None,
+            point=self.point,
+            normal=self.normal,
+            distance_mm=self.distance_mm,
+            incoming_energy_lumen=self.incoming_power_lumen,
+            outgoing_energy_lumen=0.0,
+            depth=self.depth,
+            event_type="receiver",
+            receiver_id=self.receiver_id,
+            ray_kind=self.ray_kind,
+        )
 
 
 def run_simulation(engine_input: EngineInput) -> SimulationOutput:
@@ -132,6 +177,9 @@ def run_simulation(engine_input: EngineInput) -> SimulationOutput:
 def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
+    trace_input.mesh.set_intersection_backend(
+        trace_input.config.intersection_backend
+    )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
     receiver_grids = {
         receiver.receiver_id: ReceiverGrid.empty(receiver)
@@ -140,13 +188,40 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
     }
     stored_paths: List[List[RayHit]] = []
     total_rays = 0
+    fast_primary_ray_count = 0
+    scalar_primary_ray_count = 0
     receiver_hit_count = 0
+    surface_hit_count = 0
     terminated_ray_count = 0
+    optical_resolver = OpticalPropertyResolver(
+        trace_input.mesh,
+        trace_input.optical_profiles,
+        trace_input.optical_assignments,
+    )
+    resolved_optical_by_face = [
+        optical_resolver.resolve(face_index)
+        for face_index in range(len(trace_input.mesh.faces))
+    ]
+    optical_summary = {
+        "surface_hit_count": 0,
+        "unassigned_surface_hit_count": 0,
+        "profile_hits": {},
+    }
+    reflection_summary = _empty_reflection_summary(trace_input.config)
 
     for emitter in trace_input.emitters:
         if not emitter.enabled:
             continue
-        emitter_rng = random.Random(emitter.seed if emitter.seed is not None else rng.randint(0, 2**31 - 1))
+        emitter_seed = (
+            emitter.seed
+            if emitter.seed is not None
+            else rng.randint(0, 2**31 - 1)
+        )
+        emitter_rng = random.Random(emitter_seed ^ 0x5DEECE66D)
+        if supports_fast_virtual_plane_sampling(emitter):
+            fast_primary_ray_count += emitter.ray_count
+        else:
+            scalar_primary_ray_count += emitter.ray_count
         face_weights = _build_emitter_face_weights(trace_input.mesh, emitter.face_indices) if emitter.emitter_type == "face" else []
         if emitter.emitter_type == "face":
             emitter_area_mm2 = sum(
@@ -155,25 +230,31 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
                 if 0 <= face_index < len(trace_input.mesh.faces)
             )
         else:
-            emitter_area_mm2 = float(emitter.width_mm or 0.0) * float(emitter.height_mm or 0.0)
+            emitter_area_mm2 = emitter.virtual_area_mm2()
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
-        for _ in range(emitter.ray_count):
+        for ray in _iter_primary_emitter_rays(
+            trace_input.mesh,
+            emitter,
+            face_weights,
+            emitter_rng,
+            emitter_seed,
+            trace_input.config.epsilon_mm,
+        ):
             total_rays += 1
-            if emitter.emitter_type == "face":
-                ray = _sample_face_emitter_ray(
-                    trace_input.mesh,
-                    emitter,
-                    face_weights,
-                    emitter_rng,
-                    trace_input.config.epsilon_mm,
-                )
-            else:
-                ray = _sample_virtual_plane_emitter_ray(emitter, emitter_rng, trace_input.config.epsilon_mm)
             if ray is None:
                 terminated_ray_count += 1
                 continue
             origin, direction, source_face = ray
-            hit = _first_receiver_hit(
+            store_path = (
+                trace_input.config.store_ray_paths
+                and len(stored_paths) < trace_input.config.max_stored_paths
+            )
+            emitter_event = (
+                _emitter_ray_hit(source_face, origin, direction, ray_power)
+                if store_path
+                else None
+            )
+            receiver_candidate = _find_first_receiver_hit(
                 origin=origin,
                 direction=direction,
                 power_lumen=ray_power,
@@ -182,17 +263,172 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
                 grids=receiver_grids,
                 config=trace_input.config,
             )
-            if hit is None:
+            receiver_distance = (
+                receiver_candidate.distance_mm
+                if receiver_candidate is not None
+                else None
+            )
+            surface_hit = trace_input.mesh.intersect_ray(
+                origin,
+                direction,
+                ignore_face=source_face if source_face >= 0 else None,
+                min_t=trace_input.config.epsilon_mm,
+                max_t=receiver_distance,
+            )
+            if surface_hit is not None:
+                surface_hit_count += 1
+                resolved_optical = resolved_optical_by_face[surface_hit.face_index]
+                reflected_power = ray_power * resolved_optical.profile.reflectance
+                reflection_summary["primary_surface_hit_count"] += 1
+                _record_optical_summary(
+                    optical_summary,
+                    resolved_optical.profile,
+                    resolved_optical.source,
+                    ray_power,
+                    reflected_power,
+                )
+                reflection_sample = _prepare_reflection_sample(
+                    emitter_rng,
+                    direction,
+                    surface_hit.normal,
+                    reflected_power,
+                    resolved_optical.profile,
+                    trace_input.config,
+                    reflection_summary,
+                )
+                path_events: List[RayHit] = []
+                if store_path and emitter_event is not None:
+                    path_events = [
+                        emitter_event,
+                        _surface_ray_hit(
+                            trace_input.mesh,
+                            surface_hit.face_index,
+                            surface_hit.point,
+                            surface_hit.normal,
+                            surface_hit.t,
+                            ray_power,
+                            reflected_power,
+                            depth=0,
+                            optical_profile=resolved_optical.profile,
+                            optical_source=resolved_optical.source,
+                            ray_kind=reflection_sample.lobe if reflection_sample is not None else None,
+                        ),
+                    ]
+                if reflection_sample is None:
+                    terminated_ray_count += 1
+                    if store_path:
+                        stored_paths.append(path_events)
+                    continue
+
+                _record_reflection_emission(
+                    reflection_summary,
+                    reflection_sample,
+                    reflected_power,
+                )
+                reflected_origin = vec_add(
+                    surface_hit.point,
+                    vec_mul(surface_hit.normal, trace_input.config.epsilon_mm),
+                )
+                reflected_receiver = _find_first_receiver_hit(
+                    origin=reflected_origin,
+                    direction=reflection_sample.direction,
+                    power_lumen=reflected_power,
+                    source_face=surface_hit.face_index,
+                    receivers=receiver_frames,
+                    grids=receiver_grids,
+                    config=trace_input.config,
+                    depth=1,
+                    ray_kind=reflection_sample.lobe,
+                )
+                reflected_receiver_distance = (
+                    reflected_receiver.distance_mm
+                    if reflected_receiver is not None
+                    else None
+                )
+                secondary_surface_hit = trace_input.mesh.intersect_ray(
+                    reflected_origin,
+                    reflection_sample.direction,
+                    ignore_face=surface_hit.face_index,
+                    min_t=trace_input.config.epsilon_mm,
+                    max_t=reflected_receiver_distance,
+                )
+                if secondary_surface_hit is not None:
+                    surface_hit_count += 1
+                    terminated_ray_count += 1
+                    _record_reflection_outcome(
+                        reflection_summary,
+                        reflection_sample.lobe,
+                        "blocked",
+                    )
+                    if store_path:
+                        path_events.append(
+                            _surface_ray_hit(
+                                trace_input.mesh,
+                                secondary_surface_hit.face_index,
+                                secondary_surface_hit.point,
+                                secondary_surface_hit.normal,
+                                secondary_surface_hit.t,
+                                reflected_power,
+                                0.0,
+                                depth=1,
+                                ray_kind=reflection_sample.lobe,
+                            )
+                        )
+                        stored_paths.append(path_events)
+                    continue
+                if reflected_receiver is not None:
+                    _record_receiver_hit(reflected_receiver)
+                    receiver_hit_count += 1
+                    _record_reflection_outcome(
+                        reflection_summary,
+                        reflection_sample.lobe,
+                        "receiver",
+                        reflected_receiver.received_power_lumen,
+                    )
+                    if store_path:
+                        path_events.append(reflected_receiver.to_ray_hit())
+                        stored_paths.append(path_events)
+                    continue
+                terminated_ray_count += 1
+                _record_reflection_outcome(
+                    reflection_summary,
+                    reflection_sample.lobe,
+                    "escaped",
+                )
+                if store_path:
+                    stored_paths.append(path_events)
+                continue
+            if receiver_candidate is None:
                 terminated_ray_count += 1
                 continue
+            _record_receiver_hit(receiver_candidate)
             receiver_hit_count += 1
-            if trace_input.config.store_ray_paths and len(stored_paths) < trace_input.config.max_stored_paths:
-                stored_paths.append([hit])
+            reflection_summary["direct_receiver_hit_count"] += 1
+            reflection_summary["direct_receiver_flux_lumen"] += receiver_candidate.received_power_lumen
+            if store_path and emitter_event is not None:
+                stored_paths.append([emitter_event, receiver_candidate.to_ray_hit()])
 
     grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
     metrics = _build_direct_metrics(grids, trace_input.config)
+    metrics["_optical_summary"] = optical_summary
+    metrics["_reflection_summary"] = reflection_summary
+    runtime_sec = time.time() - start_time
+    acceleration_info = trace_input.mesh.acceleration_info()
+    metrics["_performance_summary"] = {
+        "backend": "python_numpy_cpu",
+        "intersection_backend": acceleration_info["selected_backend"],
+        "configured_intersection_backend": acceleration_info["configured_backend"],
+        "bvh_node_count": acceleration_info["bvh_node_count"],
+        "bvh_leaf_count": acceleration_info["bvh_leaf_count"],
+        "bvh_build_sec": acceleration_info["bvh_build_sec"],
+        "fast_primary_ray_count": fast_primary_ray_count,
+        "scalar_primary_ray_count": scalar_primary_ray_count,
+        "resolved_optical_face_cache_count": len(resolved_optical_by_face),
+        "stored_path_count": len(stored_paths),
+        "rays_per_sec": total_rays / runtime_sec if runtime_sec > 0.0 else 0.0,
+    }
     return RayTraceResult(
-        run_id=fresh_run_id("rt1"),
+        run_id=fresh_run_id("rt2c"),
         config=trace_input.config,
         emitters=trace_input.emitters,
         receivers=trace_input.receivers,
@@ -200,22 +436,240 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
         optical_profiles=trace_input.optical_profiles,
         total_rays=total_rays,
         receiver_hit_count=receiver_hit_count,
-        surface_hit_count=0,
+        surface_hit_count=surface_hit_count,
         terminated_ray_count=terminated_ray_count,
-        runtime_sec=time.time() - start_time,
+        runtime_sec=runtime_sec,
         stored_paths=stored_paths,
         metrics=metrics,
     )
 
 
+def _iter_primary_emitter_rays(
+    mesh: TriangleMesh,
+    emitter: EmitterSpec,
+    face_weights: List[Tuple[int, float]],
+    rng: random.Random,
+    seed: int,
+    epsilon_mm: float,
+):
+    if supports_fast_virtual_plane_sampling(emitter):
+        for origin_batch, direction_batch in iter_virtual_plane_ray_batches(
+            emitter,
+            epsilon_mm,
+            seed,
+        ):
+            for index in range(len(origin_batch)):
+                origin_values = origin_batch[index]
+                direction_values = direction_batch[index]
+                yield (
+                    (
+                        float(origin_values[0]),
+                        float(origin_values[1]),
+                        float(origin_values[2]),
+                    ),
+                    (
+                        float(direction_values[0]),
+                        float(direction_values[1]),
+                        float(direction_values[2]),
+                    ),
+                    -1,
+                )
+        return
+    for _ in range(emitter.ray_count):
+        if emitter.emitter_type == "face":
+            yield _sample_face_emitter_ray(
+                mesh,
+                emitter,
+                face_weights,
+                rng,
+                epsilon_mm,
+            )
+        else:
+            yield _sample_virtual_plane_emitter_ray(
+                emitter,
+                rng,
+                epsilon_mm,
+            )
+
+
+def _empty_reflection_summary(config: RayTraceConfig) -> Dict:
+    return {
+        "enabled": config.max_depth >= 1,
+        "implemented_max_depth": min(config.max_depth, 1),
+        "primary_surface_hit_count": 0,
+        "reflection_attempt_count": 0,
+        "reflection_emitted_count": 0,
+        "reflection_receiver_hit_count": 0,
+        "reflection_blocked_count": 0,
+        "reflection_escaped_count": 0,
+        "reflection_below_energy_count": 0,
+        "reflection_disabled_count": 0,
+        "direct_receiver_hit_count": 0,
+        "direct_receiver_flux_lumen": 0.0,
+        "reflected_receiver_flux_lumen": 0.0,
+        "lobes": {
+            lobe: {
+                "emitted_count": 0,
+                "emitted_flux_lumen": 0.0,
+                "receiver_hit_count": 0,
+                "receiver_flux_lumen": 0.0,
+                "blocked_count": 0,
+                "escaped_count": 0,
+            }
+            for lobe in ("specular", "lambertian", "gaussian")
+        },
+    }
+
+
+def _prepare_reflection_sample(
+    rng: random.Random,
+    incoming: Vec3,
+    normal: Vec3,
+    reflected_power_lumen: float,
+    profile: OpticalProfile,
+    config: RayTraceConfig,
+    summary: Dict,
+) -> Optional[ReflectionSample]:
+    if config.max_depth < 1:
+        summary["reflection_disabled_count"] += 1
+        return None
+    summary["reflection_attempt_count"] += 1
+    if reflected_power_lumen < config.min_energy:
+        summary["reflection_below_energy_count"] += 1
+        return None
+    reflection_sample = sample_reflection_direction(rng, incoming, normal, profile)
+    if reflection_sample is None:
+        summary["reflection_disabled_count"] += 1
+    return reflection_sample
+
+
+def _record_reflection_emission(
+    summary: Dict,
+    reflection_sample: ReflectionSample,
+    reflected_power_lumen: float,
+) -> None:
+    summary["reflection_emitted_count"] += 1
+    lobe_summary = summary["lobes"][reflection_sample.lobe]
+    lobe_summary["emitted_count"] += 1
+    lobe_summary["emitted_flux_lumen"] += reflected_power_lumen
+
+
+def _record_reflection_outcome(
+    summary: Dict,
+    lobe: str,
+    outcome: str,
+    received_power_lumen: float = 0.0,
+) -> None:
+    lobe_summary = summary["lobes"][lobe]
+    if outcome == "receiver":
+        summary["reflection_receiver_hit_count"] += 1
+        summary["reflected_receiver_flux_lumen"] += received_power_lumen
+        lobe_summary["receiver_hit_count"] += 1
+        lobe_summary["receiver_flux_lumen"] += received_power_lumen
+    elif outcome == "blocked":
+        summary["reflection_blocked_count"] += 1
+        lobe_summary["blocked_count"] += 1
+    else:
+        summary["reflection_escaped_count"] += 1
+        lobe_summary["escaped_count"] += 1
+
+
+def _surface_ray_hit(
+    mesh: TriangleMesh,
+    face_index: int,
+    point: Vec3,
+    normal: Vec3,
+    distance_mm: float,
+    incoming_power_lumen: float,
+    outgoing_power_lumen: float,
+    depth: int,
+    optical_profile: Optional[OpticalProfile] = None,
+    optical_source: Optional[str] = None,
+    ray_kind: Optional[str] = None,
+) -> RayHit:
+    metadata = mesh.metadata(face_index)
+    component_id = metadata.get("component_id")
+    return RayHit(
+        face_index=face_index,
+        component_id=int(component_id) if component_id is not None else None,
+        material_id=mesh.material_id(face_index) or None,
+        point=point,
+        normal=normal,
+        distance_mm=distance_mm,
+        incoming_energy_lumen=incoming_power_lumen,
+        outgoing_energy_lumen=outgoing_power_lumen,
+        depth=depth,
+        event_type="surface",
+        optical_profile_id=optical_profile.profile_id if optical_profile is not None else None,
+        reflectance=optical_profile.reflectance if optical_profile is not None else None,
+        scatter_model=optical_profile.scatter_model if optical_profile is not None else None,
+        optical_assignment_source=optical_source,
+        ray_kind=ray_kind,
+    )
+
+
+def _record_optical_summary(
+    summary: Dict,
+    profile: OpticalProfile,
+    source: str,
+    incoming_power_lumen: float,
+    reflected_power_lumen: float,
+) -> None:
+    summary["surface_hit_count"] += 1
+    if profile.profile_id == UNASSIGNED_PROFILE_ID:
+        summary["unassigned_surface_hit_count"] += 1
+    profile_hits = summary["profile_hits"]
+    entry = profile_hits.setdefault(
+        profile.profile_id,
+        {
+            "profile_id": profile.profile_id,
+            "source": source,
+            "hit_count": 0,
+            "reflectance": profile.reflectance,
+            "specular_ratio": profile.specular_ratio,
+            "diffuse_ratio": profile.diffuse_ratio,
+            "scatter_model": profile.scatter_model,
+            "incoming_flux_lumen": 0.0,
+            "potential_reflected_flux_lumen": 0.0,
+        },
+    )
+    entry["hit_count"] += 1
+    entry["incoming_flux_lumen"] += incoming_power_lumen
+    entry["potential_reflected_flux_lumen"] += reflected_power_lumen
+
+
 def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
+    columns, rows = receiver.resolution
+    frame_fields = {
+        "half_width": receiver.width_mm * 0.5,
+        "half_height": receiver.height_mm * 0.5,
+        "inverse_width": 1.0 / receiver.width_mm,
+        "inverse_height": 1.0 / receiver.height_mm,
+        "minimum_acceptance_cosine": math.cos(
+            math.radians(receiver.acceptance_angle_deg)
+        ),
+        "columns": columns,
+        "rows": rows,
+    }
+    if receiver.u_axis is not None and receiver.v_axis is not None:
+        return ReceiverFrame(
+            receiver=receiver,
+            u_axis=vec_norm(receiver.u_axis),
+            v_axis=vec_norm(receiver.v_axis),
+            **frame_fields,
+        )
     normal = vec_norm(receiver.normal)
     reference = (0.0, 0.0, 1.0)
     if abs(vec_dot(normal, reference)) > 0.95:
         reference = (0.0, 1.0, 0.0)
     u_axis = vec_norm(vec_cross(reference, normal))
     v_axis = vec_norm(vec_cross(normal, u_axis))
-    return ReceiverFrame(receiver=receiver, u_axis=u_axis, v_axis=v_axis)
+    return ReceiverFrame(
+        receiver=receiver,
+        u_axis=u_axis,
+        v_axis=v_axis,
+        **frame_fields,
+    )
 
 
 def _build_emitter_face_weights(mesh: TriangleMesh, face_indices: List[int]) -> List[Tuple[int, float]]:
@@ -293,15 +747,52 @@ def _sample_virtual_plane_emitter_ray(
     normal = vec_norm(vec_cross(u_axis, v_axis))
     if emitter.normal_flip:
         normal = vec_mul(normal, -1.0)
-    u_offset = (rng.random() - 0.5) * emitter.width_mm
-    v_offset = (rng.random() - 0.5) * emitter.height_mm
-    point = vec_add(
-        emitter.center,
-        vec_add(vec_mul(u_axis, u_offset), vec_mul(v_axis, v_offset)),
-    )
+    if emitter.surface_construction == "polygon_auto" and len(emitter.polygon_vertices) >= 3:
+        point = _sample_polygon_point(emitter.polygon_vertices, rng)
+        if point is None:
+            return None
+    else:
+        u_offset = (rng.random() - 0.5) * emitter.width_mm
+        v_offset = (rng.random() - 0.5) * emitter.height_mm
+        point = vec_add(
+            emitter.center,
+            vec_add(vec_mul(u_axis, u_offset), vec_mul(v_axis, v_offset)),
+        )
     direction = _sample_emitter_direction(rng, emitter, normal)
     origin = vec_add(point, vec_mul(normal, epsilon_mm))
     return origin, direction, -1
+
+
+def _sample_polygon_point(vertices: List[Vec3], rng: random.Random) -> Optional[Vec3]:
+    origin = vertices[0]
+    weighted_triangles: List[Tuple[Vec3, Vec3, float]] = []
+    total_area = 0.0
+    for index in range(1, len(vertices) - 1):
+        first = vertices[index]
+        second = vertices[index + 1]
+        cross = vec_cross(vec_add(first, vec_mul(origin, -1.0)), vec_add(second, vec_mul(origin, -1.0)))
+        area = 0.5 * math.sqrt(vec_dot(cross, cross))
+        if area <= 1e-12:
+            continue
+        total_area += area
+        weighted_triangles.append((first, second, total_area))
+    if total_area <= 1e-12:
+        return None
+    target = rng.random() * total_area
+    first, second, _ = weighted_triangles[-1]
+    for triangle_first, triangle_second, cumulative_area in weighted_triangles:
+        if target <= cumulative_area:
+            first, second = triangle_first, triangle_second
+            break
+    root = math.sqrt(rng.random())
+    second_weight = root * rng.random()
+    first_weight = root - second_weight
+    origin_weight = 1.0 - root
+    return (
+        origin_weight * origin[0] + first_weight * first[0] + second_weight * second[0],
+        origin_weight * origin[1] + first_weight * first[1] + second_weight * second[1],
+        origin_weight * origin[2] + first_weight * first[2] + second_weight * second[2],
+    )
 
 
 def _sample_emitter_direction(rng: random.Random, emitter: EmitterSpec, normal: Vec3) -> Vec3:
@@ -353,7 +844,23 @@ def _sample_gaussian_cone(rng: random.Random, normal: Vec3, sigma_deg: float) ->
     return vec_norm(direction)
 
 
-def _first_receiver_hit(
+def _emitter_ray_hit(source_face: int, origin: Vec3, direction: Vec3, power_lumen: float) -> RayHit:
+    return RayHit(
+        face_index=source_face,
+        component_id=None,
+        material_id=None,
+        point=origin,
+        normal=direction,
+        distance_mm=0.0,
+        incoming_energy_lumen=power_lumen,
+        outgoing_energy_lumen=power_lumen,
+        depth=0,
+        event_type="emitter",
+        ray_kind="direct",
+    )
+
+
+def _find_first_receiver_hit(
     origin: Vec3,
     direction: Vec3,
     power_lumen: float,
@@ -361,56 +868,96 @@ def _first_receiver_hit(
     receivers: List[ReceiverFrame],
     grids: Dict[str, ReceiverGrid],
     config: RayTraceConfig,
-) -> Optional[RayHit]:
-    best_hit: Optional[RayHit] = None
-    best_grid_cell: Optional[Tuple[ReceiverGrid, int, int, float]] = None
+    depth: int = 0,
+    ray_kind: str = "direct",
+) -> Optional[ReceiverHitCandidate]:
+    best_candidate: Optional[ReceiverHitCandidate] = None
+    best_distance = float("inf")
+    origin_x, origin_y, origin_z = origin
+    direction_x, direction_y, direction_z = direction
     for frame in receivers:
         receiver = frame.receiver
-        denom = vec_dot(direction, receiver.normal)
+        normal_x, normal_y, normal_z = receiver.normal
+        denom = (
+            direction_x * normal_x
+            + direction_y * normal_y
+            + direction_z * normal_z
+        )
         if abs(denom) < 1e-12:
             continue
-        t = vec_dot(vec_sub(receiver.center, origin), receiver.normal) / denom
+        center_x, center_y, center_z = receiver.center
+        t = (
+            (center_x - origin_x) * normal_x
+            + (center_y - origin_y) * normal_y
+            + (center_z - origin_z) * normal_z
+        ) / denom
         if t <= config.epsilon_mm:
             continue
-        point = vec_add(origin, vec_mul(direction, t))
-        local = vec_sub(point, receiver.center)
-        u = vec_dot(local, frame.u_axis)
-        v = vec_dot(local, frame.v_axis)
-        half_width = receiver.width_mm * 0.5
-        half_height = receiver.height_mm * 0.5
-        if u < -half_width or u > half_width or v < -half_height or v > half_height:
+        if t >= best_distance:
             continue
-        cos_accept = max(0.0, -vec_dot(direction, receiver.normal))
-        min_cos = math.cos(math.radians(receiver.acceptance_angle_deg))
-        if cos_accept < min_cos:
+        point_x = origin_x + direction_x * t
+        point_y = origin_y + direction_y * t
+        point_z = origin_z + direction_z * t
+        local_x = point_x - center_x
+        local_y = point_y - center_y
+        local_z = point_z - center_z
+        u_axis_x, u_axis_y, u_axis_z = frame.u_axis
+        v_axis_x, v_axis_y, v_axis_z = frame.v_axis
+        u = local_x * u_axis_x + local_y * u_axis_y + local_z * u_axis_z
+        v = local_x * v_axis_x + local_y * v_axis_y + local_z * v_axis_z
+        if (
+            u < -frame.half_width
+            or u > frame.half_width
+            or v < -frame.half_height
+            or v > frame.half_height
+        ):
             continue
-        if best_hit is not None and t >= best_hit.distance_mm:
+        cos_accept = max(
+            0.0,
+            -(
+                direction_x * normal_x
+                + direction_y * normal_y
+                + direction_z * normal_z
+            ),
+        )
+        if cos_accept < frame.minimum_acceptance_cosine:
             continue
-        columns, rows = receiver.resolution
-        col = min(columns - 1, max(0, int(((u + half_width) / receiver.width_mm) * columns)))
-        row = min(rows - 1, max(0, int(((v + half_height) / receiver.height_mm) * rows)))
+        col = min(
+            frame.columns - 1,
+            max(
+                0,
+                int((u + frame.half_width) * frame.inverse_width * frame.columns),
+            ),
+        )
+        row = min(
+            frame.rows - 1,
+            max(
+                0,
+                int((v + frame.half_height) * frame.inverse_height * frame.rows),
+            ),
+        )
         received_power = power_lumen * cos_accept
-        best_hit = RayHit(
-            face_index=-1,
-            component_id=None,
-            material_id=None,
-            point=point,
+        best_distance = t
+        best_candidate = ReceiverHitCandidate(
+            grid=grids[receiver.receiver_id],
+            row=row,
+            column=col,
+            received_power_lumen=received_power,
+            point=(point_x, point_y, point_z),
             normal=receiver.normal,
             distance_mm=t,
-            incoming_energy_lumen=power_lumen,
-            outgoing_energy_lumen=0.0,
-            depth=0,
-            event_type="receiver",
+            incoming_power_lumen=power_lumen,
             receiver_id=receiver.receiver_id,
+            depth=depth,
+            ray_kind=ray_kind,
         )
-        best_grid_cell = (grids[receiver.receiver_id], row, col, received_power)
 
-    if best_hit is None or best_grid_cell is None:
-        return None
-    grid, row, col, received_power = best_grid_cell
-    grid.flux_lumen[row][col] += received_power
-    grid.hit_count += 1
-    return best_hit
+    return best_candidate
+
+
+def _record_receiver_hit(candidate: ReceiverHitCandidate) -> None:
+    candidate.grid.flux_lumen[candidate.row][candidate.column] += candidate.received_power_lumen
+    candidate.grid.hit_count += 1
 
 
 def _build_direct_metrics(grids: List[ReceiverGrid], config: RayTraceConfig) -> Dict[str, Dict[str, float]]:

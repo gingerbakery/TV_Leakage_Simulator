@@ -259,6 +259,10 @@ RT-1 구현 상태:
 - rectangular receiver plane intersection 추가
 - receiver grid bin별 `flux_lumen` 누적 추가
 - receiver별 `peak_nit_est`, `mean_nit_est`, `p95_nit_est`, `total_flux_lumen`, `hit_count` metrics 추가
+- Web UI의 Emitter/Receiver 계약을 `/api/raytrace/direct` 실행 API에 연결
+- scene token cache를 사용하여 큰 CAD mesh를 매 실행마다 브라우저에서 재전송하지 않도록 구성
+- 적용된 component move/tilt를 direct trace용 triangle mesh에 반영
+- Receiver heatmap, 밝기 지표와 hit ray path를 Result/3D viewer에 표시
 
 RT-1 한계:
 - 반사/산란 후 재추적은 아직 수행하지 않는다.
@@ -266,22 +270,45 @@ RT-1 한계:
 - optical property는 결과 계약에 포함되지만 direct hit 감쇄에는 아직 사용하지 않는다.
 - 이 한계는 `RT-2: 1회 반사와 optical property`에서 해소한다.
 
-### Phase RT-2: 1회 반사와 optical property
-목표:
-- ray-triangle intersection을 추가한다.
-- hit surface의 reflectance/scatter model에 따라 1회 반사를 계산한다.
+### Phase RT-2: 차폐와 1회 반사
+정확도와 회귀 검증을 유지하기 위해 다음 네 단계로 분리한다.
 
-구현:
-- Möller-Trumbore intersection
-- specular reflection
-- lambertian diffuse scattering
-- gaussian scattering
-- material assignment lookup
+#### RT-2A: CAD 차폐 판정
+- 각 ray에서 가장 가까운 Receiver 교차 거리와 CAD surface 교차 거리를 비교한다.
+- CAD가 먼저 맞으면 해당 ray를 차단하고 Receiver flux에 누적하지 않는다.
+- 차단 surface의 face/component/material ID를 ray path에 기록한다.
+- 실제 CAD 반복 계산을 위해 lazy BVH 가속을 함께 적용한다.
+- 상태: 구현 및 합성 회귀 검증 완료.
+
+#### RT-2B: 최초 충돌 optical property 조회
+- hit face의 Part Assignment와 Face Override를 해석한다.
+- 최종 `OpticalProfile`과 reflectance/absorption 값을 ray event에 기록한다.
+- 반사 가능 광량을 `Phi_reflected = Phi_incoming * reflectance`로 계산한다.
+- 반사되지 않은 나머지는 투과시키지 않고 해당 surface에서 종료한다.
+- 적용 우선순위는 `Face Override > Part Assignment > CAD material ID > default > 안전 종료`이다.
+- 상태: 구현 및 합성 회귀 검증 완료.
+- 주의: RT-2B의 `outgoing_energy_lumen`은 반사 가능한 에너지 예산이다. 실제 반사/산란 방향 ray 생성은 RT-2C에서 수행한다.
+
+#### RT-2C: 1회 반사/산란
+- specular reflection, Lambertian diffuse, Gaussian scattering을 지원한다.
+- hit energy에 reflectance와 specular/diffuse 비율을 적용한다.
+- 최초 충돌 후 생성한 반사 ray에 대해 Receiver와 다음 CAD surface 중 가까운 교차를 다시 판정한다.
+- `max_depth=0`은 RT-2A/RT-2B 동작을 유지하고, `max_depth>=1`일 때 한 번의 반사를 수행한다.
+- `mixed` profile은 `specular_ratio` 확률로 Gaussian glossy lobe, 나머지는 Lambertian lobe를 선택한다.
+- 상태: 구현 및 합성 회귀 검증 완료.
+- 현재 제한: 두 번째 CAD surface에서 추가 반사는 생성하지 않으며 RT-3에서 확장한다.
+
+#### RT-2D: 기여도 분리와 결과 보고
+- direct/reflected flux를 분리한다.
+- component별 차폐/반사/Receiver 기여도를 집계한다.
+- 3D ray path와 결과 리포트에서 direct/blocked/reflected를 구분한다.
 
 검증:
-- reflectance가 낮으면 receiver 누적량이 감소해야 한다.
+- 완전 차폐판은 direct Receiver hit를 0으로 만들어야 한다.
+- 기하 gap이 생기면 gap을 통과한 ray만 Receiver에 도달해야 한다.
+- reflectance가 낮으면 reflected Receiver 누적량이 감소해야 한다.
 - specular_ratio가 높으면 특정 방향 집중도가 증가해야 한다.
-- lambertian은 더 넓게 퍼져야 한다.
+- Lambertian은 더 넓게 퍼져야 한다.
 
 ### Phase RT-3: 다중 bounce와 termination
 목표:
@@ -339,6 +366,16 @@ UI 항목:
 - A/B delta map
 - 설계 변경 전후 `peak/mean/p95 nit_est`
 
+### V2 표면 광학 고도화 게이트
+- V1의 `Specular + Gaussian + Lambertian` 모델과 실측 결과의 차이를 평가한다.
+- V2 진입 시 `docs/v2-advanced-surface-models.md`를 반드시 검토한다.
+- 후보 모델:
+  - 거친 diffuse: Oren–Nayar
+  - 입사각/거칠기 의존 glossy: Fresnel + Microfacet GGX/Beckmann
+  - 방향성 표면: Anisotropic Gaussian/GGX
+  - 역반사·비대칭 표면: Retroreflective lobe 또는 측정 BSDF
+- 모델 추가는 실측 오차가 설계안 우열 또는 절대 밝기 정합에 영향을 주는 경우에만 우선 적용한다.
+
 ## 파일 구조 제안
 
 초기에는 기존 파일을 활용한다.
@@ -366,8 +403,9 @@ src/leakage_simulator/raytracing/
 1. `Phase RT-0` 데이터 구조를 `types.py`에 추가한다. `[완료]`
 2. synthetic plane emitter/receiver 테스트를 만든다. `[완료]`
 3. direct ray hit 기반 receiver heatmap을 JSON/CSV로 출력한다. `[부분 완료: ReceiverGrid/metrics in-memory 출력]`
-4. Web UI의 Ray tracing 메뉴에 최소 입력값을 연결한다.
-5. 그 다음 material reflectance와 1회 반사를 붙인다.
+4. Web UI의 Ray tracing 메뉴에 최소 입력값을 연결한다. `[완료]`
+5. material reflectance와 1회 반사를 붙인다. `[완료: RT-2B/RT-2C]`
+6. direct/reflected/component 기여도와 결과 보고를 분리한다. `[다음 단계: RT-2D]`
 
 ## 보류 항목
 - 분광/색온도/색좌표
@@ -381,4 +419,22 @@ src/leakage_simulator/raytracing/
 - V1은 파이썬 자체 ray tracing으로 시작한다.
 - 정확도 검증을 위해 알고리즘을 투명하게 유지한다.
 - 속도 병목이 확인된 지점에만 BVH/NumPy/Numba/Open3D 같은 가속을 붙인다.
-- 다음 실제 개발 단계는 `Phase RT-2: 1회 반사 + optical property` 또는 `RT-1 UI 연결`이다.
+- RT-1 direct 실행과 UI 연결까지 완료했다.
+- `RT-2A: CAD 차폐 판정`까지 완료했다.
+- `RT-2B: optical property 조회`와 `RT-2C: 1회 반사/산란`까지 완료했다.
+- `PERF-1: Python hot path 최적화`까지 완료했다.
+- 다음 성능 단계는 `PERF-2: 실제 CAD intersection 가속`이다.
+## 성능 가속 상태
+
+### PERF-1 완료
+- 가상 평면 광원 NumPy batch sampling
+- 제한된 표시 path에만 ray event 객체 생성
+- receiver 판정 상수 사전 계산
+- face별 optical property 사전 캐시
+- Specular/Gaussian/Lambertian 수치 계산 hot path 단순화
+- Gaussian 1,000,000 ray synthetic benchmark: `22.980초`
+
+### 다음 단계
+- PERF-2 flat BVH 기반 CAD triangle 교차 가속을 완료했다.
+- 다음은 실제 회사 TV ROI 도면의 end-to-end 성능 측정과 RT-2D 결과 분해다.
+- 상세 정책과 CPU/GPU fallback은 `docs/performance-acceleration-plan.md`에서 관리한다.
