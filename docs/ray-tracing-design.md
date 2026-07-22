@@ -451,3 +451,9 @@ src/leakage_simulator/raytracing/
 - 상세 보고서: `docs/perf3a-report.md`
 - 다음은 실제 회사 TV ROI 도면의 end-to-end 성능 측정과 RT-2D 결과 분해다.
 - 상세 정책과 CPU/GPU fallback은 `docs/performance-acceleration-plan.md`에서 관리한다.
+
+## 비동기 실행 및 진행률
+- Web UI는 `POST /api/raytrace/start`로 계산 job을 시작하고 `GET /api/raytrace/status`를 주기적으로 조회한다.
+- Ray tracer는 실제 처리 ray 수를 progress callback으로 보고한다.
+- Web UI ETA는 누적 처리 속도를 기준으로 계산하므로 geometry와 반사 depth에 따라 실행 중 계속 보정된다.
+- 동기식 `POST /api/raytrace/direct`는 테스트와 기존 연동 호환을 위해 유지한다.

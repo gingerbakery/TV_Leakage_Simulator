@@ -61,6 +61,10 @@
 - 3D ray path는 surface와 Receiver event의 bounce depth를 유지한다.
 - Web UI `v0.9.13`부터 `Fast summary`와 `Detailed contribution` 결과 모드를 선택한다.
 - 일반 반복 계산은 Fast summary, 부품·면·소재별 원인 분석은 Detailed contribution을 사용한다.
+- Web UI `v0.9.14`부터 왼쪽 `Result` 메뉴에서 저장 광선을 유형별로 표시하거나 숨긴다.
+- 기본값은 Receiver 도달, Direct, Specular, Lambertian, Gaussian 경로를 모두 표시하며, 체크박스를 해제한 유형만 3D Viewer에서 숨긴다.
+- Web UI `v0.9.15`부터 Receiver 도달 경로를 `Direct`와 `반사광`으로 분리해 표시한다.
+- Ray tracing 실행 중 실제 처리 ray 수 기반 진행률, 경과 시간, 예상 남은 시간을 게이지로 표시한다.
 
 ## Three.js 전환
 - 3D viewer는 `docs/viewer-data-contract.md`의 `mesh-scene.v1`을 기준으로 단계 전환한다.

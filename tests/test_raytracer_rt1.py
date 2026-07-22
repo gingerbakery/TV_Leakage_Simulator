@@ -143,6 +143,46 @@ class RayTracerRT1Tests(unittest.TestCase):
         self.assertEqual(result.receiver_hit_count, 0)
         self.assertEqual(result.metrics["back_receiver"]["peak_nit_est"], 0.0)
 
+    def test_progress_callback_reports_completed_ray_count(self) -> None:
+        mesh = build_emitter_plane()
+        emitter = EmitterSpec(
+            emitter_id="progress_source",
+            face_indices=[0, 1],
+            direction_distribution="gaussian",
+            gaussian_sigma_deg=2.0,
+            power_lumen=1.0,
+            ray_count=120,
+            seed=17,
+        )
+        receiver = ReceiverSpec(
+            receiver_id="progress_receiver",
+            center=(0.0, 0.0, 20.0),
+            normal=(0.0, 0.0, -1.0),
+            width_mm=80.0,
+            height_mm=80.0,
+            resolution=(8, 8),
+        )
+        progress_events = []
+
+        result = run_direct_ray_trace(
+            DirectRayTraceInput(
+                mesh=mesh,
+                emitters=[emitter],
+                receivers=[receiver],
+                optical_profiles=[OpticalProfile(profile_id="default", reflectance=0.08)],
+                config=RayTraceConfig(ray_count=120, max_depth=0, seed=29),
+            ),
+            progress_callback=lambda processed, total: progress_events.append((processed, total)),
+        )
+
+        self.assertEqual(result.total_rays, 120)
+        self.assertGreaterEqual(len(progress_events), 2)
+        self.assertEqual(progress_events[0], (0, 120))
+        self.assertEqual(progress_events[-1], (120, 120))
+        self.assertTrue(
+            all(left[0] <= right[0] for left, right in zip(progress_events, progress_events[1:]))
+        )
+
     def test_datum_plane_emitter_hits_receiver(self) -> None:
         mesh = build_emitter_plane()
         emitter = EmitterSpec(

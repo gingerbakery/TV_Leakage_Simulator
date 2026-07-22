@@ -76,6 +76,59 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(trace_input.optical_profiles[0].profile_id, "part_profile")
         self.assertEqual(trace_input.optical_assignments[0].component_id, 7)
 
+    def test_excluded_component_is_removed_from_direct_mesh(self) -> None:
+        scene_mesh = {
+            "vertices": [
+                [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                [0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0],
+            ],
+            "faces": [[0, 1, 2], [3, 4, 5]],
+            "face_component_ids": [7, 8],
+            "face_material_ids": ["deleted", "kept"],
+            "face_centroids": [[1.0 / 3.0, 1.0 / 3.0, 0.0], [1.0 / 3.0, 1.0 / 3.0, 2.0]],
+        }
+
+        mesh = build_transformed_mesh(scene_mesh, [], excluded_component_ids=[7])
+
+        self.assertEqual(len(mesh.faces), 1)
+        self.assertEqual(mesh.metadata(0)["source_face_index"], 1)
+        self.assertEqual(mesh.metadata(0)["component_id"], 8)
+        self.assertEqual(mesh.material_id(0), "kept")
+
+    def test_face_emitter_is_remapped_after_component_deletion(self) -> None:
+        scene_mesh = {
+            "vertices": [
+                [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                [0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0],
+            ],
+            "faces": [[0, 1, 2], [3, 4, 5]],
+            "face_component_ids": [7, 8],
+            "face_material_ids": ["deleted", "kept"],
+            "face_centroids": [[1.0 / 3.0, 1.0 / 3.0, 0.0], [1.0 / 3.0, 1.0 / 3.0, 2.0]],
+        }
+        trace_input = build_direct_trace_input(
+            scene_mesh,
+            {
+                "excluded_component_ids": [7],
+                "emitters": [{
+                    "emitter_id": "source",
+                    "emitter_type": "face",
+                    "face_indices": [1],
+                }],
+                "receivers": [{
+                    "receiver_id": "receiver",
+                    "center": [0, 0, 10],
+                    "normal": [0, 0, -1],
+                    "width_mm": 10,
+                    "height_mm": 10,
+                }],
+            },
+        )
+
+        self.assertEqual(len(trace_input.mesh.faces), 1)
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+        self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

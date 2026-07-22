@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import math
 
 from .geometry import TriangleMesh
@@ -12,7 +12,31 @@ def build_direct_trace_input(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
 ) -> DirectRayTraceInput:
-    emitters = [EmitterSpec.from_dict(dict(item)) for item in request_payload.get("emitters", [])]
+    mesh = build_transformed_mesh(
+        scene_mesh,
+        request_payload.get("transform_rules", []),
+        request_payload.get("excluded_component_ids", []),
+    )
+    source_to_trace_face = {
+        int(mesh.metadata(face_index).get("source_face_index", face_index)): face_index
+        for face_index in range(len(mesh.faces))
+    }
+    emitter_payloads = []
+    for item in request_payload.get("emitters", []):
+        normalized = dict(item)
+        if str(normalized.get("emitter_type") or "face") == "face":
+            source_faces = [int(face_index) for face_index in normalized.get("face_indices", [])]
+            normalized["face_indices"] = [
+                source_to_trace_face[face_index]
+                for face_index in source_faces
+                if face_index in source_to_trace_face
+            ]
+            if not normalized["face_indices"]:
+                raise ValueError(
+                    "Face emitter has no traceable faces after component deletion or Traceability Off"
+                )
+        emitter_payloads.append(normalized)
+    emitters = [EmitterSpec.from_dict(item) for item in emitter_payloads]
     receivers = [ReceiverSpec.from_dict(dict(item)) for item in request_payload.get("receivers", [])]
     if not emitters:
         raise ValueError("Direct ray tracing requires at least one emitter")
@@ -27,7 +51,7 @@ def build_direct_trace_input(
         for item in request_payload.get("optical_assignments", [])
     ]
     return DirectRayTraceInput(
-        mesh=build_transformed_mesh(scene_mesh, request_payload.get("transform_rules", [])),
+        mesh=mesh,
         emitters=emitters,
         receivers=receivers,
         optical_profiles=optical_profiles,
@@ -40,6 +64,7 @@ def build_direct_trace_input(
 def build_transformed_mesh(
     scene_mesh: Dict[str, Any],
     transform_rules: List[Dict[str, Any]],
+    excluded_component_ids: Optional[List[int]] = None,
 ) -> TriangleMesh:
     vertices = scene_mesh.get("vertices") or []
     faces = scene_mesh.get("faces") or []
@@ -50,6 +75,9 @@ def build_transformed_mesh(
     ]
     if len(component_ids) != len(faces):
         raise ValueError("face_component_ids must match face count")
+    excluded_components: Set[int] = {
+        int(component_id) for component_id in (excluded_component_ids or [])
+    }
 
     enabled_rules = {
         int(rule["object_id"]): rule
@@ -62,7 +90,10 @@ def build_transformed_mesh(
     for face_index, component_id in enumerate(component_ids):
         if component_id is None:
             continue
-        component_face_indices.setdefault(int(component_id), []).append(face_index)
+        normalized_component_id = int(component_id)
+        if normalized_component_id in excluded_components:
+            continue
+        component_face_indices.setdefault(normalized_component_id, []).append(face_index)
     pivots = {
         component_id: _average_points([face_centroids[index] for index in indices])
         for component_id, indices in component_face_indices.items()
@@ -73,6 +104,8 @@ def build_transformed_mesh(
         if len(face) != 3:
             raise ValueError("Direct ray tracing requires triangle faces")
         component_id = component_ids[face_index]
+        if component_id is not None and int(component_id) in excluded_components:
+            continue
         rule = enabled_rules.get(int(component_id)) if component_id is not None else None
         pivot = pivots.get(int(component_id), (0.0, 0.0, 0.0)) if component_id is not None else (0.0, 0.0, 0.0)
         transformed_indices: List[int] = []

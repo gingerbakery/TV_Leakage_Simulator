@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import math
 import random
 import time
@@ -174,7 +174,10 @@ def run_simulation(engine_input: EngineInput) -> SimulationOutput:
     )
 
 
-def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
+def run_direct_ray_trace(
+    trace_input: DirectRayTraceInput,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> RayTraceResult:
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     trace_input.mesh.set_intersection_backend(
@@ -220,6 +223,13 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
         if trace_input.config.max_depth <= 1
         else "multi_bounce"
     )
+    expected_ray_count = sum(
+        emitter.ray_count for emitter in trace_input.emitters if emitter.enabled
+    )
+    progress_interval = max(1, expected_ray_count // 400)
+    last_progress_count = -1
+    if progress_callback is not None:
+        progress_callback(0, expected_ray_count)
 
     for emitter in trace_input.emitters:
         if not emitter.enabled:
@@ -253,6 +263,11 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
             trace_input.config.epsilon_mm,
         ):
             total_rays += 1
+            if progress_callback is not None:
+                processed_ray_count = max(0, total_rays - 1)
+                if processed_ray_count - last_progress_count >= progress_interval:
+                    progress_callback(processed_ray_count, expected_ray_count)
+                    last_progress_count = processed_ray_count
             if ray is None:
                 terminated_ray_count += 1
                 continue
@@ -538,6 +553,8 @@ def run_direct_ray_trace(trace_input: DirectRayTraceInput) -> RayTraceResult:
                 current_depth = next_depth
                 current_ray_kind = reflection_sample.lobe
 
+    if progress_callback is not None:
+        progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
     grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
     metrics = _build_direct_metrics(grids, trace_input.config)

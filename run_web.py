@@ -5,9 +5,11 @@ import json
 import re
 import sys
 import os
+import threading
 import time
 import traceback
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -16,6 +18,11 @@ from urllib.parse import parse_qs
 ROOT = Path(__file__).resolve().parent
 sys.path.append(str(ROOT / "src"))
 
+DESKTOP_BOOT = os.environ.get("LEAKAGE_DESKTOP_BOOT", "").strip() == "1"
+if DESKTOP_BOOT:
+    print("[BOOT] Embedded Python runtime started.", flush=True)
+    print("[BOOT] Loading simulator modules...", flush=True)
+
 from leakage_simulator.engine import execute_run
 from leakage_simulator.materials import default_material_library
 from leakage_simulator.raytrace_bridge import build_direct_trace_input
@@ -23,13 +30,18 @@ from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.9.13"
+WEB_UI_VERSION = "0.9.15"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 SCENE_MESH_CACHE: Dict[str, Dict] = {}
+RAYTRACE_JOBS: Dict[str, Dict] = {}
+RAYTRACE_JOBS_LOCK = threading.Lock()
 UPLOAD_DIR = ROOT / "_uploads"
 DEMO_CAD_PATH = ROOT / "samples" / "tv_leakage_full_assembled_no_gap.stp"
 STATIC_DIR = ROOT / "web" / "static"
 SERVER_BOOT_TOKEN = str(time.time_ns())
+
+if DESKTOP_BOOT:
+    print("[BOOT] Simulator modules loaded. CAD runtime will load on STEP import.", flush=True)
 
 
 def _cache_scene_mesh(scene_payload: Dict) -> str:
@@ -39,6 +51,107 @@ def _cache_scene_mesh(scene_payload: Dict) -> str:
         oldest_token = next(iter(SCENE_MESH_CACHE))
         SCENE_MESH_CACHE.pop(oldest_token, None)
     return scene_token
+
+
+def _update_raytrace_job(job_id: str, **updates) -> None:
+    with RAYTRACE_JOBS_LOCK:
+        job = RAYTRACE_JOBS.get(job_id)
+        if job is not None:
+            job.update(updates)
+
+
+def _raytrace_job_snapshot(job_id: str) -> Optional[Dict]:
+    with RAYTRACE_JOBS_LOCK:
+        job = RAYTRACE_JOBS.get(job_id)
+        if job is None:
+            return None
+        return dict(job)
+
+
+def _prune_raytrace_jobs(max_jobs: int = 8) -> None:
+    with RAYTRACE_JOBS_LOCK:
+        if len(RAYTRACE_JOBS) <= max_jobs:
+            return
+        removable = sorted(
+            (
+                (job_id, float(job.get("created_at", 0.0)))
+                for job_id, job in RAYTRACE_JOBS.items()
+                if job.get("status") in {"completed", "failed"}
+            ),
+            key=lambda item: item[1],
+        )
+        for job_id, _ in removable:
+            if len(RAYTRACE_JOBS) <= max_jobs:
+                break
+            RAYTRACE_JOBS.pop(job_id, None)
+
+
+def _run_raytrace_job(job_id: str, scene_mesh: Dict, request_payload: Dict) -> None:
+    try:
+        _update_raytrace_job(job_id, status="running", phase="preparing")
+        trace_input = build_direct_trace_input(scene_mesh, request_payload)
+        total_ray_count = sum(
+            emitter.ray_count for emitter in trace_input.emitters if emitter.enabled
+        )
+        trace_started_at = time.time()
+        _update_raytrace_job(
+            job_id,
+            phase="tracing",
+            processed_rays=0,
+            total_rays=total_ray_count,
+            progress=0.0,
+            elapsed_sec=0.0,
+            estimated_remaining_sec=None,
+        )
+
+        def report_progress(processed_rays: int, total_rays: int) -> None:
+            elapsed_sec = max(0.0, time.time() - trace_started_at)
+            safe_total = max(0, int(total_rays))
+            safe_processed = max(0, min(int(processed_rays), safe_total))
+            progress = safe_processed / safe_total if safe_total > 0 else 0.0
+            if safe_processed > 0 and elapsed_sec > 0.0:
+                ray_rate = safe_processed / elapsed_sec
+                estimated_remaining_sec = (
+                    max(0.0, safe_total - safe_processed) / ray_rate
+                    if ray_rate > 0.0
+                    else None
+                )
+            else:
+                ray_rate = 0.0
+                estimated_remaining_sec = None
+            _update_raytrace_job(
+                job_id,
+                phase="tracing",
+                processed_rays=safe_processed,
+                total_rays=safe_total,
+                progress=progress,
+                elapsed_sec=elapsed_sec,
+                estimated_remaining_sec=estimated_remaining_sec,
+                rays_per_sec=ray_rate,
+            )
+
+        result = run_direct_ray_trace(trace_input, progress_callback=report_progress)
+        _update_raytrace_job(
+            job_id,
+            status="completed",
+            phase="completed",
+            processed_rays=total_ray_count,
+            total_rays=total_ray_count,
+            progress=1.0,
+            elapsed_sec=max(0.0, time.time() - trace_started_at),
+            estimated_remaining_sec=0.0,
+            result=result.to_dict(),
+            completed_at=time.time(),
+        )
+    except Exception as exc:
+        _update_raytrace_job(
+            job_id,
+            status="failed",
+            phase="failed",
+            error=str(exc),
+            estimated_remaining_sec=None,
+            completed_at=time.time(),
+        )
 
 
 def _safe_upload_filename(raw_name: str) -> Optional[str]:
@@ -371,16 +484,32 @@ def _build_html_form(material_options: str, version: str) -> str:
       border-radius: 8px;
       padding: 6px;
     }}
-    .object-item {{ padding: 6px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }}
+    .object-item {{ padding: 7px 6px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }}
     .object-item:last-child {{ border-bottom: none; }}
     .object-item.is-selected {{
       background: #dbeafe;
       border-radius: 10px;
     }}
+    .object-item.is-hidden .component-row-main {{
+      opacity: 0.48;
+    }}
+    .object-item.is-hidden .component-row-main .name {{
+      text-decoration: line-through;
+      text-decoration-color: #94a3b8;
+    }}
+    .object-item.is-non-traceable {{
+      border-left: 3px solid #f59e0b;
+      background: #fffbeb;
+    }}
+    .object-item.is-non-traceable .component-row-main .meta::after {{
+      content: ' · Traceability off';
+      color: #b45309;
+      font-weight: 700;
+    }}
     .component-tree-row {{
       display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
       align-items: center;
     }}
     .component-row-main {{
@@ -388,10 +517,14 @@ def _build_html_form(material_options: str, version: str) -> str:
       cursor: pointer;
     }}
     .component-row-main .name {{
+      display: block;
+      overflow: hidden;
       font-size: 12px;
       font-weight: 700;
       color: #1e293b;
       cursor: text;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }}
     .component-row-main .name:hover {{
       color: #2563eb;
@@ -420,8 +553,8 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
     .component-row-actions {{
       display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
+      gap: 4px;
+      flex-wrap: nowrap;
       justify-content: flex-end;
     }}
     .mini-btn {{
@@ -430,6 +563,93 @@ def _build_html_form(material_options: str, version: str) -> str:
       font-size: 11px;
       font-weight: 700;
     }}
+    .mini-btn.component-material {{ background: #334155; color: #ffffff; }}
+    .mini-btn.component-material:hover {{ background: #1e293b; }}
+    .mini-btn.component-transform {{ background: #2563eb; color: #ffffff; }}
+    .mini-btn.component-transform:hover {{ background: #1d4ed8; }}
+    .mini-btn.traceability-toggle {{
+      min-width: 62px;
+      border: 1px solid #bfdbfe;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }}
+    .mini-btn.traceability-toggle:hover {{ border-color: #60a5fa; background: #dbeafe; }}
+    .object-item.is-non-traceable .mini-btn.traceability-toggle {{
+      border-color: #f59e0b;
+      background: #fef3c7;
+      color: #92400e;
+    }}
+    .mini-btn.component-more {{
+      width: 32px;
+      min-width: 32px;
+      padding: 6px 0;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #475569;
+      font-size: 16px;
+      line-height: 1;
+    }}
+    .mini-btn.component-more:hover {{
+      border-color: #60a5fa;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }}
+    .component-context-menu {{
+      position: fixed;
+      z-index: 120;
+      width: 230px;
+      overflow: hidden;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.985);
+      box-shadow: 0 18px 45px rgba(2, 6, 23, 0.48);
+      color: #e2e8f0;
+    }}
+    .component-context-menu-head {{
+      padding: 10px 12px;
+      border-bottom: 1px solid #334155;
+      background: #111c31;
+    }}
+    .component-context-menu-name {{
+      overflow: hidden;
+      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 800;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .component-context-menu-status {{
+      margin-top: 3px;
+      color: #94a3b8;
+      font-size: 10px;
+    }}
+    .component-context-menu-items {{ padding: 5px; }}
+    .component-context-menu button {{
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 34px;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: transparent;
+      color: #dbeafe;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .component-context-menu button:hover,
+    .component-context-menu button:focus-visible {{
+      outline: none;
+      background: #1e3a5f;
+      color: #ffffff;
+    }}
+    .component-context-menu button.danger {{ color: #fda4af; }}
+    .component-context-menu button.danger:hover,
+    .component-context-menu button.danger:focus-visible {{ background: #4c1d2a; color: #fecdd3; }}
+    .component-context-menu-separator {{ height: 1px; margin: 5px 4px; background: #334155; }}
+    .component-context-menu button.hidden-block,
+    .component-context-menu-separator.hidden-block {{ display: none; }}
     .tree-actions {{
       display: flex;
       gap: 8px;
@@ -551,6 +771,86 @@ def _build_html_form(material_options: str, version: str) -> str:
     .viewer-tool-group .tool-title {{
       font-size: 11px;
       color: #94a3b8;
+    }}
+    .ray-filter-panel {{
+      margin: 10px 0;
+      padding: 10px;
+      border: 1px solid #dbe3ee;
+      border-radius: 12px;
+      background: #f8fafc;
+    }}
+    .ray-filter-panel-head {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 7px;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .ray-filter-count {{
+      min-width: 24px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      color: #334155;
+      text-align: center;
+      font-size: 10px;
+    }}
+    .ray-filter-row {{
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 32px;
+      padding: 5px 7px;
+      border-radius: 8px;
+      color: #334155;
+      cursor: pointer;
+    }}
+    .ray-filter-row:hover {{ background: #eef2f7; }}
+    .ray-filter-row.receiver {{
+      margin-bottom: 5px;
+      background: rgba(132, 204, 22, 0.10);
+      color: #3f6212;
+      font-weight: 700;
+    }}
+    .ray-filter-row input {{ margin: 0; accent-color: #84cc16; }}
+    .ray-swatch {{
+      width: 24px;
+      height: 3px;
+      border-radius: 999px;
+      background: var(--ray-color, #ffffff);
+      box-shadow: 0 0 7px var(--ray-color, #ffffff);
+    }}
+    .ray-filter-divider {{
+      height: 1px;
+      margin: 5px 2px;
+      background: #dbe3ee;
+    }}
+    .ray-filter-actions {{
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }}
+    .ray-filter-actions button {{
+      min-width: 0;
+      padding: 6px 5px;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      background: #ffffff;
+      color: #475569;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .ray-filter-actions button:hover {{ border-color: #60a5fa; color: #1d4ed8; }}
+    .ray-filter-note {{
+      margin-top: 8px;
+      color: #64748b;
+      font-size: 10px;
+      line-height: 1.45;
     }}
     .mode-buttons {{
       display: inline-flex;
@@ -1529,9 +1829,64 @@ def _build_html_form(material_options: str, version: str) -> str:
       color: #1e3a8a;
       padding: 10px;
     }}
+    .result-popup-launch {{
+      width: 100%;
+      margin: 10px 0 0;
+      border: 1px solid #2563eb;
+      border-radius: 9px;
+      background: #2563eb;
+      color: #ffffff;
+      font-weight: 800;
+    }}
+    .result-popup-launch:hover:not(:disabled) {{ background: #1d4ed8; }}
+    .result-popup-launch:disabled {{
+      border-color: #cbd5e1;
+      background: #e2e8f0;
+      color: #94a3b8;
+      cursor: not-allowed;
+    }}
     .rt-mode-note {{ border: 1px solid #bfdbfe; background: #eff6ff; color: #1e40af; border-radius: 9px; padding: 9px 10px; font-size: 12px; line-height: 1.45; margin-top: 8px; }}
     .rt-ready-status {{ margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #f8fafc; color: #475569; font-size: 12px; }}
     .rt-ready-status.ready {{ background: #ecfdf5; color: #047857; }}
+    .rt-progress-panel {{
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      background: #eff6ff;
+    }}
+    .rt-progress-panel.failed {{ border-color: #fecaca; background: #fef2f2; }}
+    .rt-progress-head, .rt-progress-meta {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }}
+    .rt-progress-head {{ color: #1e3a8a; font-size: 12px; font-weight: 800; }}
+    .rt-progress-panel.failed .rt-progress-head {{ color: #b91c1c; }}
+    .rt-progress-track {{
+      height: 10px;
+      margin: 8px 0 6px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dbeafe;
+    }}
+    .rt-progress-fill {{
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2563eb, #38bdf8);
+      transition: width 0.25s ease;
+    }}
+    .rt-progress-panel.preparing .rt-progress-fill {{
+      width: 28%;
+      animation: rt-progress-preparing 1.25s ease-in-out infinite alternate;
+    }}
+    .rt-progress-meta {{ color: #64748b; font-size: 10px; }}
+    @keyframes rt-progress-preparing {{
+      from {{ transform: translateX(-85%); }}
+      to {{ transform: translateX(350%); }}
+    }}
     .rt-result-kpis {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }}
     .rt-result-kpi {{ background: #ffffff; border: 1px solid #dbeafe; border-radius: 8px; padding: 8px; }}
     .rt-result-kpi span {{ display: block; font-size: 10px; color: #64748b; }}
@@ -1543,6 +1898,131 @@ def _build_html_form(material_options: str, version: str) -> str:
     .rt-metric-row b {{ display: block; color: #1e293b; font-size: 12px; margin-top: 2px; }}
     .rt-heatmap {{ display: block; width: 100%; height: 150px; border-radius: 8px; border: 1px solid #1e293b; background: #020617; image-rendering: pixelated; }}
     .rt-result-note {{ font-size: 11px; color: #64748b; margin-top: 7px; line-height: 1.45; }}
+    .ray-result-popup {{
+      z-index: 12;
+      width: min(780px, calc(100% - 48px));
+      height: min(640px, calc(100% - 76px));
+      min-width: min(520px, calc(100% - 32px));
+      min-height: 360px;
+      max-width: calc(100% - 32px);
+      max-height: calc(100% - 76px);
+      padding: 0;
+      overflow: hidden;
+      border-color: rgba(96, 165, 250, 0.58);
+      background: rgba(8, 16, 31, 0.985);
+      box-shadow: 0 28px 72px rgba(2, 6, 23, 0.62);
+    }}
+    .ray-result-popup .move-title {{
+      min-height: 48px;
+      margin: 0;
+      padding: 11px 14px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(15, 23, 42, 0.98);
+    }}
+    .ray-result-popup-title {{ display: flex; align-items: center; gap: 10px; }}
+    .ray-result-popup-status {{
+      border: 1px solid rgba(74, 222, 128, 0.38);
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: rgba(22, 101, 52, 0.20);
+      color: #86efac;
+      font-size: 10px;
+      font-weight: 800;
+    }}
+    .ray-result-tabs {{
+      height: 42px;
+      display: flex;
+      align-items: end;
+      gap: 3px;
+      padding: 7px 12px 0;
+      overflow-x: auto;
+      border-bottom: 1px solid #2b3b55;
+      background: #0b1426;
+      scrollbar-width: thin;
+    }}
+    .ray-result-tab {{
+      flex: 0 0 auto;
+      height: 35px;
+      padding: 0 13px;
+      border: 1px solid #334155;
+      border-bottom-color: #2b3b55;
+      border-radius: 8px 8px 0 0;
+      background: #111c31;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: none;
+    }}
+    .ray-result-tab:hover {{ background: #17243a; color: #e2e8f0; }}
+    .ray-result-tab.active {{
+      border-color: #3b82f6;
+      border-bottom-color: #12213a;
+      background: #12213a;
+      color: #dbeafe;
+    }}
+    .ray-result-popup-body {{
+      height: calc(100% - 90px);
+      overflow-y: auto;
+      padding: 16px 16px 24px;
+      scrollbar-color: #475569 #0f172a;
+    }}
+    .ray-result-resize-handle {{
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      z-index: 4;
+      width: 24px;
+      height: 24px;
+      cursor: nwse-resize;
+      touch-action: none;
+    }}
+    .ray-result-resize-handle::before {{
+      content: '';
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      width: 12px;
+      height: 12px;
+      border-right: 2px solid #60a5fa;
+      border-bottom: 2px solid #60a5fa;
+      opacity: 0.9;
+    }}
+    .ray-result-resize-handle::after {{
+      content: '';
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      width: 6px;
+      height: 6px;
+      border-right: 1px solid #94a3b8;
+      border-bottom: 1px solid #94a3b8;
+    }}
+    .ray-result-popup.is-resizing {{ user-select: none; }}
+    .ray-result-tab-panel {{ display: none; }}
+    .ray-result-tab-panel.active {{ display: block; }}
+    .ray-result-section-heading {{
+      margin: 0 0 12px;
+      color: #f8fafc;
+      font-size: 15px;
+      font-weight: 800;
+    }}
+    .ray-result-popup .rt-result-kpis {{ grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }}
+    .ray-result-popup .rt-result-kpi {{ border: 1px solid #2b3b55; background: #111c31; padding: 11px; }}
+    .ray-result-popup .rt-result-kpi span {{ color: #94a3b8; }}
+    .ray-result-popup .rt-result-kpi strong {{ color: #f8fafc; font-size: 17px; }}
+    .ray-result-popup .rt-receiver-result {{ border: 1px solid #2b3b55; border-radius: 11px; background: #0b1528; padding: 13px; }}
+    .ray-result-popup .rt-receiver-title {{ color: #f8fafc; }}
+    .ray-result-popup .rt-metric-row div {{ border: 1px solid #263552; background: #111c31; color: #94a3b8; }}
+    .ray-result-popup .rt-metric-row b {{ color: #f8fafc; }}
+    .ray-result-popup .rt-result-note {{ color: #94a3b8; }}
+    .ray-result-popup .library-row {{ border-color: #263552; background: #111c31; }}
+    .ray-result-popup .library-row .name {{ color: #f8fafc; }}
+    .ray-result-popup .library-row .meta {{ color: #a5b4cc; }}
+    .ray-result-popup .rt-heatmap {{ height: 280px; }}
+    @media (max-width: 1050px) {{
+      .ray-result-popup {{ min-width: min(440px, calc(100% - 32px)); width: calc(100% - 32px); }}
+      .ray-result-popup .rt-result-kpis {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    }}
   </style>
 </head>
 <body>
@@ -1633,7 +2113,11 @@ def _build_html_form(material_options: str, version: str) -> str:
             <span class=\"help-tip\" tabindex=\"0\" aria-label=\"Component tree help\">?</span>
             <div class=\"help-popover\">
               부품 선택과 transform 진입을 한 곳에서 처리합니다.<br>
-              Component row를 클릭하면 선택/해제되고, <b>Transform</b> 버튼을 누르면 오른쪽 3D viewer의 Transform popup이 열립니다.<br>
+              Component row 또는 3D 형상을 클릭하면 선택만 하고, <b>Material</b>, <b>Transform</b>, <b>Trace Off/On</b>은 행에서 바로 실행할 수 있습니다.<br>
+              <b>+</b> 메뉴에는 Hide/Show와 Delete를 모았으며, 우클릭 메뉴에서는 전체 명령을 사용할 수 있습니다.<br>
+              <b>Traceability Off</b>는 부품을 화면에 유지한 채 ray collision 대상에서만 제외합니다.<br>
+              <b>Delete</b>는 확인 후 해당 부품을 viewer와 ray tracing 해석 대상에서 제거합니다.<br>
+              <b>Transform</b> 명령을 선택할 때만 오른쪽 3D viewer의 Transform popup이 열립니다.<br>
               Transform 방식과 selection mode는 popup 안에서 설정합니다.
             </div>
           </div>
@@ -1968,6 +2452,17 @@ def _build_html_form(material_options: str, version: str) -> str:
             </details>
             <div id=\"directRunHint\" class=\"rt-ready-status\">Emitter와 Receiver를 각각 1개 이상 등록하세요.</div>
             <button id=\"runBtn\" class=\"run-btn\" type=\"submit\" disabled>Run ray tracing</button>
+            <div id=\"rayTraceProgressPanel\" class=\"rt-progress-panel hidden-block\">
+              <div class=\"rt-progress-head\">
+                <span id=\"rayTraceProgressLabel\">Ray tracing 준비 중</span>
+                <span id=\"rayTraceRemaining\">예상 시간 계산 중</span>
+              </div>
+              <div class=\"rt-progress-track\"><div id=\"rayTraceProgressFill\" class=\"rt-progress-fill\"></div></div>
+              <div class=\"rt-progress-meta\">
+                <span id=\"rayTraceProgressCount\">0 / 0 rays</span>
+                <span id=\"rayTraceElapsed\">경과 0s</span>
+              </div>
+            </div>
             <details class=\"panel-meta-details\">
               <summary>Information</summary>
               <div class=\"move-summary\">Emitter: 광선이 시작되는 면과 power, 방향 분포를 정의합니다.\nReceiver: 광선이 도달하는 관측 위치와 크기를 정의합니다.</div>
@@ -1999,7 +2494,51 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"card\">
             <div class=\"step\">Step 5</div>
             <h2>Result</h2>
-            <div id=\"resultPlaceholder\" class=\"manager-empty\">Ray tracing 실행 후 direct/반사 밝기 지표와 Receiver heatmap이 표시됩니다.</div>
+            <div id=\"rayDisplayPanel\" class=\"ray-filter-panel hidden-block\">
+              <div class=\"ray-filter-panel-head\">
+                <span>3D Ray path 표시</span>
+                <span id=\"rayDisplayCount\" class=\"ray-filter-count\">0/0</span>
+              </div>
+              <label class=\"ray-filter-row receiver\">
+                <input type=\"checkbox\" data-ray-filter=\"receiver_direct\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#4ade80\"></span>
+                <span>Receiver 도달 · Direct</span>
+              </label>
+              <label class=\"ray-filter-row receiver\">
+                <input type=\"checkbox\" data-ray-filter=\"receiver_reflected\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#facc15\"></span>
+                <span>Receiver 도달 · 반사광</span>
+              </label>
+              <div class=\"ray-filter-divider\"></div>
+              <label class=\"ray-filter-row\">
+                <input type=\"checkbox\" data-ray-filter=\"direct\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#60a5fa\"></span>
+                <span>Direct / 최초 진행</span>
+              </label>
+              <label class=\"ray-filter-row\">
+                <input type=\"checkbox\" data-ray-filter=\"specular\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#fb923c\"></span>
+                <span>Specular</span>
+              </label>
+              <label class=\"ray-filter-row\">
+                <input type=\"checkbox\" data-ray-filter=\"lambertian\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#c084fc\"></span>
+                <span>Lambertian</span>
+              </label>
+              <label class=\"ray-filter-row\">
+                <input type=\"checkbox\" data-ray-filter=\"gaussian\" checked>
+                <span class=\"ray-swatch\" style=\"--ray-color:#22d3ee\"></span>
+                <span>Gaussian</span>
+              </label>
+              <div class=\"ray-filter-actions\">
+                <button id=\"rayReceiverOnlyBtn\" type=\"button\">Receiver only</button>
+                <button id=\"rayAllOnBtn\" type=\"button\">All on</button>
+                <button id=\"rayAllOffBtn\" type=\"button\">All off</button>
+              </div>
+              <div class=\"ray-filter-note\">기본값은 모든 저장 경로 표시입니다. 체크를 해제하면 해당 유형이 3D Viewer에서 즉시 숨겨집니다.</div>
+            </div>
+            <div id=\"resultPlaceholder\" class=\"manager-empty\">Ray tracing 완료 후 3D viewer 위에 분석 결과창이 표시됩니다.</div>
+            <button id=\"openRayTraceResultBtn\" class=\"result-popup-launch\" type=\"button\" disabled>분석 결과 보기</button>
             <div id=\"resultPanel\" class=\"result-card\" style=\"display:none;\"></div>
           </div>
           </div>
@@ -2048,7 +2587,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           </div>
           <span id=\"renderModeBadge\" class=\"mode-badge\">Wireframe</span>
         </div>
-        <div id=\"viewerTip\" class=\"tip\">Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.</div>
+        <div id=\"viewerTip\" class=\"tip\">Drag = rotate, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll.</div>
       </div>
       <div class=\"viewer-inner\">
         <div class=\"kpi\">
@@ -2343,8 +2882,41 @@ def _build_html_form(material_options: str, version: str) -> str:
             <div id=\"receiverGeometrySummary\" class=\"move-summary\">Receiver geometry not set</div>
           </details>
         </div>
+        <div id=\"rayTraceResultPopup\" class=\"move-popup ray-result-popup hidden-block\" role=\"dialog\" aria-modal=\"false\" aria-labelledby=\"rayTraceResultPopupTitle\">
+          <div id=\"rayTraceResultPopupHeader\" class=\"move-title\">
+            <div class=\"ray-result-popup-title\">
+              <span id=\"rayTraceResultPopupTitle\">Ray Tracing Analysis Result</span>
+              <span id=\"rayTraceResultPopupStatus\" class=\"ray-result-popup-status\">Complete</span>
+            </div>
+            <button id=\"rayTraceResultPopupClose\" type=\"button\" class=\"move-close\">Close</button>
+          </div>
+          <div id=\"rayTraceResultTabs\" class=\"ray-result-tabs\" role=\"tablist\" aria-label=\"Ray tracing result categories\">
+            <button id=\"rayResultTabSummary\" class=\"ray-result-tab active\" type=\"button\" role=\"tab\" data-result-tab=\"ray_summary\" aria-controls=\"rayResultPanelSummary\" aria-selected=\"true\">Ray summary</button>
+            <button id=\"rayResultTabOptical\" class=\"ray-result-tab\" type=\"button\" role=\"tab\" data-result-tab=\"surface_optical\" aria-controls=\"rayResultPanelOptical\" aria-selected=\"false\">Surface optical</button>
+            <button id=\"rayResultTabBounce\" class=\"ray-result-tab\" type=\"button\" role=\"tab\" data-result-tab=\"multi_bounce\" aria-controls=\"rayResultPanelBounce\" aria-selected=\"false\">Multi-bounce</button>
+            <button id=\"rayResultTabReceiver\" class=\"ray-result-tab\" type=\"button\" role=\"tab\" data-result-tab=\"receiver\" aria-controls=\"rayResultPanelReceiver\" aria-selected=\"false\">Receiver</button>
+          </div>
+          <div id=\"rayTraceResultPopupBody\" class=\"ray-result-popup-body\"></div>
+          <div id=\"rayTraceResultResizeHandle\" class=\"ray-result-resize-handle\" role=\"separator\" aria-label=\"Resize result panel\" title=\"Drag to resize result panel\"></div>
+        </div>
       </div>
     </main>
+  </div>
+
+  <div id=\"componentContextMenu\" class=\"component-context-menu hidden-block\" role=\"menu\" aria-hidden=\"true\" aria-label=\"Component actions\">
+    <div class=\"component-context-menu-head\">
+      <div id=\"componentContextMenuName\" class=\"component-context-menu-name\">Component</div>
+      <div id=\"componentContextMenuStatus\" class=\"component-context-menu-status\">Visible · Traceability on</div>
+    </div>
+    <div class=\"component-context-menu-items\">
+      <button id=\"componentContextVisibility\" type=\"button\" role=\"menuitem\" data-component-context-action=\"visibility\">Hide</button>
+      <button id=\"componentContextTraceability\" type=\"button\" role=\"menuitem\" data-component-context-action=\"traceability\">Traceability Off</button>
+      <div id=\"componentContextPrimarySeparator\" class=\"component-context-menu-separator\"></div>
+      <button id=\"componentContextMaterial\" type=\"button\" role=\"menuitem\" data-component-context-action=\"material\">Material</button>
+      <button id=\"componentContextTransform\" type=\"button\" role=\"menuitem\" data-component-context-action=\"transform\">Transform</button>
+      <div id=\"componentContextDeleteSeparator\" class=\"component-context-menu-separator\"></div>
+      <button id=\"componentContextDelete\" type=\"button\" class=\"danger\" role=\"menuitem\" data-component-context-action=\"delete\">Delete…</button>
+    </div>
   </div>
 
   <script type=\"importmap\">
@@ -2629,13 +3201,18 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.lastMeshRef = null;
         this.resizeObserver = new ResizeObserver(() => this.resize());
         this.resizeObserver.observe(this.container);
-        this.renderer.domElement.addEventListener('contextmenu', (ev) => ev.preventDefault());
+        this.renderer.domElement.addEventListener('contextmenu', (ev) => this.handleContextMenu(ev));
         this.renderer.domElement.addEventListener('pointerdown', (ev) => this.handlePointerDown(ev));
         this.renderer.domElement.addEventListener('pointermove', (ev) => this.handlePointerMove(ev));
         this.renderer.domElement.addEventListener('pointerup', (ev) => this.handlePointerUp(ev));
         this.renderer.domElement.addEventListener('pointercancel', (ev) => this.handlePointerCancel(ev));
         this.animate = this.animate.bind(this);
         requestAnimationFrame(this.animate);
+      }}
+
+      handleContextMenu(ev) {{
+        ev.preventDefault();
+        ev.stopPropagation();
       }}
 
       handlePointerDown(ev) {{
@@ -2646,7 +3223,10 @@ def _build_html_form(material_options: str, version: str) -> str:
           ctrlKey: ev.ctrlKey,
           metaKey: ev.metaKey,
           shiftKey: ev.shiftKey,
-          altKey: ev.altKey
+          altKey: ev.altKey,
+          totalMove: 0,
+          lastX: ev.clientX,
+          lastY: ev.clientY
         }};
         if ((ev.shiftKey || ev.altKey) && ev.button === 0) {{
           this.rollDrag.active = true;
@@ -2665,6 +3245,12 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
 
       handlePointerMove(ev) {{
+        if (this.pointerDown) {{
+          this.pointerDown.totalMove += Math.abs(ev.clientX - this.pointerDown.lastX)
+            + Math.abs(ev.clientY - this.pointerDown.lastY);
+          this.pointerDown.lastX = ev.clientX;
+          this.pointerDown.lastY = ev.clientY;
+        }}
         if (this.rollDrag.active) {{
           const dx = ev.clientX - this.rollDrag.lastX;
           this.rollDrag.lastX = ev.clientX;
@@ -2686,8 +3272,12 @@ def _build_html_form(material_options: str, version: str) -> str:
         const wasRoll = this.rollDrag.active;
         this.handlePointerCancel(ev);
         if (wasRoll || !this.pointerDown) return;
-        const move = Math.abs(ev.clientX - this.pointerDown.x) + Math.abs(ev.clientY - this.pointerDown.y);
+        const move = Math.max(
+          this.pointerDown.totalMove || 0,
+          Math.abs(ev.clientX - this.pointerDown.x) + Math.abs(ev.clientY - this.pointerDown.y)
+        );
         const isPrimaryClick = this.pointerDown.button === 0 && ev.button === 0;
+        const isSecondaryClick = this.pointerDown.button === 2 && ev.button === 2;
         if (isPrimaryClick && move <= 6) {{
           const pick = this.pickGeometry(ev);
           this.container.dispatchEvent(new CustomEvent('leakage-three-pick', {{
@@ -2704,6 +3294,17 @@ def _build_html_form(material_options: str, version: str) -> str:
               metaKey: ev.metaKey || this.pointerDown.metaKey,
               shiftKey: ev.shiftKey || this.pointerDown.shiftKey,
               altKey: ev.altKey || this.pointerDown.altKey
+            }}
+          }}));
+        }} else if (isSecondaryClick && move <= 6) {{
+          const pick = this.pickGeometry(ev, true);
+          this.container.dispatchEvent(new CustomEvent('leakage-three-contextmenu', {{
+            bubbles: true,
+            detail: {{
+              faceIndex: pick ? pick.faceIndex : null,
+              mode: this.mode,
+              clientX: ev.clientX,
+              clientY: ev.clientY
             }}
           }}));
         }}
@@ -2746,7 +3347,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.controls.update();
       }}
 
-      pickGeometry(ev) {{
+      pickGeometry(ev, componentOnly = false) {{
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.pointer.x = ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
         this.pointer.y = -((ev.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1;
@@ -2757,7 +3358,9 @@ def _build_html_form(material_options: str, version: str) -> str:
         for (const child of this.overlayRoot.children) {{
           if (!child.isMesh) continue;
           const overlayKind = child.userData ? String(child.userData.overlayKind || '') : '';
-          if (this.pickBaseOnly && (overlayKind.startsWith('emitter_') || overlayKind.startsWith('receiver_'))) continue;
+          const isPlacementOverlay = overlayKind.startsWith('emitter_') || overlayKind.startsWith('receiver_');
+          if (componentOnly && isPlacementOverlay) continue;
+          if (!componentOnly && this.pickBaseOnly && isPlacementOverlay) continue;
           candidates.push(child);
         }}
         const hits = this.raycaster.intersectObjects(candidates, false);
@@ -2896,8 +3499,15 @@ def _build_html_form(material_options: str, version: str) -> str:
               ]);
               const segmentLine = new THREE.Line(
                 segmentGeometry,
-                new THREE.LineBasicMaterial({{ color: overlay.segmentColor || 0x22d3ee, depthTest: false }})
+                new THREE.LineBasicMaterial({{
+                  color: overlay.segmentColor || 0x22d3ee,
+                  transparent: true,
+                  opacity: overlay.segmentOpacity ?? 0.92,
+                  depthTest: false,
+                }})
               );
+              segmentLine.name = 'ray_segment_' + (overlay.kind || 'overlay');
+              segmentLine.userData.overlayKind = overlay.kind || 'overlay';
               segmentLine.renderOrder = 84;
               this.overlayRoot.add(segmentLine);
             }}
@@ -3109,6 +3719,14 @@ def _build_html_form(material_options: str, version: str) -> str:
       sceneToken: null,
       rayTraceResult: null,
       rayTraceRunning: false,
+      rayDisplayFilters: {{
+        receiver_direct: true,
+        receiver_reflected: true,
+        direct: true,
+        specular: true,
+        lambertian: true,
+        gaussian: true,
+      }},
       selectedFaces: new Set(),
       clickedFaces: new Set(),
       panelFaces: new Set(),
@@ -3116,6 +3734,11 @@ def _build_html_form(material_options: str, version: str) -> str:
       faceToObjectId: new Map(),
       selectedGapObjectId: null,
       selectedGapObjectIds: new Set(),
+      hiddenComponentObjectIds: new Set(),
+      nonTraceableComponentObjectIds: new Set(),
+      deletedComponentObjectIds: new Set(),
+      componentContextMenuObjectId: null,
+      componentContextMenuPosition: null,
       transformRules: [],
       activeTransformRuleId: null,
       selectedTransformRuleIds: new Set(),
@@ -3175,6 +3798,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       receiverSequence: 1,
       receiverPopupPosition: null,
       receiverPopupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
+      resultPopupPosition: null,
+      resultPopupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
+      resultPopupResize: {{ active: false, startX: 0, startY: 0, startWidth: 0, startHeight: 0 }},
+      resultActiveTab: 'ray_summary',
       popupPosition: null,
       popupDrag: {{ active: false, offsetX: 0, offsetY: 0 }},
       materialPopupPosition: null,
@@ -3191,6 +3818,14 @@ def _build_html_form(material_options: str, version: str) -> str:
     const loadDemoCadBtn = document.getElementById('loadDemoCad');
     const useSampleBtn = document.getElementById('useSample');
     const objectList = document.getElementById('objectList');
+    const componentContextMenu = document.getElementById('componentContextMenu');
+    const componentContextMenuName = document.getElementById('componentContextMenuName');
+    const componentContextMenuStatus = document.getElementById('componentContextMenuStatus');
+    const componentContextVisibility = document.getElementById('componentContextVisibility');
+    const componentContextTraceability = document.getElementById('componentContextTraceability');
+    const componentContextPrimarySeparator = document.getElementById('componentContextPrimarySeparator');
+    const componentContextMaterial = document.getElementById('componentContextMaterial');
+    const componentContextTransform = document.getElementById('componentContextTransform');
     const roiInput = document.getElementById('roiFacesInput');
     const roiStat = document.getElementById('roiStat');
     const roiSelectionMode = document.getElementById('roiSelectionMode');
@@ -3206,7 +3841,21 @@ def _build_html_form(material_options: str, version: str) -> str:
     const runBtn = document.getElementById('runBtn');
     const resultPanel = document.getElementById('resultPanel');
     const resultPlaceholder = document.getElementById('resultPlaceholder');
+    const openRayTraceResultBtn = document.getElementById('openRayTraceResultBtn');
+    const rayTraceResultPopup = document.getElementById('rayTraceResultPopup');
+    const rayTraceResultPopupHeader = document.getElementById('rayTraceResultPopupHeader');
+    const rayTraceResultPopupClose = document.getElementById('rayTraceResultPopupClose');
+    const rayTraceResultPopupStatus = document.getElementById('rayTraceResultPopupStatus');
+    const rayTraceResultTabs = document.getElementById('rayTraceResultTabs');
+    const rayTraceResultPopupBody = document.getElementById('rayTraceResultPopupBody');
+    const rayTraceResultResizeHandle = document.getElementById('rayTraceResultResizeHandle');
     const directRunHint = document.getElementById('directRunHint');
+    const rayTraceProgressPanel = document.getElementById('rayTraceProgressPanel');
+    const rayTraceProgressLabel = document.getElementById('rayTraceProgressLabel');
+    const rayTraceRemaining = document.getElementById('rayTraceRemaining');
+    const rayTraceProgressFill = document.getElementById('rayTraceProgressFill');
+    const rayTraceProgressCount = document.getElementById('rayTraceProgressCount');
+    const rayTraceElapsed = document.getElementById('rayTraceElapsed');
     const rtMaxDepthInput = document.getElementById('rtMaxDepthInput');
     const rtTerminationModeInput = document.getElementById('rtTerminationModeInput');
     const rtMinEnergyInput = document.getElementById('rtMinEnergyInput');
@@ -3216,6 +3865,12 @@ def _build_html_form(material_options: str, version: str) -> str:
     const rtKAbsInput = document.getElementById('rtKAbsInput');
     const rtKBrdfInput = document.getElementById('rtKBrdfInput');
     const rtStorePathsInput = document.getElementById('rtStorePathsInput');
+    const rayDisplayPanel = document.getElementById('rayDisplayPanel');
+    const rayDisplayCount = document.getElementById('rayDisplayCount');
+    const rayReceiverOnlyBtn = document.getElementById('rayReceiverOnlyBtn');
+    const rayAllOnBtn = document.getElementById('rayAllOnBtn');
+    const rayAllOffBtn = document.getElementById('rayAllOffBtn');
+    let lastRayTraceResultHtml = '';
     const materialTargetSummary = document.getElementById('materialTargetSummary');
     const materialBaseList = document.getElementById('materialBaseList');
     const materialSurfaceList = document.getElementById('materialSurfaceList');
@@ -3482,6 +4137,140 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
     }}
 
+    function clampRayTraceResultPopupPosition(left, top) {{
+      const rect = viewerWrap.getBoundingClientRect();
+      const popupWidth = rayTraceResultPopup.offsetWidth || 780;
+      const popupHeight = rayTraceResultPopup.offsetHeight || 680;
+      return {{
+        left: Math.min(Math.max(16, rect.width - popupWidth - 16), Math.max(16, left)),
+        top: Math.min(Math.max(60, rect.height - popupHeight - 16), Math.max(60, top))
+      }};
+    }}
+
+    function applyRayTraceResultPopupPosition(left, top) {{
+      const next = clampRayTraceResultPopupPosition(left, top);
+      rayTraceResultPopup.style.left = next.left + 'px';
+      rayTraceResultPopup.style.top = next.top + 'px';
+      state.resultPopupPosition = next;
+    }}
+
+    function showRayTraceResultPopup() {{
+      rayTraceResultPopup.classList.remove('hidden-block');
+      if (state.resultPopupPosition) {{
+        applyRayTraceResultPopupPosition(state.resultPopupPosition.left, state.resultPopupPosition.top);
+      }} else {{
+        const rect = viewerWrap.getBoundingClientRect();
+        const popupWidth = rayTraceResultPopup.offsetWidth || 780;
+        const popupHeight = rayTraceResultPopup.offsetHeight || 680;
+        applyRayTraceResultPopupPosition(
+          Math.max(16, (rect.width - popupWidth) / 2),
+          Math.max(60, (rect.height - popupHeight) / 2)
+        );
+      }}
+    }}
+
+    function hideRayTraceResultPopup() {{
+      rayTraceResultPopup.classList.add('hidden-block');
+    }}
+
+    function startRayTraceResultPopupDrag(ev) {{
+      if (ev.target && ev.target.closest('button')) return;
+      const popupRect = rayTraceResultPopup.getBoundingClientRect();
+      state.resultPopupDrag.active = true;
+      state.resultPopupDrag.offsetX = ev.clientX - popupRect.left;
+      state.resultPopupDrag.offsetY = ev.clientY - popupRect.top;
+      rayTraceResultPopup.classList.add('is-dragging');
+      ev.preventDefault();
+    }}
+
+    function moveRayTraceResultPopupDrag(ev) {{
+      if (!state.resultPopupDrag.active) return;
+      const rect = viewerWrap.getBoundingClientRect();
+      applyRayTraceResultPopupPosition(
+        ev.clientX - rect.left - state.resultPopupDrag.offsetX,
+        ev.clientY - rect.top - state.resultPopupDrag.offsetY
+      );
+    }}
+
+    function stopRayTraceResultPopupDrag() {{
+      if (state.resultPopupDrag.active) {{
+        state.resultPopupDrag.active = false;
+        rayTraceResultPopup.classList.remove('is-dragging');
+      }}
+      if (!rayTraceResultPopup.classList.contains('hidden-block') && state.resultPopupPosition) {{
+        applyRayTraceResultPopupPosition(state.resultPopupPosition.left, state.resultPopupPosition.top);
+      }}
+    }}
+
+    function startRayTraceResultPopupResize(ev) {{
+      const popupRect = rayTraceResultPopup.getBoundingClientRect();
+      state.resultPopupResize.active = true;
+      state.resultPopupResize.startX = ev.clientX;
+      state.resultPopupResize.startY = ev.clientY;
+      state.resultPopupResize.startWidth = popupRect.width;
+      state.resultPopupResize.startHeight = popupRect.height;
+      rayTraceResultPopup.classList.add('is-resizing');
+      ev.preventDefault();
+      ev.stopPropagation();
+    }}
+
+    function moveRayTraceResultPopupResize(ev) {{
+      if (!state.resultPopupResize.active) return;
+      const viewerRect = viewerWrap.getBoundingClientRect();
+      const popupLeft = state.resultPopupPosition?.left || 16;
+      const popupTop = state.resultPopupPosition?.top || 60;
+      const maxWidth = Math.max(320, viewerRect.width - popupLeft - 16);
+      const maxHeight = Math.max(260, viewerRect.height - popupTop - 16);
+      const minWidth = Math.min(520, maxWidth);
+      const minHeight = Math.min(360, maxHeight);
+      const nextWidth = Math.min(
+        maxWidth,
+        Math.max(minWidth, state.resultPopupResize.startWidth + ev.clientX - state.resultPopupResize.startX)
+      );
+      const nextHeight = Math.min(
+        maxHeight,
+        Math.max(minHeight, state.resultPopupResize.startHeight + ev.clientY - state.resultPopupResize.startY)
+      );
+      rayTraceResultPopup.style.width = Math.round(nextWidth) + 'px';
+      rayTraceResultPopup.style.height = Math.round(nextHeight) + 'px';
+      ev.preventDefault();
+    }}
+
+    function stopRayTraceResultPopupResize() {{
+      if (!state.resultPopupResize.active) return;
+      state.resultPopupResize.active = false;
+      rayTraceResultPopup.classList.remove('is-resizing');
+      if (state.resultPopupPosition) {{
+        applyRayTraceResultPopupPosition(state.resultPopupPosition.left, state.resultPopupPosition.top);
+      }}
+    }}
+
+    function setRayTraceResultTab(tabName) {{
+      const allowedTabs = new Set(['ray_summary', 'surface_optical', 'multi_bounce', 'receiver']);
+      const nextTab = allowedTabs.has(tabName) ? tabName : 'ray_summary';
+      state.resultActiveTab = nextTab;
+      for (const button of rayTraceResultTabs.querySelectorAll('[data-result-tab]')) {{
+        const active = button.getAttribute('data-result-tab') === nextTab;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        button.tabIndex = active ? 0 : -1;
+      }}
+      for (const panel of rayTraceResultPopupBody.querySelectorAll('[data-result-tab-panel]')) {{
+        const active = panel.getAttribute('data-result-tab-panel') === nextTab;
+        panel.classList.toggle('active', active);
+        panel.setAttribute('aria-hidden', active ? 'false' : 'true');
+      }}
+      rayTraceResultPopupBody.scrollTop = 0;
+    }}
+
+    function renderRayTraceResultPopup(resultHtml, result) {{
+      rayTraceResultPopupBody.innerHTML = resultHtml;
+      setRayTraceResultTab('ray_summary');
+      rayTraceResultPopupStatus.textContent = 'Complete · ' + new Date().toLocaleTimeString('ko-KR');
+      showRayTraceResultPopup();
+      drawReceiverHeatmaps(result, rayTraceResultPopupBody);
+    }}
+
     function escapeHtml(value) {{
       return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -3519,9 +4308,11 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
     }}
 
-    function drawReceiverHeatmaps(result) {{
+    function drawReceiverHeatmaps(result, root) {{
+      const heatmapRoot = root || resultPanel;
+      if (!heatmapRoot) return;
       for (const grid of result.receiver_grids || []) {{
-        const canvas = resultPanel.querySelector('[data-receiver-heatmap="' + grid.receiver_id + '"]');
+        const canvas = heatmapRoot.querySelector('[data-receiver-heatmap="' + grid.receiver_id + '"]');
         if (!canvas) continue;
         const columns = Math.max(1, Number(grid.resolution?.[0]) || 1);
         const rows = Math.max(1, Number(grid.resolution?.[1]) || 1);
@@ -3556,6 +4347,65 @@ def _build_html_form(material_options: str, version: str) -> str:
         }}
         context.putImageData(image, 0, 0);
       }}
+    }}
+
+    function rayPathReachesReceiver(path) {{
+      return Array.isArray(path)
+        && path.length >= 2
+        && path[path.length - 1]?.event_type === 'receiver';
+    }}
+
+    function receiverPathFilterName(path) {{
+      if (!rayPathReachesReceiver(path)) return null;
+      return path.some((event) => event?.event_type === 'surface')
+        ? 'receiver_reflected'
+        : 'receiver_direct';
+    }}
+
+    function rayPathHasVisibleNonReceiverSegment(path) {{
+      if (!Array.isArray(path) || path.length < 2 || rayPathReachesReceiver(path)) return false;
+      if (state.rayDisplayFilters.direct) return true;
+      for (let index = 1; index < path.length; index++) {{
+        const startEvent = path[index - 1];
+        const endEvent = path[index];
+        const rayKind = String(endEvent?.ray_kind || startEvent?.ray_kind || '');
+        if (rayKind && state.rayDisplayFilters[rayKind]) return true;
+      }}
+      return false;
+    }}
+
+    function updateRayDisplayUI() {{
+      if (!rayDisplayPanel || !rayDisplayCount) return;
+      const paths = state.rayTraceResult && Array.isArray(state.rayTraceResult.stored_paths)
+        ? state.rayTraceResult.stored_paths
+        : [];
+      let visiblePathCount = 0;
+      for (const path of paths) {{
+        if (rayPathReachesReceiver(path)) {{
+          const receiverFilter = receiverPathFilterName(path);
+          if (receiverFilter && state.rayDisplayFilters[receiverFilter]) visiblePathCount += 1;
+        }} else if (rayPathHasVisibleNonReceiverSegment(path)) {{
+          visiblePathCount += 1;
+        }}
+      }}
+      rayDisplayCount.textContent = visiblePathCount + '/' + paths.length;
+      rayDisplayPanel.classList.toggle('hidden-block', paths.length === 0);
+      for (const input of rayDisplayPanel.querySelectorAll('[data-ray-filter]')) {{
+        const filterName = input.getAttribute('data-ray-filter');
+        input.checked = !!state.rayDisplayFilters[filterName];
+      }}
+    }}
+
+    function applyRayDisplayPreset(preset) {{
+      const enableAll = preset === 'all';
+      state.rayDisplayFilters.receiver_direct = enableAll || preset === 'receiver';
+      state.rayDisplayFilters.receiver_reflected = enableAll || preset === 'receiver';
+      state.rayDisplayFilters.direct = enableAll;
+      state.rayDisplayFilters.specular = enableAll;
+      state.rayDisplayFilters.lambertian = enableAll;
+      state.rayDisplayFilters.gaussian = enableAll;
+      updateRayDisplayUI();
+      drawViewer();
     }}
 
     function renderDirectRayTraceResult(result) {{
@@ -3638,9 +4488,9 @@ def _build_html_form(material_options: str, version: str) -> str:
             + ' / escaped: ' + Math.round(Number(item.escaped_count) || 0).toLocaleString()
             + '</div></div>';
         }}).join('')
-        + '<div class="rt-result-note">파란색은 최초 진행 경로, 주황색은 Specular, 청록색은 Gaussian, 보라색은 Lambertian 반사 경로입니다.</div>'
+        + '<div class="rt-result-note">메인 화면 Result의 3D Ray path 표시에서 경로 유형별 체크박스를 켜고 끌 수 있습니다. 기본값은 모든 저장 경로 표시입니다.</div>'
         + '</div>';
-      const resultHtml = '<div class="rt-result-kpis">'
+      const raySummaryHtml = '<div class="rt-result-kpis">'
         + '<div class="rt-result-kpi"><span>Total rays</span><strong>' + totalRays.toLocaleString() + '</strong></div>'
         + '<div class="rt-result-kpi"><span>Receiver hits</span><strong>' + hitCount.toLocaleString() + '</strong></div>'
         + '<div class="rt-result-kpi"><span>Surface interactions</span><strong>' + surfaceInteractionCount.toLocaleString() + '</strong></div>'
@@ -3653,26 +4503,109 @@ def _build_html_form(material_options: str, version: str) -> str:
         + '<div class="rt-result-note">RT-3 multi-bounce · PERF-2 CAD intersection · '
         + escapeHtml(intersectionBackend.toUpperCase())
         + ' · BVH build ' + (Number(performanceSummary.bvh_build_sec) || 0).toFixed(3)
-        + ' s · 3D path ' + pathCount + '개 표시</div>'
+        + ' s · 3D path ' + pathCount + '개 표시</div>';
+      const resultHtml = '<section id="rayResultPanelSummary" class="ray-result-tab-panel active" data-result-tab-panel="ray_summary" role="tabpanel" aria-labelledby="rayResultTabSummary">'
+        + '<h3 class="ray-result-section-heading">Ray summary</h3>'
+        + raySummaryHtml
+        + '</section>'
+        + '<section id="rayResultPanelOptical" class="ray-result-tab-panel" data-result-tab-panel="surface_optical" role="tabpanel" aria-labelledby="rayResultTabOptical">'
         + opticalHtml
+        + '</section>'
+        + '<section id="rayResultPanelBounce" class="ray-result-tab-panel" data-result-tab-panel="multi_bounce" role="tabpanel" aria-labelledby="rayResultTabBounce">'
         + reflectionHtml
-        + receiverHtml;
-      setResultMessage(resultHtml, {{ openResult: true }});
-      drawReceiverHeatmaps(result);
+        + '</section>'
+        + '<section id="rayResultPanelReceiver" class="ray-result-tab-panel" data-result-tab-panel="receiver" role="tabpanel" aria-labelledby="rayResultTabReceiver">'
+        + '<h3 class="ray-result-section-heading">Receiver results</h3>'
+        + (receiverHtml || '<div class="rt-result-note">Receiver result가 없습니다.</div>')
+        + '</section>';
+      lastRayTraceResultHtml = resultHtml;
+      openRayTraceResultBtn.disabled = false;
+      openRayTraceResultBtn.textContent = '분석 결과 보기';
+      setResultMessage('<div><b>Ray tracing 완료</b><br>상세 분석 결과가 3D viewer 위 결과창에 표시되었습니다.</div>');
+      renderRayTraceResultPopup(resultHtml, result);
     }}
 
     function invalidateDirectRayTraceResult() {{
       if (!state.rayTraceResult) return;
       state.rayTraceResult = null;
-      setResultMessage('<div>Emitter, Receiver 또는 Transform 설정이 변경되었습니다. Ray tracing을 다시 실행하세요.</div>');
+      lastRayTraceResultHtml = '';
+      openRayTraceResultBtn.disabled = true;
+      openRayTraceResultBtn.textContent = '분석 결과 보기';
+      updateRayDisplayUI();
+      setResultMessage('<div>모델, 광학 또는 Emitter/Receiver 설정이 변경되었습니다. Ray tracing을 다시 실행하세요.</div>');
+      rayTraceResultPopupBody.innerHTML = '';
+      hideRayTraceResultPopup();
+    }}
+
+    function formatRayTraceDuration(seconds) {{
+      const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+      if (totalSeconds < 60) return totalSeconds + 's';
+      const minutes = Math.floor(totalSeconds / 60);
+      const remainder = totalSeconds % 60;
+      if (minutes < 60) return minutes + 'm' + (remainder ? ' ' + remainder + 's' : '');
+      const hours = Math.floor(minutes / 60);
+      const remainingMinutes = minutes % 60;
+      return hours + 'h' + (remainingMinutes ? ' ' + remainingMinutes + 'm' : '');
+    }}
+
+    function updateRayTraceProgress(job) {{
+      const status = String(job?.status || 'queued');
+      const phase = String(job?.phase || status);
+      const processed = Math.max(0, Number(job?.processed_rays) || 0);
+      const total = Math.max(0, Number(job?.total_rays) || 0);
+      const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
+      const elapsed = Math.max(0, Number(job?.elapsed_sec) || 0);
+      const remaining = job?.estimated_remaining_sec;
+      const phaseLabels = {{
+        queued: '계산 대기 중',
+        preparing: 'CAD / 광학 입력 준비 중',
+        tracing: 'Ray tracing 진행 중',
+        completed: 'Ray tracing 완료',
+        failed: 'Ray tracing 실패',
+      }};
+      rayTraceProgressPanel.classList.remove('hidden-block', 'preparing', 'failed');
+      if (phase === 'queued' || phase === 'preparing') rayTraceProgressPanel.classList.add('preparing');
+      if (status === 'failed') rayTraceProgressPanel.classList.add('failed');
+      rayTraceProgressLabel.textContent = phaseLabels[phase] || phaseLabels[status] || 'Ray tracing 진행 중';
+      rayTraceProgressFill.style.width = (phase === 'queued' || phase === 'preparing')
+        ? '28%'
+        : (progress * 100).toFixed(1) + '%';
+      rayTraceProgressCount.textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' rays';
+      rayTraceElapsed.textContent = '경과 ' + formatRayTraceDuration(elapsed);
+      if (status === 'completed') {{
+        rayTraceRemaining.textContent = '완료';
+      }} else if (status === 'failed') {{
+        rayTraceRemaining.textContent = '중단됨';
+      }} else if (remaining === null || remaining === undefined || processed <= 0) {{
+        rayTraceRemaining.textContent = '예상 시간 계산 중';
+      }} else {{
+        rayTraceRemaining.textContent = '약 ' + formatRayTraceDuration(remaining) + ' 남음';
+      }}
+    }}
+
+    async function waitForRayTraceJob(jobId) {{
+      while (true) {{
+        const response = await fetch('/api/raytrace/status?job_id=' + encodeURIComponent(jobId), {{ cache: 'no-store' }});
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || 'Ray tracing progress lookup failed');
+        updateRayTraceProgress(job);
+        if (job.status === 'completed') return job.result;
+        if (job.status === 'failed') throw new Error(job.error || 'Ray tracing failed');
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      }}
     }}
 
     async function runDirectRayTrace() {{
       updateRayTraceRunState();
       if (runBtn.disabled || state.rayTraceRunning) return;
       state.rayTraceRunning = true;
+      lastRayTraceResultHtml = '';
+      openRayTraceResultBtn.disabled = true;
+      openRayTraceResultBtn.textContent = '계산 완료 후 결과 보기';
+      hideRayTraceResultPopup();
       updateRayTraceRunState();
-      setResultMessage('<div>Direct + multi-bounce ray tracing 실행 중…</div>', {{ openResult: true }});
+      updateRayTraceProgress({{ status: 'queued', phase: 'queued', processed_rays: 0, total_rays: 0, progress: 0 }});
+      setResultMessage('<div>Direct + multi-bounce ray tracing 실행 중…<br>진행 상황은 왼쪽 게이지에서 확인할 수 있습니다.</div>');
       try {{
         const totalRayCount = state.emitters
           .filter((item) => item.enabled !== false)
@@ -3686,6 +4619,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           optical_profiles: opticalPayload.profiles,
           optical_assignments: opticalPayload.assignments,
           transform_rules: state.transformRules.filter((rule) => rule.enabled !== false),
+          excluded_component_ids: getRayTraceExcludedComponentIds(),
           config: {{
             ray_count: Math.max(1, totalRayCount),
             max_depth: Math.max(0, Math.min(3, parseInt(rtMaxDepthInput.value, 10) || 0)),
@@ -3700,19 +4634,28 @@ def _build_html_form(material_options: str, version: str) -> str:
             max_stored_paths: Math.max(0, Math.min(1000, parseInt(rtMaxPathsInput.value, 10) || 0))
           }}
         }};
-        const response = await fetch('/api/raytrace/direct', {{
+        const response = await fetch('/api/raytrace/start', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
           body: JSON.stringify(requestPayload)
         }});
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'Ray tracing failed');
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || 'Ray tracing failed');
+        updateRayTraceProgress(job);
+        const result = await waitForRayTraceJob(job.job_id);
         state.rayTraceResult = result;
         renderDirectRayTraceResult(result);
+        updateRayDisplayUI();
         drawViewer();
       }} catch (error) {{
         state.rayTraceResult = null;
-        setResultMessage('<div><b>Ray tracing failed:</b> ' + escapeHtml(error.message) + '</div>', {{ openResult: true }});
+        lastRayTraceResultHtml = '';
+        openRayTraceResultBtn.disabled = true;
+        openRayTraceResultBtn.textContent = '분석 결과 보기';
+        updateRayDisplayUI();
+        updateRayTraceProgress({{ status: 'failed', phase: 'failed', processed_rays: 0, total_rays: 0, progress: 0 }});
+        hideRayTraceResultPopup();
+        setResultMessage('<div><b>Ray tracing failed:</b> ' + escapeHtml(error.message) + '</div>');
         drawViewer();
       }} finally {{
         state.rayTraceRunning = false;
@@ -3804,6 +4747,302 @@ def _build_html_form(material_options: str, version: str) -> str:
       return item.object_name + ' / faces: ' + item.face_count + ', area: ' + item.area_mm2 + ' mm2' + trunc;
     }}
 
+    function isComponentHidden(objectId) {{
+      return objectId !== null
+        && objectId !== undefined
+        && state.hiddenComponentObjectIds.has(objectId);
+    }}
+
+    function isComponentDeleted(objectId) {{
+      return objectId !== null
+        && objectId !== undefined
+        && state.deletedComponentObjectIds.has(objectId);
+    }}
+
+    function isComponentTraceable(objectId) {{
+      return objectId !== null
+        && objectId !== undefined
+        && !state.nonTraceableComponentObjectIds.has(objectId);
+    }}
+
+    function getRayTraceExcludedComponentIds() {{
+      return uniqueSorted(
+        Array.from(state.deletedComponentObjectIds).concat(Array.from(state.nonTraceableComponentObjectIds))
+      );
+    }}
+
+    function isComponentUnavailable(objectId) {{
+      return isComponentHidden(objectId) || isComponentDeleted(objectId);
+    }}
+
+    function isFaceDeleted(faceIndex) {{
+      if (faceIndex === null || faceIndex === undefined) return false;
+      return isComponentDeleted(state.faceToObjectId.get(faceIndex));
+    }}
+
+    function isFaceHidden(faceIndex) {{
+      if (faceIndex === null || faceIndex === undefined) return false;
+      return isComponentUnavailable(state.faceToObjectId.get(faceIndex));
+    }}
+
+    function visibleFaceIndices(faceIndices) {{
+      return (faceIndices || []).filter(faceIndex => !isFaceHidden(faceIndex));
+    }}
+
+    function getHiddenComponentFaceSet() {{
+      const hiddenFaces = new Set();
+      for (const objectId of state.hiddenComponentObjectIds) {{
+        const object = state.objectsById.get(objectId);
+        if (!object || !object.face_indices) continue;
+        for (const faceIndex of object.face_indices) {{
+          hiddenFaces.add(faceIndex);
+        }}
+      }}
+      return hiddenFaces;
+    }}
+
+    function getDeletedComponentFaceSet() {{
+      const deletedFaces = new Set();
+      for (const objectId of state.deletedComponentObjectIds) {{
+        const object = state.objectsById.get(objectId);
+        if (!object || !object.face_indices) continue;
+        for (const faceIndex of object.face_indices) {{
+          deletedFaces.add(faceIndex);
+        }}
+      }}
+      return deletedFaces;
+    }}
+
+    function getViewerExcludedFaceSet() {{
+      const excludedFaces = getHiddenComponentFaceSet();
+      for (const faceIndex of getDeletedComponentFaceSet()) {{
+        excludedFaces.add(faceIndex);
+      }}
+      return excludedFaces;
+    }}
+
+    function removeFacesFromSet(source, removedFaces) {{
+      return new Set(Array.from(source || []).filter(faceIndex => !removedFaces.has(faceIndex)));
+    }}
+
+    function syncComponentVisibilityDom(objectId) {{
+      if (!gapObjectList) return;
+      const row = gapObjectList.querySelector('[data-component-row-id="' + objectId + '"]');
+      if (!row) return;
+      const hidden = isComponentHidden(objectId);
+      const button = row.querySelector('[data-component-visibility]');
+      row.classList.toggle('is-hidden', hidden);
+      if (!button) return;
+      button.textContent = hidden ? 'Show' : 'Hide';
+      button.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+      button.setAttribute('aria-label', (hidden ? 'Show ' : 'Hide ') + (state.objectsById.get(objectId)?.object_name || ('component ' + objectId)) + ' in 3D viewer');
+      button.title = hidden ? 'Show component in 3D viewer' : 'Hide component from 3D viewer';
+    }}
+
+    function syncComponentTraceabilityDom(objectId) {{
+      if (!gapObjectList) return;
+      const row = gapObjectList.querySelector('[data-component-row-id="' + objectId + '"]');
+      if (!row) return;
+      const traceable = isComponentTraceable(objectId);
+      const button = row.querySelector('[data-component-traceability]');
+      row.classList.toggle('is-non-traceable', !traceable);
+      row.setAttribute('data-traceability', traceable ? 'on' : 'off');
+      if (button) {{
+        button.textContent = traceable ? 'Trace Off' : 'Trace On';
+        button.setAttribute('aria-pressed', traceable ? 'true' : 'false');
+        button.setAttribute(
+          'aria-label',
+          (traceable ? 'Disable' : 'Enable') + ' ray tracing collision for '
+            + (state.objectsById.get(objectId)?.object_name || ('component ' + objectId))
+        );
+      }}
+    }}
+
+    function hideComponentContextMenu() {{
+      componentContextMenu.classList.add('hidden-block');
+      componentContextMenu.setAttribute('aria-hidden', 'true');
+      state.componentContextMenuObjectId = null;
+    }}
+
+    function showComponentContextMenu(objectId, clientX, clientY, menuMode = 'full') {{
+      const object = state.objectsById.get(objectId);
+      if (!object || isComponentDeleted(objectId)) {{
+        hideComponentContextMenu();
+        return;
+      }}
+      state.componentContextMenuObjectId = objectId;
+      state.componentContextMenuPosition = {{ clientX, clientY }};
+      componentContextMenuName.textContent = object.object_name;
+      const hidden = isComponentHidden(objectId);
+      const traceable = isComponentTraceable(objectId);
+      componentContextMenuStatus.textContent = (hidden ? 'Hidden' : 'Visible')
+        + ' · ' + (traceable ? 'Traceability on' : 'Traceability off');
+      componentContextVisibility.textContent = hidden ? 'Show' : 'Hide';
+      componentContextTraceability.textContent = traceable ? 'Traceability Off' : 'Traceability On';
+      const compactMenu = menuMode === 'compact';
+      componentContextTraceability.classList.toggle('hidden-block', compactMenu);
+      componentContextPrimarySeparator.classList.toggle('hidden-block', compactMenu);
+      componentContextMaterial.classList.toggle('hidden-block', compactMenu);
+      componentContextTransform.classList.toggle('hidden-block', compactMenu);
+      componentContextMenu.classList.remove('hidden-block');
+      componentContextMenu.setAttribute('aria-hidden', 'false');
+      const menuWidth = componentContextMenu.offsetWidth || 230;
+      const menuHeight = componentContextMenu.offsetHeight || 250;
+      const left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, clientX));
+      const top = Math.max(8, Math.min(window.innerHeight - menuHeight - 8, clientY));
+      componentContextMenu.style.left = Math.round(left) + 'px';
+      componentContextMenu.style.top = Math.round(top) + 'px';
+      componentContextVisibility.focus({{ preventScroll: true }});
+    }}
+
+    function showComponentContextMenuForFace(faceIndex, clientX, clientY) {{
+      const objectId = faceIndex === null || faceIndex === undefined
+        ? null
+        : state.faceToObjectId.get(faceIndex);
+      if (objectId === null || objectId === undefined) {{
+        hideComponentContextMenu();
+        return;
+      }}
+      showComponentContextMenu(objectId, clientX, clientY);
+    }}
+
+    function toggleComponentVisibility(objectId) {{
+      if (!state.objectsById.has(objectId) || isComponentDeleted(objectId)) return;
+      if (isComponentHidden(objectId)) {{
+        state.hiddenComponentObjectIds.delete(objectId);
+      }} else {{
+        state.hiddenComponentObjectIds.add(objectId);
+      }}
+      syncComponentVisibilityDom(objectId);
+      drawViewer();
+    }}
+
+    function toggleComponentTraceability(objectId) {{
+      if (!state.objectsById.has(objectId) || isComponentDeleted(objectId)) return;
+      if (isComponentTraceable(objectId)) {{
+        state.nonTraceableComponentObjectIds.add(objectId);
+      }} else {{
+        state.nonTraceableComponentObjectIds.delete(objectId);
+      }}
+      syncComponentTraceabilityDom(objectId);
+      invalidateDirectRayTraceResult();
+      updateRayTraceRunState();
+      drawViewer();
+    }}
+
+    function runComponentContextMenuAction(action) {{
+      const objectId = state.componentContextMenuObjectId;
+      const popupPosition = state.componentContextMenuPosition
+        ? {{ ...state.componentContextMenuPosition }}
+        : null;
+      hideComponentContextMenu();
+      if (objectId === null || objectId === undefined || isComponentDeleted(objectId)) return;
+      if (action === 'visibility') {{
+        toggleComponentVisibility(objectId);
+      }} else if (action === 'traceability') {{
+        toggleComponentTraceability(objectId);
+      }} else if (action === 'material') {{
+        focusMaterialForObject(objectId, popupPosition);
+      }} else if (action === 'transform') {{
+        startTransformForObject(objectId, popupPosition);
+      }} else if (action === 'delete') {{
+        deleteComponentObject(objectId);
+      }}
+    }}
+
+    function deleteComponentObject(objectId) {{
+      const object = state.objectsById.get(objectId);
+      if (!object || isComponentDeleted(objectId)) return;
+      const confirmed = window.confirm(
+        '“' + object.object_name + '” component를 삭제할까요?\\n\\n'
+        + '3D viewer와 ray tracing 해석 대상에서 제거되며, 연결된 Transform / Material / Face emitter 설정도 함께 정리됩니다.\\n'
+        + '되돌리려면 CAD를 다시 불러와야 합니다.'
+      );
+      if (!confirmed) return;
+
+      const deletedFaces = new Set(object.face_indices || []);
+      state.deletedComponentObjectIds.add(objectId);
+      state.hiddenComponentObjectIds.delete(objectId);
+      state.nonTraceableComponentObjectIds.delete(objectId);
+      state.selectedObjectIds.delete(objectId);
+      state.selectedGapObjectIds.delete(objectId);
+      const remainingGapIds = uniqueSorted(Array.from(state.selectedGapObjectIds).filter(id => !isComponentDeleted(id)));
+      state.selectedGapObjectIds = new Set(remainingGapIds);
+      state.selectedGapObjectId = remainingGapIds.length ? remainingGapIds[0] : null;
+      state.clickedFaces = removeFacesFromSet(state.clickedFaces, deletedFaces);
+      state.panelFaces = removeFacesFromSet(state.panelFaces, deletedFaces);
+      state.selectedFaces = removeFacesFromSet(state.selectedFaces, deletedFaces);
+      state.localGapFaces = removeFacesFromSet(state.localGapFaces, deletedFaces);
+      state.selectedGapFaces = removeFacesFromSet(state.selectedGapFaces, deletedFaces);
+      state.emitterDraftFaces = removeFacesFromSet(state.emitterDraftFaces, deletedFaces);
+      if (state.inspectedFaceIndex !== null && deletedFaces.has(state.inspectedFaceIndex)) {{
+        state.inspectedFaceIndex = null;
+      }}
+      roiInput.value = parseFaceList(roiInput.value).filter(faceIndex => !deletedFaces.has(faceIndex)).join(',');
+      gapFaceInput.value = parseFaceList(gapFaceInput.value).filter(faceIndex => !deletedFaces.has(faceIndex)).join(',');
+
+      const removedRuleIds = new Set(
+        state.transformRules.filter(rule => rule.object_id === objectId).map(rule => rule.rule_id)
+      );
+      state.transformRules = state.transformRules.filter(rule => rule.object_id !== objectId);
+      state.selectedTransformRuleIds = new Set(
+        Array.from(state.selectedTransformRuleIds).filter(ruleId => !removedRuleIds.has(ruleId))
+      );
+      if (removedRuleIds.has(state.activeTransformRuleId)) {{
+        state.activeTransformRuleId = state.transformRules.length ? state.transformRules[0].rule_id : null;
+      }}
+      if (state.activeTransformRuleId) {{
+        syncEditorFromActiveRule();
+      }} else {{
+        state.gapMove = {{ x: 0, y: 0, z: 0 }};
+        state.gapMoveText = {{ x: '0', y: '0', z: '0' }};
+        state.gapTilt = {{ x: 0, y: 0, z: 0 }};
+        state.gapTiltText = {{ x: '0', y: '0', z: '0' }};
+        syncTransformInputs();
+        hideMovePopup();
+      }}
+
+      state.materialAssignments = state.materialAssignments.filter(item => item.object_id !== objectId);
+      if (state.selectedMaterialObjectId === objectId) {{
+        state.selectedMaterialObjectId = null;
+        hideMaterialPopup();
+      }}
+
+      const removedEmitterIds = new Set();
+      state.emitters = state.emitters.filter(emitter => {{
+        if ((emitter.emitter_type || 'face') !== 'face') return true;
+        emitter.face_indices = (emitter.face_indices || []).filter(faceIndex => !deletedFaces.has(faceIndex));
+        if (emitter.face_indices.length) return true;
+        removedEmitterIds.add(emitter.emitter_id);
+        return false;
+      }});
+      if (removedEmitterIds.has(state.activeEmitterId)) {{
+        state.activeEmitterId = null;
+        state.emitterSelectionActive = false;
+        hideEmitterPopup();
+      }}
+
+      gapObjectList.querySelector('[data-component-row-id="' + objectId + '"]')?.remove();
+      objectList.querySelector('[data-roi-object-row-id="' + objectId + '"]')?.remove();
+      if (!gapObjectList.querySelector('[data-component-row-id]')) {{
+        gapObjectList.innerHTML = '<div class="small">모든 component가 삭제되었습니다. 복원하려면 CAD를 다시 불러오세요.</div>';
+      }}
+      if (!objectList.querySelector('[data-roi-object-row-id]')) {{
+        objectList.innerHTML = '<div class="small">ROI로 선택할 component가 없습니다.</div>';
+      }}
+
+      const remainingFaceCount = Math.max(0, (state.mesh?.faces?.length || 0) - getDeletedComponentFaceSet().size);
+      kpiFaces.textContent = String(remainingFaceCount);
+      invalidateDirectRayTraceResult();
+      renderTransformRules();
+      renderMaterialLibrary();
+      renderEmitterList();
+      updateMaterialTargetSummary();
+      updateGapSelectionStats();
+      recomputeSelectedFaces();
+      updateRayTraceRunState();
+    }}
+
     function refreshComponentNameDom(objectId) {{
       const item = state.objectsById.get(objectId);
       if (!item) return;
@@ -3812,8 +5051,16 @@ def _build_html_form(material_options: str, version: str) -> str:
         const nameEl = componentRow.querySelector('[data-component-name]');
         if (nameEl && nameEl.tagName !== 'INPUT') {{
           nameEl.textContent = item.object_name;
-          nameEl.title = 'Double-click or press F2 to rename';
+          nameEl.title = item.object_name + ' · Double-click or press F2 to rename';
         }}
+        const materialButton = componentRow.querySelector('[data-component-material]');
+        if (materialButton) materialButton.setAttribute('aria-label', 'Material for ' + item.object_name);
+        const transformButton = componentRow.querySelector('[data-component-transform]');
+        if (transformButton) transformButton.setAttribute('aria-label', 'Transform ' + item.object_name);
+        const moreButton = componentRow.querySelector('[data-component-more]');
+        if (moreButton) moreButton.setAttribute('aria-label', 'Hide, show, or delete ' + item.object_name);
+        syncComponentVisibilityDom(objectId);
+        syncComponentTraceabilityDom(objectId);
       }}
       const roiRow = objectList ? objectList.querySelector('[data-roi-object-row-id=\"' + objectId + '\"]') : null;
       if (roiRow) {{
@@ -3912,7 +5159,7 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function buildTransformRule(objectId) {{
       const item = state.objectsById.get(objectId);
-      if (!item) return null;
+      if (!item || isComponentDeleted(objectId)) return null;
       return {{
         rule_id: 'tr_' + objectId + '_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
         target_type: 'component',
@@ -3950,7 +5197,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     function syncComponentSelectionSummary() {{
       const ids = selectedComponentObjectIds();
       if (!ids.length) {{
-        componentSelectionSummary.textContent = '선택된 부품 없음. Component row를 클릭하면 하이라이트되고, Transform 버튼을 누르면 오른쪽 viewer 입력창이 열립니다.';
+        componentSelectionSummary.textContent = '선택된 부품 없음. Component row 또는 3D 형상을 클릭하면 선택되며, Transform 버튼이나 우클릭 메뉴로 입력창을 엽니다.';
         return;
       }}
       const names = ids.slice(0, 4).map(id => {{
@@ -4595,8 +5842,8 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (state.gapTargetMode === 'face_gap') {{
         roiModeHint.textContent = '현재는 Local face move 선택 모드입니다. ROI는 선택사항이며, 3D viewer 클릭은 local face target 선택으로 동작합니다.';
         viewerTip.textContent = dragSelect
-          ? 'Drag = local face 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right drag = pan.'
-          : 'Drag/Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll. 선택 모드에서만 Click 선택.';
+          ? 'Drag = local face 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan.'
+          : 'Drag/Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll. 선택 모드에서만 Click 선택.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
         return;
@@ -4604,22 +5851,22 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (mode === 'click') {{
         roiModeHint.textContent = '3D view에서 선택: 지금부터 3D viewer 클릭이 ROI 선택으로 동작합니다.';
         viewerTip.textContent = dragSelect
-          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right drag = pan.'
-          : 'Drag/Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll. ROI 모드에서만 Click 선택.';
+          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan.'
+          : 'Drag/Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll. ROI 모드에서만 Click 선택.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
       }} else if (mode === 'panel') {{
         roiModeHint.textContent = 'Component 선택: component 체크 또는 face index 입력으로 ROI를 선택합니다.';
         viewerTip.textContent = dragSelect
-          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right drag = pan.'
-          : 'Drag/Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll, Camera preset = 정면/측면 보기 고정.';
+          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan.'
+          : 'Drag/Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll, Camera preset = 정면/측면 보기 고정.';
         componentSelectBlock.classList.remove('hidden-block');
         faceIndexBlock.classList.remove('hidden-block');
       }} else {{
         roiModeHint.textContent = 'ROI 선택 방식이 아직 정해지지 않았습니다. 현재 3D viewer 클릭은 하이라이트만 동작합니다.';
         viewerTip.textContent = dragSelect
-          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right drag = pan.'
-          : 'Drag/Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll, Camera preset = 정면/측면 보기 고정.';
+          ? 'Drag = gap target 박스 선택, Ctrl+Drag = add/remove, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan.'
+          : 'Drag/Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll, Camera preset = 정면/측면 보기 고정.';
         componentSelectBlock.classList.add('hidden-block');
         faceIndexBlock.classList.add('hidden-block');
       }}
@@ -4634,7 +5881,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       }} else {{
         merged = [];
       }}
-      state.selectedFaces = new Set(uniqueSorted(merged));
+      state.selectedFaces = new Set(uniqueSorted(merged.filter(faceIndex => !isFaceDeleted(faceIndex))));
       updateRoiStats();
       updateViewerMode();
       updateGapSelectionStats();
@@ -4645,7 +5892,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       let faces = [];
       for (const id of state.selectedObjectIds) {{
         const item = state.objectsById.get(id);
-        if (item && !item.is_truncated) {{
+        if (item && !isComponentDeleted(id) && !item.is_truncated) {{
           faces = faces.concat(item.face_indices);
         }}
       }}
@@ -4737,7 +5984,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const options = {{
         renderMode: state.renderMode,
         selectedFaces: uniqueSorted(Array.from(state.selectedFaces)),
-        hiddenFaces: getThreeHiddenTransformFaces(),
+        hiddenFaces: getThreeHiddenFaces(),
         overlays: buildThreeTransformOverlays(),
         axisScalePercent: state.axisScalePercent,
         pickBaseOnly: state.emitterSelectionActive || state.receiverSelectionActive,
@@ -4752,8 +5999,12 @@ def _build_html_form(material_options: str, version: str) -> str:
       updateViewerEngineUI();
     }}
 
-    function getThreeHiddenTransformFaces() {{
-      return uniqueSorted(Array.from(getCommittedTransformFaceSet()));
+    function getThreeHiddenFaces() {{
+      const hiddenFaces = getCommittedTransformFaceSet();
+      for (const faceIndex of getViewerExcludedFaceSet()) {{
+        hiddenFaces.add(faceIndex);
+      }}
+      return uniqueSorted(Array.from(hiddenFaces));
     }}
 
     function modelSpanMm() {{
@@ -5234,15 +6485,16 @@ def _build_html_form(material_options: str, version: str) -> str:
         if (emitter.enabled === false) continue;
         if (emitterEditorVisible && emitter.emitter_id === state.activeEmitterId) continue;
         const isFaceEmitter = emitter.emitter_type === 'face';
-        if (isFaceEmitter && (!emitter.face_indices || !emitter.face_indices.length)) continue;
-        const faceGeometry = isFaceEmitter ? emitterOverlayTransform(emitter.face_indices, emitter.normal_flip) : null;
+        const emitterFaces = isFaceEmitter ? visibleFaceIndices(emitter.face_indices) : [];
+        if (isFaceEmitter && !emitterFaces.length) continue;
+        const faceGeometry = isFaceEmitter ? emitterOverlayTransform(emitterFaces, emitter.normal_flip) : null;
         const virtualPlane = isFaceEmitter ? null : emitterPlaneFromSpec(emitter);
         if (!isFaceEmitter && (!virtualPlane || !virtualPlane.center)) continue;
         let arrowDirection = isFaceEmitter ? faceGeometry.arrowDirection : virtualPlane.normal;
         if (!isFaceEmitter && emitter.normal_flip) arrowDirection = arrowDirection.map((value) => -value);
         overlays.push({{
           kind: 'emitter_' + emitter.emitter_id,
-          faceIndices: isFaceEmitter ? emitter.face_indices : [],
+          faceIndices: emitterFaces,
           pivot: faceGeometry ? faceGeometry.pivot : [0, 0, 0],
           move: faceGeometry ? faceGeometry.move : {{ x: 0, y: 0, z: 0 }},
           tilt: faceGeometry ? faceGeometry.tilt : {{ x: 0, y: 0, z: 0 }},
@@ -5259,7 +6511,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           arrowColor: 0xfbbf24
         }});
       }}
-      const draftEmitterFaces = uniqueSorted(Array.from(state.emitterDraftFaces));
+      const draftEmitterFaces = visibleFaceIndices(uniqueSorted(Array.from(state.emitterDraftFaces)));
       const draftVirtualPlane = emitterEditorVisible ? currentDraftEmitterPlane() : null;
       if ((draftEmitterFaces.length || draftVirtualPlane) && emitterEditorVisible) {{
         const geometry = draftEmitterFaces.length ? emitterOverlayTransform(draftEmitterFaces, !!emitterNormalFlipInput.checked) : null;
@@ -5335,6 +6587,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         }});
       }}
       for (const objectId of uniqueSorted(Array.from(state.selectedGapObjectIds))) {{
+        if (isComponentUnavailable(objectId)) continue;
         const object = state.objectsById.get(objectId);
         if (!object || !object.face_indices || !object.face_indices.length) continue;
         const rule = getTransformRuleByObjectId(objectId);
@@ -5353,7 +6606,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
       if (state.selectedMaterialObjectId !== null && state.selectedMaterialObjectId !== undefined) {{
         const object = state.objectsById.get(state.selectedMaterialObjectId);
-        if (object && object.face_indices && object.face_indices.length) {{
+        if (!isComponentUnavailable(state.selectedMaterialObjectId) && object && object.face_indices && object.face_indices.length) {{
           const rule = getTransformRuleByObjectId(state.selectedMaterialObjectId);
           const hasApplied = rule && rule.enabled && transformRuleHasAppliedTransform(rule);
           overlays.push({{
@@ -5371,6 +6624,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
       for (const rule of state.transformRules) {{
         if (!rule.enabled || rule.target_type !== 'component' || !transformRuleHasAppliedTransform(rule)) continue;
+        if (isComponentUnavailable(rule.object_id)) continue;
         const object = state.objectsById.get(rule.object_id);
         if (!object || !object.face_indices || !object.face_indices.length) continue;
         overlays.push({{
@@ -5392,6 +6646,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           state.previewOverlayEnabled
           && rule
           && object
+          && !isComponentUnavailable(rule.object_id)
           && object.face_indices
           && object.face_indices.length
           && activeEditorDiffersFromRule()
@@ -5409,7 +6664,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           }});
         }}
       }} else if (state.previewOverlayEnabled) {{
-        const faceIndices = getActivePreviewFaceIndices();
+        const faceIndices = visibleFaceIndices(getActivePreviewFaceIndices());
         if (faceIndices.length && (currentMoveMagnitude() > 1e-9 || currentTiltMagnitude() > 1e-9)) {{
           overlays.push({{
             kind: 'draft_face',
@@ -5431,6 +6686,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         .filter((path) => Array.isArray(path) && path.length >= 2 && path[0].point && path[path.length - 1].point)
         .slice(0, 500);
       const directReceiverSegments = [];
+      const reflectedReceiverSegments = [];
       const primarySurfaceSegments = [];
       const reflectedSegments = {{
         specular: [],
@@ -5438,30 +6694,49 @@ def _build_html_form(material_options: str, version: str) -> str:
         gaussian: []
       }};
       for (const path of visiblePaths) {{
+        const reachesReceiver = rayPathReachesReceiver(path);
+        const receiverFilter = reachesReceiver ? receiverPathFilterName(path) : null;
+        if (receiverFilter && !state.rayDisplayFilters[receiverFilter]) continue;
         for (let index = 1; index < path.length; index++) {{
           const startEvent = path[index - 1];
           const endEvent = path[index];
           if (!startEvent?.point || !endEvent?.point) continue;
           const segment = [startEvent.point, endEvent.point];
+          if (reachesReceiver) {{
+            if (receiverFilter === 'receiver_reflected') reflectedReceiverSegments.push(segment);
+            else directReceiverSegments.push(segment);
+            continue;
+          }}
           if (index === 1) {{
-            if (path.length === 2 && endEvent.event_type === 'receiver') {{
-              directReceiverSegments.push(segment);
-            }} else {{
+            if (state.rayDisplayFilters.direct) {{
               primarySurfaceSegments.push(segment);
             }}
             continue;
           }}
           const rayKind = String(endEvent.ray_kind || startEvent.ray_kind || 'gaussian');
-          if (reflectedSegments[rayKind]) reflectedSegments[rayKind].push(segment);
+          if (reflectedSegments[rayKind] && state.rayDisplayFilters[rayKind]) {{
+            reflectedSegments[rayKind].push(segment);
+          }}
         }}
       }}
       if (directReceiverSegments.length) {{
         overlays.push({{
-          kind: 'direct_ray_paths',
+          kind: 'direct_receiver_ray_paths',
           faceIndices: [],
           referencePoints: [],
           referenceSegments: directReceiverSegments,
-          segmentColor: 0x4ade80
+          segmentColor: 0x4ade80,
+          segmentOpacity: 1.0
+        }});
+      }}
+      if (reflectedReceiverSegments.length) {{
+        overlays.push({{
+          kind: 'reflected_receiver_ray_paths',
+          faceIndices: [],
+          referencePoints: [],
+          referenceSegments: reflectedReceiverSegments,
+          segmentColor: 0xfacc15,
+          segmentOpacity: 1.0
         }});
       }}
       if (primarySurfaceSegments.length) {{
@@ -5470,7 +6745,8 @@ def _build_html_form(material_options: str, version: str) -> str:
           faceIndices: [],
           referencePoints: [],
           referenceSegments: primarySurfaceSegments,
-          segmentColor: 0x60a5fa
+          segmentColor: 0x60a5fa,
+          segmentOpacity: 0.62
         }});
       }}
       const reflectionColors = {{
@@ -5485,18 +6761,8 @@ def _build_html_form(material_options: str, version: str) -> str:
           faceIndices: [],
           referencePoints: [],
           referenceSegments: reflectedSegments[rayKind],
-          segmentColor: reflectionColors[rayKind]
-        }});
-      }}
-      if (!directReceiverSegments.length && !primarySurfaceSegments.length
-          && !reflectedSegments.specular.length && !reflectedSegments.lambertian.length
-          && !reflectedSegments.gaussian.length && visiblePaths.length) {{
-        overlays.push({{
-          kind: 'fallback_ray_paths',
-          faceIndices: [],
-          referencePoints: [],
-          referenceSegments: visiblePaths.map((path) => [path[0].point, path[path.length - 1].point]),
-          segmentColor: 0xfb923c
+          segmentColor: reflectionColors[rayKind],
+          segmentOpacity: 0.76
         }});
       }}
       return overlays;
@@ -5912,6 +7178,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const committedFaces = new Set();
       for (const rule of state.transformRules) {{
         if (!rule.enabled || rule.target_type !== 'component' || !transformRuleHasAppliedTransform(rule)) continue;
+        if (isComponentUnavailable(rule.object_id)) continue;
         const object = state.objectsById.get(rule.object_id);
         if (!object || !object.face_indices) continue;
         for (const faceIndex of object.face_indices) {{
@@ -5950,7 +7217,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (state.gapTargetMode === 'component_move_gap') {{
         const rule = activeTransformRule();
         const object = rule ? state.objectsById.get(rule.object_id) : null;
-        if (rule && object && object.face_indices && object.face_indices.length && activeEditorDiffersFromRule()) {{
+        if (rule && !isComponentUnavailable(rule.object_id) && object && object.face_indices && object.face_indices.length && activeEditorDiffersFromRule()) {{
           drawSingleTransformPreview(
             ctx,
             scene,
@@ -5962,7 +7229,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           );
         }}
       }} else {{
-        const faceIndices = getActivePreviewFaceIndices();
+        const faceIndices = visibleFaceIndices(getActivePreviewFaceIndices());
         if (faceIndices.length && (currentMoveMagnitude() > 1e-9 || currentTiltMagnitude() > 1e-9)) {{
           drawSingleTransformPreview(ctx, scene, faceIndices, state.gapMove, state.gapTilt, 'rgba(250, 204, 21, 0.18)', 'rgba(250, 204, 21, 0.95)');
         }}
@@ -5987,6 +7254,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const py = clientY - rect.top;
       for (let i = scene.triList.length - 1; i >= 0; i--) {{
         const tri = scene.triList[i];
+        if (isFaceHidden(tri.idx)) continue;
         const isSelected = state.selectedFaces.has(tri.idx);
         if (mode === 'roi' && !isSelected) continue;
         if (pointInTriangle(px, py, tri.p0, tri.p1, tri.p2)) {{
@@ -6006,6 +7274,7 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function getSurfaceCluster(seedFaceIndex) {{
       if (seedFaceIndex === null || seedFaceIndex === undefined || !state.mesh) return [];
+      if (isFaceHidden(seedFaceIndex)) return [];
       const visited = new Set();
       const queue = [seedFaceIndex];
       const seedNormal = faceNormal(seedFaceIndex);
@@ -6014,6 +7283,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         const faceIndex = queue.pop();
         if (visited.has(faceIndex)) continue;
         visited.add(faceIndex);
+        if (isFaceHidden(faceIndex)) continue;
         const currentNormal = faceNormal(faceIndex);
         if (dot3(seedNormal, currentNormal) < 0.965) {{
           continue;
@@ -6060,6 +7330,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const maxY = Math.max(rect.y0, rect.y1);
       const seedFaces = [];
       for (const tri of scene.triList) {{
+        if (isFaceHidden(tri.idx)) continue;
         if (mode === 'roi' && !state.selectedFaces.has(tri.idx)) continue;
         const cx = (tri.p0.screenX + tri.p1.screenX + tri.p2.screenX) / 3.0;
         const cy = (tri.p0.screenY + tri.p1.screenY + tri.p2.screenY) / 3.0;
@@ -6071,7 +7342,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const collected = new Set();
       for (const faceIndex of seedFaces) {{
         for (const member of getSurfaceCluster(faceIndex)) {{
-          collected.add(member);
+          if (!isFaceHidden(member)) collected.add(member);
         }}
       }}
       setLocalGapFaces(Array.from(collected), additive);
@@ -6099,7 +7370,7 @@ def _build_html_form(material_options: str, version: str) -> str:
             return;
           }}
           const objectId = faceIndex === null || faceIndex === undefined ? null : state.faceToObjectId.get(faceIndex);
-          setSelectedGapObject(objectId, pickEvent || null, additive);
+          setSelectedGapObject(objectId, null, additive);
         }}
       }}
     }}
@@ -6107,7 +7378,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     function setSelectedGapObjects(objectIds, additive, popupPosition) {{
       const next = additive ? new Set(state.selectedGapObjectIds) : new Set();
       for (const objectId of objectIds) {{
-        if (!state.objectsById.has(objectId)) continue;
+        if (!state.objectsById.has(objectId) || isComponentDeleted(objectId)) continue;
         if (additive && next.has(objectId)) {{
           next.delete(objectId);
         }} else {{
@@ -6143,7 +7414,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function startTransformForObject(objectId, popupPosition) {{
-      if (!state.objectsById.has(objectId)) return;
+      if (!state.objectsById.has(objectId) || isComponentDeleted(objectId)) return;
       state.gapTargetMode = 'component_move_gap';
       if (gapTargetMode) {{
         gapTargetMode.value = 'component_move_gap';
@@ -6163,7 +7434,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function focusMaterialForObject(objectId, popupPosition) {{
-      if (!state.objectsById.has(objectId)) return;
+      if (!state.objectsById.has(objectId) || isComponentDeleted(objectId)) return;
       ensureMaterialLibraryState();
       state.selectedMaterialObjectId = objectId;
       state.materialTargetMode = 'part';
@@ -6188,6 +7459,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       const maxY = Math.max(rect.y0, rect.y1);
       const objectIds = new Set();
       for (const tri of scene.triList) {{
+        if (isFaceHidden(tri.idx)) continue;
         const cx = (tri.p0.screenX + tri.p1.screenX + tri.p2.screenX) / 3.0;
         const cy = (tri.p0.screenY + tri.p1.screenY + tri.p2.screenY) / 3.0;
         if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {{
@@ -6328,8 +7600,8 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function activeGapFaceIndices() {{
-      const manual = parseFaceList(gapFaceInput.value);
-      const merged = uniqueSorted(Array.from(state.localGapFaces).concat(manual));
+      const manual = parseFaceList(gapFaceInput.value).filter(faceIndex => !isFaceDeleted(faceIndex));
+      const merged = uniqueSorted(Array.from(state.localGapFaces).concat(manual).filter(faceIndex => !isFaceDeleted(faceIndex)));
       state.selectedGapFaces = new Set(merged);
       gapFaceIndices.value = merged.join(',');
       return merged;
@@ -6958,10 +8230,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         viewerTip.textContent = isEdges ? 'Emitter: Click near two CAD edges.' : 'Emitter: Select 3 to 6 CAD vertices. Click again to remove.';
       }} else if (state.emitters.length) {{
         emitterSelectionBanner.textContent = state.emitters.length + ' emitter(s) registered. List의 Settings에서 편집합니다.';
-        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll.';
       }} else {{
         emitterSelectionBanner.textContent = '광원이 없습니다. Add에서 생성 방식을 선택하세요.';
-        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+        viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll.';
       }}
     }}
 
@@ -7488,10 +8760,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         viewerTip.textContent = isEdges ? 'Receiver: Click near two CAD edges.' : 'Receiver: Select 3 to 6 CAD vertices. Click again to remove.';
       }} else if (state.receivers.length) {{
         receiverSelectionBanner.textContent = state.receivers.length + ' receiver(s) registered. List의 Settings에서 편집합니다.';
-        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll.';
       }} else {{
         receiverSelectionBanner.textContent = 'Receiver가 없습니다. Add에서 배치 방식을 선택하세요.';
-        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right drag = pan, Shift/Alt+drag = roll.';
+        if (!state.emitterSelectionActive) viewerTip.textContent = 'Drag = rotate, Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll.';
       }}
     }}
 
@@ -7859,6 +9131,10 @@ def _build_html_form(material_options: str, version: str) -> str:
         state.mesh = payload.mesh;
         state.sceneToken = payload.metadata?.scene_token || null;
         state.rayTraceResult = null;
+        state.hiddenComponentObjectIds.clear();
+        state.nonTraceableComponentObjectIds.clear();
+        state.deletedComponentObjectIds.clear();
+        hideComponentContextMenu();
         pendingThreeCameraPreset = 'fit';
         drawViewer();
         state.objectsById.clear();
@@ -7907,15 +9183,24 @@ def _build_html_form(material_options: str, version: str) -> str:
               + '<div class=\"meta\">faces: ' + item.face_count + ' / area: ' + item.area_mm2 + ' mm2</div>'
               + '</div>'
               + '<div class=\"component-row-actions\">'
-              + '<button type=\"button\" class=\"mini-btn\" data-component-transform=\"' + item.object_id + '\">Transform</button>'
-              + '<button type=\"button\" class=\"mini-btn ghost\" data-component-material=\"' + item.object_id + '\">Material</button>'
+              + '<button type=\"button\" class=\"mini-btn component-material\" data-component-material=\"' + item.object_id + '\">Material</button>'
+              + '<button type=\"button\" class=\"mini-btn component-transform\" data-component-transform=\"' + item.object_id + '\">Transform</button>'
+              + '<button type=\"button\" class=\"mini-btn traceability-toggle\" data-component-traceability=\"' + item.object_id + '\" aria-pressed=\"true\">Trace Off</button>'
+              + '<button type=\"button\" class=\"mini-btn component-more\" data-component-more=\"' + item.object_id + '\" aria-haspopup=\"menu\">+</button>'
               + '</div>'
               + '</div>';
             const selectArea = gapRow.querySelector('[data-component-select]');
             const nameEl = gapRow.querySelector('[data-component-name]');
-            const transformBtn = gapRow.querySelector('[data-component-transform]');
             const materialBtn = gapRow.querySelector('[data-component-material]');
+            const transformBtn = gapRow.querySelector('[data-component-transform]');
+            const traceabilityBtn = gapRow.querySelector('[data-component-traceability]');
+            const moreBtn = gapRow.querySelector('[data-component-more]');
             nameEl.textContent = item.object_name;
+            nameEl.title = item.object_name + ' · Double-click or press F2 to rename';
+            materialBtn.setAttribute('aria-label', 'Material for ' + item.object_name);
+            transformBtn.setAttribute('aria-label', 'Transform ' + item.object_name);
+            moreBtn.setAttribute('aria-label', 'Hide, show, or delete ' + item.object_name);
+            moreBtn.title = 'Hide / Show / Delete';
             selectArea.addEventListener('click', function (ev) {{
               const id = parseInt(ev.currentTarget.getAttribute('data-component-select'), 10);
               setSelectedGapObject(id, null, true);
@@ -7935,15 +9220,36 @@ def _build_html_form(material_options: str, version: str) -> str:
               const id = parseInt(ev.currentTarget.getAttribute('data-component-select'), 10);
               beginRenameComponent(id);
             }});
-            transformBtn.addEventListener('click', function (ev) {{
-              const id = parseInt(ev.currentTarget.getAttribute('data-component-transform'), 10);
-              startTransformForObject(id, ev);
-            }});
             materialBtn.addEventListener('click', function (ev) {{
+              ev.stopPropagation();
               const id = parseInt(ev.currentTarget.getAttribute('data-component-material'), 10);
               focusMaterialForObject(id, ev);
             }});
+            transformBtn.addEventListener('click', function (ev) {{
+              ev.stopPropagation();
+              const id = parseInt(ev.currentTarget.getAttribute('data-component-transform'), 10);
+              startTransformForObject(id, ev);
+            }});
+            traceabilityBtn.addEventListener('click', function (ev) {{
+              ev.stopPropagation();
+              const id = parseInt(ev.currentTarget.getAttribute('data-component-traceability'), 10);
+              toggleComponentTraceability(id);
+            }});
+            moreBtn.addEventListener('click', function (ev) {{
+              ev.preventDefault();
+              ev.stopPropagation();
+              const id = parseInt(ev.currentTarget.getAttribute('data-component-more'), 10);
+              const rect = ev.currentTarget.getBoundingClientRect();
+              showComponentContextMenu(id, rect.left, rect.bottom + 4, 'compact');
+            }});
+            gapRow.addEventListener('contextmenu', function (ev) {{
+              ev.preventDefault();
+              ev.stopPropagation();
+              showComponentContextMenu(item.object_id, ev.clientX, ev.clientY);
+            }});
             gapObjectList.appendChild(gapRow);
+            syncComponentVisibilityDom(item.object_id);
+            syncComponentTraceabilityDom(item.object_id);
           }}
         }}
 
@@ -8008,7 +9314,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       ctx.fillRect(0, 0, w, h);
       const renderModeValue = state.renderMode || 'wireframe';
       const committedFaces = mode === 'full' ? getCommittedTransformFaceSet() : new Set();
+      const hiddenComponentFaces = getViewerExcludedFaceSet();
       for (const tri of scene.triList) {{
+        if (hiddenComponentFaces.has(tri.idx)) continue;
         const sel = state.selectedFaces.has(tri.idx);
         const inspected = state.inspectedFaceIndex === tri.idx;
         const gapSelected = state.gapTargetMode === 'component_move_gap'
@@ -8259,15 +9567,34 @@ def _build_html_form(material_options: str, version: str) -> str:
         handleViewerPickFace(faceIndex, mode, ev);
       }}
 
+      function handleComponentContextPick(ev, mode) {{
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (totalMove > 6) return;
+        const canvas = mode === 'roi' ? roiCanvas : fullCanvas;
+        const faceIndex = pickFaceFromCanvas(canvas, mode, ev.clientX, ev.clientY);
+        showComponentContextMenuForFace(faceIndex, ev.clientX, ev.clientY);
+      }}
+
       fullCanvas.addEventListener('click', function (ev) {{
         handlePick(ev, 'full');
       }});
       roiCanvas.addEventListener('click', function (ev) {{
         handlePick(ev, 'roi');
       }});
+      fullCanvas.addEventListener('contextmenu', function (ev) {{
+        handleComponentContextPick(ev, 'full');
+      }});
+      roiCanvas.addEventListener('contextmenu', function (ev) {{
+        handleComponentContextPick(ev, 'roi');
+      }});
       viewerWrap.addEventListener('leakage-three-pick', function (ev) {{
         const detail = ev.detail || {{}};
         handleViewerPickFace(detail.faceIndex, detail.mode || 'full', detail);
+      }});
+      viewerWrap.addEventListener('leakage-three-contextmenu', function (ev) {{
+        const detail = ev.detail || {{}};
+        showComponentContextMenuForFace(detail.faceIndex, detail.clientX, detail.clientY);
       }});
     }}
 
@@ -8350,6 +9677,44 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (!target) return;
       applyCameraPreset(target.getAttribute('data-camera'));
     }});
+    openRayTraceResultBtn.addEventListener('click', function () {{
+      if (state.rayTraceResult && lastRayTraceResultHtml) {{
+        renderRayTraceResultPopup(lastRayTraceResultHtml, state.rayTraceResult);
+      }}
+    }});
+    componentContextMenu.addEventListener('click', function (ev) {{
+      const actionButton = ev.target.closest('[data-component-context-action]');
+      if (!actionButton) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      runComponentContextMenuAction(actionButton.getAttribute('data-component-context-action'));
+    }});
+    document.addEventListener('pointerdown', function (ev) {{
+      if (componentContextMenu.classList.contains('hidden-block')) return;
+      if (!componentContextMenu.contains(ev.target)) hideComponentContextMenu();
+    }});
+    document.addEventListener('keydown', function (ev) {{
+      if (ev.key === 'Escape') hideComponentContextMenu();
+    }});
+    window.addEventListener('blur', hideComponentContextMenu);
+    window.addEventListener('scroll', hideComponentContextMenu, true);
+    rayTraceResultTabs.addEventListener('click', function (ev) {{
+      const tabButton = ev.target.closest('[data-result-tab]');
+      if (!tabButton) return;
+      setRayTraceResultTab(tabButton.getAttribute('data-result-tab'));
+    }});
+    rayDisplayPanel.addEventListener('change', function (ev) {{
+      const target = ev.target.closest('[data-ray-filter]');
+      if (!target) return;
+      const filterName = target.getAttribute('data-ray-filter');
+      if (!(filterName in state.rayDisplayFilters)) return;
+      state.rayDisplayFilters[filterName] = !!target.checked;
+      updateRayDisplayUI();
+      drawViewer();
+    }});
+    rayReceiverOnlyBtn.addEventListener('click', function () {{ applyRayDisplayPreset('receiver'); }});
+    rayAllOnBtn.addEventListener('click', function () {{ applyRayDisplayPreset('all'); }});
+    rayAllOffBtn.addEventListener('click', function () {{ applyRayDisplayPreset('none'); }});
     function bindMoveInput(inputElX, inputElY, inputElZ) {{
       if (!inputElX || !inputElY || !inputElZ) return;
       const handler = function () {{
@@ -8401,18 +9766,27 @@ def _build_html_form(material_options: str, version: str) -> str:
     if (cursorReceiverPopupHeader) {{
       cursorReceiverPopupHeader.addEventListener('mousedown', startReceiverPopupDrag);
     }}
+    rayTraceResultPopupHeader.addEventListener('mousedown', startRayTraceResultPopupDrag);
+    rayTraceResultResizeHandle.addEventListener('mousedown', startRayTraceResultPopupResize);
+    rayTraceResultPopupClose.addEventListener('click', hideRayTraceResultPopup);
     window.addEventListener('mousemove', movePopupDrag);
     window.addEventListener('mousemove', moveMaterialPopupDrag);
     window.addEventListener('mousemove', moveEmitterPopupDrag);
     window.addEventListener('mousemove', moveReceiverPopupDrag);
+    window.addEventListener('mousemove', moveRayTraceResultPopupDrag);
+    window.addEventListener('mousemove', moveRayTraceResultPopupResize);
     window.addEventListener('mouseup', stopPopupDrag);
     window.addEventListener('mouseup', stopMaterialPopupDrag);
     window.addEventListener('mouseup', stopEmitterPopupDrag);
     window.addEventListener('mouseup', stopReceiverPopupDrag);
+    window.addEventListener('mouseup', stopRayTraceResultPopupDrag);
+    window.addEventListener('mouseup', stopRayTraceResultPopupResize);
     window.addEventListener('mouseleave', stopPopupDrag);
     window.addEventListener('mouseleave', stopMaterialPopupDrag);
     window.addEventListener('mouseleave', stopEmitterPopupDrag);
     window.addEventListener('mouseleave', stopReceiverPopupDrag);
+    window.addEventListener('mouseleave', stopRayTraceResultPopupDrag);
+    window.addEventListener('mouseleave', stopRayTraceResultPopupResize);
     previewOverlayToggle.addEventListener('change', function () {{
       state.previewOverlayEnabled = !!previewOverlayToggle.checked;
       drawViewer();
@@ -8672,7 +10046,13 @@ def _build_html_form(material_options: str, version: str) -> str:
       await runDirectRayTrace();
     }});
 
-    window.addEventListener('resize', drawViewer);
+    window.addEventListener('resize', function () {{
+      hideComponentContextMenu();
+      drawViewer();
+      if (!rayTraceResultPopup.classList.contains('hidden-block') && state.resultPopupPosition) {{
+        applyRayTraceResultPopupPosition(state.resultPopupPosition.left, state.resultPopupPosition.top);
+      }}
+    }});
     renderEmitterList();
     renderReceiverList();
     setSidebarLayout('vertical');
@@ -8685,6 +10065,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     updateGapSelectionStats();
     updateMaterialTargetSummary();
     updateRayTraceRunState();
+    updateRayDisplayUI();
     state.renderMode = 'wireframe';
     state.axisScalePercent = parseInt(axisScale.value, 10) || 100;
     state.previewOverlayEnabled = !!previewOverlayToggle.checked;
@@ -8781,6 +10162,16 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
             self._send_plain(200, "pong")
             return
 
+        if parsed.path == "/api/raytrace/status":
+            params = urllib.parse.parse_qs(parsed.query)
+            job_id = str(params.get("job_id", [""])[0])
+            job = _raytrace_job_snapshot(job_id)
+            if job is None:
+                self._send_json(404, {"error": "Ray tracing job was not found"})
+            else:
+                self._send_json(200, job)
+            return
+
         if parsed.path.startswith("/static/"):
             rel = parsed.path[len("/static/") :]
             path = _safe_static_path(rel)
@@ -8821,6 +10212,51 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+
+        if parsed.path == "/api/raytrace/start":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise ValueError("Ray tracing request is empty")
+                request_payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                scene_token = str(request_payload.get("scene_token") or "")
+                scene_mesh = SCENE_MESH_CACHE.get(scene_token)
+                if scene_mesh is None:
+                    raise ValueError("CAD scene cache expired. Reload the CAD model and run again")
+                requested_ray_count = sum(
+                    max(0, int(emitter.get("ray_count", 0)))
+                    for emitter in request_payload.get("emitters", [])
+                    if emitter.get("enabled", True)
+                )
+                job_id = uuid.uuid4().hex
+                job = {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "phase": "queued",
+                    "processed_rays": 0,
+                    "total_rays": requested_ray_count,
+                    "progress": 0.0,
+                    "elapsed_sec": 0.0,
+                    "estimated_remaining_sec": None,
+                    "rays_per_sec": 0.0,
+                    "created_at": time.time(),
+                }
+                with RAYTRACE_JOBS_LOCK:
+                    RAYTRACE_JOBS[job_id] = job
+                _prune_raytrace_jobs()
+                worker = threading.Thread(
+                    target=_run_raytrace_job,
+                    args=(job_id, scene_mesh, request_payload),
+                    daemon=True,
+                    name="raytrace-{}".format(job_id[:8]),
+                )
+                worker.start()
+                self._send_json(202, job)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"error": str(exc)})
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
 
         if parsed.path == "/api/raytrace/direct":
             try:
@@ -9015,10 +10451,10 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
         return
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8787) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8787, strict_port: bool = False) -> None:
     start_port = port
     last_error: Optional[OSError] = None
-    max_tries = 24
+    max_tries = 1 if strict_port else 24
 
     for trial in range(max_tries):
         candidate = start_port + trial
@@ -9060,6 +10496,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8787) -> None:
 def main() -> None:
     port = 8787
     port_text = ""
+    strict_port = "--strict-port" in sys.argv[1:]
 
     args = sys.argv[1:]
     for index, arg in enumerate(args):
@@ -9078,7 +10515,7 @@ def main() -> None:
             port = int(port_text)
         except ValueError:
             pass
-    run_server(port=port)
+    run_server(port=port, strict_port=strict_port)
 
 
 if __name__ == "__main__":
