@@ -30,13 +30,12 @@ from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.types import EmitterConfig, GapRule, RunConfig
 
-WEB_UI_VERSION = "0.9.15"
+WEB_UI_VERSION = "0.9.26"
 OUTPUT_FILE_INDEX: Dict[str, Path] = {}
 SCENE_MESH_CACHE: Dict[str, Dict] = {}
 RAYTRACE_JOBS: Dict[str, Dict] = {}
 RAYTRACE_JOBS_LOCK = threading.Lock()
 UPLOAD_DIR = ROOT / "_uploads"
-DEMO_CAD_PATH = ROOT / "samples" / "tv_leakage_full_assembled_no_gap.stp"
 STATIC_DIR = ROOT / "web" / "static"
 SERVER_BOOT_TOKEN = str(time.time_ns())
 
@@ -2062,12 +2061,8 @@ def _build_html_form(material_options: str, version: str) -> str:
           <input id=\"cadFilePicker\" type=\"file\" accept=\".obj,.stl,.stp,.step,.x_t\" style=\"display:none;\" />
           <label>Selected CAD file</label>
           <div class=\"grid\">
-            <input id=\"cadFileName\" type=\"text\" value=\"Sample geometry (no CAD file)\" readonly />
+            <input id=\"cadFileName\" type=\"text\" value=\"No CAD selected\" readonly />
             <button id=\"importCad\" type=\"button\" class=\"ghost\">Import CAD</button>
-          </div>
-          <div class=\"grid\" style=\"margin-top: 8px;\">
-            <button id=\"loadDemoCad\" type=\"button\" class=\"ghost\">Load demo CAD</button>
-            <button id=\"useSample\" type=\"button\" class=\"ghost\">Use sample model</button>
           </div>
           <p class=\"small\" id=\"cadMeta\">No CAD uploaded yet. Click Import CAD to choose a file from Windows.</p>
         </div>
@@ -2842,9 +2837,9 @@ def _build_html_form(material_options: str, version: str) -> str:
             <label>Name<input id=\"receiverNameInput\" type=\"text\" value=\"Receiver 1\"></label>
           </div>
           <div class=\"move-grid\">
-            <label>Width (mm)<input id=\"receiverWidthInput\" type=\"text\" inputmode=\"decimal\" value=\"100\"></label>
+            <label>Width (mm)<input id=\"receiverWidthInput\" type=\"text\" inputmode=\"decimal\" value=\"30\"></label>
             <label>Height (mm)<input id=\"receiverHeightInput\" type=\"text\" inputmode=\"decimal\" value=\"30\"></label>
-            <label>Area (mm²)<input id=\"receiverAreaInput\" type=\"text\" value=\"3000\" readonly></label>
+            <label>Area (mm²)<input id=\"receiverAreaInput\" type=\"text\" value=\"900\" readonly></label>
           </div>
           <div id=\"receiverDatumSection\" class=\"emitter-geometry-section hidden-block\">
             <div class=\"move-sub\">Datum plane geometry</div>
@@ -2879,7 +2874,7 @@ def _build_html_form(material_options: str, version: str) -> str:
               <label>View distance (mm)<input id=\"receiverViewDistanceInput\" type=\"text\" inputmode=\"decimal\" value=\"100\"></label>
               <button id=\"receiverCaptureViewBtn\" type=\"button\">Update from current view</button>
             </div>
-            <div class=\"field-note\">현재 Full CAD View 카메라 방향과 화면 수평 방향을 Receiver 축으로 저장합니다.</div>
+            <div class=\"field-note\">현재 메인 3D View의 카메라 방향과 화면 수평 방향을 Receiver 축으로 저장합니다.</div>
           </div>
           <details id=\"receiverAdjustmentSection\" class=\"popup-details hidden-block\">
             <summary>Position / Tilt adjustment</summary>
@@ -3055,6 +3050,567 @@ def _build_html_form(material_options: str, version: str) -> str:
       return geometry;
     }}
 
+    function normalizeRoiClipBoxes(boxes) {{
+      return (Array.isArray(boxes) ? boxes : []).map(box => ({{
+        xMin: Number(box.xMin),
+        xMax: Number(box.xMax),
+        yMin: Number(box.yMin),
+        yMax: Number(box.yMax),
+      }})).filter(box => Number.isFinite(box.xMin)
+        && Number.isFinite(box.xMax)
+        && Number.isFinite(box.yMin)
+        && Number.isFinite(box.yMax)
+        && box.xMax > box.xMin
+        && box.yMax > box.yMin);
+    }}
+
+    function clipRoiPolygonAgainstPlane(points, axisIndex, boundary, keepGreater) {{
+      if (!points.length) return [];
+      const output = [];
+      let previous = points[points.length - 1];
+      let previousInside = keepGreater
+        ? previous[axisIndex] >= boundary - 1e-9
+        : previous[axisIndex] <= boundary + 1e-9;
+      for (const current of points) {{
+        const currentInside = keepGreater
+          ? current[axisIndex] >= boundary - 1e-9
+          : current[axisIndex] <= boundary + 1e-9;
+        if (currentInside !== previousInside) {{
+          const denominator = current[axisIndex] - previous[axisIndex];
+          if (Math.abs(denominator) > 1e-12) {{
+            const t = (boundary - previous[axisIndex]) / denominator;
+            output.push([
+              previous[0] + (current[0] - previous[0]) * t,
+              previous[1] + (current[1] - previous[1]) * t,
+              previous[2] + (current[2] - previous[2]) * t,
+            ]);
+          }}
+        }}
+        if (currentInside) output.push(current);
+        previous = current;
+        previousInside = currentInside;
+      }}
+      const deduped = [];
+      for (const point of output) {{
+        const last = deduped[deduped.length - 1];
+        if (!last || Math.hypot(point[0] - last[0], point[1] - last[1], point[2] - last[2]) > 1e-8) {{
+          deduped.push(point);
+        }}
+      }}
+      if (deduped.length > 2) {{
+        const first = deduped[0];
+        const last = deduped[deduped.length - 1];
+        if (Math.hypot(first[0] - last[0], first[1] - last[1], first[2] - last[2]) <= 1e-8) {{
+          deduped.pop();
+        }}
+      }}
+      return deduped;
+    }}
+
+    function clipTriangleToRoiBox(points, box) {{
+      let polygon = points;
+      polygon = clipRoiPolygonAgainstPlane(polygon, 0, box.xMin, true);
+      polygon = clipRoiPolygonAgainstPlane(polygon, 0, box.xMax, false);
+      polygon = clipRoiPolygonAgainstPlane(polygon, 1, box.yMin, true);
+      polygon = clipRoiPolygonAgainstPlane(polygon, 1, box.yMax, false);
+      return polygon;
+    }}
+
+    function roiClipVertexKey(componentId, point) {{
+      const precision = 1000000;
+      return String(componentId ?? -1) + ':'
+        + Math.round(point[0] * precision) + ':'
+        + Math.round(point[1] * precision) + ':'
+        + Math.round(point[2] * precision);
+    }}
+
+    function roiFlatPosition(positions, vertexIndex) {{
+      return new THREE.Vector3(
+        positions[vertexIndex * 3],
+        positions[vertexIndex * 3 + 1],
+        positions[vertexIndex * 3 + 2]
+      );
+    }}
+
+    function simplifyRoiClipLoop(loop, positions) {{
+      const simplified = Array.from(loop);
+      let changed = true;
+      while (changed && simplified.length > 3) {{
+        changed = false;
+        for (let index = 0; index < simplified.length; index += 1) {{
+          const previous = roiFlatPosition(positions, simplified[(index - 1 + simplified.length) % simplified.length]);
+          const current = roiFlatPosition(positions, simplified[index]);
+          const next = roiFlatPosition(positions, simplified[(index + 1) % simplified.length]);
+          const first = current.clone().sub(previous);
+          const second = next.clone().sub(current);
+          const scale = Math.max(first.length() * second.length(), 1e-12);
+          if (first.dot(second) >= 0 && first.clone().cross(second).length() <= scale * 1e-7) {{
+            simplified.splice(index, 1);
+            changed = true;
+            break;
+          }}
+        }}
+      }}
+      return simplified;
+    }}
+
+    function appendRoiClipCap(loop, surfacePositions, capPositions, capIndices, capEdgePositions, planeName) {{
+      const cleanLoop = simplifyRoiClipLoop(loop, surfacePositions);
+      if (cleanLoop.length < 3) return false;
+      const points = cleanLoop.map(vertexIndex => roiFlatPosition(surfacePositions, vertexIndex));
+      const contour = points.map(point => (planeName === 'xMin' || planeName === 'xMax')
+        ? new THREE.Vector2(point.y, point.z)
+        : new THREE.Vector2(point.x, point.z));
+      const triangles = THREE.ShapeUtils.triangulateShape(contour, []);
+      if (!triangles.length) return false;
+      const baseIndex = capPositions.length / 3;
+      for (const point of points) capPositions.push(point.x, point.y, point.z);
+      for (let index = 0; index < points.length; index += 1) {{
+        const current = points[index];
+        const next = points[(index + 1) % points.length];
+        capEdgePositions.push(current.x, current.y, current.z, next.x, next.y, next.z);
+      }}
+      for (const triangle of triangles) {{
+        capIndices.push(baseIndex + triangle[0], baseIndex + triangle[1], baseIndex + triangle[2]);
+      }}
+      return true;
+    }}
+
+    function splitRoiCapEdgesAtTJunctions(edges, positions, tolerance) {{
+      const vertexIds = Array.from(new Set(edges.flatMap(edge => [edge.a, edge.b])));
+      if (edges.length * vertexIds.length > 6000000) return edges;
+      const segments = new Map();
+      for (const edge of edges) {{
+        const first = roiFlatPosition(positions, edge.a);
+        const second = roiFlatPosition(positions, edge.b);
+        const direction = second.clone().sub(first);
+        const lengthSquared = direction.lengthSq();
+        if (lengthSquared < 1e-18) continue;
+        const cuts = [{{ t: 0, vertexId: edge.a }}, {{ t: 1, vertexId: edge.b }}];
+        for (const vertexId of vertexIds) {{
+          if (vertexId === edge.a || vertexId === edge.b) continue;
+          const point = roiFlatPosition(positions, vertexId);
+          const t = point.clone().sub(first).dot(direction) / lengthSquared;
+          if (t <= 1e-8 || t >= 1 - 1e-8) continue;
+          const projected = first.clone().add(direction.clone().multiplyScalar(t));
+          if (projected.distanceTo(point) <= tolerance) cuts.push({{ t, vertexId }});
+        }}
+        cuts.sort((left, right) => left.t - right.t);
+        for (let index = 0; index < cuts.length - 1; index += 1) {{
+          const a = cuts[index].vertexId;
+          const b = cuts[index + 1].vertexId;
+          if (a === b) continue;
+          const low = Math.min(a, b);
+          const high = Math.max(a, b);
+          segments.set(low + ':' + high, {{ a: low, b: high }});
+        }}
+      }}
+      return Array.from(segments.values());
+    }}
+
+    function closeRoiCapEdgeChains(edges, positions, planeName, box, tolerance) {{
+      const adjacency = new Map();
+      const edgeKeys = new Set();
+      for (const edge of edges) {{
+        if (!adjacency.has(edge.a)) adjacency.set(edge.a, []);
+        if (!adjacency.has(edge.b)) adjacency.set(edge.b, []);
+        adjacency.get(edge.a).push(edge.b);
+        adjacency.get(edge.b).push(edge.a);
+        edgeKeys.add(Math.min(edge.a, edge.b) + ':' + Math.max(edge.a, edge.b));
+      }}
+      const endpoints = Array.from(adjacency.entries())
+        .filter(([, neighbors]) => neighbors.length === 1)
+        .map(([vertexId]) => vertexId);
+      if (!endpoints.length) return edges;
+
+      const boundaryGroups = new Map();
+      const remaining = new Set(endpoints);
+      for (const vertexId of endpoints) {{
+        const point = roiFlatPosition(positions, vertexId);
+        let boundaryName = null;
+        if (planeName === 'xMin' || planeName === 'xMax') {{
+          if (Math.abs(point.y - box.yMin) <= tolerance) boundaryName = 'yMin';
+          else if (Math.abs(point.y - box.yMax) <= tolerance) boundaryName = 'yMax';
+        }} else {{
+          if (Math.abs(point.x - box.xMin) <= tolerance) boundaryName = 'xMin';
+          else if (Math.abs(point.x - box.xMax) <= tolerance) boundaryName = 'xMax';
+        }}
+        if (!boundaryName) continue;
+        if (!boundaryGroups.has(boundaryName)) boundaryGroups.set(boundaryName, []);
+        boundaryGroups.get(boundaryName).push(vertexId);
+      }}
+
+      const connectors = [];
+      function connectPairs(vertexIds) {{
+        const ordered = Array.from(vertexIds).sort((left, right) => {{
+          const leftPoint = roiFlatPosition(positions, left);
+          const rightPoint = roiFlatPosition(positions, right);
+          return leftPoint.z - rightPoint.z;
+        }});
+        while (ordered.length >= 2) {{
+          const first = ordered.shift();
+          let bestIndex = 0;
+          let bestDistance = Infinity;
+          const firstPoint = roiFlatPosition(positions, first);
+          for (let index = 0; index < ordered.length; index += 1) {{
+            const distance = firstPoint.distanceTo(roiFlatPosition(positions, ordered[index]));
+            if (distance < bestDistance) {{
+              bestDistance = distance;
+              bestIndex = index;
+            }}
+          }}
+          const second = ordered.splice(bestIndex, 1)[0];
+          const low = Math.min(first, second);
+          const high = Math.max(first, second);
+          const key = low + ':' + high;
+          if (!edgeKeys.has(key) && first !== second) {{
+            edgeKeys.add(key);
+            connectors.push({{ a: low, b: high }});
+          }}
+          remaining.delete(first);
+          remaining.delete(second);
+        }}
+      }}
+
+      for (const vertexIds of boundaryGroups.values()) connectPairs(vertexIds);
+      if (remaining.size >= 2) connectPairs(Array.from(remaining));
+      return edges.concat(connectors);
+    }}
+
+    function buildRoiClippedGeometries(mesh, faceFilter, boxes, options) {{
+      const clipBoxes = normalizeRoiClipBoxes(boxes);
+      if (!clipBoxes.length || !Array.isArray(faceFilter) || !faceFilter.length) return null;
+      const excludedFaces = new Set((options || {{}}).excludeFaces || []);
+      const componentIds = Array.isArray(mesh.face_component_ids) ? mesh.face_component_ids : [];
+      const positions = [];
+      const indices = [];
+      const sourceFaceIds = [];
+      const triangleRecords = [];
+      const vertexMaps = clipBoxes.map(() => new Map());
+
+      function addVertex(boxIndex, componentId, point) {{
+        const key = roiClipVertexKey(componentId, point);
+        const vertexMap = vertexMaps[boxIndex];
+        const existing = vertexMap.get(key);
+        if (existing !== undefined) return existing;
+        const vertexIndex = positions.length / 3;
+        positions.push(point[0], point[1], point[2]);
+        vertexMap.set(key, vertexIndex);
+        return vertexIndex;
+      }}
+
+      for (const faceId of faceFilter) {{
+        if (excludedFaces.has(faceId)) continue;
+        const triangle = mesh.faces[faceId];
+        if (!triangle) continue;
+        const componentId = componentIds[faceId] ?? -1;
+        const trianglePoints = triangle.map(vertexIndex => mesh.vertices[vertexIndex]);
+        for (let boxIndex = 0; boxIndex < clipBoxes.length; boxIndex += 1) {{
+          const polygon = clipTriangleToRoiBox(trianglePoints, clipBoxes[boxIndex]);
+          if (polygon.length < 3) continue;
+          const polygonIndices = polygon.map(point => addVertex(boxIndex, componentId, point));
+          for (let index = 1; index < polygonIndices.length - 1; index += 1) {{
+            const a = polygonIndices[0];
+            const b = polygonIndices[index];
+            const c = polygonIndices[index + 1];
+            const pa = roiFlatPosition(positions, a);
+            const pb = roiFlatPosition(positions, b);
+            const pc = roiFlatPosition(positions, c);
+            if (pb.clone().sub(pa).cross(pc.clone().sub(pa)).lengthSq() < 1e-16) continue;
+            indices.push(a, b, c);
+            sourceFaceIds.push(faceId);
+            triangleRecords.push({{ a, b, c, boxIndex, componentId }});
+          }}
+        }}
+      }}
+      if (!indices.length) return null;
+
+      const surfaceGeometry = new THREE.BufferGeometry();
+      surfaceGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      surfaceGeometry.setIndex(indices);
+      surfaceGeometry.computeVertexNormals();
+      surfaceGeometry.computeBoundingBox();
+      surfaceGeometry.computeBoundingSphere();
+      surfaceGeometry.userData.sourceFaceIds = sourceFaceIds;
+
+      const edgeRecords = new Map();
+      for (const triangle of triangleRecords) {{
+        for (const edge of [[triangle.a, triangle.b], [triangle.b, triangle.c], [triangle.c, triangle.a]]) {{
+          const low = Math.min(edge[0], edge[1]);
+          const high = Math.max(edge[0], edge[1]);
+          const key = triangle.boxIndex + ':' + triangle.componentId + ':' + low + ':' + high;
+          const record = edgeRecords.get(key) || {{
+            a: low,
+            b: high,
+            count: 0,
+            boxIndex: triangle.boxIndex,
+            componentId: triangle.componentId,
+          }};
+          record.count += 1;
+          edgeRecords.set(key, record);
+        }}
+      }}
+
+      const planeGroups = new Map();
+      for (const edge of edgeRecords.values()) {{
+        if (edge.count !== 1) continue;
+        const box = clipBoxes[edge.boxIndex];
+        const first = roiFlatPosition(positions, edge.a);
+        const second = roiFlatPosition(positions, edge.b);
+        const tolerance = Math.max(box.xMax - box.xMin, box.yMax - box.yMin, 1) * 1e-6;
+        let planeName = null;
+        if (Math.abs(first.x - box.xMin) <= tolerance && Math.abs(second.x - box.xMin) <= tolerance) planeName = 'xMin';
+        else if (Math.abs(first.x - box.xMax) <= tolerance && Math.abs(second.x - box.xMax) <= tolerance) planeName = 'xMax';
+        else if (Math.abs(first.y - box.yMin) <= tolerance && Math.abs(second.y - box.yMin) <= tolerance) planeName = 'yMin';
+        else if (Math.abs(first.y - box.yMax) <= tolerance && Math.abs(second.y - box.yMax) <= tolerance) planeName = 'yMax';
+        if (!planeName) continue;
+        const key = edge.boxIndex + ':' + edge.componentId + ':' + planeName;
+        if (!planeGroups.has(key)) planeGroups.set(key, {{ planeName, boxIndex: edge.boxIndex, edges: [] }});
+        planeGroups.get(key).edges.push(edge);
+      }}
+
+      const capPositions = [];
+      const capIndices = [];
+      const capEdgePositions = [];
+      let capLoopCount = 0;
+      let openChainCount = 0;
+      for (const group of planeGroups.values()) {{
+        const groupSpan = group.edges.reduce((maxLength, edge) => {{
+          const first = roiFlatPosition(positions, edge.a);
+          const second = roiFlatPosition(positions, edge.b);
+          return Math.max(maxLength, first.distanceTo(second));
+        }}, 1);
+        const splitEdges = splitRoiCapEdgesAtTJunctions(
+          group.edges,
+          positions,
+          Math.max(groupSpan * 1e-7, 1e-6)
+        );
+        const edges = closeRoiCapEdgeChains(
+          splitEdges,
+          positions,
+          group.planeName,
+          clipBoxes[group.boxIndex],
+          Math.max(groupSpan * 1e-7, 1e-6)
+        );
+        const adjacency = new Map();
+        for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {{
+          const edge = edges[edgeIndex];
+          if (!adjacency.has(edge.a)) adjacency.set(edge.a, []);
+          if (!adjacency.has(edge.b)) adjacency.set(edge.b, []);
+          adjacency.get(edge.a).push(edgeIndex);
+          adjacency.get(edge.b).push(edgeIndex);
+        }}
+        const unused = new Set(edges.map((edge, index) => index));
+        while (unused.size) {{
+          const firstEdgeIndex = unused.values().next().value;
+          const firstEdge = edges[firstEdgeIndex];
+          unused.delete(firstEdgeIndex);
+          const loop = [firstEdge.a, firstEdge.b];
+          let currentVertex = firstEdge.b;
+          let closed = false;
+          let guard = 0;
+          while (guard < edges.length + 2) {{
+            guard += 1;
+            if (currentVertex === loop[0]) {{
+              closed = true;
+              break;
+            }}
+            const nextEdgeIndex = (adjacency.get(currentVertex) || []).find(edgeIndex => unused.has(edgeIndex));
+            if (nextEdgeIndex === undefined) break;
+            unused.delete(nextEdgeIndex);
+            const nextEdge = edges[nextEdgeIndex];
+            currentVertex = nextEdge.a === currentVertex ? nextEdge.b : nextEdge.a;
+            loop.push(currentVertex);
+          }}
+          if (!closed || loop.length < 4) {{
+            openChainCount += 1;
+            continue;
+          }}
+          loop.pop();
+          if (appendRoiClipCap(loop, positions, capPositions, capIndices, capEdgePositions, group.planeName)) {{
+            capLoopCount += 1;
+          }}
+        }}
+      }}
+
+      let capGeometry = null;
+      let capEdgeGeometry = null;
+      if (capIndices.length) {{
+        capGeometry = new THREE.BufferGeometry();
+        capGeometry.setAttribute('position', new THREE.Float32BufferAttribute(capPositions, 3));
+        capGeometry.setIndex(capIndices);
+        capGeometry.computeVertexNormals();
+        capGeometry.computeBoundingBox();
+        capGeometry.computeBoundingSphere();
+        capGeometry.userData.roiCapLoopCount = capLoopCount;
+        capGeometry.userData.roiCapOpenChainCount = openChainCount;
+      }}
+      if (capEdgePositions.length) {{
+        capEdgeGeometry = new THREE.BufferGeometry();
+        capEdgeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(capEdgePositions, 3));
+        const referenceSegments = [];
+        for (let index = 0; index + 5 < capEdgePositions.length; index += 6) {{
+          referenceSegments.push([
+            capEdgePositions.slice(index, index + 3),
+            capEdgePositions.slice(index + 3, index + 6)
+          ]);
+        }}
+        capEdgeGeometry.userData.referenceSegments = referenceSegments;
+      }}
+      return {{ surfaceGeometry, capGeometry, capEdgeGeometry, capLoopCount, openChainCount }};
+    }}
+
+    function clipRoiFeatureSegment(start, end, box) {{
+      const delta = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+      let enter = 0;
+      let leave = 1;
+      const constraints = [
+        [-delta[0], start[0] - box.xMin],
+        [delta[0], box.xMax - start[0]],
+        [-delta[1], start[1] - box.yMin],
+        [delta[1], box.yMax - start[1]],
+      ];
+      for (const [direction, distance] of constraints) {{
+        if (Math.abs(direction) < 1e-12) {{
+          if (distance < 0) return null;
+          continue;
+        }}
+        const ratio = distance / direction;
+        if (direction < 0) enter = Math.max(enter, ratio);
+        else leave = Math.min(leave, ratio);
+        if (enter > leave) return null;
+      }}
+      return [
+        [start[0] + delta[0] * enter, start[1] + delta[1] * enter, start[2] + delta[2] * enter],
+        [start[0] + delta[0] * leave, start[1] + delta[1] * leave, start[2] + delta[2] * leave],
+      ];
+    }}
+
+    function buildRoiFeatureEdgeGeometry(mesh, boxes, excludeFaces) {{
+      const sourceSegments = Array.isArray(mesh.feature_edge_segments) ? mesh.feature_edge_segments : [];
+      const clipBoxes = normalizeRoiClipBoxes(boxes);
+      if (!sourceSegments.length || !clipBoxes.length) return null;
+      const componentTotals = new Map();
+      const hiddenCounts = new Map();
+      const componentIds = Array.isArray(mesh.face_component_ids) ? mesh.face_component_ids : [];
+      for (const componentId of componentIds) {{
+        if (componentId === null || componentId === undefined) continue;
+        componentTotals.set(componentId, (componentTotals.get(componentId) || 0) + 1);
+      }}
+      for (const faceId of (excludeFaces || [])) {{
+        const componentId = componentIds[faceId];
+        if (componentId === null || componentId === undefined) continue;
+        hiddenCounts.set(componentId, (hiddenCounts.get(componentId) || 0) + 1);
+      }}
+      const fullyHiddenComponents = new Set();
+      for (const [componentId, hiddenCount] of hiddenCounts.entries()) {{
+        if (hiddenCount >= (componentTotals.get(componentId) || Number.POSITIVE_INFINITY)) {{
+          fullyHiddenComponents.add(componentId);
+        }}
+      }}
+
+      const linePositions = [];
+      const referenceSegments = [];
+      for (const segment of sourceSegments) {{
+        if (fullyHiddenComponents.has(segment.component_id)) continue;
+        const start = toVector3Array(segment.start, [0, 0, 0]);
+        const end = toVector3Array(segment.end, [0, 0, 0]);
+        for (const box of clipBoxes) {{
+          const clipped = clipRoiFeatureSegment(start, end, box);
+          if (!clipped) continue;
+          linePositions.push(...clipped[0], ...clipped[1]);
+          referenceSegments.push([clipped[0], clipped[1]]);
+        }}
+      }}
+      if (!linePositions.length) return null;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+      geometry.userData.referenceSegments = referenceSegments;
+      return geometry;
+    }}
+
+    function buildViewerEdgeGeometry(mesh, surfaceGeometry, faceFilter, excludeFaces, roiBoxes) {{
+      const sourceSegments = Array.isArray(mesh.feature_edge_segments)
+        ? mesh.feature_edge_segments
+        : [];
+      if (faceFilter && Array.isArray(roiBoxes) && roiBoxes.length) {{
+        const roiFeatureEdges = buildRoiFeatureEdgeGeometry(mesh, roiBoxes, excludeFaces);
+        if (roiFeatureEdges) return roiFeatureEdges;
+      }}
+      if (!faceFilter && sourceSegments.length) {{
+        const componentTotals = new Map();
+        const hiddenCounts = new Map();
+        const componentIds = Array.isArray(mesh.face_component_ids) ? mesh.face_component_ids : [];
+        for (const componentId of componentIds) {{
+          if (componentId === null || componentId === undefined) continue;
+          componentTotals.set(componentId, (componentTotals.get(componentId) || 0) + 1);
+        }}
+        for (const faceId of (excludeFaces || [])) {{
+          const componentId = componentIds[faceId];
+          if (componentId === null || componentId === undefined) continue;
+          hiddenCounts.set(componentId, (hiddenCounts.get(componentId) || 0) + 1);
+        }}
+        const fullyHiddenComponents = new Set();
+        for (const [componentId, hiddenCount] of hiddenCounts.entries()) {{
+          if (hiddenCount >= (componentTotals.get(componentId) || Number.POSITIVE_INFINITY)) {{
+            fullyHiddenComponents.add(componentId);
+          }}
+        }}
+
+        const linePositions = [];
+        const referenceSegments = [];
+        for (const segment of sourceSegments) {{
+          if (fullyHiddenComponents.has(segment.component_id)) continue;
+          linePositions.push(
+            ...toVector3Array(segment.start, [0, 0, 0]),
+            ...toVector3Array(segment.end, [0, 0, 0])
+          );
+          referenceSegments.push([
+            toVector3Array(segment.start, [0, 0, 0]),
+            toVector3Array(segment.end, [0, 0, 0])
+          ]);
+        }}
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+        geometry.userData.referenceSegments = referenceSegments;
+        return geometry;
+      }}
+      const geometry = new THREE.EdgesGeometry(surfaceGeometry, 18);
+      const position = geometry.getAttribute('position');
+      const referenceSegments = [];
+      for (let index = 0; index + 1 < position.count; index += 2) {{
+        referenceSegments.push([
+          [position.getX(index), position.getY(index), position.getZ(index)],
+          [position.getX(index + 1), position.getY(index + 1), position.getZ(index + 1)]
+        ]);
+      }}
+      geometry.userData.referenceSegments = referenceSegments;
+      return geometry;
+    }}
+
+    function buildComponentFeatureEdgeGeometry(mesh, componentIds, transformSpec) {{
+      const sourceSegments = Array.isArray(mesh.feature_edge_segments)
+        ? mesh.feature_edge_segments
+        : [];
+      const allowedComponents = new Set(componentIds || []);
+      if (!sourceSegments.length || !allowedComponents.size) return null;
+      const linePositions = [];
+      for (const segment of sourceSegments) {{
+        if (!allowedComponents.has(segment.component_id)) continue;
+        const start = transformSpec
+          ? transformPointForThree(toVector3Array(segment.start, [0, 0, 0]), transformSpec)
+          : toVector3Array(segment.start, [0, 0, 0]);
+        const end = transformSpec
+          ? transformPointForThree(toVector3Array(segment.end, [0, 0, 0]), transformSpec)
+          : toVector3Array(segment.end, [0, 0, 0]);
+        linePositions.push(...start, ...end);
+      }}
+      if (!linePositions.length) return null;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+      return geometry;
+    }}
+
     function buildVirtualPlaneGeometry(plane) {{
       const polygonPoints = Array.isArray(plane.polygonPoints) ? plane.polygonPoints : [];
       if (polygonPoints.length >= 3) {{
@@ -3102,6 +3658,18 @@ def _build_html_form(material_options: str, version: str) -> str:
       for (const v of mesh.vertices) {{
         box.expandByPoint(new THREE.Vector3(v[0], v[1], v[2]));
       }}
+      const center = new THREE.Vector3();
+      const sizeVec = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(sizeVec);
+      return {{ center, size: Math.max(sizeVec.x, sizeVec.y, sizeVec.z, 1) }};
+    }}
+
+    function geometryCenterAndSize(geometry) {{
+      if (!geometry) return {{ center: new THREE.Vector3(0, 0, 0), size: 1 }};
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      const box = geometry.boundingBox;
+      if (!box || box.isEmpty()) return {{ center: new THREE.Vector3(0, 0, 0), size: 1 }};
       const center = new THREE.Vector3();
       const sizeVec = new THREE.Vector3();
       box.getCenter(center);
@@ -3178,6 +3746,42 @@ def _build_html_form(material_options: str, version: str) -> str:
         group.add(label);
       }}
       return group;
+    }}
+
+    function activeReferenceSelectionMode() {{
+      if (state.emitterSelectionActive && state.emitterDraftType === 'reference_plane') {{
+        return emitterReferenceModeSelect.value || 'three_vertices';
+      }}
+      if (state.receiverSelectionActive && state.receiverDraftType === 'reference_plane') {{
+        return receiverReferenceModeSelect.value || 'three_vertices';
+      }}
+      return null;
+    }}
+
+    function referencePointSignature(point) {{
+      const values = toVector3Array(point, [0, 0, 0]);
+      return values.map((value) => Math.round(value * 1000000)).join(':');
+    }}
+
+    function referenceSegmentSignature(segment) {{
+      if (!Array.isArray(segment) || segment.length !== 2) return '';
+      return [referencePointSignature(segment[0]), referencePointSignature(segment[1])].sort().join('|');
+    }}
+
+    function meshVertexIndexForReferencePoint(point) {{
+      if (!state.mesh || !Array.isArray(state.mesh.vertices) || !Array.isArray(point)) return null;
+      const tolerance = Math.max(modelSpanMm() * 1e-8, 1e-6);
+      for (let index = 0; index < state.mesh.vertices.length; index += 1) {{
+        const candidate = state.mesh.vertices[index];
+        if (Math.hypot(candidate[0] - point[0], candidate[1] - point[1], candidate[2] - point[2]) <= tolerance) return index;
+      }}
+      return null;
+    }}
+
+    function referenceVertexIndex(value) {{
+      if (value === null || value === undefined || value === '') return null;
+      const parsed = Number(value);
+      return Number.isInteger(parsed) ? parsed : null;
     }}
 
     class LeakageThreeViewer {{
@@ -3453,7 +4057,10 @@ def _build_html_form(material_options: str, version: str) -> str:
               faceIndex: pick ? pick.faceIndex : null,
               point: pick ? pick.point : null,
               vertexIndex: pick ? pick.vertexIndex : null,
+              vertexPoint: pick ? pick.vertexPoint : null,
               edgeVertexIndices: pick ? pick.edgeVertexIndices : null,
+              edgePoints: pick ? pick.edgePoints : null,
+              syntheticReference: pick ? !!pick.syntheticReference : false,
               mode: this.mode,
               clientX: ev.clientX,
               clientY: ev.clientY,
@@ -3525,14 +4132,102 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.controls.update();
       }}
 
+      screenDistanceToPoint(point, rect, clientX, clientY) {{
+        const projected = point.clone().project(this.camera);
+        const screenX = rect.left + (projected.x + 1) * 0.5 * rect.width;
+        const screenY = rect.top + (1 - projected.y) * 0.5 * rect.height;
+        return Math.hypot(screenX - clientX, screenY - clientY);
+      }}
+
+      trianglePointsFromHit(hit) {{
+        const geometry = hit && hit.object ? hit.object.geometry : null;
+        const position = geometry && geometry.getAttribute ? geometry.getAttribute('position') : null;
+        if (!geometry || !position || hit.faceIndex === null || hit.faceIndex === undefined) return [];
+        const index = geometry.getIndex();
+        const points = [];
+        for (let corner = 0; corner < 3; corner += 1) {{
+          const offset = hit.faceIndex * 3 + corner;
+          const vertexIndex = index ? index.getX(offset) : offset;
+          points.push(new THREE.Vector3(position.getX(vertexIndex), position.getY(vertexIndex), position.getZ(vertexIndex)));
+        }}
+        return points;
+      }}
+
+      originalVertexIndexForPoint(meshRef, triangle, point) {{
+        if (!meshRef || !triangle || !point) return null;
+        const tolerance = Math.max(this.size * 1e-8, 1e-6);
+        for (const vertexIndex of triangle) {{
+          const value = meshRef.vertices[vertexIndex];
+          if (!value) continue;
+          if (point.distanceTo(new THREE.Vector3(value[0], value[1], value[2])) <= tolerance) return vertexIndex;
+        }}
+        return null;
+      }}
+
+      segmentFromLineHit(hit) {{
+        const geometry = hit && hit.object ? hit.object.geometry : null;
+        const segments = geometry && geometry.userData ? geometry.userData.referenceSegments : null;
+        if (!Array.isArray(segments) || !segments.length) return null;
+        const rawIndex = Number(hit.index);
+        const candidateIndices = [];
+        if (Number.isInteger(rawIndex)) {{
+          candidateIndices.push(Math.floor(rawIndex / 2), rawIndex);
+        }}
+        let bestSegment = null;
+        let bestDistance = Infinity;
+        const uniqueCandidates = Array.from(new Set(candidateIndices.filter((index) => index >= 0 && index < segments.length)));
+        for (const index of uniqueCandidates) {{
+          const segment = segments[index];
+          const start = new THREE.Vector3(...toVector3Array(segment[0], [0, 0, 0]));
+          const end = new THREE.Vector3(...toVector3Array(segment[1], [0, 0, 0]));
+          const direction = end.clone().sub(start);
+          const lengthSquared = Math.max(direction.lengthSq(), 1e-12);
+          const factor = Math.max(0, Math.min(1, hit.point.clone().sub(start).dot(direction) / lengthSquared));
+          const distance = start.clone().addScaledVector(direction, factor).distanceTo(hit.point);
+          if (distance < bestDistance) {{
+            bestDistance = distance;
+            bestSegment = [start.toArray(), end.toArray()];
+          }}
+        }}
+        return bestSegment;
+      }}
+
       pickGeometry(ev, componentOnly = false) {{
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.pointer.x = ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
         this.pointer.y = -((ev.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1;
         this.raycaster.setFromCamera(this.pointer, this.camera);
+        const referenceMode = componentOnly ? null : activeReferenceSelectionMode();
+        if (referenceMode === 'two_edges') {{
+          const lineCandidates = [];
+          const featureEdges = this.root.getObjectByName('edges');
+          const roiCapEdges = this.root.getObjectByName('roiCapEdges');
+          if (featureEdges) lineCandidates.push(featureEdges);
+          if (roiCapEdges) lineCandidates.push(roiCapEdges);
+          this.raycaster.params.Line.threshold = Math.max(this.size * 0.0015, 0.05);
+          const lineHits = this.raycaster.intersectObjects(lineCandidates, false);
+          for (const hit of lineHits) {{
+            const segment = this.segmentFromLineHit(hit);
+            if (!segment) continue;
+            return {{
+              faceIndex: null,
+              point: hit.point.toArray(),
+              vertexIndex: null,
+              vertexPoint: null,
+              edgeVertexIndices: null,
+              edgePoints: segment,
+              syntheticReference: true
+            }};
+          }}
+        }}
         const candidates = [];
         const surface = this.root.getObjectByName('surface');
-        if (surface) candidates.push(surface);
+        const wirefill = this.root.getObjectByName('wirefill');
+        if (surface && surface.visible) candidates.push(surface);
+        else if (wirefill && wirefill.visible) candidates.push(wirefill);
+        else if (surface) candidates.push(surface);
+        const roiCaps = this.root.getObjectByName('roiCaps');
+        if (referenceMode === 'three_vertices' && roiCaps) candidates.push(roiCaps);
         for (const child of this.overlayRoot.children) {{
           if (!child.isMesh) continue;
           const overlayKind = child.userData ? String(child.userData.overlayKind || '') : '';
@@ -3547,12 +4242,37 @@ def _build_html_form(material_options: str, version: str) -> str:
           const sourceFaceIds = hit.object.geometry && hit.object.geometry.userData
             ? hit.object.geometry.userData.sourceFaceIds
             : null;
-          if (!sourceFaceIds || hit.faceIndex === null || hit.faceIndex === undefined) continue;
-          const sourceFace = sourceFaceIds[hit.faceIndex];
-          if (sourceFace === null || sourceFace === undefined) continue;
+          const isRoiCap = hit.object && hit.object.name === 'roiCaps';
+          if ((!sourceFaceIds && !isRoiCap) || hit.faceIndex === null || hit.faceIndex === undefined) continue;
+          const sourceFace = sourceFaceIds ? sourceFaceIds[hit.faceIndex] : null;
+          if (!isRoiCap && (sourceFace === null || sourceFace === undefined)) continue;
           const meshRef = this.lastMeshRef;
           const triangle = meshRef && meshRef.faces ? meshRef.faces[sourceFace] : null;
-          if (!triangle) return {{ faceIndex: sourceFace, point: hit.point.toArray(), vertexIndex: null, edgeVertexIndices: null }};
+          const renderedPoints = this.trianglePointsFromHit(hit);
+          if (referenceMode === 'three_vertices' && renderedPoints.length === 3) {{
+            let nearestPoint = null;
+            let nearestScreenDistance = Infinity;
+            for (const point of renderedPoints) {{
+              const distance = this.screenDistanceToPoint(point, rect, ev.clientX, ev.clientY);
+              if (distance < nearestScreenDistance) {{
+                nearestScreenDistance = distance;
+                nearestPoint = point;
+              }}
+            }}
+            const snapDistancePx = 28;
+            return {{
+              faceIndex: sourceFace,
+              point: hit.point.toArray(),
+              vertexIndex: nearestScreenDistance <= snapDistancePx
+                ? this.originalVertexIndexForPoint(meshRef, triangle, nearestPoint)
+                : null,
+              vertexPoint: nearestScreenDistance <= snapDistancePx && nearestPoint ? nearestPoint.toArray() : null,
+              edgeVertexIndices: null,
+              edgePoints: null,
+              syntheticReference: isRoiCap || (nearestPoint && this.originalVertexIndexForPoint(meshRef, triangle, nearestPoint) === null)
+            }};
+          }}
+          if (!triangle) return {{ faceIndex: sourceFace, point: hit.point.toArray(), vertexIndex: null, vertexPoint: null, edgeVertexIndices: null, edgePoints: null }};
           let nearestVertex = triangle[0];
           let nearestVertexDistance = Infinity;
           for (const vertexIndex of triangle) {{
@@ -3585,7 +4305,9 @@ def _build_html_form(material_options: str, version: str) -> str:
             faceIndex: sourceFace,
             point: hit.point.toArray(),
             vertexIndex: nearestVertex,
-            edgeVertexIndices: nearestEdge
+            vertexPoint: meshRef.vertices[nearestVertex],
+            edgeVertexIndices: nearestEdge,
+            edgePoints: [meshRef.vertices[nearestEdge[0]], meshRef.vertices[nearestEdge[1]]]
           }};
         }}
         return null;
@@ -3635,19 +4357,28 @@ def _build_html_form(material_options: str, version: str) -> str:
                 color: overlay.color || 0xef4444,
                 roughness: 0.72,
                 metalness: 0.02,
+                flatShading: true,
                 transparent: true,
                 opacity: overlay.opacity ?? 0.48,
                 side: THREE.DoubleSide,
                 depthTest: true,
                 depthWrite: false,
+                polygonOffset: true,
+                polygonOffsetFactor: -1,
+                polygonOffsetUnits: -1,
               }})
             );
             surface.name = 'transform_' + (overlay.kind || 'overlay');
             surface.userData.overlayKind = overlay.kind || 'overlay';
             this.overlayRoot.add(surface);
 
+            const cleanComponentEdges = buildComponentFeatureEdgeGeometry(
+              meshRef,
+              overlay.featureEdgeComponentIds,
+              overlay
+            );
             const edges = new THREE.LineSegments(
-              new THREE.EdgesGeometry(geometry, 18),
+              cleanComponentEdges || new THREE.EdgesGeometry(geometry, 18),
               new THREE.LineBasicMaterial({{
                 color: overlay.edgeColor || overlay.color || 0xf87171,
                 transparent: true,
@@ -3720,9 +4451,26 @@ def _build_html_form(material_options: str, version: str) -> str:
         if (!payload || !payload.mesh) return;
         const selectedFaces = options?.selectedFaces || [];
         const hiddenFaces = options?.hiddenFaces || [];
-        const roiFaces = this.mode === 'roi' && selectedFaces.length ? selectedFaces : null;
         const meshRef = payload.mesh;
-        const roiKey = JSON.stringify(roiFaces || []);
+        if (this.mode === 'roi' && !selectedFaces.length) {{
+          const emptyKey = '__empty_roi__';
+          if (this.lastMeshRef !== meshRef || this.lastRoiKey !== emptyKey) {{
+            this.clearRoot();
+            this.clearOverlays();
+            const bounds = bboxCenterAndSize(meshRef);
+            this.center = bounds.center;
+            this.size = bounds.size;
+            this.lastMeshRef = meshRef;
+            this.lastRoiKey = emptyKey;
+            this.lastHiddenKey = '';
+          }}
+          this.updateAxisScale(options?.axisScalePercent);
+          this.resize();
+          return;
+        }}
+        const roiFaces = this.mode === 'roi' ? selectedFaces : null;
+        const roiBoxes = this.mode === 'roi' ? normalizeRoiClipBoxes(options?.roiBoxes || []) : [];
+        const roiKey = JSON.stringify({{ faces: roiFaces || [], boxes: roiBoxes }});
         const hiddenKey = JSON.stringify(hiddenFaces || []);
         const meshChanged = this.lastMeshRef !== meshRef;
         const roiChanged = this.lastRoiKey !== roiKey;
@@ -3732,13 +4480,19 @@ def _build_html_form(material_options: str, version: str) -> str:
         this.pickBaseOnly = !!options?.pickBaseOnly;
         if (needsRebuild) {{
           this.clearRoot();
-          const geometry = buildBufferGeometry(meshRef, roiFaces, {{ excludeFaces: hiddenFaces }});
+          const roiClipped = this.mode === 'roi' && roiBoxes.length
+            ? buildRoiClippedGeometries(meshRef, roiFaces, roiBoxes, {{ excludeFaces: hiddenFaces }})
+            : null;
+          const geometry = roiClipped
+            ? roiClipped.surfaceGeometry
+            : buildBufferGeometry(meshRef, roiFaces, {{ excludeFaces: hiddenFaces }});
           const surface = new THREE.Mesh(
             geometry,
             new THREE.MeshStandardMaterial({{
               color: 0x8fb3c7,
               roughness: 0.72,
               metalness: 0.04,
+              flatShading: true,
               transparent: true,
               opacity: 0.72,
               side: THREE.DoubleSide,
@@ -3747,18 +4501,76 @@ def _build_html_form(material_options: str, version: str) -> str:
           surface.name = 'surface';
           this.root.add(surface);
 
-          const edgeGeometry = new THREE.EdgesGeometry(geometry, 18);
+          const roiCapGeometry = roiClipped ? roiClipped.capGeometry : null;
+          if (roiCapGeometry) {{
+            const roiCaps = new THREE.Mesh(
+              roiCapGeometry,
+              new THREE.MeshStandardMaterial({{
+                color: 0x6f9fb5,
+                roughness: 0.78,
+                metalness: 0.02,
+                flatShading: true,
+                transparent: false,
+                opacity: 1.0,
+                side: THREE.DoubleSide,
+                depthTest: true,
+                depthWrite: true,
+              }})
+            );
+            roiCaps.name = 'roiCaps';
+            this.root.add(roiCaps);
+
+            const roiCapEdges = new THREE.LineSegments(
+              roiClipped.capEdgeGeometry || new THREE.BufferGeometry(),
+              new THREE.LineBasicMaterial({{ color: 0xe0f2fe, transparent: true, opacity: 0.72 }})
+            );
+            roiCapEdges.name = 'roiCapEdges';
+            roiCapEdges.renderOrder = 3;
+            this.root.add(roiCapEdges);
+          }}
+
+          const wirefill = new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({{
+              color: 0x263b4d,
+              transparent: true,
+              opacity: 0.75,
+              side: THREE.DoubleSide,
+              depthTest: true,
+              depthWrite: true,
+              depthFunc: THREE.LessEqualDepth,
+            }})
+          );
+          wirefill.name = 'wirefill';
+          this.root.add(wirefill);
+
+          const edgeGeometry = buildViewerEdgeGeometry(meshRef, geometry, roiFaces, hiddenFaces, roiBoxes);
+          const hiddenEdges = new THREE.LineSegments(
+            edgeGeometry.clone(),
+            new THREE.LineBasicMaterial({{
+              color: 0x8aa4b8,
+              transparent: true,
+              opacity: 0.16,
+              depthTest: false,
+              depthWrite: false,
+            }})
+          );
+          hiddenEdges.name = 'hiddenEdges';
+          hiddenEdges.renderOrder = 1;
+          this.root.add(hiddenEdges);
+
           const edges = new THREE.LineSegments(
             edgeGeometry,
             new THREE.LineBasicMaterial({{ color: 0xdbeafe, transparent: true, opacity: 0.46 }})
           );
           edges.name = 'edges';
+          edges.renderOrder = 2;
           this.root.add(edges);
 
           this.lastMeshRef = meshRef;
           this.lastRoiKey = roiKey;
           this.lastHiddenKey = hiddenKey;
-          const bounds = bboxCenterAndSize(meshRef);
+          const bounds = roiClipped ? geometryCenterAndSize(geometry) : bboxCenterAndSize(meshRef);
           this.center = bounds.center;
           this.size = bounds.size;
           this.updateAxisScale(options?.axisScalePercent);
@@ -3801,25 +4613,73 @@ def _build_html_form(material_options: str, version: str) -> str:
 
       applyRenderMode() {{
         const surface = this.root.getObjectByName('surface');
+        const wirefill = this.root.getObjectByName('wirefill');
+        const hiddenEdges = this.root.getObjectByName('hiddenEdges');
         const edges = this.root.getObjectByName('edges');
-        if (!surface || !edges) return;
+        const roiCaps = this.root.getObjectByName('roiCaps');
+        const roiCapEdges = this.root.getObjectByName('roiCapEdges');
+        if (!surface || !wirefill || !hiddenEdges || !edges) return;
         if (this.renderMode === 'wireframe') {{
-          surface.material.opacity = 0.10;
-          surface.material.transparent = true;
+          surface.visible = false;
+          wirefill.visible = true;
+          hiddenEdges.visible = true;
+          hiddenEdges.material.opacity = 0.16;
           edges.visible = true;
-          edges.material.opacity = 0.72;
+          edges.material.opacity = 0.82;
+          if (roiCaps) {{
+            roiCaps.visible = true;
+            roiCaps.material.color.setHex(0x314a5c);
+            roiCaps.material.transparent = true;
+            roiCaps.material.opacity = 0.75;
+            roiCaps.material.depthWrite = true;
+          }}
+          if (roiCapEdges) {{
+            roiCapEdges.visible = true;
+            roiCapEdges.material.opacity = 0.72;
+          }}
         }} else if (this.renderMode === 'surface') {{
-          surface.material.opacity = 0.66;
+          surface.visible = true;
+          wirefill.visible = false;
+          hiddenEdges.visible = false;
+          surface.material.opacity = 0.52;
           surface.material.transparent = true;
+          surface.material.depthWrite = false;
           edges.visible = false;
+          if (roiCaps) {{
+            roiCaps.visible = true;
+            roiCaps.material.color.setHex(0x6f9fb5);
+            roiCaps.material.transparent = true;
+            roiCaps.material.opacity = 0.58;
+            roiCaps.material.depthWrite = false;
+          }}
+          if (roiCapEdges) roiCapEdges.visible = false;
         }} else {{
-          surface.material.opacity = 0.88;
+          surface.visible = true;
+          wirefill.visible = false;
+          hiddenEdges.visible = false;
+          surface.material.opacity = 1.0;
           surface.material.transparent = false;
+          surface.material.depthWrite = true;
           edges.visible = true;
           edges.material.opacity = 0.62;
+          if (roiCaps) {{
+            roiCaps.visible = true;
+            roiCaps.material.color.setHex(0x6f9fb5);
+            roiCaps.material.transparent = false;
+            roiCaps.material.opacity = 1.0;
+            roiCaps.material.depthWrite = true;
+          }}
+          if (roiCapEdges) {{
+            roiCapEdges.visible = true;
+            roiCapEdges.material.opacity = 0.72;
+          }}
         }}
         surface.material.needsUpdate = true;
+        wirefill.material.needsUpdate = true;
+        hiddenEdges.material.needsUpdate = true;
         edges.material.needsUpdate = true;
+        if (roiCaps) roiCaps.material.needsUpdate = true;
+        if (roiCapEdges) roiCapEdges.material.needsUpdate = true;
       }}
 
       fit() {{
@@ -3905,8 +4765,6 @@ def _build_html_form(material_options: str, version: str) -> str:
 
   <script>
     const initialBootToken = {json.dumps(SERVER_BOOT_TOKEN)};
-    const demoCadPath = {json.dumps(str(DEMO_CAD_PATH))};
-    const demoCadName = {json.dumps(DEMO_CAD_PATH.name)};
     const state = {{
       mesh: null,
       sceneToken: null,
@@ -3934,6 +4792,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       selectedTransformRuleIds: new Set(),
       objectsById: new Map(),
       faceAdjacency: new Map(),
+      faceAdjacencyReady: false,
       roiSelectionMode: 'box_drag',
       roiBoxDragArmed: false,
       roiScopes: [],
@@ -3944,6 +4803,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       // big/main one at the moment), so it doesn't reset back to the
       // default corner position every time the big/small roles swap.
       smallPanelPlacement: {{ full: null, roi: null }},
+      primaryViewerKey: 'full',
       gapTargetMode: 'component_move_gap',
       gapSelectionMethod: 'click',
       viewerEngine: 'three',
@@ -3982,7 +4842,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitterDraftType: 'face',
       emitterDraftFaces: new Set(),
       emitterReferenceVertices: [],
+      emitterReferencePoints: [],
       emitterReferenceEdges: [],
+      emitterReferenceEdgePoints: [],
       emitterSelectionActive: false,
       emitterSequence: 1,
       emitterPopupPosition: null,
@@ -3991,7 +4853,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       activeReceiverId: null,
       receiverDraftType: 'datum_plane',
       receiverReferenceVertices: [],
+      receiverReferencePoints: [],
       receiverReferenceEdges: [],
+      receiverReferenceEdgePoints: [],
       receiverCurrentViewPlane: null,
       receiverSelectionActive: false,
       receiverSequence: 1,
@@ -4014,8 +4878,6 @@ def _build_html_form(material_options: str, version: str) -> str:
     const sidebarLayoutToggle = document.getElementById('sidebarLayoutToggle');
     const sideTabBar = document.getElementById('sideTabBar');
     const importCadBtn = document.getElementById('importCad');
-    const loadDemoCadBtn = document.getElementById('loadDemoCad');
-    const useSampleBtn = document.getElementById('useSample');
     const componentContextMenu = document.getElementById('componentContextMenu');
     const componentContextMenuName = document.getElementById('componentContextMenuName');
     const componentContextMenuStatus = document.getElementById('componentContextMenuStatus');
@@ -6111,13 +6973,14 @@ def _build_html_form(material_options: str, version: str) -> str:
       const roiActive = state.selectedFaces.size > 0;
       const addingRoi = !!state.roiBoxDragArmed;
       const promoteRoiView = roiActive && !addingRoi;
+      state.primaryViewerKey = promoteRoiView ? 'roi' : 'full';
       const nextClassName = promoteRoiView ? 'viewer-stage mode-roi' : 'viewer-stage mode-full';
       const layoutChanged = viewerStage.className !== nextClassName;
       if (promoteRoiView) {{
         fullViewHint.textContent = 'Mini map with ROI location';
         roiViewHint.textContent = 'Selected ROI promoted to main view';
       }} else {{
-        fullViewHint.textContent = 'Imported model';
+        fullViewHint.textContent = state.mesh ? 'Imported model' : 'No model loaded';
         roiViewHint.textContent = roiActive ? 'Selected ROI preview' : 'ROI preview';
       }}
       // .viewer-card has `transition: all 220ms ease` (see its CSS) so the
@@ -6263,7 +7126,9 @@ def _build_html_form(material_options: str, version: str) -> str:
         button.classList.toggle('active', active);
       }}
       renderModeBadge.textContent = renderModeLabel(state.renderMode);
-      fullViewHint.textContent = 'Imported model / ' + renderModeLabel(state.renderMode);
+      fullViewHint.textContent = state.mesh
+        ? 'Imported model / ' + renderModeLabel(state.renderMode)
+        : 'No model loaded';
     }}
 
     function updateViewerEngineUI() {{
@@ -6278,7 +7143,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (state.viewerEngine === 'three' && !window.LeakageThreeViewer) {{
         fullViewHint.textContent = 'Three.js viewer loading...';
       }} else if (useThree) {{
-        fullViewHint.textContent = 'Imported model / Three.js / ' + renderModeLabel(state.renderMode);
+        fullViewHint.textContent = state.mesh
+          ? 'Imported model / Three.js / ' + renderModeLabel(state.renderMode)
+          : 'No model loaded';
       }}
     }}
 
@@ -6307,6 +7174,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       const options = {{
         renderMode: state.renderMode,
         selectedFaces: uniqueSorted(Array.from(state.selectedFaces)),
+        roiBoxes: state.roiScopes
+          .filter(scope => scope.active && scope.clipBox)
+          .map(scope => scope.clipBox),
         hiddenFaces: getThreeHiddenFaces(),
         overlays: buildThreeTransformOverlays(),
         axisScalePercent: state.axisScalePercent,
@@ -6374,6 +7244,41 @@ def _build_html_form(material_options: str, version: str) -> str:
       const length = Math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
       if (length <= 1e-9) return null;
       return [vector[0] / length, vector[1] / length, vector[2] / length];
+    }}
+
+    function referencePointArray(value, fallback) {{
+      const source = value || fallback || [0, 0, 0];
+      if (Array.isArray(source)) {{
+        return [Number(source[0]) || 0, Number(source[1]) || 0, Number(source[2]) || 0];
+      }}
+      return [Number(source.x) || 0, Number(source.y) || 0, Number(source.z) || 0];
+    }}
+
+    function referencePointSignature(point) {{
+      return referencePointArray(point).map((value) => Math.round(value * 1000000)).join(':');
+    }}
+
+    function referenceSegmentSignature(segment) {{
+      if (!Array.isArray(segment) || segment.length !== 2) return '';
+      return [referencePointSignature(segment[0]), referencePointSignature(segment[1])].sort().join('|');
+    }}
+
+    function meshVertexIndexForReferencePoint(point) {{
+      if (!state.mesh || !Array.isArray(state.mesh.vertices) || !Array.isArray(point)) return null;
+      const tolerance = Math.max(modelSpanMm() * 1e-8, 1e-6);
+      for (let index = 0; index < state.mesh.vertices.length; index += 1) {{
+        const candidate = state.mesh.vertices[index];
+        if (Math.hypot(candidate[0] - point[0], candidate[1] - point[1], candidate[2] - point[2]) <= tolerance) {{
+          return index;
+        }}
+      }}
+      return null;
+    }}
+
+    function referenceVertexIndex(value) {{
+      if (value === null || value === undefined || value === '') return null;
+      const parsed = Number(value);
+      return Number.isInteger(parsed) ? parsed : null;
     }}
 
     function subtractArray3(a, b) {{ return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }}
@@ -6549,10 +7454,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       let uTarget = null;
       let vTarget = null;
       if (mode === 'two_edges') {{
-        if (!state.emitterReferenceEdges.length) return {{ referencePoints: [], referenceSegments: [] }};
-        referenceSegments = state.emitterReferenceEdges.map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]);
+        if (!state.emitterReferenceEdgePoints.length) return {{ referencePoints: [], referenceSegments: [] }};
+        referenceSegments = state.emitterReferenceEdgePoints.map((segment) => segment.map((point) => Array.from(point)));
         points = referenceSegments.flat();
-        if (state.emitterReferenceEdges.length < 2) return {{ referencePoints: points, referenceSegments }};
+        if (state.emitterReferenceEdgePoints.length < 2) return {{ referencePoints: points, referenceSegments }};
         const first = referenceSegments[0];
         const second = referenceSegments[1];
         origin = first[0];
@@ -6561,7 +7466,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         const secondMid = scaleArray3(addArray3(second[0], second[1]), 0.5);
         vTarget = addArray3(origin, subtractArray3(secondMid, firstMid));
       }} else {{
-        points = state.emitterReferenceVertices.map((index) => state.mesh.vertices[index]).filter(Boolean);
+        points = state.emitterReferencePoints.map((point) => Array.from(point));
         return emitterReferenceSurfaceSelect.value === 'polygon_auto'
           ? polygonPlaneFromVertexPoints(points)
           : referencePlaneFromVertexPoints(points);
@@ -6606,8 +7511,12 @@ def _build_html_form(material_options: str, version: str) -> str:
         surfaceConstruction: emitter.surface_construction || 'rectangular_fit',
         polygonPoints,
         polygonAreaMm2: Number(emitter.polygon_area_mm2) || polygonAreaMm2FromPoints(polygonPoints) || null,
-        referencePoints: (emitter.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
-        referenceSegments: (emitter.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1])
+        referencePoints: Array.isArray(emitter.reference_vertex_points) && emitter.reference_vertex_points.length
+          ? emitter.reference_vertex_points.map((point) => Array.from(point))
+          : (emitter.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: Array.isArray(emitter.reference_edge_points) && emitter.reference_edge_points.length
+          ? emitter.reference_edge_points.map((segment) => segment.map((point) => Array.from(point)))
+          : (emitter.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1])
       }};
     }}
 
@@ -6655,10 +7564,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       let uTarget = null;
       let vTarget = null;
       if (mode === 'two_edges') {{
-        if (!state.receiverReferenceEdges.length) return {{ referencePoints: [], referenceSegments: [] }};
-        referenceSegments = state.receiverReferenceEdges.map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]);
+        if (!state.receiverReferenceEdgePoints.length) return {{ referencePoints: [], referenceSegments: [] }};
+        referenceSegments = state.receiverReferenceEdgePoints.map((segment) => segment.map((point) => Array.from(point)));
         points = referenceSegments.flat();
-        if (state.receiverReferenceEdges.length < 2) return {{ referencePoints: points, referenceSegments }};
+        if (state.receiverReferenceEdgePoints.length < 2) return {{ referencePoints: points, referenceSegments }};
         const first = referenceSegments[0];
         const second = referenceSegments[1];
         origin = first[0];
@@ -6667,7 +7576,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         const secondMid = scaleArray3(addArray3(second[0], second[1]), 0.5);
         vTarget = addArray3(origin, subtractArray3(secondMid, firstMid));
       }} else {{
-        points = state.receiverReferenceVertices.map((index) => state.mesh.vertices[index]).filter(Boolean);
+        points = state.receiverReferencePoints.map((point) => Array.from(point));
         return referencePlaneFromVertexPoints(points);
       }}
       const uAxis = normalizeArray3(subtractArray3(uTarget, origin));
@@ -6697,10 +7606,17 @@ def _build_html_form(material_options: str, version: str) -> str:
       }};
     }}
 
+    function primaryThreeRenderer() {{
+      if (!ensureThreeRenderers()) return null;
+      if (state.primaryViewerKey === 'roi' && threeRoiRenderer) return threeRoiRenderer;
+      return threeFullRenderer;
+    }}
+
     function captureCurrentViewReceiverPlane() {{
-      if (!ensureThreeRenderers() || !threeFullRenderer || typeof threeFullRenderer.getCameraFrame !== 'function') return null;
+      const activeRenderer = primaryThreeRenderer();
+      if (!activeRenderer || typeof activeRenderer.getCameraFrame !== 'function') return null;
       const distanceMm = Math.max(0.001, Math.abs(parseMoveFieldValue(receiverViewDistanceInput.value)) || Math.max(50, modelSpanMm() * 0.25));
-      const frame = threeFullRenderer.getCameraFrame(distanceMm);
+      const frame = activeRenderer.getCameraFrame(distanceMm);
       if (!frame || !frame.center) return null;
       state.receiverCurrentViewPlane = {{
         center: frame.center,
@@ -6725,8 +7641,12 @@ def _build_html_form(material_options: str, version: str) -> str:
         normal: receiver.normal || normalizeArray3(crossArray3(receiver.u_axis || [1, 0, 0], receiver.v_axis || [0, 1, 0])) || [0, 0, 1],
         widthMm: Number(receiver.width_mm) || 1,
         heightMm: Number(receiver.height_mm) || 1,
-        referencePoints: (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
-        referenceSegments: (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
+        referencePoints: Array.isArray(receiver.reference_vertex_points) && receiver.reference_vertex_points.length
+          ? receiver.reference_vertex_points.map((point) => Array.from(point))
+          : (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: Array.isArray(receiver.reference_edge_points) && receiver.reference_edge_points.length
+          ? receiver.reference_edge_points.map((segment) => segment.map((point) => Array.from(point)))
+          : (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
         distanceMm: receiver.view_distance_mm || null
       }};
     }}
@@ -6746,8 +7666,12 @@ def _build_html_form(material_options: str, version: str) -> str:
         normal: receiver.base_normal || normalizeArray3(crossArray3(baseU, baseV)) || [0, 0, 1],
         widthMm: Number(receiver.width_mm) || 1,
         heightMm: Number(receiver.height_mm) || 1,
-        referencePoints: (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
-        referenceSegments: (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
+        referencePoints: Array.isArray(receiver.reference_vertex_points) && receiver.reference_vertex_points.length
+          ? receiver.reference_vertex_points.map((point) => Array.from(point))
+          : (receiver.reference_vertex_indices || []).map((index) => state.mesh.vertices[index]).filter(Boolean),
+        referenceSegments: Array.isArray(receiver.reference_edge_points) && receiver.reference_edge_points.length
+          ? receiver.reference_edge_points.map((segment) => segment.map((point) => Array.from(point)))
+          : (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]),
         distanceMm: receiver.view_distance_mm || null
       }};
     }}
@@ -6918,6 +7842,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         overlays.push({{
           kind: 'selected_component_' + objectId,
           faceIndices: object.face_indices,
+          featureEdgeComponentIds: [objectId],
           pivot: computePivotForFaceIndices(object.face_indices),
           move: hasApplied ? cloneVector(rule.move) : {{ x: 0, y: 0, z: 0 }},
           tilt: hasApplied ? cloneVector(rule.tilt) : {{ x: 0, y: 0, z: 0 }},
@@ -6935,6 +7860,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           overlays.push({{
             kind: 'selected_material_' + state.selectedMaterialObjectId,
             faceIndices: object.face_indices,
+            featureEdgeComponentIds: [state.selectedMaterialObjectId],
             pivot: computePivotForFaceIndices(object.face_indices),
             move: hasApplied ? cloneVector(rule.move) : {{ x: 0, y: 0, z: 0 }},
             tilt: hasApplied ? cloneVector(rule.tilt) : {{ x: 0, y: 0, z: 0 }},
@@ -6953,6 +7879,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         overlays.push({{
           kind: rule.rule_id === state.activeTransformRuleId ? 'applied_active' : 'applied',
           faceIndices: object.face_indices,
+          featureEdgeComponentIds: [rule.object_id],
           pivot: computePivotForFaceIndices(object.face_indices),
           move: cloneVector(rule.move),
           tilt: cloneVector(rule.tilt),
@@ -6977,6 +7904,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           overlays.push({{
             kind: 'draft',
             faceIndices: object.face_indices,
+            featureEdgeComponentIds: [rule.object_id],
             pivot: computePivotForFaceIndices(object.face_indices),
             move: cloneVector(state.gapMove),
             tilt: cloneVector(state.gapTilt),
@@ -7093,6 +8021,7 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function buildFaceAdjacency() {{
       state.faceAdjacency = new Map();
+      state.faceAdjacencyReady = false;
       if (!state.mesh || !state.mesh.faces) return;
       const edgeMap = new Map();
       for (let faceIndex = 0; faceIndex < state.mesh.faces.length; faceIndex++) {{
@@ -7128,6 +8057,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           }}
         }}
       }}
+      state.faceAdjacencyReady = true;
     }}
 
     function buildProjectedScene(canvas) {{
@@ -7598,6 +8528,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     function getSurfaceCluster(seedFaceIndex) {{
       if (seedFaceIndex === null || seedFaceIndex === undefined || !state.mesh) return [];
       if (isFaceHidden(seedFaceIndex)) return [];
+      if (!state.faceAdjacencyReady) buildFaceAdjacency();
       const visited = new Set();
       const queue = [seedFaceIndex];
       const seedNormal = faceNormal(seedFaceIndex);
@@ -8033,7 +8964,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
     }}
 
-    function addRoiScope(faceIndices) {{
+    function addRoiScope(faceIndices, clipBox) {{
       if (!faceIndices.length) {{
         showRoiScopePopup(null);
         return;
@@ -8044,7 +8975,19 @@ def _build_html_form(material_options: str, version: str) -> str:
       const scopeId = label || ('ROI-' + state.roiScopeSeq);
       const yaw = ((state.transform.yaw % (Math.PI * 2.0)) + Math.PI * 2.0) % (Math.PI * 2.0);
       const view = Math.abs(yaw - Math.PI) < Math.PI / 2.0 ? 'back_neg_xy' : 'front_xy';
-      const scope = {{ id: state.roiScopeSeq, scopeId: scopeId, view: view, components: components, active: true }};
+      const scope = {{
+        id: state.roiScopeSeq,
+        scopeId: scopeId,
+        view: view,
+        components: components,
+        active: true,
+        clipBox: clipBox ? {{
+          xMin: Number(clipBox.xMin),
+          xMax: Number(clipBox.xMax),
+          yMin: Number(clipBox.yMin),
+          yMax: Number(clipBox.yMax),
+        }} : null,
+      }};
       state.roiScopes.push(scope);
       roiScopeLabel.value = '';
       recomputeSelectedFaces();
@@ -8205,7 +9148,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           return;
         }}
         const faceIndices = resolveFaceIndicesInXyBoxJs(box.xMin, box.xMax, box.yMin, box.yMax);
-        addRoiScope(faceIndices);
+        addRoiScope(faceIndices, box);
       }} finally {{
         disarmRoiBoxDrag();
       }}
@@ -8811,6 +9754,8 @@ def _build_html_form(material_options: str, version: str) -> str:
         polygon_vertices: Array.isArray(emitter.polygon_vertices) ? emitter.polygon_vertices : [],
         reference_vertex_indices: emitter.reference_vertex_indices || [],
         reference_edge_vertex_indices: emitter.reference_edge_vertex_indices || [],
+        reference_vertex_points: emitter.reference_vertex_points || [],
+        reference_edge_points: emitter.reference_edge_points || [],
         ray_count: Math.max(1, parseInt(emitter.ray_count, 10) || 10000),
         seed: null,
         enabled: emitter.enabled !== false
@@ -8949,7 +9894,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         const isEdges = emitterReferenceModeSelect.value === 'two_edges';
         emitterReferenceSurfaceWrap.classList.toggle('hidden-block', isEdges);
         if (isEdges) emitterReferenceSurfaceSelect.value = 'rectangular_fit';
-        const selectedCount = isEdges ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+        const selectedCount = isEdges ? state.emitterReferenceEdgePoints.length : state.emitterReferencePoints.length;
         emitterReferenceHint.textContent = isEdges
           ? '서로 다른 edge 2개를 선택합니다. 잘못 선택했으면 아래 Clear selected edges를 누르세요.'
           : (emitterReferenceSurfaceSelect.value === 'polygon_auto'
@@ -8991,7 +9936,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           cursorEmitterNameHint.textContent = '좌표·크기·회전각으로 빈 공간의 가상 발광면을 정의합니다.';
         }} else {{
           const mode = emitterReferenceModeSelect.value || 'three_vertices';
-          count = mode === 'two_edges' ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+          count = mode === 'two_edges' ? state.emitterReferenceEdgePoints.length : state.emitterReferencePoints.length;
           const polygonMode = mode !== 'two_edges' && emitterReferenceSurfaceSelect.value === 'polygon_auto';
           area = plane && plane.center
             ? (polygonMode ? Math.max(0, Number(plane.polygonAreaMm2) || 0) : plane.widthMm * plane.heightMm)
@@ -9039,7 +9984,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         viewerTip.textContent = 'Emitter: Click CAD surface, Ctrl+click = add/remove, Apply = save.';
       }} else if (isReferenceSelecting) {{
         const isEdges = emitterReferenceModeSelect.value === 'two_edges';
-        const selectedCount = isEdges ? state.emitterReferenceEdges.length : state.emitterReferenceVertices.length;
+        const selectedCount = isEdges ? state.emitterReferenceEdgePoints.length : state.emitterReferencePoints.length;
         emitterSelectionBanner.textContent = isEdges
           ? ('Reference edge 선택: ' + selectedCount + ' / 2 · Apply로 확정')
           : ('Reference vertex 선택: ' + selectedCount + ' / 3–6 · 최소 3개 선택 후 Apply');
@@ -9150,7 +10095,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.emitterDraftType = emitterTypeValue;
       state.emitterDraftFaces = new Set();
       state.emitterReferenceVertices = [];
+      state.emitterReferencePoints = [];
       state.emitterReferenceEdges = [];
+      state.emitterReferenceEdgePoints = [];
       state.emitterSelectionActive = emitterTypeValue !== 'datum_plane';
       resetEmitterEditorValues();
       switchSideTab('raytracing', {{ forceOpen: true }});
@@ -9169,8 +10116,16 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.activeEmitterId = emitterId;
       state.emitterDraftType = emitter.emitter_type || 'face';
       state.emitterDraftFaces = new Set(emitter.face_indices || []);
-      state.emitterReferenceVertices = Array.from(emitter.reference_vertex_indices || []).slice(0, 6);
-      state.emitterReferenceEdges = (emitter.reference_edge_vertex_indices || []).map((edge) => Array.from(edge));
+      const storedVertexPoints = Array.isArray(emitter.reference_vertex_points) && emitter.reference_vertex_points.length
+        ? emitter.reference_vertex_points.map((point) => Array.from(point)).slice(0, 6)
+        : Array.from(emitter.reference_vertex_indices || []).slice(0, 6).map((index) => state.mesh.vertices[index]).filter(Boolean);
+      state.emitterReferencePoints = storedVertexPoints;
+      state.emitterReferenceVertices = storedVertexPoints.map(meshVertexIndexForReferencePoint);
+      const storedEdgePoints = Array.isArray(emitter.reference_edge_points) && emitter.reference_edge_points.length
+        ? emitter.reference_edge_points.map((segment) => segment.map((point) => Array.from(point))).slice(0, 2)
+        : (emitter.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]);
+      state.emitterReferenceEdgePoints = storedEdgePoints;
+      state.emitterReferenceEdges = storedEdgePoints.map((segment) => segment.map(meshVertexIndexForReferencePoint));
       state.emitterSelectionActive = false;
       resetEmitterEditorValues();
       showEmitterPopupAt(
@@ -9193,7 +10148,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (!currentEmitter()) {{
         state.emitterDraftFaces = new Set();
         state.emitterReferenceVertices = [];
+        state.emitterReferencePoints = [];
         state.emitterReferenceEdges = [];
+        state.emitterReferenceEdgePoints = [];
         hideEmitterPopup();
       }}
       updateEmitterSelectionUI();
@@ -9202,7 +10159,9 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function clearEmitterReferenceSelection() {{
       state.emitterReferenceVertices = [];
+      state.emitterReferencePoints = [];
       state.emitterReferenceEdges = [];
+      state.emitterReferenceEdgePoints = [];
       state.emitterSelectionActive = state.emitterDraftType === 'reference_plane';
       updateEmitterDraftSummary();
       updateEmitterSelectionUI();
@@ -9210,24 +10169,53 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function handleEmitterGeometryPick(faceIndex, pickEvent) {{
-      if (faceIndex === null || faceIndex === undefined) return;
       if (state.emitterDraftType === 'reference_plane') {{
         let maximumReached = false;
         if ((emitterReferenceModeSelect.value || 'three_vertices') === 'two_edges') {{
-          const edge = pickEvent && Array.isArray(pickEvent.edgeVertexIndices) ? pickEvent.edgeVertexIndices.map(Number).sort((a, b) => a - b) : [];
-          if (edge.length !== 2 || edge.some((value) => !Number.isInteger(value))) return;
-          const signature = edge.join(':');
-          const existing = state.emitterReferenceEdges.findIndex((item) => item.slice().sort((a, b) => a - b).join(':') === signature);
-          if (existing >= 0) state.emitterReferenceEdges.splice(existing, 1);
-          else if (state.emitterReferenceEdges.length < 2) state.emitterReferenceEdges.push(edge);
-          else state.emitterReferenceEdges = [state.emitterReferenceEdges[1], edge];
+          const edgePoints = pickEvent && Array.isArray(pickEvent.edgePoints)
+            ? pickEvent.edgePoints.map((point) => referencePointArray(point, [0, 0, 0]))
+            : [];
+          if (edgePoints.length !== 2) return;
+          const signature = referenceSegmentSignature(edgePoints);
+          const existing = state.emitterReferenceEdgePoints.findIndex((segment) => referenceSegmentSignature(segment) === signature);
+          const pickedEdgeIndices = pickEvent && Array.isArray(pickEvent.edgeVertexIndices)
+            ? pickEvent.edgeVertexIndices.map(referenceVertexIndex)
+            : [];
+          const sourceEdge = pickedEdgeIndices.length === 2 && pickedEdgeIndices.every((value) => value !== null)
+            ? pickedEdgeIndices
+            : edgePoints.map(meshVertexIndexForReferencePoint);
+          if (existing >= 0) {{
+            state.emitterReferenceEdgePoints.splice(existing, 1);
+            state.emitterReferenceEdges.splice(existing, 1);
+          }} else if (state.emitterReferenceEdgePoints.length < 2) {{
+            state.emitterReferenceEdgePoints.push(edgePoints);
+            state.emitterReferenceEdges.push(sourceEdge);
+          }} else {{
+            state.emitterReferenceEdgePoints = [state.emitterReferenceEdgePoints[1], edgePoints];
+            state.emitterReferenceEdges = [state.emitterReferenceEdges[1], sourceEdge];
+          }}
         }} else {{
-          const vertexIndex = Number(pickEvent && pickEvent.vertexIndex);
-          if (!Number.isInteger(vertexIndex) || vertexIndex < 0) return;
-          const existing = state.emitterReferenceVertices.indexOf(vertexIndex);
-          if (existing >= 0) state.emitterReferenceVertices.splice(existing, 1);
-          else if (state.emitterReferenceVertices.length < 6) state.emitterReferenceVertices.push(vertexIndex);
-          else maximumReached = true;
+          const vertexPoint = pickEvent && Array.isArray(pickEvent.vertexPoint)
+            ? referencePointArray(pickEvent.vertexPoint, [0, 0, 0])
+            : null;
+          if (!vertexPoint) {{
+            emitterSelectionBanner.textContent = '선택할 vertex 가까이를 클릭하세요. ROI 절단면의 꼭지점도 선택할 수 있습니다.';
+            emitterSelectionBanner.classList.add('active');
+            return;
+          }}
+          const signature = referencePointSignature(vertexPoint);
+          const existing = state.emitterReferencePoints.findIndex((point) => referencePointSignature(point) === signature);
+          const pickedVertexIndex = referenceVertexIndex(pickEvent && pickEvent.vertexIndex);
+          const sourceVertexIndex = pickedVertexIndex !== null
+            ? pickedVertexIndex
+            : meshVertexIndexForReferencePoint(vertexPoint);
+          if (existing >= 0) {{
+            state.emitterReferencePoints.splice(existing, 1);
+            state.emitterReferenceVertices.splice(existing, 1);
+          }} else if (state.emitterReferencePoints.length < 6) {{
+            state.emitterReferencePoints.push(vertexPoint);
+            state.emitterReferenceVertices.push(sourceVertexIndex);
+          }} else maximumReached = true;
         }}
         updateEmitterDraftSummary();
         updateEmitterSelectionUI();
@@ -9240,6 +10228,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         drawViewer();
         return;
       }}
+      if (faceIndex === null || faceIndex === undefined) return;
       const additive = !!(pickEvent && (pickEvent.ctrlKey || pickEvent.metaKey));
       const cluster = getSurfaceCluster(faceIndex);
       const next = additive ? new Set(state.emitterDraftFaces) : new Set();
@@ -9325,8 +10314,18 @@ def _build_html_form(material_options: str, version: str) -> str:
       emitter.polygon_area_mm2 = emitter.surface_construction === 'polygon_auto' && plane
         ? Math.max(0, Number(plane.polygonAreaMm2) || 0)
         : null;
-      emitter.reference_vertex_indices = emitterTypeValue === 'reference_plane' ? Array.from(state.emitterReferenceVertices) : [];
-      emitter.reference_edge_vertex_indices = emitterTypeValue === 'reference_plane' ? state.emitterReferenceEdges.map((edge) => Array.from(edge)) : [];
+      emitter.reference_vertex_indices = emitterTypeValue === 'reference_plane'
+        ? state.emitterReferenceVertices.filter((index) => Number.isInteger(index))
+        : [];
+      emitter.reference_edge_vertex_indices = emitterTypeValue === 'reference_plane'
+        ? state.emitterReferenceEdges.filter((edge) => Array.isArray(edge) && edge.length === 2 && edge.every((index) => Number.isInteger(index))).map((edge) => Array.from(edge))
+        : [];
+      emitter.reference_vertex_points = emitterTypeValue === 'reference_plane'
+        ? state.emitterReferencePoints.map((point) => Array.from(point))
+        : [];
+      emitter.reference_edge_points = emitterTypeValue === 'reference_plane'
+        ? state.emitterReferenceEdgePoints.map((segment) => segment.map((point) => Array.from(point)))
+        : [];
       emitter.rotation_deg = emitterTypeValue === 'datum_plane' ? {{
         x: parseMoveFieldValue(emitterRotationX.value),
         y: parseMoveFieldValue(emitterRotationY.value),
@@ -9363,7 +10362,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.emitterDraftType = 'face';
       state.emitterDraftFaces = new Set();
       state.emitterReferenceVertices = [];
+      state.emitterReferencePoints = [];
       state.emitterReferenceEdges = [];
+      state.emitterReferenceEdgePoints = [];
       state.emitterSelectionActive = false;
       invalidateDirectRayTraceResult();
       hideEmitterPopup();
@@ -9385,7 +10386,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.emitterDraftType = 'face';
       state.emitterDraftFaces = new Set();
       state.emitterReferenceVertices = [];
+      state.emitterReferencePoints = [];
       state.emitterReferenceEdges = [];
+      state.emitterReferenceEdgePoints = [];
       state.emitterSelectionActive = false;
       state.emitterSequence = 1;
       hideEmitterPopup();
@@ -9421,6 +10424,8 @@ def _build_html_form(material_options: str, version: str) -> str:
         reference_mode: receiver.reference_mode || null,
         reference_vertex_indices: receiver.reference_vertex_indices || [],
         reference_edge_vertex_indices: receiver.reference_edge_vertex_indices || [],
+        reference_vertex_points: receiver.reference_vertex_points || [],
+        reference_edge_points: receiver.reference_edge_points || [],
         view_distance_mm: receiver.view_distance_mm ?? null,
         base_center: receiver.base_center || null,
         base_u_axis: receiver.base_u_axis || null,
@@ -9503,7 +10508,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       receiverHeightInput.disabled = isReference;
       if (isReference) {{
         const isEdges = receiverReferenceModeSelect.value === 'two_edges';
-        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        const selectedCount = isEdges ? state.receiverReferenceEdgePoints.length : state.receiverReferencePoints.length;
         receiverReferenceHint.textContent = isEdges
           ? '서로 다른 edge 2개를 선택합니다. 잘못 선택했으면 아래 Clear selected edges를 누르세요.'
           : 'vertex 3개 이상 선택 시 평면 preview가 생성됩니다. 최대 6개까지 선택하며 같은 점을 다시 누르면 제외됩니다.';
@@ -9534,7 +10539,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         }}
       }} else if (placementMode === 'reference_plane') {{
         const isEdges = receiverReferenceModeSelect.value === 'two_edges';
-        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        const selectedCount = isEdges ? state.receiverReferenceEdgePoints.length : state.receiverReferencePoints.length;
         summary = 'Type: Reference geometry\\n' + (isEdges ? 'Edges: ' + selectedCount + ' / 2' : 'Vertices: ' + selectedCount + ' / 3–6');
       }}
       const shownNormal = receiverNormalFlipInput.checked ? normal.map((value) => -value) : normal;
@@ -9569,7 +10574,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       receiverSelectionBanner.classList.toggle('active', state.receiverSelectionActive);
       if (isReferenceSelecting) {{
         const isEdges = receiverReferenceModeSelect.value === 'two_edges';
-        const selectedCount = isEdges ? state.receiverReferenceEdges.length : state.receiverReferenceVertices.length;
+        const selectedCount = isEdges ? state.receiverReferenceEdgePoints.length : state.receiverReferencePoints.length;
         receiverSelectionBanner.textContent = isEdges
           ? ('Reference edge 선택: ' + selectedCount + ' / 2 · Apply로 확정')
           : ('Reference vertex 선택: ' + selectedCount + ' / 3–6 · 최소 3개 선택 후 Apply');
@@ -9590,7 +10595,8 @@ def _build_html_form(material_options: str, version: str) -> str:
       const positionOffset = receiver && Array.isArray(receiver.position_offset_mm) ? receiver.position_offset_mm : [0, 0, 0];
       const tiltAdjustment = receiver && Array.isArray(receiver.tilt_xyz_deg) ? receiver.tilt_xyz_deg : [0, 0, 0];
       receiverNameInput.value = receiver ? receiver.display_name : ('Receiver ' + state.receiverSequence);
-      receiverWidthInput.value = receiver ? String(receiver.width_mm ?? 100) : '100';
+      const defaultWidthMm = state.receiverDraftType === 'current_view' ? 30 : 100;
+      receiverWidthInput.value = receiver ? String(receiver.width_mm ?? defaultWidthMm) : String(defaultWidthMm);
       receiverHeightInput.value = receiver ? String(receiver.height_mm ?? 30) : '30';
       receiverCenterX.value = String(center[0] ?? 0);
       receiverCenterY.value = String(center[1] ?? 0);
@@ -9685,7 +10691,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.activeReceiverId = null;
       state.receiverDraftType = placementMode;
       state.receiverReferenceVertices = [];
+      state.receiverReferencePoints = [];
       state.receiverReferenceEdges = [];
+      state.receiverReferenceEdgePoints = [];
       state.receiverCurrentViewPlane = null;
       state.receiverSelectionActive = placementMode === 'reference_plane';
       resetReceiverEditorValues();
@@ -9705,8 +10713,16 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (!receiver) return;
       state.activeReceiverId = receiverId;
       state.receiverDraftType = receiver.placement_mode || 'datum_plane';
-      state.receiverReferenceVertices = Array.from(receiver.reference_vertex_indices || []).slice(0, 6);
-      state.receiverReferenceEdges = (receiver.reference_edge_vertex_indices || []).map((edge) => Array.from(edge));
+      const storedVertexPoints = Array.isArray(receiver.reference_vertex_points) && receiver.reference_vertex_points.length
+        ? receiver.reference_vertex_points.map((point) => Array.from(point)).slice(0, 6)
+        : Array.from(receiver.reference_vertex_indices || []).slice(0, 6).map((index) => state.mesh.vertices[index]).filter(Boolean);
+      state.receiverReferencePoints = storedVertexPoints;
+      state.receiverReferenceVertices = storedVertexPoints.map(meshVertexIndexForReferencePoint);
+      const storedEdgePoints = Array.isArray(receiver.reference_edge_points) && receiver.reference_edge_points.length
+        ? receiver.reference_edge_points.map((segment) => segment.map((point) => Array.from(point))).slice(0, 2)
+        : (receiver.reference_edge_vertex_indices || []).map((edge) => [state.mesh.vertices[edge[0]], state.mesh.vertices[edge[1]]]).filter((segment) => segment[0] && segment[1]);
+      state.receiverReferenceEdgePoints = storedEdgePoints;
+      state.receiverReferenceEdges = storedEdgePoints.map((segment) => segment.map(meshVertexIndexForReferencePoint));
       state.receiverSelectionActive = false;
       state.receiverCurrentViewPlane = state.receiverDraftType === 'current_view' ? receiverBasePlaneFromSpec(receiver) : null;
       resetReceiverEditorValues();
@@ -9729,7 +10745,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.receiverSelectionActive = false;
       if (!currentReceiver()) {{
         state.receiverReferenceVertices = [];
+        state.receiverReferencePoints = [];
         state.receiverReferenceEdges = [];
+        state.receiverReferenceEdgePoints = [];
         hideReceiverPopup();
       }}
       updateReceiverSelectionUI();
@@ -9738,7 +10756,9 @@ def _build_html_form(material_options: str, version: str) -> str:
 
     function clearReceiverReferenceSelection() {{
       state.receiverReferenceVertices = [];
+      state.receiverReferencePoints = [];
       state.receiverReferenceEdges = [];
+      state.receiverReferenceEdgePoints = [];
       state.receiverSelectionActive = state.receiverDraftType === 'reference_plane';
       updateReceiverDraftSummary();
       updateReceiverSelectionUI();
@@ -9746,23 +10766,53 @@ def _build_html_form(material_options: str, version: str) -> str:
     }}
 
     function handleReceiverGeometryPick(faceIndex, pickEvent) {{
-      if (faceIndex === null || faceIndex === undefined || state.receiverDraftType !== 'reference_plane') return;
+      if (state.receiverDraftType !== 'reference_plane') return;
       let maximumReached = false;
       if ((receiverReferenceModeSelect.value || 'three_vertices') === 'two_edges') {{
-        const edge = pickEvent && Array.isArray(pickEvent.edgeVertexIndices) ? pickEvent.edgeVertexIndices.map(Number).sort((a, b) => a - b) : [];
-        if (edge.length !== 2 || edge.some((value) => !Number.isInteger(value))) return;
-        const signature = edge.join(':');
-        const existing = state.receiverReferenceEdges.findIndex((item) => item.slice().sort((a, b) => a - b).join(':') === signature);
-        if (existing >= 0) state.receiverReferenceEdges.splice(existing, 1);
-        else if (state.receiverReferenceEdges.length < 2) state.receiverReferenceEdges.push(edge);
-        else state.receiverReferenceEdges = [state.receiverReferenceEdges[1], edge];
+        const edgePoints = pickEvent && Array.isArray(pickEvent.edgePoints)
+          ? pickEvent.edgePoints.map((point) => referencePointArray(point, [0, 0, 0]))
+          : [];
+        if (edgePoints.length !== 2) return;
+        const signature = referenceSegmentSignature(edgePoints);
+        const existing = state.receiverReferenceEdgePoints.findIndex((segment) => referenceSegmentSignature(segment) === signature);
+        const pickedEdgeIndices = pickEvent && Array.isArray(pickEvent.edgeVertexIndices)
+          ? pickEvent.edgeVertexIndices.map(referenceVertexIndex)
+          : [];
+        const sourceEdge = pickedEdgeIndices.length === 2 && pickedEdgeIndices.every((value) => value !== null)
+          ? pickedEdgeIndices
+          : edgePoints.map(meshVertexIndexForReferencePoint);
+        if (existing >= 0) {{
+          state.receiverReferenceEdgePoints.splice(existing, 1);
+          state.receiverReferenceEdges.splice(existing, 1);
+        }} else if (state.receiverReferenceEdgePoints.length < 2) {{
+          state.receiverReferenceEdgePoints.push(edgePoints);
+          state.receiverReferenceEdges.push(sourceEdge);
+        }} else {{
+          state.receiverReferenceEdgePoints = [state.receiverReferenceEdgePoints[1], edgePoints];
+          state.receiverReferenceEdges = [state.receiverReferenceEdges[1], sourceEdge];
+        }}
       }} else {{
-        const vertexIndex = Number(pickEvent && pickEvent.vertexIndex);
-        if (!Number.isInteger(vertexIndex) || vertexIndex < 0) return;
-        const existing = state.receiverReferenceVertices.indexOf(vertexIndex);
-        if (existing >= 0) state.receiverReferenceVertices.splice(existing, 1);
-        else if (state.receiverReferenceVertices.length < 6) state.receiverReferenceVertices.push(vertexIndex);
-        else maximumReached = true;
+        const vertexPoint = pickEvent && Array.isArray(pickEvent.vertexPoint)
+          ? referencePointArray(pickEvent.vertexPoint, [0, 0, 0])
+          : null;
+        if (!vertexPoint) {{
+          receiverSelectionBanner.textContent = '선택할 vertex 가까이를 클릭하세요. ROI 절단면의 꼭지점도 선택할 수 있습니다.';
+          receiverSelectionBanner.classList.add('active');
+          return;
+        }}
+        const signature = referencePointSignature(vertexPoint);
+        const existing = state.receiverReferencePoints.findIndex((point) => referencePointSignature(point) === signature);
+        const pickedVertexIndex = referenceVertexIndex(pickEvent && pickEvent.vertexIndex);
+        const sourceVertexIndex = pickedVertexIndex !== null
+          ? pickedVertexIndex
+          : meshVertexIndexForReferencePoint(vertexPoint);
+        if (existing >= 0) {{
+          state.receiverReferencePoints.splice(existing, 1);
+          state.receiverReferenceVertices.splice(existing, 1);
+        }} else if (state.receiverReferencePoints.length < 6) {{
+          state.receiverReferencePoints.push(vertexPoint);
+          state.receiverReferenceVertices.push(sourceVertexIndex);
+        }} else maximumReached = true;
       }}
       updateReceiverDraftSummary();
       updateReceiverSelectionUI();
@@ -9805,8 +10855,18 @@ def _build_html_form(material_options: str, version: str) -> str:
       receiver.acceptance_angle_deg = Math.min(180, Math.max(0.1, parseFloat(receiverAcceptanceInput.value) || 90));
       receiver.normal_flip = !!receiverNormalFlipInput.checked;
       receiver.reference_mode = placementMode === 'reference_plane' ? (receiverReferenceModeSelect.value || 'three_vertices') : null;
-      receiver.reference_vertex_indices = placementMode === 'reference_plane' ? Array.from(state.receiverReferenceVertices) : [];
-      receiver.reference_edge_vertex_indices = placementMode === 'reference_plane' ? state.receiverReferenceEdges.map((edge) => Array.from(edge)) : [];
+      receiver.reference_vertex_indices = placementMode === 'reference_plane'
+        ? state.receiverReferenceVertices.filter((index) => Number.isInteger(index))
+        : [];
+      receiver.reference_edge_vertex_indices = placementMode === 'reference_plane'
+        ? state.receiverReferenceEdges.filter((edge) => Array.isArray(edge) && edge.length === 2 && edge.every((index) => Number.isInteger(index))).map((edge) => Array.from(edge))
+        : [];
+      receiver.reference_vertex_points = placementMode === 'reference_plane'
+        ? state.receiverReferencePoints.map((point) => Array.from(point))
+        : [];
+      receiver.reference_edge_points = placementMode === 'reference_plane'
+        ? state.receiverReferenceEdgePoints.map((segment) => segment.map((point) => Array.from(point)))
+        : [];
       receiver.view_distance_mm = placementMode === 'current_view' ? Math.max(0.001, parseMoveFieldValue(receiverViewDistanceInput.value)) : null;
       const adjustment = receiverAdjustmentFromInputs();
       receiver.base_center = placementMode === 'datum_plane' || !basePlane ? null : Array.from(basePlane.center || [0, 0, 0]);
@@ -9839,7 +10899,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.activeReceiverId = null;
       state.receiverDraftType = 'datum_plane';
       state.receiverReferenceVertices = [];
+      state.receiverReferencePoints = [];
       state.receiverReferenceEdges = [];
+      state.receiverReferenceEdgePoints = [];
       state.receiverCurrentViewPlane = null;
       state.receiverSelectionActive = false;
       invalidateDirectRayTraceResult();
@@ -9861,7 +10923,9 @@ def _build_html_form(material_options: str, version: str) -> str:
       state.activeReceiverId = null;
       state.receiverDraftType = 'datum_plane';
       state.receiverReferenceVertices = [];
+      state.receiverReferencePoints = [];
       state.receiverReferenceEdges = [];
+      state.receiverReferenceEdgePoints = [];
       state.receiverCurrentViewPlane = null;
       state.receiverSelectionActive = false;
       state.receiverSequence = 1;
@@ -9898,7 +10962,6 @@ def _build_html_form(material_options: str, version: str) -> str:
       const fileName = (file && file.name) ? file.name : 'unknown';
       runBtn.disabled = true;
       importCadBtn.disabled = true;
-      useSampleBtn.disabled = true;
       setResultMessage('<div>Uploading CAD file...</div>');
       try {{
         const res = await fetch('/api/upload?filename=' + encodeURIComponent(fileName), {{
@@ -9919,7 +10982,6 @@ def _build_html_form(material_options: str, version: str) -> str:
         setResultMessage('<div><b>Upload failed:</b> ' + err.message + '</div>');
       }} finally {{
         importCadBtn.disabled = false;
-        useSampleBtn.disabled = false;
         updateRayTraceRunState();
       }}
     }}
@@ -9927,9 +10989,15 @@ def _build_html_form(material_options: str, version: str) -> str:
     async function loadScene() {{
       runBtn.disabled = true;
       importCadBtn.disabled = true;
-      useSampleBtn.disabled = true;
       runBtn.textContent = 'Loading CAD...';
       const cad = cadInput.value.trim();
+      if (!cad) {{
+        cadFileName.value = 'No CAD selected';
+        cadMeta.textContent = 'No CAD uploaded yet. Click Import CAD to choose a file from Windows.';
+        importCadBtn.disabled = false;
+        updateRayTraceRunState();
+        return;
+      }}
       const endpoint = '/api/scene?cad=' + encodeURIComponent(cad);
       try {{
         const res = await fetch(endpoint);
@@ -9945,6 +11013,8 @@ def _build_html_form(material_options: str, version: str) -> str:
           throw new Error('CAD tessellation produced an empty triangle mesh');
         }}
         state.mesh = payload.mesh;
+        state.faceAdjacency = new Map();
+        state.faceAdjacencyReady = false;
         state.sceneToken = payload.metadata?.scene_token || null;
         state.rayTraceResult = null;
         state.hiddenComponentObjectIds.clear();
@@ -9952,10 +11022,8 @@ def _build_html_form(material_options: str, version: str) -> str:
         state.deletedComponentObjectIds.clear();
         hideComponentContextMenu();
         pendingThreeCameraPreset = 'fit';
-        drawViewer();
         state.objectsById.clear();
         state.faceToObjectId.clear();
-        buildFaceAdjacency();
         gapObjectList.innerHTML = '';
         disarmRoiBoxDrag();
         resetRoiSelection();
@@ -10055,10 +11123,7 @@ def _build_html_form(material_options: str, version: str) -> str:
         kpiFaces.textContent = String(payload.metadata.face_count);
         kpiVerts.textContent = String(payload.metadata.vertex_count);
         kpiMode.textContent = payload.metadata.synthetic ? 'Synthetic' : 'CAD';
-        if (!cad) {{
-          cadFileName.value = 'Sample geometry (no CAD file)';
-        }}
-        cadMeta.textContent = 'Loaded: ' + (payload.metadata.source_file || 'sample geometry')
+        cadMeta.textContent = 'Loaded: ' + (payload.metadata.source_file || cadFileName.value)
           + ' / ' + payload.metadata.face_count + ' faces'
           + ' / ' + payload.metadata.component_count + ' components'
           + ' / ' + payload.metadata.import_note;
@@ -10070,19 +11135,12 @@ def _build_html_form(material_options: str, version: str) -> str:
         updateGapSelectionStats();
         pendingThreeCameraPreset = 'fit';
         drawViewer();
-        const loadedMesh = state.mesh;
-        window.requestAnimationFrame(function () {{
-          if (state.mesh !== loadedMesh) return;
-          pendingThreeCameraPreset = 'fit';
-          drawViewer();
-        }});
       }} catch (err) {{
         state.sceneToken = null;
         cadMeta.textContent = 'Load failed: ' + err.message;
         setResultMessage('<div><b>Load failed:</b> ' + err.message + '</div>');
       }} finally {{
         importCadBtn.disabled = false;
-        useSampleBtn.disabled = false;
         updateRayTraceRunState();
       }}
     }}
@@ -10458,22 +11516,10 @@ def _build_html_form(material_options: str, version: str) -> str:
       if (!target) return;
       setSidebarLayout(target.getAttribute('data-layout'));
     }});
-    loadDemoCadBtn.addEventListener('click', function () {{
-      cadInput.value = demoCadPath;
-      cadFileName.value = demoCadName;
-      cadMeta.textContent = 'Demo CAD selected.';
-      loadScene();
-    }});
     cadFilePicker.addEventListener('change', async function () {{
       if (!cadFilePicker.files || !cadFilePicker.files.length) return;
       await uploadCadFile(cadFilePicker.files[0]);
       cadFilePicker.value = '';
-    }});
-    useSampleBtn.addEventListener('click', function () {{
-      cadInput.value = '';
-      cadFileName.value = 'Sample geometry (no CAD file)';
-      cadMeta.textContent = 'Sample geometry selected.';
-      loadScene();
     }});
     roiPointResolve.addEventListener('click', function () {{
       resolveRoiPoint();
@@ -10939,7 +11985,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     initSmallPanelDragAndResize(roiViewerCard, roiViewerCardHead, roiViewerResizeHandle, 'roi', function () {{ return threeRoiRenderer; }});
     updateViewerMode();
     initDevAutoRefresh();
-    loadScene();
+    drawViewer();
   </script>
 </body>
 </html>"""
@@ -11000,6 +12046,9 @@ class LeakageWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/scene":
             params = urllib.parse.parse_qs(parsed.query)
             cad = params.get("cad", [""])[0]
+            if not cad.strip():
+                self._send_json(400, {"error": "CAD file is required"})
+                return
             try:
                 payload = build_scene_payload(cad)
                 payload.setdefault("metadata", {})["scene_token"] = _cache_scene_mesh(payload)

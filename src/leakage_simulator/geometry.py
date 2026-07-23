@@ -652,6 +652,53 @@ def estimate_subdivided_face_count(
     return total
 
 
+def build_feature_edge_segments(
+    mesh: TriangleMesh,
+    threshold_angle_deg: float = 18.0,
+) -> List[Dict]:
+    """Build CAD feature edges before adaptive ROI subdivision.
+
+    Coplanar triangle diagonals are tessellation details rather than visible
+    CAD edges. Building this list from the original mesh also prevents
+    subdivision T-junctions from appearing as false edges in the viewer.
+    """
+    edge_faces: Dict[Tuple[int, int], List[int]] = {}
+    for face_index, face in enumerate(mesh.faces):
+        for start, end in (
+            (face.v0, face.v1),
+            (face.v1, face.v2),
+            (face.v2, face.v0),
+        ):
+            edge = (start, end) if start < end else (end, start)
+            edge_faces.setdefault(edge, []).append(face_index)
+
+    threshold_cosine = math.cos(math.radians(float(threshold_angle_deg)))
+    segments: List[Dict] = []
+    for (start, end), adjacent_faces in edge_faces.items():
+        is_feature = len(adjacent_faces) != 2
+        if len(adjacent_faces) == 2:
+            normal_a = mesh.normal(adjacent_faces[0])
+            normal_b = mesh.normal(adjacent_faces[1])
+            is_feature = abs(vec_dot(normal_a, normal_b)) <= threshold_cosine
+        if not is_feature:
+            continue
+
+        component_ids = {
+            mesh.metadata(face_index).get("step_component_id")
+            for face_index in adjacent_faces
+            if mesh.metadata(face_index).get("step_component_id") is not None
+        }
+        segments.append(
+            {
+                "start": mesh.vertices[start],
+                "end": mesh.vertices[end],
+                "adjacent_face_indices": list(adjacent_faces),
+                "step_component_id": next(iter(component_ids)) if len(component_ids) == 1 else None,
+            }
+        )
+    return segments
+
+
 def choose_adaptive_subdivision_area_mm2(
     mesh: TriangleMesh,
     target_divisions_across_diagonal: int = 512,

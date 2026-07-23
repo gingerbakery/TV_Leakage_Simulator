@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Set
 
 from .components import build_face_groups
-from .geometry import TriangleMesh
+from .geometry import TriangleMesh, build_feature_edge_segments
 from .importers import import_geometry
 from .types import ReceiverPatchConfig, ROIComponentClip, ROIPointSelection, ROIRegionResult, Vec3
 
@@ -48,6 +48,34 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         for face_index in face_ids
     ]
     face_areas = [round(mesh.area(face_index), 6) for face_index in face_ids]
+    step_component_to_component: Dict[int, int] = {}
+    for face_index, component_id in face_to_component.items():
+        step_component_id = mesh.metadata(face_index).get("step_component_id")
+        if step_component_id is not None:
+            step_component_to_component[int(step_component_id)] = component_id
+
+    source_feature_edges = import_result.feature_edge_segments
+    if source_feature_edges is None:
+        source_feature_edges = build_feature_edge_segments(mesh)
+    feature_edge_segments = []
+    for segment in source_feature_edges:
+        step_component_id = segment.get("step_component_id")
+        component_id = (
+            step_component_to_component.get(int(step_component_id))
+            if step_component_id is not None
+            else None
+        )
+        if component_id is None:
+            adjacent_faces = segment.get("adjacent_face_indices") or []
+            if adjacent_faces:
+                component_id = face_to_component.get(int(adjacent_faces[0]))
+        feature_edge_segments.append(
+            {
+                "start": [round(float(value), 6) for value in segment["start"]],
+                "end": [round(float(value), 6) for value in segment["end"]],
+                "component_id": component_id,
+            }
+        )
     return {
         "schema_version": "mesh-scene.v1",
         "units": {
@@ -70,6 +98,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
             "face_normals": face_normals,
             "face_centroids": face_centroids,
             "face_areas_mm2": face_areas,
+            "feature_edge_segments": feature_edge_segments,
         },
         "objects": objects,
         "components": objects,

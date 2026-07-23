@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple, List
 
 from .geometry import (
     TriangleMesh,
+    build_feature_edge_segments,
     choose_adaptive_subdivision_area_mm2,
     subdivide_flat_mesh,
 )
@@ -27,12 +28,14 @@ TopoDS = None
 ocp_available = None
 
 # STEP tessellation can leave flat panels as only one or two huge triangles.
-# Size-aware post-tessellation gives ROI picking fine spatial resolution
-# without imposing a fixed physical area on every CAD model.
-ROI_SUBDIVISION_TARGET_DIVISIONS = 512
-ROI_SUBDIVISION_MIN_EDGE_MM = 0.5
-ROI_SUBDIVISION_MAX_EDGE_MM = 3.0
-ROI_SUBDIVISION_MAX_FACES = 750_000
+# Subdivision improves ROI picking resolution, but it does not improve the
+# underlying CAD curvature or ray-intersection accuracy. The current corner
+# ROI workflow uses regions up to roughly 50 mm, so a 1.5 mm lower edge target
+# avoids display-only triangle explosions while preserving useful selection.
+ROI_SUBDIVISION_TARGET_DIVISIONS = 128
+ROI_SUBDIVISION_MIN_EDGE_MM = 1.5
+ROI_SUBDIVISION_MAX_EDGE_MM = 5.0
+ROI_SUBDIVISION_MAX_FACES = 150_000
 ROI_SUBDIVISION_MAX_DEPTH = 9
 
 
@@ -111,6 +114,7 @@ class ImportResult:
     receiver_face_indices: List[int]
     synthetic: bool
     note: str
+    feature_edge_segments: Optional[List[Dict]] = None
 
 
 def import_geometry(file_path: Optional[str]) -> ImportResult:
@@ -299,6 +303,7 @@ def _import_step(path: Path) -> ImportResult:
             note="STEP parsed but tessellation produced no triangles; synthetic fallback used.",
         )
 
+    feature_edge_segments = build_feature_edge_segments(mesh)
     mesh, target_area = _subdivide_step_mesh(mesh)
     receiver_faces = _guess_receiver_faces(mesh)
     return ImportResult(
@@ -310,6 +315,7 @@ def _import_step(path: Path) -> ImportResult:
             "STEP parsed with CadQuery and adaptively tessellated "
             f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces)."
         ),
+        feature_edge_segments=feature_edge_segments,
     )
 
 
@@ -404,6 +410,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
             note="STEP parsed with OCP but tessellation produced no triangles; synthetic fallback used.",
         )
 
+    feature_edge_segments = build_feature_edge_segments(mesh)
     mesh, target_area = _subdivide_step_mesh(mesh)
 
     guessed_receivers = _guess_receiver_faces(mesh)
@@ -418,6 +425,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
             "STEP parsed with OCP and adaptively tessellated "
             f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces)."
         ),
+        feature_edge_segments=feature_edge_segments,
     )
 
 

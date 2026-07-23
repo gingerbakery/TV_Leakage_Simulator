@@ -9,10 +9,44 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from leakage_simulator.geometry import (
     TriangleMesh,
+    build_feature_edge_segments,
     choose_adaptive_subdivision_area_mm2,
     estimate_subdivided_face_count,
     subdivide_flat_mesh,
 )
+
+
+class FeatureEdgeSegmentTests(unittest.TestCase):
+    def test_coplanar_quad_diagonal_is_not_a_feature_edge(self) -> None:
+        mesh = TriangleMesh()
+        v0 = mesh.add_vertex((0.0, 0.0, 0.0))
+        v1 = mesh.add_vertex((10.0, 0.0, 0.0))
+        v2 = mesh.add_vertex((10.0, 10.0, 0.0))
+        v3 = mesh.add_vertex((0.0, 10.0, 0.0))
+        mesh.add_face(v0, v1, v2, "mat", {})
+        mesh.add_face(v0, v2, v3, "mat", {})
+
+        segments = build_feature_edge_segments(mesh)
+
+        self.assertEqual(len(segments), 4)
+        endpoints = {
+            frozenset((tuple(segment["start"]), tuple(segment["end"])))
+            for segment in segments
+        }
+        self.assertNotIn(frozenset(((0.0, 0.0, 0.0), (10.0, 10.0, 0.0))), endpoints)
+
+    def test_folded_triangles_keep_their_shared_feature_edge(self) -> None:
+        mesh = TriangleMesh()
+        v0 = mesh.add_vertex((0.0, 0.0, 0.0))
+        v1 = mesh.add_vertex((10.0, 0.0, 0.0))
+        v2 = mesh.add_vertex((0.0, 10.0, 0.0))
+        v3 = mesh.add_vertex((0.0, 0.0, 10.0))
+        mesh.add_face(v0, v1, v2, "mat", {})
+        mesh.add_face(v0, v3, v1, "mat", {})
+
+        segments = build_feature_edge_segments(mesh)
+
+        self.assertEqual(len(segments), 5)
 
 
 class SubdivideFlatMeshTests(unittest.TestCase):

@@ -176,6 +176,8 @@ class EmitterSpec:
     polygon_vertices: List[Vec3] = field(default_factory=list)
     reference_vertex_indices: List[int] = field(default_factory=list)
     reference_edge_vertex_indices: List[Tuple[int, int]] = field(default_factory=list)
+    reference_vertex_points: List[Vec3] = field(default_factory=list)
+    reference_edge_points: List[Tuple[Vec3, Vec3]] = field(default_factory=list)
     ray_count: int = 10000
     seed: Optional[int] = None
     enabled: bool = True
@@ -252,6 +254,16 @@ class EmitterSpec:
         self.reference_edge_vertex_indices = [
             (int(edge[0]), int(edge[1])) for edge in self.reference_edge_vertex_indices
         ]
+        self.reference_vertex_points = [
+            vec3_from(point, "reference_vertex_points") for point in self.reference_vertex_points
+        ]
+        self.reference_edge_points = [
+            (
+                vec3_from(edge[0], "reference_edge_points"),
+                vec3_from(edge[1], "reference_edge_points"),
+            )
+            for edge in self.reference_edge_points
+        ]
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
 
     def effective_power_lumen(self, area_mm2: float) -> float:
@@ -301,6 +313,8 @@ class ReceiverSpec:
     reference_mode: Optional[str] = None
     reference_vertex_indices: List[int] = field(default_factory=list)
     reference_edge_vertex_indices: List[Tuple[int, int]] = field(default_factory=list)
+    reference_vertex_points: List[Vec3] = field(default_factory=list)
+    reference_edge_points: List[Tuple[Vec3, Vec3]] = field(default_factory=list)
     view_distance_mm: Optional[float] = None
     base_center: Optional[Vec3] = None
     base_u_axis: Optional[Vec3] = None
@@ -350,6 +364,16 @@ class ReceiverSpec:
         self.reference_vertex_indices = [int(index) for index in self.reference_vertex_indices]
         self.reference_edge_vertex_indices = [
             (int(edge[0]), int(edge[1])) for edge in self.reference_edge_vertex_indices
+        ]
+        self.reference_vertex_points = [
+            vec3_from(point, "reference_vertex_points") for point in self.reference_vertex_points
+        ]
+        self.reference_edge_points = [
+            (
+                vec3_from(edge[0], "reference_edge_points"),
+                vec3_from(edge[1], "reference_edge_points"),
+            )
+            for edge in self.reference_edge_points
         ]
         if self.view_distance_mm is not None:
             self.view_distance_mm = require_positive(self.view_distance_mm, "view_distance_mm")

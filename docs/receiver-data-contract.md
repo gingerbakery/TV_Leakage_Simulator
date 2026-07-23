@@ -59,6 +59,8 @@
   "reference_mode": null,
   "reference_vertex_indices": [],
   "reference_edge_vertex_indices": [],
+  "reference_vertex_points": [],
+  "reference_edge_points": [],
   "view_distance_mm": 130.0,
   "base_center": [260.0, 150.0, 177.5],
   "base_u_axis": [1.0, 0.0, 0.0],
@@ -69,6 +71,13 @@
   "enabled": true
 }
 ```
+
+## ROI 절단 Reference 좌표 계약
+
+- `reference_vertex_points`는 원본 CAD vertex와 ROI 절단으로 새로 생긴 가상 vertex의 월드 좌표를 함께 저장한다.
+- `reference_edge_points`는 원본 CAD edge와 ROI 절단 경계 edge의 양 끝점 좌표를 저장한다.
+- 원본 mesh index가 존재하면 기존 index 필드도 호환용으로 유지한다.
+- 원본 index가 없는 절단 geometry도 좌표를 사용해 Receiver 기준면과 위치 보정 기준을 재생성한다.
 
 ## 필드 규칙
 

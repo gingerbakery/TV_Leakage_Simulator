@@ -52,11 +52,20 @@
   "polygon_vertices": [],
   "reference_vertex_indices": [],
   "reference_edge_vertex_indices": [],
+  "reference_vertex_points": [],
+  "reference_edge_points": [],
   "ray_count": 10000,
   "seed": null,
   "enabled": true
 }
 ```
+
+## ROI 절단 Reference 좌표 계약
+
+- `reference_vertex_points`는 원본 CAD vertex와 ROI 절단으로 새로 생긴 가상 vertex의 월드 좌표를 함께 저장한다.
+- `reference_edge_points`는 원본 CAD edge와 ROI 절단 경계 edge의 양 끝점 좌표를 저장한다.
+- 원본 mesh index가 존재하면 기존 `reference_vertex_indices`, `reference_edge_vertex_indices`도 호환용으로 함께 저장한다.
+- ROI 절단 vertex/edge처럼 원본 index가 없는 경우에도 좌표 필드를 기준으로 Emitter 평면을 재생성할 수 있다.
 
 ## Power 모드
 

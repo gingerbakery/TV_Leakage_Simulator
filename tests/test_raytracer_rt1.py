@@ -58,6 +58,16 @@ class RayTracerRT1Tests(unittest.TestCase):
             acceptance_angle_deg=75.0,
             reference_mode="three_vertices",
             reference_vertex_indices=[1, 4, 9, 12, 15, 18],
+            reference_vertex_points=[
+                (0.0, 0.0, 0.0),
+                (10.0, 0.0, 0.0),
+                (10.0, 10.0, 0.0),
+                (0.0, 10.0, 0.0),
+            ],
+            reference_edge_points=[
+                ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)),
+                ((0.0, 10.0, 0.0), (10.0, 10.0, 0.0)),
+            ],
             base_center=(4.0, 5.0, 6.0),
             base_u_axis=(1.0, 0.0, 0.0),
             base_v_axis=(0.0, 1.0, 0.0),
@@ -71,10 +81,45 @@ class RayTracerRT1Tests(unittest.TestCase):
         self.assertEqual(restored.display_name, "Corner observer")
         self.assertEqual(restored.placement_mode, "reference_plane")
         self.assertEqual(restored.reference_vertex_indices, [1, 4, 9, 12, 15, 18])
+        self.assertEqual(restored.reference_vertex_points[2], (10.0, 10.0, 0.0))
+        self.assertEqual(restored.reference_edge_points[1][0], (0.0, 10.0, 0.0))
         self.assertEqual(restored.resolution, (24, 16))
         self.assertEqual(restored.base_center, (4.0, 5.0, 6.0))
         self.assertEqual(restored.position_offset_mm, (1.0, 1.0, 1.0))
         self.assertEqual(restored.tilt_xyz_deg, (2.0, -3.0, 4.0))
+
+    def test_roi_cut_reference_points_do_not_require_source_vertex_ids(self) -> None:
+        cut_points = [
+            (50.5, 257.6, 40.0),
+            (50.5, 89.9, 0.0),
+            (322.8, 89.9, 40.0),
+        ]
+        emitter = EmitterSpec(
+            emitter_id="roi_cut_emitter",
+            emitter_type="reference_plane",
+            center=(141.3, 145.8, 26.7),
+            u_axis=(1.0, 0.0, 0.0),
+            v_axis=(0.0, 1.0, 0.0),
+            width_mm=272.3,
+            height_mm=167.7,
+            reference_vertex_indices=[],
+            reference_vertex_points=cut_points,
+        )
+        receiver = ReceiverSpec(
+            receiver_id="roi_cut_receiver",
+            placement_mode="reference_plane",
+            center=(141.3, 145.8, 26.7),
+            reference_vertex_indices=[],
+            reference_vertex_points=cut_points,
+        )
+
+        restored_emitter = EmitterSpec.from_dict(emitter.to_dict())
+        restored_receiver = ReceiverSpec.from_dict(receiver.to_dict())
+
+        self.assertEqual(restored_emitter.reference_vertex_indices, [])
+        self.assertEqual(restored_receiver.reference_vertex_indices, [])
+        self.assertEqual(restored_emitter.reference_vertex_points, cut_points)
+        self.assertEqual(restored_receiver.reference_vertex_points, cut_points)
 
     def test_direct_receiver_hit_from_face_emitter(self) -> None:
         mesh = build_emitter_plane()
@@ -242,11 +287,17 @@ class RayTracerRT1Tests(unittest.TestCase):
             power_density_lm_per_m2=500.0,
             reference_mode="three_vertices",
             reference_vertex_indices=[0, 1, 2, 3, 4, 5],
+            reference_vertex_points=[
+                (0.0, 0.0, 0.0),
+                (20.0, 0.0, 0.0),
+                (20.0, 10.0, 0.0),
+            ],
             ray_count=100,
         )
 
         self.assertAlmostEqual(emitter.effective_power_lumen(200.0), 0.1)
         self.assertEqual(emitter.reference_vertex_indices, [0, 1, 2, 3, 4, 5])
+        self.assertEqual(emitter.reference_vertex_points[1], (20.0, 0.0, 0.0))
 
     def test_polygon_reference_emitter_uses_polygon_area(self) -> None:
         emitter = EmitterSpec(
