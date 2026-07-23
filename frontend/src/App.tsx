@@ -7,7 +7,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { CheckCircle2, Cuboid, Layers3, Palette } from 'lucide-react'
+import { CheckCircle2, Database, Layers3, Workflow } from 'lucide-react'
 
 const simulationColors = [
   { label: 'Viewer', className: 'bg-sim-viewer' },
@@ -35,14 +35,14 @@ function App() {
             className="border-primary/30 bg-primary/10 text-primary"
           >
             <CheckCircle2 data-icon="inline-start" />
-            Framework migration · Step 04
+            Framework migration · Step 06
           </Badge>
           <div className="max-w-3xl space-y-4">
             <h1 className="text-4xl font-semibold tracking-[-0.04em] text-balance sm:text-6xl">
               TV Leakage Simulator
             </h1>
             <p className="max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
-              Tailwind CSS, shadcn/ui, 시뮬레이터 전용 디자인 토큰이 새 React
+              서버 상태와 UI 상태를 분리하는 프론트엔드 상태 계층이 새 React
               작업 공간에 구성되었습니다.
             </p>
           </div>
@@ -51,10 +51,11 @@ function App() {
         <div className="grid gap-4 md:grid-cols-3">
           <Card className="border-border/80 bg-card/80 backdrop-blur">
             <CardHeader>
-              <Palette className="size-5 text-primary" aria-hidden="true" />
-              <CardTitle>Design tokens</CardTitle>
+              <Database className="size-5 text-primary" aria-hidden="true" />
+              <CardTitle>TanStack Query</CardTitle>
               <CardDescription>
-                색상, 반경, 패널, 선택과 광선 의미를 CSS 변수로 관리합니다.
+                Scene, Ray Trace job과 결과 등 Python 서버 상태를 캐시하고
+                동기화합니다.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -62,19 +63,21 @@ function App() {
           <Card className="border-border/80 bg-card/80 backdrop-blur">
             <CardHeader>
               <Layers3 className="size-5 text-primary" aria-hidden="true" />
-              <CardTitle>shadcn/ui</CardTitle>
+              <CardTitle>Zustand</CardTitle>
               <CardDescription>
-                Radix 기반 컴포넌트를 프로젝트 코드로 소유하고 확장합니다.
+                CAD 작업 세션과 face/component 선택·표시 상태를 독립적으로
+                관리합니다.
               </CardDescription>
             </CardHeader>
           </Card>
 
           <Card className="border-border/80 bg-card/80 backdrop-blur">
             <CardHeader>
-              <Cuboid className="size-5 text-primary" aria-hidden="true" />
-              <CardTitle>Migration boundary</CardTitle>
+              <Workflow className="size-5 text-primary" aria-hidden="true" />
+              <CardTitle>State boundary</CardTitle>
               <CardDescription>
-                기존 Viewer와 Python API는 그대로 유지한 채 기능별로 이전합니다.
+                API 응답을 UI store에 복제하지 않아 불필요한 동기화와 재요청을
+                줄입니다.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -107,8 +110,8 @@ function App() {
         </Card>
 
         <p className="text-sm text-muted-foreground">
-          기존 WebView2 화면은 아직 변경되지 않았습니다. 새 UI는 독립된
-          프론트엔드에서 검증한 뒤 기능 단위로 연결합니다.
+          기존 WebView2 화면은 아직 변경되지 않았습니다. 다음 기능 이전부터
+          이 상태 계층을 통해 CAD와 Viewer UI가 실제로 연결됩니다.
         </p>
       </section>
     </main>

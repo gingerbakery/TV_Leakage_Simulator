@@ -11,4 +11,23 @@ export type {
   HttpClientOptions,
   JsonRequestOptions,
 } from './http'
+export {
+  useDevStatusQuery,
+  useDirectRayTraceMutation,
+  useRayTraceJobQuery,
+  useSceneQuery,
+  useStartRayTraceMutation,
+  useUploadCadMutation,
+} from './hooks'
+export type {
+  RayTraceMutationVariables,
+  UploadCadVariables,
+} from './hooks'
+export {
+  apiQueryKeys,
+  devStatusQueryOptions,
+  getRayTracePollingInterval,
+  rayTraceJobQueryOptions,
+  sceneQueryOptions,
+} from './query-options'
 export type * from './types'
