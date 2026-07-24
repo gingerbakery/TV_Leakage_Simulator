@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ComponentContextMenu,
   ConfirmationDialog,
+  ViewerComponentActionMenu,
 } from '@/components/common'
 import { AppDialog } from '@/components/common/app-dialog'
 
@@ -98,6 +99,33 @@ describe('common overlays', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Material' }))
 
     expect(onAction).toHaveBeenCalledWith('material')
+  })
+
+  it('forwards wheel zoom while the Viewer context menu stays open', () => {
+    const wheelTarget = document.createElement('canvas')
+    const onWheel = vi.fn()
+    wheelTarget.addEventListener('wheel', onWheel)
+    document.body.append(wheelTarget)
+
+    render(
+      <ViewerComponentActionMenu
+        open
+        componentName="Display Panel A"
+        position={{ x: 200, y: 160 }}
+        visible
+        traceable
+        wheelTarget={wheelTarget}
+        onOpenChange={vi.fn()}
+        onAction={vi.fn()}
+      />,
+    )
+
+    fireEvent.wheel(screen.getByRole('menu'), { deltaY: -120 })
+
+    expect(onWheel).toHaveBeenCalledOnce()
+    expect(onWheel.mock.calls[0][0]).toMatchObject({ deltaY: -120 })
+    expect(screen.getByRole('menu')).not.toBeNull()
+    wheelTarget.remove()
   })
 
   it('returns focus to a programmatic dialog opener', async () => {

@@ -440,6 +440,7 @@ export function ViewerWorkspace({
                       contextComponent.component_id,
                     )
                   }
+                  wheelTarget={contextTarget.returnFocusElement}
                   onOpenChange={(open) => {
                     if (!open) setContextTarget(null)
                   }}

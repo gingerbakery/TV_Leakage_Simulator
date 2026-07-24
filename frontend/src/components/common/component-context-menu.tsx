@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   type ReactNode,
+  type WheelEvent as ReactWheelEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -45,6 +46,7 @@ export interface ViewerComponentActionMenuProps {
   position: { x: number; y: number }
   visible: boolean
   traceable: boolean
+  wheelTarget?: HTMLElement | null
   onOpenChange(open: boolean): void
   onAction(action: ComponentContextAction): void
 }
@@ -114,6 +116,7 @@ export function ViewerComponentActionMenu({
   position,
   visible,
   traceable,
+  wheelTarget,
   onOpenChange,
   onAction,
 }: ViewerComponentActionMenuProps) {
@@ -147,6 +150,28 @@ export function ViewerComponentActionMenu({
     onAction(action)
     onOpenChange(false)
   }
+  const forwardWheel = (event: ReactWheelEvent) => {
+    const WheelEventType =
+      wheelTarget?.ownerDocument.defaultView?.WheelEvent
+    if (!wheelTarget || !WheelEventType) return
+
+    event.stopPropagation()
+    wheelTarget.dispatchEvent(
+      new WheelEventType('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        ctrlKey: event.ctrlKey,
+        deltaMode: event.deltaMode,
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaZ: event.deltaZ,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+      }),
+    )
+  }
   const itemClassName =
     'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0'
 
@@ -158,6 +183,7 @@ export function ViewerComponentActionMenu({
         event.preventDefault()
         onOpenChange(false)
       }}
+      onWheel={forwardWheel}
     >
       <div
         ref={menuRef}
