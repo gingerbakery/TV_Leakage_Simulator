@@ -20,8 +20,27 @@ import { workspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 
 vi.mock('@/features/viewer', () => ({
-  ThreeViewerCanvas: () => (
-    <canvas aria-label="Interactive 3D CAD viewer" />
+  ThreeViewerCanvas: ({
+    onComponentContextMenu,
+  }: {
+    onComponentContextMenu?(target: {
+      clientX: number
+      clientY: number
+      componentId: number
+      returnFocusElement: HTMLElement
+    }): void
+  }) => (
+    <canvas
+      aria-label="Interactive 3D CAD viewer"
+      onContextMenu={(event) =>
+        onComponentContextMenu?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          componentId: 1,
+          returnFocusElement: event.currentTarget,
+        })
+      }
+    />
   ),
 }))
 
@@ -73,6 +92,35 @@ describe('Step 07·08 feature editors', () => {
     expect(
       screen.getByText('2 visible · 1 component · 1 face · 0 ROI'),
     ).not.toBeNull()
+  })
+
+  it('restores component actions on the Viewer context menu', async () => {
+    const onEditMaterial = vi.fn()
+    render(
+      <ViewerWorkspace
+        scene={createSceneFixture()}
+        onEditMaterial={onEditMaterial}
+      />,
+    )
+    const viewer = await screen.findByLabelText(
+      'Interactive 3D CAD viewer',
+    )
+
+    fireEvent.contextMenu(viewer)
+    expect(await screen.findByText('STEP Solid 1')).not.toBeNull()
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: /Traceability Off/ }),
+    )
+    expect(workspaceStore.getState().excludedComponentIds).toEqual([1])
+
+    fireEvent.contextMenu(viewer)
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: /Material/ }),
+    )
+    expect(onEditMaterial).toHaveBeenCalledWith({
+      componentId: 1,
+      returnFocusElement: viewer,
+    })
   })
 
   it('adds and activates a coordinate ROI scope', () => {

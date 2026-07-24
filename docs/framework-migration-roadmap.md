@@ -46,6 +46,8 @@ Material·Transform, 카메라와 렌더 모드를 React 상태와 동기화했�
 선택 지점의 잔상 없는 component highlight와 pole 제한 없는 자유 회전을 지원한다.
 모델에 가려지지 않는 고정 XYZ orientation gizmo와 크기 조절도 제공한다.
 카메라 프리셋은 Iso와 `±XY`, `±YZ`, `±ZX` 여섯 정면을 지원한다.
+Full CAD와 잘린 ROI 표면의 component 우클릭 메뉴도 복원해 표시·해석 포함,
+Material·Transform 편집과 삭제 확인으로 바로 이동할 수 있다.
 
 ## 9. ROI 선택·관리 — 완료
 

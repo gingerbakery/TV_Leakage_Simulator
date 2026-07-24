@@ -139,6 +139,15 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onCameraFrameChange={setViewerCameraFrame}
+          onEditMaterial={(request) =>
+            openComponentDialog('material', request)
+          }
+          onEditTransform={(request) =>
+            openComponentDialog('transform', request)
+          }
+          onDeleteComponent={(request) =>
+            openComponentDialog('delete', request)
+          }
         />
       </div>
 

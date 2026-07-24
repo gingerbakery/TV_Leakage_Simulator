@@ -1,4 +1,9 @@
-import type { ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  type ReactNode,
+} from 'react'
+import { createPortal } from 'react-dom'
 import {
   Eye,
   EyeOff,
@@ -31,6 +36,16 @@ export interface ComponentContextMenuProps {
   componentName: string
   visible: boolean
   traceable: boolean
+  onAction(action: ComponentContextAction): void
+}
+
+export interface ViewerComponentActionMenuProps {
+  componentName: string
+  open: boolean
+  position: { x: number; y: number }
+  visible: boolean
+  traceable: boolean
+  onOpenChange(open: boolean): void
   onAction(action: ComponentContextAction): void
 }
 
@@ -90,5 +105,137 @@ export function ComponentContextMenu({
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+  )
+}
+
+export function ViewerComponentActionMenu({
+  componentName,
+  open,
+  position,
+  visible,
+  traceable,
+  onOpenChange,
+  onAction,
+}: ViewerComponentActionMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+      ?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onOpenChange(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onOpenChange, open])
+
+  if (!open || typeof document === 'undefined') return null
+
+  const left = Math.max(
+    8,
+    Math.min(position.x, window.innerWidth - 272),
+  )
+  const top = Math.max(
+    8,
+    Math.min(position.y, window.innerHeight - 260),
+  )
+  const select = (action: ComponentContextAction) => {
+    onAction(action)
+    onOpenChange(false)
+  }
+  const itemClassName =
+    'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0'
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50"
+      onPointerDown={() => onOpenChange(false)}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onOpenChange(false)
+      }}
+    >
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`Component actions for ${componentName}`}
+        className="fixed w-64 rounded-lg border border-border bg-popover/98 p-1 text-popover-foreground shadow-2xl shadow-black/40 ring-1 ring-foreground/10"
+        style={{ left, top }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+      >
+        <div className="px-2 py-1.5">
+          <span className="block truncate text-sm font-semibold text-foreground">
+            {componentName}
+          </span>
+          <span className="mt-0.5 block text-[0.7rem] text-muted-foreground">
+            {visible ? 'Visible' : 'Hidden'} ·{' '}
+            {traceable ? 'Traceability on' : 'Traceability off'}
+          </span>
+        </div>
+        <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('visibility')}
+        >
+          {visible ? <EyeOff /> : <Eye />}
+          {visible ? 'Hide' : 'Show'}
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('traceability')}
+        >
+          {traceable ? <ScanLine /> : <ScanSearch />}
+          {traceable ? 'Traceability Off' : 'Traceability On'}
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('material')}
+        >
+          <Palette />
+          Material
+          <span className="ml-auto text-xs tracking-widest text-muted-foreground">
+            M
+          </span>
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('transform')}
+        >
+          <Move3D />
+          Transform
+          <span className="ml-auto text-xs tracking-widest text-muted-foreground">
+            T
+          </span>
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          className={`${itemClassName} text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive`}
+          onClick={() => select('delete')}
+        >
+          <Trash2 />
+          Delete…
+        </button>
+      </div>
+    </div>,
+    document.body,
   )
 }

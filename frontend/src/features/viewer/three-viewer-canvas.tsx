@@ -83,6 +83,13 @@ export interface RoiBoxSelectionResult {
   view: RoiView
 }
 
+export interface ViewerComponentContextTarget {
+  clientX: number
+  clientY: number
+  componentId: number
+  returnFocusElement: HTMLElement | null
+}
+
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
   axisScalePercent: number
@@ -94,6 +101,7 @@ interface ThreeViewerCanvasProps {
   roiScopes: RoiScope[]
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
+  onComponentContextMenu?(target: ViewerComponentContextTarget): void
   onStatusMessage(message: string): void
 }
 
@@ -918,6 +926,7 @@ export function ThreeViewerCanvas({
   roiScopes,
   onRoiBoxSelection,
   onCameraFrameChange,
+  onComponentContextMenu,
   onStatusMessage,
 }: ThreeViewerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -928,6 +937,7 @@ export function ThreeViewerCanvas({
   const selectedComponentIdsRef = useRef<number[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
+  const onComponentContextMenuRef = useRef(onComponentContextMenu)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
@@ -979,6 +989,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     onCameraFrameChangeRef.current = onCameraFrameChange
   }, [onCameraFrameChange])
+
+  useEffect(() => {
+    onComponentContextMenuRef.current = onComponentContextMenu
+  }, [onComponentContextMenu])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1256,8 +1270,63 @@ export function ThreeViewerCanvas({
       }
     }
 
+    const resolveSurfaceHit = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect()
+      const pointer = new Vector2(
+        ((clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1,
+      )
+      runtime.raycaster.setFromCamera(pointer, camera)
+      const candidates = runtime.roiPreviewRoot.visible
+        ? runtime.roiPreviewRoot.children.filter(
+            (child): child is Mesh<BufferGeometry, Material> =>
+              child instanceof Mesh &&
+              Array.isArray(child.geometry.userData.sourceFaceIds),
+          )
+        : [...nodes.values()]
+            .filter((node) => node.group.visible)
+            .map((node) => node.surface)
+      const hits = runtime.raycaster.intersectObjects(candidates, false)
+
+      for (const hit of hits) {
+        if (!(hit.object instanceof Mesh)) continue
+        const hitFaceIndex = hit.faceIndex
+        if (hitFaceIndex === null || hitFaceIndex === undefined) continue
+        const sourceFaceIds =
+          (hit.object.userData.sourceFaceIds as number[] | undefined) ??
+          (hit.object.geometry.userData.sourceFaceIds as
+            | number[]
+            | undefined)
+        const faceId = sourceFaceIds?.[hitFaceIndex]
+        if (faceId === undefined || !Number.isSafeInteger(faceId)) {
+          continue
+        }
+        const objectComponentId = Number(
+          hit.object.userData.componentId,
+        )
+        const componentId = Number.isSafeInteger(objectComponentId)
+          ? objectComponentId
+          : scene.mesh.face_component_ids[faceId]
+        if (
+          componentId === null ||
+          !Number.isSafeInteger(componentId)
+        ) {
+          continue
+        }
+        return { componentId, faceId }
+      }
+      return null
+    }
+
     let pointerDown: { x: number; y: number } | null = null
+    let rightPointerDown: { x: number; y: number } | null = null
+    let rightPointerMoved = false
     const handlePointerDown = (event: PointerEvent) => {
+      if (event.button === 2) {
+        rightPointerDown = { x: event.clientX, y: event.clientY }
+        rightPointerMoved = false
+        return
+      }
       if (event.button !== 0) return
       if (roiBoxSelectionArmedRef.current) {
         event.preventDefault()
@@ -1277,6 +1346,15 @@ export function ThreeViewerCanvas({
       pointerDown = { x: event.clientX, y: event.clientY }
     }
     const handlePointerMove = (event: PointerEvent) => {
+      if (
+        rightPointerDown &&
+        Math.hypot(
+          event.clientX - rightPointerDown.x,
+          event.clientY - rightPointerDown.y,
+        ) > 5
+      ) {
+        rightPointerMoved = true
+      }
       const selection = boxDragRef.current
       if (!selection) return
       const point = canvasPoint(event)
@@ -1289,6 +1367,19 @@ export function ThreeViewerCanvas({
       setBoxDrag(nextSelection)
     }
     const handlePointerUp = (event: PointerEvent) => {
+      if (event.button === 2) {
+        if (
+          rightPointerDown &&
+          Math.hypot(
+            event.clientX - rightPointerDown.x,
+            event.clientY - rightPointerDown.y,
+          ) > 5
+        ) {
+          rightPointerMoved = true
+        }
+        rightPointerDown = null
+        return
+      }
       if (event.button !== 0) return
       const selection = boxDragRef.current
       if (selection) {
@@ -1329,20 +1420,10 @@ export function ThreeViewerCanvas({
       pointerDown = null
       if (movement > 5) return
 
-      const rect = canvas.getBoundingClientRect()
-      const pointer = new Vector2(
-        ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1,
-        -((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1,
-      )
-      runtime.raycaster.setFromCamera(pointer, camera)
-      const candidates = [...nodes.values()]
-        .filter((node) => node.group.visible)
-        .map((node) => node.surface)
-      const hit = runtime.raycaster.intersectObjects(candidates, false)[0]
+      const hit = resolveSurfaceHit(event.clientX, event.clientY)
       const additive = event.ctrlKey || event.metaKey || event.shiftKey
-      const hitFaceIndex = hit?.faceIndex
 
-      if (!hit || hitFaceIndex === null || hitFaceIndex === undefined) {
+      if (!hit) {
         if (!additive) {
           actions.setSelectedComponentIds([])
           actions.setSelectedFaceIds([])
@@ -1351,18 +1432,7 @@ export function ThreeViewerCanvas({
         return
       }
 
-      const componentId = Number(hit.object.userData.componentId)
-      const sourceFaceIds = hit.object.userData.sourceFaceIds as
-        | number[]
-        | undefined
-      const faceId = sourceFaceIds?.[hitFaceIndex]
-      if (
-        !Number.isSafeInteger(componentId) ||
-        faceId === undefined ||
-        !Number.isSafeInteger(faceId)
-      ) {
-        return
-      }
+      const { componentId, faceId } = hit
 
       if (emitterFaceSelectionArmedRef.current) {
         const component = scene.components.find(
@@ -1419,18 +1489,52 @@ export function ThreeViewerCanvas({
     }
     const handlePointerCancel = () => {
       pointerDown = null
+      rightPointerDown = null
+      rightPointerMoved = false
       boxDragRef.current = null
       setBoxDrag(null)
     }
-    const preventContextMenu = (event: MouseEvent) =>
+    const handleContextMenu = (event: MouseEvent) => {
+      const suppressMenu =
+        rightPointerMoved ||
+        roiBoxSelectionArmedRef.current ||
+        emitterFaceSelectionArmedRef.current
+      rightPointerDown = null
+      rightPointerMoved = false
+      if (suppressMenu) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      const hit = resolveSurfaceHit(event.clientX, event.clientY)
+      if (!hit) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      actions.setSelectedComponentIds([hit.componentId])
+      actions.setSelectedFaceIds([])
+      onComponentContextMenuRef.current?.({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        componentId: hit.componentId,
+        returnFocusElement: canvas,
+      })
+      onStatusMessage(
+        `Component menu · Component ${hit.componentId}`,
+      )
       event.preventDefault()
+      event.stopPropagation()
+    }
 
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
     canvas.addEventListener('pointercancel', handlePointerCancel)
     canvas.addEventListener('dblclick', handleDoubleClick)
-    canvas.addEventListener('contextmenu', preventContextMenu)
+    canvas.addEventListener('contextmenu', handleContextMenu)
 
     return () => {
       window.cancelAnimationFrame(animationFrame)
@@ -1440,7 +1544,7 @@ export function ThreeViewerCanvas({
       canvas.removeEventListener('pointerup', handlePointerUp)
       canvas.removeEventListener('pointercancel', handlePointerCancel)
       canvas.removeEventListener('dblclick', handleDoubleClick)
-      canvas.removeEventListener('contextmenu', preventContextMenu)
+      canvas.removeEventListener('contextmenu', handleContextMenu)
       controls.removeEventListener('end', emitCameraFrame)
       controls.dispose()
       disposeObject(threeScene)

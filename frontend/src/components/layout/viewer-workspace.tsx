@@ -15,11 +15,20 @@ import {
   Rotate3D,
 } from 'lucide-react'
 
+import {
+  type ComponentContextAction,
+  ViewerComponentActionMenu,
+} from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  getComponentDisplayName,
+  type ComponentEditorRequest,
+} from '@/features/components'
 import type {
   RoiBoxSelectionResult,
   ViewerCameraPreset,
+  ViewerComponentContextTarget,
   ViewerRenderMode,
 } from '@/features/viewer'
 import type { ViewerCameraFrame } from '@/features/raytracing'
@@ -60,6 +69,9 @@ interface ViewerWorkspaceProps {
   isSceneLoading?: boolean
   sceneErrorMessage?: string
   onCameraFrameChange?(frame: ViewerCameraFrame): void
+  onEditMaterial?(request: ComponentEditorRequest): void
+  onEditTransform?(request: ComponentEditorRequest): void
+  onDeleteComponent?(request: ComponentEditorRequest): void
 }
 
 export function ViewerWorkspace({
@@ -67,6 +79,9 @@ export function ViewerWorkspace({
   isSceneLoading = false,
   sceneErrorMessage,
   onCameraFrameChange,
+  onEditMaterial,
+  onEditTransform,
+  onDeleteComponent,
 }: ViewerWorkspaceProps) {
   const [cameraPreset, setCameraPreset] =
     useState<ViewerCameraPreset>('Iso')
@@ -77,6 +92,8 @@ export function ViewerWorkspace({
   const [statusMessage, setStatusMessage] = useState(
     'CAD를 Import하면 Three.js Viewer에서 component와 face를 선택할 수 있습니다.',
   )
+  const [contextTarget, setContextTarget] =
+    useState<ViewerComponentContextTarget | null>(null)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
   )
@@ -85,6 +102,9 @@ export function ViewerWorkspace({
   )
   const hiddenComponentIds = useWorkspaceStore(
     workspaceSelectors.hiddenComponentIds,
+  )
+  const excludedComponentIds = useWorkspaceStore(
+    workspaceSelectors.excludedComponentIds,
   )
   const deletedComponentIds = useWorkspaceStore(
     workspaceSelectors.deletedComponentIds,
@@ -156,6 +176,41 @@ export function ViewerWorkspace({
     (component) =>
       !hiddenComponentIds.includes(component.component_id),
   ).length
+  const contextComponent = components.find(
+    (component) =>
+      component.component_id === contextTarget?.componentId,
+  )
+  const contextComponentId = contextComponent?.component_id
+  const handleContextAction = (action: ComponentContextAction) => {
+    if (contextComponentId === undefined) return
+
+    if (action === 'visibility') {
+      actions.toggleComponentVisibility(contextComponentId)
+      setStatusMessage(
+        hiddenComponentIds.includes(contextComponentId)
+          ? `Component ${contextComponentId} 표시`
+          : `Component ${contextComponentId} 숨김`,
+      )
+      return
+    }
+    if (action === 'traceability') {
+      actions.toggleComponentTraceability(contextComponentId)
+      setStatusMessage(
+        excludedComponentIds.includes(contextComponentId)
+          ? `Component ${contextComponentId} · Traceability On`
+          : `Component ${contextComponentId} · Traceability Off`,
+      )
+      return
+    }
+
+    const request = {
+      componentId: contextComponentId,
+      returnFocusElement: contextTarget?.returnFocusElement ?? null,
+    }
+    if (action === 'material') onEditMaterial?.(request)
+    else if (action === 'transform') onEditTransform?.(request)
+    else onDeleteComponent?.(request)
+  }
 
   return (
     <main className="flex min-h-[42rem] min-w-0 flex-col bg-sim-viewer lg:min-h-0">
@@ -336,30 +391,62 @@ export function ViewerWorkspace({
               </p>
             </div>
           ) : (
-            <Suspense
-              fallback={
-                <div className="relative z-10 flex flex-col items-center text-center">
-                  <LoaderCircle className="size-8 animate-spin text-primary" />
-                  <div className="mt-3 text-sm font-semibold">
-                    Starting Three.js Viewer
-                  </div>
-                </div>
-              }
-            >
-              <ThreeViewerCanvas
-                scene={scene}
-                axisScalePercent={axisScalePercent}
-                cameraPreset={cameraPreset}
-                cameraRequestId={cameraRequestId}
-                renderMode={renderMode}
-                roiBoxSelectionArmed={roiBoxSelectionArmed}
-                roiFaceIds={activeRoiFaceIds}
-                roiScopes={roiScopes}
-                onRoiBoxSelection={addBoxRoi}
-                onCameraFrameChange={onCameraFrameChange}
-                onStatusMessage={setStatusMessage}
-              />
-            </Suspense>
+            <>
+              <div className="absolute inset-0 rounded-[inherit]">
+                <Suspense
+                  fallback={
+                    <div className="relative z-10 flex h-full flex-col items-center justify-center text-center">
+                      <LoaderCircle className="size-8 animate-spin text-primary" />
+                      <div className="mt-3 text-sm font-semibold">
+                        Starting Three.js Viewer
+                      </div>
+                    </div>
+                  }
+                >
+                  <ThreeViewerCanvas
+                    scene={scene}
+                    axisScalePercent={axisScalePercent}
+                    cameraPreset={cameraPreset}
+                    cameraRequestId={cameraRequestId}
+                    renderMode={renderMode}
+                    roiBoxSelectionArmed={roiBoxSelectionArmed}
+                    roiFaceIds={activeRoiFaceIds}
+                    roiScopes={roiScopes}
+                    onRoiBoxSelection={addBoxRoi}
+                    onCameraFrameChange={onCameraFrameChange}
+                    onComponentContextMenu={setContextTarget}
+                    onStatusMessage={setStatusMessage}
+                  />
+                </Suspense>
+              </div>
+              {contextComponent && contextTarget ? (
+                <ViewerComponentActionMenu
+                  open
+                  componentName={getComponentDisplayName(
+                    contextComponent,
+                    componentNameOverrides,
+                  )}
+                  position={{
+                    x: contextTarget.clientX,
+                    y: contextTarget.clientY,
+                  }}
+                  visible={
+                    !hiddenComponentIds.includes(
+                      contextComponent.component_id,
+                    )
+                  }
+                  traceable={
+                    !excludedComponentIds.includes(
+                      contextComponent.component_id,
+                    )
+                  }
+                  onOpenChange={(open) => {
+                    if (!open) setContextTarget(null)
+                  }}
+                  onAction={handleContextAction}
+                />
+              ) : null}
+            </>
           )}
         </div>
       </div>
