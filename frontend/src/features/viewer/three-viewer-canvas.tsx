@@ -107,6 +107,8 @@ interface ViewerRuntime {
   nodes: Map<number, ComponentRenderNode>
   raycaster: Raycaster
   renderer: WebGLRenderer
+  roiSelectionCameraUp: Vector3 | null
+  roiSelectionViewDirection: Vector3 | null
   roiPreviewKey: string
   roiPreviewRoot: Group
   scene: Scene
@@ -369,19 +371,43 @@ function fitCamera(
     direction.set(0, 0, -1)
   }
 
-  runtime.camera.up.set(0, preset === '-XY' ? -1 : 1, 0)
-  if (preset === 'Iso' || preset === 'Fit') {
+  if (preset === 'XY') {
+    runtime.camera.up.set(0, 1, 0)
+  } else if (preset === '-XY') {
+    runtime.camera.up.set(0, -1, 0)
+  } else if (preset === 'Iso') {
     runtime.camera.up.set(0, 0, 1)
   }
 
   runtime.camera.position
     .copy(center)
     .add(direction.normalize().multiplyScalar(distance))
-  runtime.camera.near = Math.max(distance / 5000, 0.01)
-  runtime.camera.far = Math.max(distance * 100, 1000)
+  runtime.camera.near = Math.max(distance / 1000, 0.01)
+  runtime.camera.far = Math.max(distance * 20, 1000)
   runtime.camera.updateProjectionMatrix()
   runtime.controls.target.copy(center)
   runtime.controls.update()
+}
+
+function restoreRoiSelectionCameraPose(
+  runtime: ViewerRuntime,
+): boolean {
+  const direction = runtime.roiSelectionViewDirection
+  const up = runtime.roiSelectionCameraUp
+  if (!direction || !up) return false
+
+  const distance = Math.max(
+    runtime.camera.position.distanceTo(runtime.controls.target),
+    1,
+  )
+  runtime.camera.up.copy(up)
+  runtime.camera.position
+    .copy(runtime.controls.target)
+    .add(direction.clone().multiplyScalar(distance))
+  runtime.controls.update()
+  runtime.roiSelectionViewDirection = null
+  runtime.roiSelectionCameraUp = null
+  return true
 }
 
 function createComponentNode(
@@ -608,6 +634,8 @@ export function ThreeViewerCanvas({
       nodes,
       raycaster: new Raycaster(),
       renderer,
+      roiSelectionCameraUp: null,
+      roiSelectionViewDirection: null,
       roiPreviewKey: '',
       roiPreviewRoot,
       scene: threeScene,
@@ -910,6 +938,15 @@ export function ThreeViewerCanvas({
 
     runtime.controls.noRotate = roiBoxSelectionArmed
     if (roiBoxSelectionArmed) {
+      if (!runtime.roiSelectionViewDirection) {
+        runtime.roiSelectionViewDirection = runtime.camera.position
+          .clone()
+          .sub(runtime.controls.target)
+          .normalize()
+        runtime.roiSelectionCameraUp = runtime.camera.up
+          .clone()
+          .normalize()
+      }
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
       const preset =
@@ -967,36 +1004,59 @@ export function ThreeViewerCanvas({
       )
       if (clipped && clipped.openChainCount === 0) {
         const isWireframe = renderMode === 'Wireframe'
+        const surfaceMaterial = isWireframe
+          ? new MeshBasicMaterial({
+              color: 0x263b4d,
+              transparent: true,
+              opacity: wireframeSurfaceOpacity,
+              side: DoubleSide,
+              depthTest: true,
+              depthWrite: true,
+              toneMapped: false,
+            })
+          : new MeshStandardMaterial({
+              color: 0x8fb3c7,
+              roughness: 0.72,
+              metalness: 0.04,
+              flatShading: true,
+              transparent: false,
+              opacity: 1,
+              side: DoubleSide,
+              depthTest: true,
+              depthWrite: true,
+            })
         const surface = new Mesh(
           clipped.surfaceGeometry,
-          new MeshStandardMaterial({
-            color: 0x8fb3c7,
-            roughness: 0.72,
-            metalness: 0.04,
-            flatShading: false,
-            transparent: isWireframe,
-            opacity: isWireframe ? wireframeSurfaceOpacity : 1,
-            side: DoubleSide,
-            depthWrite: true,
-          }),
+          surfaceMaterial,
         )
         surface.name = 'roi-clipped-surface'
         runtime.roiPreviewRoot.add(surface)
 
         if (clipped.capGeometry) {
+          const capMaterial = isWireframe
+            ? new MeshBasicMaterial({
+                color: 0x314a5c,
+                transparent: true,
+                opacity: 0.75,
+                side: DoubleSide,
+                depthTest: true,
+                depthWrite: true,
+                toneMapped: false,
+              })
+            : new MeshStandardMaterial({
+                color: 0x6f9fb5,
+                roughness: 0.78,
+                metalness: 0.02,
+                flatShading: true,
+                transparent: false,
+                opacity: 1,
+                side: DoubleSide,
+                depthTest: true,
+                depthWrite: true,
+              })
           const caps = new Mesh(
             clipped.capGeometry,
-            new MeshStandardMaterial({
-              color: 0x6f9fb5,
-              roughness: 0.78,
-              metalness: 0.02,
-              flatShading: false,
-              transparent: isWireframe,
-              opacity: isWireframe ? 0.82 : 1,
-              side: DoubleSide,
-              depthTest: true,
-              depthWrite: true,
-            }),
+            capMaterial,
           )
           caps.name = 'roi-section-caps'
           caps.renderOrder = 1
@@ -1044,6 +1104,7 @@ export function ThreeViewerCanvas({
         runtime.roiPreviewRoot.visible = true
         runtime.modelRoot.visible = false
         runtime.roiPreviewKey = previewKey
+        restoreRoiSelectionCameraPose(runtime)
         fitCamera(runtime, 'Fit')
         onStatusMessage(
           `ROI isolated solid · ${clipped.clippedTriangleCount.toLocaleString()} triangles · ${clipped.capLoopCount} section caps`,
@@ -1057,6 +1118,8 @@ export function ThreeViewerCanvas({
         runtime.roiPreviewRoot.visible = false
         runtime.modelRoot.visible = true
         runtime.roiPreviewKey = previewKey
+        restoreRoiSelectionCameraPose(runtime)
+        fitCamera(runtime, 'Fit')
         onStatusMessage(
           clipped
             ? `ROI section cap 무결성 오류 · 열린 경계 ${clipped.openChainCount}개`
@@ -1069,9 +1132,18 @@ export function ThreeViewerCanvas({
     ) {
       runtime.roiPreviewRoot.visible = true
       runtime.modelRoot.visible = false
+      if (restoreRoiSelectionCameraPose(runtime)) {
+        fitCamera(runtime, 'Fit')
+      }
     } else if (!showRoiPreview) {
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
+      if (
+        !roiBoxSelectionArmed &&
+        restoreRoiSelectionCameraPose(runtime)
+      ) {
+        fitCamera(runtime, 'Fit')
+      }
     }
 
     const roiFaceSet = new Set(roiFaceIds)
