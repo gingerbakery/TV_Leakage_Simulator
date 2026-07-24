@@ -117,6 +117,80 @@ export function createFeatureEdgeGeometry(
   return geometry
 }
 
+export function findCoplanarFacePatch(
+  scene: ScenePayload,
+  componentFaceIds: Iterable<number>,
+  seedFaceId: number,
+): number[] {
+  const seedFace = scene.mesh.faces[seedFaceId]
+  const seedNormalValues = scene.mesh.face_normals[seedFaceId]
+  const seedCentroidValues = scene.mesh.face_centroids[seedFaceId]
+  if (!seedFace || !seedNormalValues || !seedCentroidValues) {
+    return [seedFaceId]
+  }
+
+  const componentFaces = new Set(componentFaceIds)
+  if (!componentFaces.has(seedFaceId)) return [seedFaceId]
+  const edgeFaces = new Map<string, number[]>()
+  const edgeKey = (first: number, second: number) =>
+    first < second ? `${first}:${second}` : `${second}:${first}`
+
+  for (const faceId of componentFaces) {
+    const face = scene.mesh.faces[faceId]
+    if (!face) continue
+    for (let edge = 0; edge < 3; edge += 1) {
+      const key = edgeKey(face[edge], face[(edge + 1) % 3])
+      const faceIds = edgeFaces.get(key)
+      if (faceIds) faceIds.push(faceId)
+      else edgeFaces.set(key, [faceId])
+    }
+  }
+
+  const seedNormal = new Vector3(...seedNormalValues).normalize()
+  const seedCentroid = new Vector3(...seedCentroidValues)
+  const normalDotTolerance = Math.cos(Math.PI / 360)
+  const component = scene.components.find((candidate) =>
+    candidate.face_indices.includes(seedFaceId),
+  )
+  const componentDiagonal = component
+    ? new Vector3(...component.bbox_max)
+        .sub(new Vector3(...component.bbox_min))
+        .length()
+    : 1
+  const planeTolerance = Math.max(componentDiagonal * 1e-5, 1e-4)
+  const selected = new Set<number>([seedFaceId])
+  const queue = [seedFaceId]
+
+  while (queue.length > 0) {
+    const faceId = queue.pop()
+    if (faceId === undefined) break
+    const face = scene.mesh.faces[faceId]
+    if (!face) continue
+    for (let edge = 0; edge < 3; edge += 1) {
+      const neighbors =
+        edgeFaces.get(edgeKey(face[edge], face[(edge + 1) % 3])) ?? []
+      for (const neighborId of neighbors) {
+        if (selected.has(neighborId)) continue
+        const normalValues = scene.mesh.face_normals[neighborId]
+        const centroidValues = scene.mesh.face_centroids[neighborId]
+        if (!normalValues || !centroidValues) continue
+        const normal = new Vector3(...normalValues).normalize()
+        if (normal.dot(seedNormal) < normalDotTolerance) continue
+        const planeDistance = Math.abs(
+          new Vector3(...centroidValues)
+            .sub(seedCentroid)
+            .dot(seedNormal),
+        )
+        if (planeDistance > planeTolerance) continue
+        selected.add(neighborId)
+        queue.push(neighborId)
+      }
+    }
+  }
+
+  return [...selected].sort((first, second) => first - second)
+}
+
 export function getSceneBounds(scene: ScenePayload): {
   center: Vector3
   size: Vector3

@@ -109,6 +109,7 @@ export interface WorkspaceSnapshot {
   roiScopes: RoiScope[]
   roiScopeSequence: number
   roiBoxSelectionArmed: boolean
+  emitterFaceSelectionArmed: boolean
   roiDraftLabel: string
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
@@ -139,6 +140,7 @@ export interface WorkspaceActions {
   removeRoiScope(scopeId: string): void
   clearRoiScopes(): void
   setRoiBoxSelectionArmed(armed: boolean): void
+  setEmitterFaceSelectionArmed(armed: boolean): void
   setRoiDraftLabel(label: string): void
   upsertEmitter(emitter: EmitterSpec): void
   setEmitterEnabled(emitterId: string, enabled: boolean): void
@@ -318,6 +320,7 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     roiScopes: [],
     roiScopeSequence: 0,
     roiBoxSelectionArmed: false,
+    emitterFaceSelectionArmed: false,
     roiDraftLabel: '',
     emitters: [],
     receivers: [],
@@ -561,6 +564,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       setRoiBoxSelectionArmed: (roiBoxSelectionArmed) => {
         set({ roiBoxSelectionArmed })
       },
+      setEmitterFaceSelectionArmed: (emitterFaceSelectionArmed) => {
+        set({ emitterFaceSelectionArmed })
+      },
       setRoiDraftLabel: (roiDraftLabel) => {
         set({ roiDraftLabel })
       },
@@ -671,6 +677,8 @@ export const workspaceSelectors = {
   roiScopes: (state: WorkspaceStore) => state.roiScopes,
   roiBoxSelectionArmed: (state: WorkspaceStore) =>
     state.roiBoxSelectionArmed,
+  emitterFaceSelectionArmed: (state: WorkspaceStore) =>
+    state.emitterFaceSelectionArmed ?? false,
   roiDraftLabel: (state: WorkspaceStore) => state.roiDraftLabel,
   emitters: (state: WorkspaceStore) => state.emitters ?? [],
   receivers: (state: WorkspaceStore) => state.receivers ?? [],

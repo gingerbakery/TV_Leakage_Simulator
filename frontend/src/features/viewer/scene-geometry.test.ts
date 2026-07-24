@@ -5,6 +5,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import {
   createComponentGeometry,
   createFeatureEdgeGeometry,
+  findCoplanarFacePatch,
   getSceneBounds,
 } from './scene-geometry'
 
@@ -59,5 +60,26 @@ describe('Three.js scene geometry', () => {
 
     expect(bounds.center.toArray()).toEqual([30, 30, 10])
     expect(bounds.size.toArray()).toEqual([60, 60, 20])
+  })
+
+  it('expands one picked triangle to its connected coplanar surface', () => {
+    const scene = createSceneFixture()
+    scene.mesh.vertices[3][2] = 0
+    scene.mesh.face_centroids[1][2] = 0
+
+    expect(
+      findCoplanarFacePatch(
+        scene,
+        scene.components[0].face_indices,
+        0,
+      ),
+    ).toEqual([0, 1])
+    expect(
+      findCoplanarFacePatch(
+        scene,
+        scene.components[0].face_indices,
+        2,
+      ),
+    ).toEqual([2])
   })
 })

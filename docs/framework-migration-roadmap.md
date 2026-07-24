@@ -75,6 +75,10 @@ Material assignment, component Transform, 해석 제외 component와 활성 ROI�
 queued·preparing·tracing·completed·failed 상태, ray 수, 경과·잔여 시간을
 표시한다. 설정이 바뀌면 이전 결과 job을 무효화하고 다시 계산하도록 했다.
 
+CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동작한다. 한 번
+클릭하면 연결된 동일 평면 patch를 선택하며, Emitter·Receiver 기준면에는
+방향 화살표를 함께 표시한다.
+
 ## 11. Result·광선 시각화 — 예정
 
 Direct·reflected ray와 component contribution 결과를 Viewer overlay,

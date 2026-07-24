@@ -10,6 +10,7 @@ import {
   DirectionalLight,
   DoubleSide,
   EdgesGeometry,
+  Float32BufferAttribute,
   GridHelper,
   Group,
   HemisphereLight,
@@ -58,6 +59,7 @@ import {
   createComponentGeometry,
   createFaceGeometry,
   createFeatureEdgeGeometry,
+  findCoplanarFacePatch,
   getSceneBounds,
 } from './scene-geometry'
 
@@ -104,6 +106,7 @@ interface ComponentRenderNode {
   group: Group
   materialOverlayRoot: Group
   roiOverlayRoot: Group
+  selectionOverlayRoot: Group
   surface: Mesh<BufferGeometry, MeshStandardMaterial>
   transformOverlayRoot: Group
 }
@@ -145,6 +148,15 @@ interface ViewerBoxDrag {
   startY: number
   currentX: number
   currentY: number
+}
+
+interface FacePlacementFrame {
+  center: [number, number, number]
+  height: number
+  normal: [number, number, number]
+  uAxis: [number, number, number]
+  vAxis: [number, number, number]
+  width: number
 }
 
 const componentPalette = [
@@ -344,13 +356,46 @@ function createPlacementPlane(
   )
   edges.renderOrder = 21
 
-  const normalLength = Math.max(
-    Math.min(Math.abs(width), Math.abs(height)) * 0.35,
+  const normalLength = MathUtils.clamp(
+    Math.min(Math.abs(width), Math.abs(height)) * 0.18,
     2,
+    18,
+  )
+  root.add(
+    surface,
+    edges,
+    createDirectionArrow(
+      `${name}-direction`,
+      center,
+      normal,
+      normalLength,
+      color,
+    ),
+  )
+  return root
+}
+
+function createDirectionArrow(
+  name: string,
+  center: Vector3,
+  normal: Vector3,
+  normalLength: number,
+  color: number,
+): Group {
+  const root = new Group()
+  root.name = name
+  const arrowHeadLength = MathUtils.clamp(
+    normalLength * 0.28,
+    0.7,
+    5,
+  )
+  const shaftLength = Math.max(
+    normalLength - arrowHeadLength,
+    normalLength * 0.55,
   )
   const normalGeometry = new BufferGeometry().setFromPoints([
     center,
-    center.clone().addScaledVector(normal, normalLength),
+    center.clone().addScaledVector(normal, shaftLength),
   ])
   const normalLine = new LineSegments(
     normalGeometry,
@@ -363,8 +408,192 @@ function createPlacementPlane(
     }),
   )
   normalLine.renderOrder = 22
-  root.add(surface, edges, normalLine)
+  const arrowHead = new Mesh(
+    new ConeGeometry(arrowHeadLength * 0.38, arrowHeadLength, 12),
+    new MeshBasicMaterial({
+      color,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  )
+  arrowHead.position.copy(
+    center
+      .clone()
+      .addScaledVector(
+        normal,
+        normalLength - arrowHeadLength / 2,
+      ),
+  )
+  arrowHead.quaternion.setFromUnitVectors(
+    new Vector3(0, 1, 0),
+    normal,
+  )
+  arrowHead.renderOrder = 23
+  root.add(normalLine, arrowHead)
   return root
+}
+
+function createFacePatchBoundary(
+  scene: ScenePayload,
+  faceIds: Iterable<number>,
+  center: Vector3,
+  normal: Vector3,
+): LineSegments<BufferGeometry, LineBasicMaterial> | null {
+  const edges = new Map<
+    string,
+    { count: number; first: number; second: number }
+  >()
+  for (const faceId of faceIds) {
+    const face = scene.mesh.faces[faceId]
+    if (!face) continue
+    for (let edge = 0; edge < 3; edge += 1) {
+      const first = face[edge]
+      const second = face[(edge + 1) % 3]
+      const key =
+        first < second ? `${first}:${second}` : `${second}:${first}`
+      const existing = edges.get(key)
+      if (existing) existing.count += 1
+      else edges.set(key, { count: 1, first, second })
+    }
+  }
+
+  const positions: number[] = []
+  const offset = normal.clone().multiplyScalar(0.02)
+  for (const edge of edges.values()) {
+    if (edge.count !== 1) continue
+    const first = scene.mesh.vertices[edge.first]
+    const second = scene.mesh.vertices[edge.second]
+    if (!first || !second) continue
+    positions.push(
+      first[0] - center.x + offset.x,
+      first[1] - center.y + offset.y,
+      first[2] - center.z + offset.z,
+      second[0] - center.x + offset.x,
+      second[1] - center.y + offset.y,
+      second[2] - center.z + offset.z,
+    )
+  }
+  if (positions.length === 0) return null
+  const geometry = new BufferGeometry()
+  geometry.setAttribute(
+    'position',
+    new Float32BufferAttribute(positions, 3),
+  )
+  const boundary = new LineSegments(
+    geometry,
+    new LineBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  )
+  boundary.name = 'emitter-face-boundary'
+  boundary.renderOrder = 22
+  return boundary
+}
+
+function resolveFacePlacementFrame(
+  scene: ScenePayload,
+  faceIds: Iterable<number>,
+): FacePlacementFrame | null {
+  const points: Vector3[] = []
+  const normalSum = new Vector3()
+  const centerSum = new Vector3()
+  let totalWeight = 0
+  let referenceNormal: Vector3 | null = null
+  let longestEdge = new Vector3(1, 0, 0)
+  let longestEdgeLengthSq = 0
+
+  for (const faceId of faceIds) {
+    const face = scene.mesh.faces[faceId]
+    const normalValues = scene.mesh.face_normals[faceId]
+    if (!face || !normalValues) continue
+    const vertices = face
+      .map((vertexId) => scene.mesh.vertices[vertexId])
+      .filter((vertex): vertex is [number, number, number] =>
+        Boolean(vertex),
+      )
+      .map((vertex) => new Vector3(...vertex))
+    if (vertices.length !== 3) continue
+
+    const normal = new Vector3(...normalValues).normalize()
+    if (!referenceNormal) referenceNormal = normal.clone()
+    if (normal.dot(referenceNormal) < 0) normal.multiplyScalar(-1)
+    const weight = Math.max(
+      scene.mesh.face_areas_mm2[faceId] ?? 0,
+      1e-6,
+    )
+    const centroid = vertices[0]
+      .clone()
+      .add(vertices[1])
+      .add(vertices[2])
+      .multiplyScalar(1 / 3)
+    normalSum.addScaledVector(normal, weight)
+    centerSum.addScaledVector(centroid, weight)
+    totalWeight += weight
+    points.push(...vertices)
+
+    for (let edge = 0; edge < 3; edge += 1) {
+      const edgeVector = vertices[(edge + 1) % 3]
+        .clone()
+        .sub(vertices[edge])
+      if (edgeVector.lengthSq() > longestEdgeLengthSq) {
+        longestEdge = edgeVector
+        longestEdgeLengthSq = edgeVector.lengthSq()
+      }
+    }
+  }
+
+  if (points.length === 0 || totalWeight <= 0) return null
+  const normal = normalSum.normalize()
+  if (normal.lengthSq() < 0.5) return null
+  const center = centerSum.multiplyScalar(1 / totalWeight)
+  const uAxis = longestEdge
+    .sub(normal.clone().multiplyScalar(longestEdge.dot(normal)))
+    .normalize()
+  if (uAxis.lengthSq() < 0.5) {
+    uAxis
+      .crossVectors(
+        Math.abs(normal.z) < 0.9
+          ? new Vector3(0, 0, 1)
+          : new Vector3(0, 1, 0),
+        normal,
+      )
+      .normalize()
+  }
+  const vAxis = new Vector3().crossVectors(normal, uAxis).normalize()
+  let minU = Infinity
+  let maxU = -Infinity
+  let minV = Infinity
+  let maxV = -Infinity
+  for (const point of points) {
+    const relative = point.clone().sub(center)
+    const u = relative.dot(uAxis)
+    const v = relative.dot(vAxis)
+    minU = Math.min(minU, u)
+    maxU = Math.max(maxU, u)
+    minV = Math.min(minV, v)
+    maxV = Math.max(maxV, v)
+  }
+  const width = Math.max(maxU - minU, 0.5)
+  const height = Math.max(maxV - minV, 0.5)
+  const planeCenter = center
+    .clone()
+    .addScaledVector(uAxis, (minU + maxU) / 2)
+    .addScaledVector(vAxis, (minV + maxV) / 2)
+    .addScaledVector(normal, Math.max(Math.hypot(width, height) * 0.001, 0.015))
+
+  return {
+    center: planeCenter.toArray(),
+    height,
+    normal: normal.toArray(),
+    uAxis: uAxis.toArray(),
+    vAxis: vAxis.toArray(),
+    width,
+  }
 }
 
 function createAxisLabel(text: string, color: string): Sprite {
@@ -648,6 +877,7 @@ function createComponentNode(
   const emitterOverlayRoot = new Group()
   const materialOverlayRoot = new Group()
   const roiOverlayRoot = new Group()
+  const selectionOverlayRoot = new Group()
   const transformOverlayRoot = new Group()
   const group = new Group()
   group.name = `component-${component.component_id}`
@@ -658,6 +888,7 @@ function createComponentNode(
     emitterOverlayRoot,
     materialOverlayRoot,
     roiOverlayRoot,
+    selectionOverlayRoot,
     transformOverlayRoot,
   )
 
@@ -670,6 +901,7 @@ function createComponentNode(
     group,
     materialOverlayRoot,
     roiOverlayRoot,
+    selectionOverlayRoot,
     surface,
     transformOverlayRoot,
   }
@@ -691,6 +923,9 @@ export function ThreeViewerCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
+  const emitterFaceSelectionArmedRef = useRef(false)
+  const selectedFaceIdsRef = useRef<number[]>([])
+  const selectedComponentIdsRef = useRef<number[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
@@ -698,6 +933,12 @@ export function ThreeViewerCanvas({
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
+  )
+  const selectedFaceIds = useWorkspaceStore(
+    workspaceSelectors.selectedFaceIds,
+  )
+  const emitterFaceSelectionArmed = useWorkspaceStore(
+    workspaceSelectors.emitterFaceSelectionArmed,
   )
   const hiddenComponentIds = useWorkspaceStore(
     workspaceSelectors.hiddenComponentIds,
@@ -714,6 +955,18 @@ export function ThreeViewerCanvas({
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+
+  useEffect(() => {
+    emitterFaceSelectionArmedRef.current = emitterFaceSelectionArmed
+  }, [emitterFaceSelectionArmed])
+
+  useEffect(() => {
+    selectedFaceIdsRef.current = selectedFaceIds
+  }, [selectedFaceIds])
+
+  useEffect(() => {
+    selectedComponentIdsRef.current = selectedComponentIds
+  }, [selectedComponentIds])
 
   useEffect(() => {
     roiBoxSelectionArmedRef.current = roiBoxSelectionArmed
@@ -1111,6 +1364,43 @@ export function ThreeViewerCanvas({
         return
       }
 
+      if (emitterFaceSelectionArmedRef.current) {
+        const component = scene.components.find(
+          (candidate) => candidate.component_id === componentId,
+        )
+        const patchFaceIds = findCoplanarFacePatch(
+          scene,
+          component?.face_indices ?? [faceId],
+          faceId,
+        )
+        if (additive) {
+          const nextFaceIds = new Set(selectedFaceIdsRef.current)
+          const removePatch = patchFaceIds.every((id) =>
+            nextFaceIds.has(id),
+          )
+          for (const id of patchFaceIds) {
+            if (removePatch) nextFaceIds.delete(id)
+            else nextFaceIds.add(id)
+          }
+          actions.setSelectedFaceIds(nextFaceIds)
+          if (!removePatch) {
+            actions.setSelectedComponentIds([
+              ...new Set([
+                ...selectedComponentIdsRef.current,
+                componentId,
+              ]),
+            ])
+          }
+        } else {
+          actions.setSelectedComponentIds([componentId])
+          actions.setSelectedFaceIds(patchFaceIds)
+        }
+        onStatusMessage(
+          `Emitter surface picking · Component ${componentId} · ${patchFaceIds.length.toLocaleString()} triangles`,
+        )
+        return
+      }
+
       if (additive) {
         actions.toggleSelectedComponentId(componentId)
         actions.toggleSelectedFaceId(faceId)
@@ -1441,17 +1731,23 @@ export function ThreeViewerCanvas({
       )
     }
 
-    const emitterFaceSet = new Set(
-      emitters
-        .filter(
-          (emitter) =>
-            emitter.enabled && emitter.emitter_type === 'face',
-        )
-        .flatMap((emitter) => emitter.face_indices),
+    const enabledFaceEmitters = emitters.filter(
+      (emitter) =>
+        emitter.enabled && emitter.emitter_type === 'face',
     )
+    const enabledFaceEmitterSets = enabledFaceEmitters.map((emitter) => ({
+      emitter,
+      faceIds: new Set(emitter.face_indices),
+    }))
+    const emitterFaceSet = new Set(
+      enabledFaceEmitters.flatMap((emitter) => emitter.face_indices),
+    )
+    const selectedFaceSet = new Set(selectedFaceIds)
     const roiFaceSet = new Set(roiFaceIds)
     for (const [componentId, node] of runtime.nodes) {
-      const isSelected = selectedComponentIds.includes(componentId)
+      const isSelected =
+        !emitterFaceSelectionArmed &&
+        selectedComponentIds.includes(componentId)
       const isUnavailable =
         hiddenComponentIds.includes(componentId) ||
         deletedComponentIds.includes(componentId)
@@ -1504,6 +1800,7 @@ export function ThreeViewerCanvas({
       clearGroup(node.emitterOverlayRoot)
       clearGroup(node.materialOverlayRoot)
       clearGroup(node.roiOverlayRoot)
+      clearGroup(node.selectionOverlayRoot)
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
@@ -1536,6 +1833,77 @@ export function ThreeViewerCanvas({
           overlay.name = `emitter-highlight-${componentId}`
           overlay.renderOrder = 8
           node.emitterOverlayRoot.add(overlay)
+        } else {
+          bundle.geometry.dispose()
+        }
+      }
+      for (const { emitter, faceIds } of enabledFaceEmitterSets) {
+        const emitterFaceIds = node.component.face_indices.filter(
+          (faceId) => faceIds.has(faceId),
+        )
+        const frame = resolveFacePlacementFrame(scene, emitterFaceIds)
+        if (!frame) continue
+        const normal = new Vector3(...frame.normal).multiplyScalar(
+          emitter.normal_flip ? -1 : 1,
+        )
+        const localCenter = new Vector3(
+          frame.center[0] - node.center.x,
+          frame.center[1] - node.center.y,
+          frame.center[2] - node.center.z,
+        )
+        const reference = new Group()
+        reference.name = `emitter-face-reference-${emitter.emitter_id}-${componentId}`
+        const boundary = createFacePatchBoundary(
+          scene,
+          emitterFaceIds,
+          node.center,
+          new Vector3(...frame.normal),
+        )
+        if (boundary) reference.add(boundary)
+        reference.add(
+          createDirectionArrow(
+            `${reference.name}-direction`,
+            localCenter,
+            normal,
+            MathUtils.clamp(
+              Math.min(frame.width, frame.height) * 0.18,
+              2,
+              18,
+            ),
+            0xf59e0b,
+          ),
+        )
+        node.emitterOverlayRoot.add(reference)
+      }
+
+      const componentSelectedFaceIds = node.component.face_indices.filter(
+        (faceId) => selectedFaceSet.has(faceId),
+      )
+      if (componentSelectedFaceIds.length > 0) {
+        const bundle = createFaceGeometry(
+          scene,
+          componentSelectedFaceIds,
+          node.center,
+        )
+        if (bundle.faceIds.length > 0) {
+          const overlay = new Mesh(
+            bundle.geometry,
+            new MeshBasicMaterial({
+              color: 0xfbbf24,
+              side: DoubleSide,
+              transparent: true,
+              opacity: 0.86,
+              depthTest: true,
+              depthWrite: false,
+              polygonOffset: true,
+              polygonOffsetFactor: -4,
+              polygonOffsetUnits: -4,
+              toneMapped: false,
+            }),
+          )
+          overlay.name = `selected-face-highlight-${componentId}`
+          overlay.renderOrder = 12
+          node.selectionOverlayRoot.add(overlay)
         } else {
           bundle.geometry.dispose()
         }
@@ -1643,6 +2011,7 @@ export function ThreeViewerCanvas({
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
+    emitterFaceSelectionArmed,
     emitters,
     hiddenComponentIds,
     materialAssignments,
@@ -1653,6 +2022,7 @@ export function ThreeViewerCanvas({
     receivers,
     scene,
     selectedComponentIds,
+    selectedFaceIds,
     transformRules,
     onStatusMessage,
   ])
@@ -1666,6 +2036,8 @@ export function ThreeViewerCanvas({
         ref={canvasRef}
         className={`absolute inset-0 size-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
           roiBoxSelectionArmed ? 'cursor-crosshair' : ''
+        } ${
+          emitterFaceSelectionArmed ? 'cursor-crosshair' : ''
         }`}
         aria-label="Interactive 3D CAD viewer"
         aria-describedby="three-viewer-controls"
@@ -1690,6 +2062,8 @@ export function ThreeViewerCanvas({
       >
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
+          : emitterFaceSelectionArmed
+            ? 'Emitter surface mode · Click a CAD surface · Shift multi-select'
           : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select'}
       </div>
       {rendererError ? (

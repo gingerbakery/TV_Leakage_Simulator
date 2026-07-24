@@ -13,6 +13,9 @@ describe('workspace store', () => {
     actions.toggleSelectedFaceId(2)
     actions.toggleSelectedFaceId(3)
     expect(store.getState().selectedFaceIds).toEqual([0, 3, 5])
+
+    actions.setEmitterFaceSelectionArmed(true)
+    expect(store.getState().emitterFaceSelectionArmed).toBe(true)
   })
 
   it('resets scene-scoped state when the active CAD changes', () => {

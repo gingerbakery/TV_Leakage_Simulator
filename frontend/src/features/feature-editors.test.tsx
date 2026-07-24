@@ -274,4 +274,54 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('button', { name: 'Run ray tracing' }),
     ).toHaveProperty('disabled', false)
   })
+
+  it('keeps CAD surface selection interactive while configuring an emitter', () => {
+    render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+        />
+      </AppProviders>,
+    )
+
+    act(() => {
+      workspaceStore.getState().actions.setSelectedFaceIds([4])
+    })
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Add CAD surface emitter',
+      }),
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'CAD surface emitter',
+    })
+    expect(dialog.getAttribute('aria-modal')).toBeNull()
+    expect(
+      document.querySelector('[data-slot="dialog-overlay"]'),
+    ).toBeNull()
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+    expect(
+      workspaceStore.getState().emitterFaceSelectionArmed,
+    ).toBe(true)
+
+    act(() => {
+      workspaceStore.getState().actions.setSelectedFaceIds([0, 1])
+    })
+    expect(screen.getByText('Selected faces · 2')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_id: 'emitter_001',
+        emitter_type: 'face',
+        face_indices: [0, 1],
+      }),
+    ])
+    expect(
+      workspaceStore.getState().emitterFaceSelectionArmed,
+    ).toBe(false)
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+  })
 })

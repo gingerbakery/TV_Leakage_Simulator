@@ -21,6 +21,9 @@ export interface AppDialogProps {
   footer?: ReactNode
   size?: AppDialogSize
   returnFocusRef?: RefObject<HTMLElement | null>
+  modal?: boolean
+  keepOpenOnInteractOutside?: boolean
+  contentClassName?: string
 }
 
 const sizeClasses: Record<AppDialogSize, string> = {
@@ -38,10 +41,19 @@ export function AppDialog({
   footer,
   size = 'md',
   returnFocusRef,
+  modal = true,
+  keepOpenOnInteractOutside = false,
+  contentClassName,
 }: AppDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog modal={modal} open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        showOverlay={modal}
+        onInteractOutside={
+          keepOpenOnInteractOutside
+            ? (event) => event.preventDefault()
+            : undefined
+        }
         onCloseAutoFocus={(event) => {
           if (!returnFocusRef?.current) return
           event.preventDefault()
@@ -50,6 +62,7 @@ export function AppDialog({
         className={cn(
           'border border-border bg-popover/98 shadow-2xl shadow-black/40',
           sizeClasses[size],
+          contentClassName,
         )}
       >
         <DialogHeader>

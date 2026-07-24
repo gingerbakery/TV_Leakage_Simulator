@@ -39,3 +39,19 @@
 - 같은 CAD의 face `40698`을 CAD surface Emitter로 등록해 `2,000 rays`,
   `18 receiver hits`, 약 `1.12 s` 실행 완료
 - Step 11에서 사용할 stored ray path 결과는 TanStack Query cache에 유지
+
+## 후속 개선: CAD surface 선택과 방향 표시
+
+- CAD surface Emitter 설정창을 비모달 플로팅 패널로 바꿔, 창을 연 상태에서도
+  Viewer 회전·확대·면 선택을 계속할 수 있게 했다.
+- 클릭한 triangle과 같은 평면에 연결된 triangle을 하나의 surface patch로
+  확장해 선택하고, 선택 중에는 해당 패치 전체를 노란색으로 강조한다.
+- 저장한 surface Emitter는 실제 패치 형상과 외곽선을 주황색으로 유지하며,
+  면 중심에 법선 방향 화살표를 표시한다.
+- Datum Emitter와 모든 Receiver의 기존 normal 선 끝에도 깊이에 가려지지 않는
+  작은 화살촉을 추가했다.
+- 실제 CAD에서 상단 평면 `4,096 triangles`가 한 번의 클릭으로 선택되고,
+  저장 후 Emitter·Current View Receiver 기준면과 방향 표시가 유지되는 것을
+  Chrome에서 확인했다.
+- Frontend Vitest `42`개, TypeScript typecheck, Oxlint, production build가
+  모두 통과했다.

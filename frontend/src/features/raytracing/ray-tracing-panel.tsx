@@ -217,6 +217,13 @@ function EmitterDialog({
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
+      modal={mode !== 'face'}
+      keepOpenOnInteractOutside={mode === 'face'}
+      contentClassName={
+        mode === 'face'
+          ? 'left-auto right-5 top-24 max-h-[calc(100vh-7rem)] w-[min(25rem,calc(100vw-2rem))] translate-x-0 translate-y-0 sm:max-w-md'
+          : undefined
+      }
       title={
         mode === 'face' ? 'CAD surface emitter' : 'Datum plane emitter'
       }
@@ -244,7 +251,8 @@ function EmitterDialog({
               Selected faces · {selectedFaceIds.length.toLocaleString()}
             </div>
             <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-              Viewer에서 클릭하고 Shift를 누른 채 추가 선택할 수 있습니다.
+              이 패널을 열어 둔 채 Viewer 면을 클릭하세요. Shift를 누르면
+              여러 면을 추가 선택할 수 있습니다.
             </p>
           </div>
         ) : (
@@ -602,6 +610,11 @@ export function RayTracingPanel({
     enabledReceiverCount > 0 &&
     !isRunning
 
+  useEffect(
+    () => () => actions.setEmitterFaceSelectionArmed(false),
+    [actions],
+  )
+
   const updateConfig = (patch: Partial<RayTraceConfigRequest>) => {
     actions.setRayTraceConfig({ ...config, ...patch })
   }
@@ -653,7 +666,12 @@ export function RayTracingPanel({
             size="sm"
             aria-label="Add CAD surface emitter"
             disabled={!scene || isRunning}
-            onClick={() => setEmitterMode('face')}
+            onClick={() => {
+              actions.setSelectedFaceIds([])
+              actions.setSelectedComponentIds([])
+              actions.setEmitterFaceSelectionArmed(true)
+              setEmitterMode('face')
+            }}
           >
             <Plus />
             CAD surface
@@ -663,7 +681,10 @@ export function RayTracingPanel({
             size="sm"
             aria-label="Add datum plane emitter"
             disabled={!scene || isRunning}
-            onClick={() => setEmitterMode('datum_plane')}
+            onClick={() => {
+              actions.setEmitterFaceSelectionArmed(false)
+              setEmitterMode('datum_plane')
+            }}
           >
             <Plus />
             Datum plane
@@ -982,9 +1003,18 @@ export function RayTracingPanel({
         selectedFaceIds={selectedFaceIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
         onOpenChange={(open) => {
-          if (!open) setEmitterMode(null)
+          if (!open) {
+            actions.setEmitterFaceSelectionArmed(false)
+            actions.setSelectedFaceIds([])
+            actions.setSelectedComponentIds([])
+            setEmitterMode(null)
+          }
         }}
-        onApply={actions.upsertEmitter}
+        onApply={(emitter) => {
+          actions.upsertEmitter(emitter)
+          actions.setSelectedFaceIds([])
+          actions.setSelectedComponentIds([])
+        }}
       />
       <ReceiverDialog
         open={receiverMode !== null}
