@@ -44,6 +44,7 @@ Material assignment와 Transform rule 편집 흐름을 React로 이전했다.
 Material·Transform, 카메라와 렌더 모드를 React 상태와 동기화했다.
 중첩 component의 depth 충돌과 Wireframe 반투명 면·edge 안정화도 반영했다.
 선택 지점의 잔상 없는 component highlight와 pole 제한 없는 자유 회전을 지원한다.
+모델에 가려지지 않는 고정 XYZ orientation gizmo와 크기 조절도 제공한다.
 
 ## 9. ROI 선택·관리 — 예정
 

@@ -52,6 +52,13 @@ describe('Step 07·08 feature editors', () => {
     expect(
       await screen.findByLabelText('Interactive 3D CAD viewer'),
     ).not.toBeNull()
+    const axisSize = screen.getByRole('slider', {
+      name: 'Axis size',
+    })
+    expect(axisSize).toHaveProperty('value', '100')
+    fireEvent.change(axisSize, { target: { value: '125' } })
+    expect(axisSize).toHaveProperty('value', '125')
+    expect(screen.getByText('125%')).not.toBeNull()
 
     act(() => {
       workspaceStore.getState().actions.setSelectedComponentIds([1])

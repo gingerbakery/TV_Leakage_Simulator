@@ -54,6 +54,7 @@ export function ViewerWorkspace({
   const [cameraRequestId, setCameraRequestId] = useState(0)
   const [renderMode, setRenderMode] =
     useState<ViewerRenderMode>('Surface + Edge')
+  const [axisScalePercent, setAxisScalePercent] = useState(100)
   const [statusMessage, setStatusMessage] = useState(
     'CAD를 Import하면 Three.js Viewer에서 component와 face를 선택할 수 있습니다.',
   )
@@ -134,6 +135,28 @@ export function ViewerWorkspace({
                 </Button>
               ))}
             </div>
+            <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/60 px-2 text-[0.65rem] text-muted-foreground">
+              <span className="font-medium whitespace-nowrap">
+                Axis size
+              </span>
+              <input
+                aria-label="Axis size"
+                type="range"
+                min="50"
+                max="150"
+                step="5"
+                value={axisScalePercent}
+                className="h-1.5 w-20 cursor-pointer accent-primary"
+                onChange={(event) => {
+                  const nextScale = Number(event.currentTarget.value)
+                  setAxisScalePercent(nextScale)
+                  setStatusMessage(`Axis size · ${nextScale}%`)
+                }}
+              />
+              <span className="w-8 text-right font-semibold text-foreground">
+                {axisScalePercent}%
+              </span>
+            </label>
           </div>
         </div>
       </div>
@@ -242,6 +265,7 @@ export function ViewerWorkspace({
             >
               <ThreeViewerCanvas
                 scene={scene}
+                axisScalePercent={axisScalePercent}
                 cameraPreset={cameraPreset}
                 cameraRequestId={cameraRequestId}
                 renderMode={renderMode}

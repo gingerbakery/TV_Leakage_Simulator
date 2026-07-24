@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
-  AxesHelper,
   Box3,
+  CanvasTexture,
   Color,
+  ConeGeometry,
+  CylinderGeometry,
   DirectionalLight,
   DoubleSide,
   EdgesGeometry,
@@ -14,12 +16,16 @@ import {
   LineSegments,
   MathUtils,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   MOUSE,
+  OrthographicCamera,
   PerspectiveCamera,
   Raycaster,
   Scene,
   SRGBColorSpace,
+  Sprite,
+  SpriteMaterial,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -56,6 +62,7 @@ export type ViewerRenderMode =
 
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
+  axisScalePercent: number
   cameraPreset: ViewerCameraPreset
   cameraRequestId: number
   renderMode: ViewerRenderMode
@@ -74,6 +81,7 @@ interface ComponentRenderNode {
 }
 
 interface ViewerRuntime {
+  axisScalePercent: number
   camera: PerspectiveCamera
   controls: TrackballControls
   grid: GridHelper
@@ -124,8 +132,101 @@ function disposeObject(object: Object3D): void {
     if (child instanceof Mesh || child instanceof LineSegments) {
       child.geometry.dispose()
       disposeMaterial(child.material)
+    } else if (child instanceof Sprite) {
+      child.material.map?.dispose()
+      child.material.dispose()
     }
   })
+}
+
+function createAxisLabel(text: string, color: string): Sprite {
+  const canvas = document.createElement('canvas')
+  canvas.width = 96
+  canvas.height = 96
+  const context = canvas.getContext('2d')
+  if (context) {
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    context.font = '800 52px Geist, Segoe UI, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.lineWidth = 8
+    context.strokeStyle = 'rgba(2, 6, 23, 0.96)'
+    context.strokeText(text, 48, 47)
+    context.fillStyle = color
+    context.fillText(text, 48, 47)
+  }
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  const label = new Sprite(
+    new SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  )
+  label.scale.set(0.38, 0.38, 1)
+  return label
+}
+
+function createOrientationGizmo(): Group {
+  const gizmo = new Group()
+  const up = new Vector3(0, 1, 0)
+  const axes = [
+    {
+      name: 'X',
+      color: '#ef4444',
+      hex: 0xef4444,
+      direction: new Vector3(1, 0, 0),
+    },
+    {
+      name: 'Y',
+      color: '#22c55e',
+      hex: 0x22c55e,
+      direction: new Vector3(0, 1, 0),
+    },
+    {
+      name: 'Z',
+      color: '#3b82f6',
+      hex: 0x3b82f6,
+      direction: new Vector3(0, 0, 1),
+    },
+  ]
+
+  for (const axis of axes) {
+    const material = new MeshBasicMaterial({
+      color: axis.hex,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    })
+    const shaft = new Mesh(
+      new CylinderGeometry(0.022, 0.022, 1, 14),
+      material,
+    )
+    shaft.position.copy(axis.direction).multiplyScalar(0.5)
+    shaft.quaternion.setFromUnitVectors(up, axis.direction)
+    shaft.renderOrder = 200
+    gizmo.add(shaft)
+
+    const head = new Mesh(
+      new ConeGeometry(0.065, 0.2, 18),
+      material.clone(),
+    )
+    head.position.copy(axis.direction)
+    head.quaternion.setFromUnitVectors(up, axis.direction)
+    head.renderOrder = 201
+    gizmo.add(head)
+
+    const label = createAxisLabel(axis.name, axis.color)
+    label.position.copy(axis.direction).multiplyScalar(1.28)
+    label.renderOrder = 202
+    gizmo.add(label)
+  }
+
+  return gizmo
 }
 
 function clearGroup(group: Group): void {
@@ -324,6 +425,7 @@ function createComponentNode(
 
 export function ThreeViewerCanvas({
   scene,
+  axisScalePercent,
   cameraPreset,
   cameraRequestId,
   renderMode,
@@ -374,8 +476,19 @@ export function ThreeViewerCanvas({
     renderer.toneMapping = ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.05
     renderer.setClearColor(0x000000, 0)
+    renderer.autoClear = false
 
     const threeScene = new Scene()
+    const orientationScene = new Scene()
+    const orientationCamera = new OrthographicCamera(
+      -1.45,
+      1.45,
+      1.45,
+      -1.45,
+      0.1,
+      10,
+    )
+    orientationScene.add(createOrientationGizmo())
     const camera = new PerspectiveCamera(42, 1, 0.01, 100000)
     camera.up.set(0, 0, 1)
     const controls = new TrackballControls(camera, canvas)
@@ -427,10 +540,6 @@ export function ThreeViewerCanvas({
     grid.renderOrder = -100
     threeScene.add(grid)
 
-    const axes = new AxesHelper(Math.max(maxDimension * 0.08, 1))
-    axes.position.copy(bounds.center)
-    threeScene.add(axes)
-
     const nodes = new Map<number, ComponentRenderNode>()
     scene.components.forEach((component, index) => {
       const node = createComponentNode(scene, component, index)
@@ -439,6 +548,7 @@ export function ThreeViewerCanvas({
     })
 
     const runtime: ViewerRuntime = {
+      axisScalePercent: 100,
       camera,
       controls,
       grid,
@@ -451,10 +561,14 @@ export function ThreeViewerCanvas({
     }
     runtimeRef.current = runtime
 
+    let viewportWidth = 1
+    let viewportHeight = 1
     const resize = () => {
       const rect = canvas.getBoundingClientRect()
       const width = Math.max(Math.floor(rect.width), 1)
       const height = Math.max(Math.floor(rect.height), 1)
+      viewportWidth = width
+      viewportHeight = height
       renderer.setSize(width, height, false)
       camera.aspect = width / height
       camera.updateProjectionMatrix()
@@ -470,7 +584,36 @@ export function ThreeViewerCanvas({
       controls.update()
       runtime.grid.visible =
         runtime.showGrid && camera.position.z > grid.position.z
+      renderer.setScissorTest(false)
+      renderer.setViewport(0, 0, viewportWidth, viewportHeight)
+      renderer.clear()
       renderer.render(threeScene, camera)
+
+      const gizmoSize = Math.max(
+        44,
+        Math.min(
+          Math.round(112 * (runtime.axisScalePercent / 100)),
+          Math.floor(viewportWidth * 0.28),
+          Math.floor(viewportHeight * 0.28),
+        ),
+      )
+      const gizmoX = 14
+      const gizmoY = 46
+      const cameraDirection = orientationCamera.position
+        .subVectors(camera.position, controls.target)
+        .normalize()
+        .multiplyScalar(3)
+      orientationCamera.position.copy(cameraDirection)
+      orientationCamera.up.copy(camera.up).normalize()
+      orientationCamera.lookAt(0, 0, 0)
+      orientationCamera.updateMatrixWorld()
+
+      renderer.clearDepth()
+      renderer.setViewport(gizmoX, gizmoY, gizmoSize, gizmoSize)
+      renderer.setScissor(gizmoX, gizmoY, gizmoSize, gizmoSize)
+      renderer.setScissorTest(true)
+      renderer.render(orientationScene, orientationCamera)
+      renderer.setScissorTest(false)
       animationFrame = window.requestAnimationFrame(animate)
     }
     animationFrame = window.requestAnimationFrame(animate)
@@ -561,6 +704,7 @@ export function ThreeViewerCanvas({
       canvas.removeEventListener('contextmenu', preventContextMenu)
       controls.dispose()
       disposeObject(threeScene)
+      disposeObject(orientationScene)
       renderer.dispose()
       runtimeRef.current = null
     }
@@ -571,6 +715,12 @@ export function ThreeViewerCanvas({
     if (!runtime) return
     fitCamera(runtime, cameraPreset)
   }, [cameraPreset, cameraRequestId, scene])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    runtime.axisScalePercent = axisScalePercent
+  }, [axisScalePercent])
 
   useEffect(() => {
     const runtime = runtimeRef.current
