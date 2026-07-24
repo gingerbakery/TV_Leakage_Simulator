@@ -14,7 +14,6 @@ import {
   LineSegments,
   MathUtils,
   Mesh,
-  MeshBasicMaterial,
   MeshStandardMaterial,
   MOUSE,
   PerspectiveCamera,
@@ -28,7 +27,7 @@ import {
   type Material,
   type Object3D,
 } from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
 import type { SceneComponent, ScenePayload } from '@/api'
 import {
@@ -70,14 +69,13 @@ interface ComponentRenderNode {
   edges: LineSegments<BufferGeometry, LineBasicMaterial>
   group: Group
   materialOverlayRoot: Group
-  selectionOverlayRoot: Group
   surface: Mesh<BufferGeometry, MeshStandardMaterial>
   transformOverlayRoot: Group
 }
 
 interface ViewerRuntime {
   camera: PerspectiveCamera
-  controls: OrbitControls
+  controls: TrackballControls
   grid: GridHelper
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
@@ -298,7 +296,6 @@ function createComponentNode(
   edges.renderOrder = 100 + index
 
   const materialOverlayRoot = new Group()
-  const selectionOverlayRoot = new Group()
   const transformOverlayRoot = new Group()
   const group = new Group()
   group.name = `component-${component.component_id}`
@@ -308,7 +305,6 @@ function createComponentNode(
     edges,
     materialOverlayRoot,
     transformOverlayRoot,
-    selectionOverlayRoot,
   )
 
   return {
@@ -318,7 +314,6 @@ function createComponentNode(
     edges,
     group,
     materialOverlayRoot,
-    selectionOverlayRoot,
     surface,
     transformOverlayRoot,
   }
@@ -334,9 +329,6 @@ export function ThreeViewerCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const [rendererError, setRendererError] = useState('')
-  const selectedFaceIds = useWorkspaceStore(
-    workspaceSelectors.selectedFaceIds,
-  )
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
   )
@@ -383,12 +375,11 @@ export function ThreeViewerCanvas({
     const threeScene = new Scene()
     const camera = new PerspectiveCamera(42, 1, 0.01, 100000)
     camera.up.set(0, 0, 1)
-    const controls = new OrbitControls(camera, canvas)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.08
-    controls.rotateSpeed = 0.72
-    controls.zoomSpeed = 0.92
-    controls.panSpeed = 0.8
+    const controls = new TrackballControls(camera, canvas)
+    controls.staticMoving = true
+    controls.rotateSpeed = 1.15
+    controls.zoomSpeed = 1.2
+    controls.panSpeed = 0.6
     controls.mouseButtons = {
       LEFT: MOUSE.ROTATE,
       MIDDLE: MOUSE.DOLLY,
@@ -464,6 +455,7 @@ export function ThreeViewerCanvas({
       renderer.setSize(width, height, false)
       camera.aspect = width / height
       camera.updateProjectionMatrix()
+      controls.handleResize()
     }
     const resizeObserver = new ResizeObserver(resize)
     resizeObserver.observe(canvas)
@@ -635,7 +627,6 @@ export function ThreeViewerCanvas({
 
       clearGroup(node.materialOverlayRoot)
       clearGroup(node.transformOverlayRoot)
-      clearGroup(node.selectionOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
       const faceAssignments = materialAssignments.filter(
@@ -701,30 +692,6 @@ export function ThreeViewerCanvas({
         overlay.renderOrder = 3
         node.transformOverlayRoot.add(overlay)
       }
-
-      const componentSelectedFaceIds = selectedFaceIds.filter(
-        (faceId) =>
-          scene.mesh.face_component_ids[faceId] === componentId,
-      )
-      if (componentSelectedFaceIds.length > 0) {
-        const bundle = createFaceGeometry(
-          scene,
-          componentSelectedFaceIds,
-          node.center,
-        )
-        const overlay = new Mesh(
-          bundle.geometry,
-          new MeshBasicMaterial({
-            color: 0xfacc15,
-            side: DoubleSide,
-            transparent: true,
-            opacity: 0.92,
-            depthTest: false,
-          }),
-        )
-        overlay.renderOrder = 10
-        node.selectionOverlayRoot.add(overlay)
-      }
     }
     runtime.showGrid = renderMode !== 'Wireframe'
   }, [
@@ -734,7 +701,6 @@ export function ThreeViewerCanvas({
     renderMode,
     scene,
     selectedComponentIds,
-    selectedFaceIds,
     transformRules,
   ])
 
