@@ -548,7 +548,7 @@ export function ThreeViewerCanvas({
     })
 
     const runtime: ViewerRuntime = {
-      axisScalePercent: 100,
+      axisScalePercent: 50,
       camera,
       controls,
       grid,
@@ -592,9 +592,9 @@ export function ThreeViewerCanvas({
       const gizmoSize = Math.max(
         44,
         Math.min(
-          Math.round(112 * (runtime.axisScalePercent / 100)),
-          Math.floor(viewportWidth * 0.34),
-          Math.floor(viewportHeight * 0.34),
+          Math.round(168 * (runtime.axisScalePercent / 50)),
+          Math.floor(viewportWidth * 0.5),
+          Math.floor(viewportHeight * 0.5),
         ),
       )
       const gizmoX = 14

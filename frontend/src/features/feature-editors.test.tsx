@@ -55,11 +55,11 @@ describe('Step 07·08 feature editors', () => {
     const axisSize = screen.getByRole('slider', {
       name: 'Axis size',
     })
+    expect(axisSize).toHaveProperty('value', '50')
+    expect(axisSize).toHaveProperty('max', '100')
+    fireEvent.change(axisSize, { target: { value: '100' } })
     expect(axisSize).toHaveProperty('value', '100')
-    expect(axisSize).toHaveProperty('max', '180')
-    fireEvent.change(axisSize, { target: { value: '180' } })
-    expect(axisSize).toHaveProperty('value', '180')
-    expect(screen.getByText('180%')).not.toBeNull()
+    expect(screen.getByText('100%')).not.toBeNull()
 
     act(() => {
       workspaceStore.getState().actions.setSelectedComponentIds([1])

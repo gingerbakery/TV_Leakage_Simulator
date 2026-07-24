@@ -54,7 +54,7 @@ export function ViewerWorkspace({
   const [cameraRequestId, setCameraRequestId] = useState(0)
   const [renderMode, setRenderMode] =
     useState<ViewerRenderMode>('Surface + Edge')
-  const [axisScalePercent, setAxisScalePercent] = useState(100)
+  const [axisScalePercent, setAxisScalePercent] = useState(50)
   const [statusMessage, setStatusMessage] = useState(
     'CAD를 Import하면 Three.js Viewer에서 component와 face를 선택할 수 있습니다.',
   )
@@ -143,7 +143,7 @@ export function ViewerWorkspace({
                 aria-label="Axis size"
                 type="range"
                 min="50"
-                max="180"
+                max="100"
                 step="5"
                 value={axisScalePercent}
                 className="h-1.5 w-20 cursor-pointer accent-primary"
