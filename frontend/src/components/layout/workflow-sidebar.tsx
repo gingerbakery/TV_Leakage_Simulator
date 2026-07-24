@@ -17,6 +17,10 @@ import {
   type ComponentEditorRequest,
 } from '@/features/components'
 import { MaterialAssignmentPanel } from '@/features/materials'
+import {
+  RayTracingPanel,
+  type ViewerCameraFrame,
+} from '@/features/raytracing'
 import { RoiSelectionPanel } from '@/features/roi'
 import { TransformRulePanel } from '@/features/transforms'
 import { Badge } from '@/components/ui/badge'
@@ -50,6 +54,7 @@ interface WorkflowSidebarProps {
   activeSection: WorkflowSectionId
   onActiveSectionChange(section: WorkflowSectionId): void
   scene?: ScenePayload
+  cameraFrame: ViewerCameraFrame | null
   isSceneLoading?: boolean
   sceneErrorMessage?: string
   onEditMaterial(request: ComponentEditorRequest): void
@@ -106,6 +111,7 @@ export function WorkflowSidebar({
   activeSection,
   onActiveSectionChange,
   scene,
+  cameraFrame,
   isSceneLoading = false,
   sceneErrorMessage,
   onEditMaterial,
@@ -159,6 +165,10 @@ export function WorkflowSidebar({
       )
     }
 
+    if (activeSection === 'ray-tracing') {
+      return <RayTracingPanel scene={scene} cameraFrame={cameraFrame} />
+    }
+
     return (
       <>
         <p className="text-xs leading-5 text-muted-foreground">
@@ -178,7 +188,8 @@ export function WorkflowSidebar({
     activeSection === 'roi' ||
     activeSection === 'components' ||
     activeSection === 'material' ||
-    activeSection === 'transform'
+    activeSection === 'transform' ||
+    activeSection === 'ray-tracing'
 
   return (
     <aside className="border-b border-border bg-sidebar lg:min-h-0 lg:border-r lg:border-b-0">
@@ -272,6 +283,8 @@ export function WorkflowSidebar({
                 >
                   {activeSection === 'roi'
                     ? 'Migrated · 09'
+                    : activeSection === 'ray-tracing'
+                      ? 'Migrated · 10'
                     : isMigratedSection
                       ? 'Migrated · 07'
                       : 'Queued'}

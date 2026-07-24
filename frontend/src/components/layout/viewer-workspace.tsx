@@ -22,6 +22,7 @@ import type {
   ViewerCameraPreset,
   ViewerRenderMode,
 } from '@/features/viewer'
+import type { ViewerCameraFrame } from '@/features/raytracing'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -58,12 +59,14 @@ interface ViewerWorkspaceProps {
   scene?: ScenePayload
   isSceneLoading?: boolean
   sceneErrorMessage?: string
+  onCameraFrameChange?(frame: ViewerCameraFrame): void
 }
 
 export function ViewerWorkspace({
   scene,
   isSceneLoading = false,
   sceneErrorMessage,
+  onCameraFrameChange,
 }: ViewerWorkspaceProps) {
   const [cameraPreset, setCameraPreset] =
     useState<ViewerCameraPreset>('Iso')
@@ -161,7 +164,7 @@ export function ViewerWorkspace({
           <div>
             <h1 className="text-sm font-semibold">3D Viewer</h1>
             <p className="text-[0.7rem] text-muted-foreground">
-              Three.js mesh · ROI selection and face picking · Step 09
+              Three.js mesh · ROI, Emitter and Receiver overlays · Step 10
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -353,6 +356,7 @@ export function ViewerWorkspace({
                 roiFaceIds={activeRoiFaceIds}
                 roiScopes={roiScopes}
                 onRoiBoxSelection={addBoxRoi}
+                onCameraFrameChange={onCameraFrameChange}
                 onStatusMessage={setStatusMessage}
               />
             </Suspense>
@@ -366,7 +370,7 @@ export function ViewerWorkspace({
           <CircleDot className="size-3 text-primary" />
           {scene
             ? `${visibleComponentCount} visible · ${selectedComponentIds.length} component · ${selectedFaceIds.length} face · ${activeRoiFaceIds.length} ROI`
-            : 'Three.js Viewer · Step 09'}
+            : 'Three.js Viewer · Step 10'}
         </span>
       </footer>
     </main>

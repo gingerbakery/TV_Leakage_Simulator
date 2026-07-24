@@ -10,7 +10,9 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ComponentTreePanel } from '@/features/components'
+import { AppProviders } from '@/app/providers'
 import { MaterialEditorDialog } from '@/features/materials'
+import { RayTracingPanel } from '@/features/raytracing'
 import { RoiSelectionPanel } from '@/features/roi'
 import { TransformEditorDialog } from '@/features/transforms'
 import { ViewerWorkspace } from '@/components/layout/viewer-workspace'
@@ -215,5 +217,61 @@ describe('Step 07·08 feature editors', () => {
         tilt: { x: 5, y: 0, z: 0 },
       }),
     ])
+  })
+
+  it('creates Emitter and Current View Receiver contracts for Step 10', () => {
+    render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={{
+            target: [10, 20, 30],
+            normal: [0, 0, -1],
+            uAxis: [1, 0, 0],
+            vAxis: [0, -1, 0],
+          }}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Add datum plane emitter',
+      }),
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Emitter rays' }),
+      { target: { value: '2500' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Add current view receiver',
+      }),
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), {
+      target: { value: 'Camera RX' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add receiver' }))
+
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_id: 'emitter_001',
+        emitter_type: 'datum_plane',
+        ray_count: 2500,
+      }),
+    ])
+    expect(workspaceStore.getState().receivers).toEqual([
+      expect.objectContaining({
+        receiver_id: 'receiver_001',
+        display_name: 'Camera RX',
+        placement_mode: 'current_view',
+        center: [10, 20, 130],
+      }),
+    ])
+    expect(
+      screen.getByRole('button', { name: 'Run ray tracing' }),
+    ).toHaveProperty('disabled', false)
   })
 })

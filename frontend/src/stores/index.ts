@@ -1,5 +1,6 @@
 export {
   createWorkspaceStore,
+  defaultRayTraceConfig,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,

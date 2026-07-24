@@ -15,9 +15,10 @@ TV 빛샘 시뮬레이터의 차세대 프론트엔드 작업 공간입니다.
 - 공통 TypeScript API client
 
 기존 `run_web.py` 화면과는 독립적으로 동작하며, CAD upload와 scene query,
-Component Tree, Material assignment, Transform rule이 Python API와 React
-작업 상태에 연결되어 있습니다. 실제 Three.js mesh 렌더링은 후속
-Viewer 이전 단계에서 추가합니다.
+Component Tree, ROI, Material assignment, Transform rule, Emitter·Receiver,
+비동기 Ray tracing job이 Python API와 React 작업 상태에 연결되어 있습니다.
+실제 Three.js Viewer는 CAD mesh와 선택, ROI solid, 광원·수광부 overlay를
+표시합니다.
 
 ## UI 구성 원칙
 
@@ -25,7 +26,8 @@ Viewer 이전 단계에서 추가합니다.
 - `src/components/ui/`: 프로젝트가 소유하는 shadcn UI 컴포넌트
 - `src/components/common/`: 공통 Dialog와 Component Context Menu
 - `src/components/layout/`: workflow sidebar와 Viewer workspace App Shell
-- `src/features/`: CAD import, Components, Material, Transform 기능 모듈
+- `src/features/`: CAD, ROI, Components, Material, Transform, Viewer,
+  Ray tracing 기능 모듈
 - `src/lib/utils.ts`: Tailwind 클래스 병합 유틸리티
 - 기본 테마: WebView2 시뮬레이터에 맞춘 dark theme
 - shadcn CLI는 상시 의존성으로 두지 않고 필요할 때 `npx`로 실행
@@ -35,7 +37,8 @@ Material, Ray tracing, Result workflow와 Viewer toolbar 구조를 반영합니�
 CAD를 Import하면 `ScenePayload.components`가 Component Tree와 Viewer
 상태 bridge에 표시되며 선택·숨김·Traceability·이름 변경을 공유합니다.
 Material과 Transform은 공통 Dialog에서 편집하고 각 관리 패널에서 다시
-열거나 제거할 수 있습니다.
+열거나 제거할 수 있습니다. Ray tracing 패널에서는 CAD/Datum Emitter와
+Datum/Current view Receiver를 배치하고 Python 비동기 job 진행률을 확인합니다.
 
 ## API 구성
 
@@ -53,7 +56,8 @@ Material과 Transform은 공통 Dialog에서 편집하고 각 관리 패널에�
 - `src/stores/`: CAD 작업 세션과 선택·표시 상태를 관리하는 Zustand store
 - Component 이름, Material assignment, Transform rule도 scene 범위
   Zustand 상태로 관리
-- Python API 응답과 Ray Trace 결과는 Zustand에 복제하지 않고 Query cache에서 관리
+- Python API 응답과 Ray Trace job/result는 Zustand에 복제하지 않고 Query
+  cache에서 관리
 - scene을 벗어나면 client query cache를 제거해 복귀 시 새 `scene_token` 요청
 - queued/running Ray Trace job만 300ms 간격으로 polling
 

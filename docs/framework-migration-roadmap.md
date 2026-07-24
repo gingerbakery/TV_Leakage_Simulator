@@ -63,10 +63,17 @@ clipping해 새 교차 vertex를 생성하고, component별 폐곡선 loop를
 화면을 그대로 복원한다. 절단 surface의 평면 셰이딩과 Wireframe 전용
 재질·깊이 범위로 회전 중 경계 물결, 면 노이즈와 깜빡임을 방지한다.
 
-## 10. Emitter·Receiver·Ray tracing 실행 — 예정
+## 10. Emitter·Receiver·Ray tracing 실행 — 완료
 
 광원과 수광부 배치, 실행 옵션, 비동기 job 진행률을 React UI와 Python
-계산 API에 연결한다.
+계산 API에 연결했다. CAD surface·Datum plane Emitter와 Datum plane·현재
+카메라 기준 Receiver를 같은 `EmitterSpec`·`ReceiverSpec` 계약으로 관리하고
+Viewer에 발광면·수광면과 normal 방향을 표시한다.
+
+Material assignment, component Transform, 해석 제외 component와 활성 ROI를
+`RayTraceRequest`로 조립하며 `/api/raytrace/start`와 300 ms polling으로
+queued·preparing·tracing·completed·failed 상태, ray 수, 경과·잔여 시간을
+표시한다. 설정이 바뀌면 이전 결과 job을 무효화하고 다시 계산하도록 했다.
 
 ## 11. Result·광선 시각화 — 예정
 

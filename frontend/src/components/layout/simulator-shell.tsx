@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import type { ComponentEditorRequest } from '@/features/components'
 import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
+import type { ViewerCameraFrame } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import {
   useWorkspaceStore,
@@ -24,6 +25,8 @@ type ComponentDialogType = 'material' | 'transform' | 'delete'
 export function SimulatorShell() {
   const [activeSection, setActiveSection] =
     useState<WorkflowSectionId>('components')
+  const [viewerCameraFrame, setViewerCameraFrame] =
+    useState<ViewerCameraFrame | null>(null)
   const [componentDialog, setComponentDialog] = useState<{
     type: ComponentDialogType
     componentId: number
@@ -88,7 +91,7 @@ export function SimulatorShell() {
             variant="outline"
             className="hidden border-primary/30 bg-primary/10 text-primary md:inline-flex"
           >
-            Migration · Features 09
+            Migration · Features 10
           </Badge>
         </div>
         <div className="flex items-center gap-2">
@@ -118,6 +121,7 @@ export function SimulatorShell() {
           activeSection={activeSection}
           onActiveSectionChange={setActiveSection}
           scene={scene}
+          cameraFrame={viewerCameraFrame}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onEditMaterial={(request) =>
@@ -134,6 +138,7 @@ export function SimulatorShell() {
           scene={scene}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
+          onCameraFrameChange={setViewerCameraFrame}
         />
       </div>
 

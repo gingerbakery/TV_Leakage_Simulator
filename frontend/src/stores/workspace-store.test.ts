@@ -167,4 +167,51 @@ describe('workspace store', () => {
     expect(store.getState().roiScopes).toEqual([])
     expect(store.getState().roiScopeSequence).toBe(0)
   })
+
+  it('owns Step 10 placement and invalidates completed tracing state', () => {
+    const store = createWorkspaceStore()
+    const { actions } = store.getState()
+
+    actions.upsertEmitter({
+      emitter_id: 'emitter_001',
+      emitter_type: 'face',
+      face_indices: [4, 4, 2],
+      normal_mode: 'face_normal',
+      normal_flip: false,
+      custom_normal: null,
+      direction_distribution: 'lambertian',
+      gaussian_sigma_deg: 12,
+      power_mode: 'total',
+      power_lumen: 1,
+      power_density_lm_per_m2: 100,
+      center: null,
+      u_axis: null,
+      v_axis: null,
+      width_mm: null,
+      height_mm: null,
+      reference_mode: null,
+      surface_construction: 'rectangular_fit',
+      polygon_vertices: [],
+      reference_vertex_indices: [],
+      reference_edge_vertex_indices: [],
+      reference_vertex_points: [],
+      reference_edge_points: [],
+      ray_count: 1000,
+      seed: null,
+      enabled: true,
+    })
+    actions.setActiveRayTraceJobId('job-1')
+    actions.setEmitterEnabled('emitter_001', false)
+
+    expect(store.getState()).toMatchObject({
+      emitters: [
+        {
+          emitter_id: 'emitter_001',
+          face_indices: [2, 4],
+          enabled: false,
+        },
+      ],
+      activeRayTraceJobId: null,
+    })
+  })
 })

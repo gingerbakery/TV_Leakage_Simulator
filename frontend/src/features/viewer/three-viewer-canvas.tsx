@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   Box3,
+  BufferGeometry,
   CanvasTexture,
   Color,
   ConeGeometry,
@@ -30,13 +31,13 @@ import {
   Vector2,
   Vector3,
   WebGLRenderer,
-  type BufferGeometry,
   type Material,
   type Object3D,
 } from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
 import type { SceneComponent, ScenePayload } from '@/api'
+import type { ViewerCameraFrame } from '@/features/raytracing'
 import {
   findBaseMaterial,
   findSurfaceProperty,
@@ -90,6 +91,7 @@ interface ThreeViewerCanvasProps {
   roiFaceIds: number[]
   roiScopes: RoiScope[]
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
+  onCameraFrameChange?(frame: ViewerCameraFrame): void
   onStatusMessage(message: string): void
 }
 
@@ -98,6 +100,7 @@ interface ComponentRenderNode {
   component: SceneComponent
   depthPriority: number
   edges: LineSegments<BufferGeometry, LineBasicMaterial>
+  emitterOverlayRoot: Group
   group: Group
   materialOverlayRoot: Group
   roiOverlayRoot: Group
@@ -112,6 +115,7 @@ interface ViewerRuntime {
   grid: GridHelper
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
+  placementRoot: Group
   raycaster: Raycaster
   renderer: WebGLRenderer
   roiSelectionCameraPose: CameraPose | null
@@ -247,6 +251,120 @@ function disposeObject(object: Object3D): void {
       child.material.dispose()
     }
   })
+}
+
+function viewerCameraFrame(runtime: ViewerRuntime): ViewerCameraFrame {
+  runtime.camera.updateMatrixWorld(true)
+  const normal = runtime.camera.getWorldDirection(new Vector3()).normalize()
+  const uAxis = new Vector3()
+    .setFromMatrixColumn(runtime.camera.matrixWorld, 0)
+    .normalize()
+  const vAxis = new Vector3()
+    .crossVectors(normal, uAxis)
+    .normalize()
+  return {
+    target: runtime.controls.target.toArray(),
+    normal: normal.toArray(),
+    uAxis: uAxis.toArray(),
+    vAxis: vAxis.toArray(),
+  }
+}
+
+function createPlacementPlane(
+  name: string,
+  centerValues: [number, number, number],
+  uValues: [number, number, number],
+  vValues: [number, number, number],
+  normalValues: [number, number, number],
+  width: number,
+  height: number,
+  color: number,
+  normalFlip: boolean,
+  fillOpacity: number,
+): Group {
+  const root = new Group()
+  root.name = name
+  const center = new Vector3(...centerValues)
+  const uAxis = new Vector3(...uValues).normalize()
+  const vAxis = new Vector3(...vValues).normalize()
+  const normal = new Vector3(...normalValues)
+    .normalize()
+    .multiplyScalar(normalFlip ? -1 : 1)
+  const halfU = uAxis.clone().multiplyScalar(width / 2)
+  const halfV = vAxis.clone().multiplyScalar(height / 2)
+  const corners = [
+    center.clone().sub(halfU).sub(halfV),
+    center.clone().add(halfU).sub(halfV),
+    center.clone().add(halfU).add(halfV),
+    center.clone().sub(halfU).add(halfV),
+  ]
+  const surfaceGeometry = new BufferGeometry()
+  surfaceGeometry.setFromPoints([
+    corners[0],
+    corners[1],
+    corners[2],
+    corners[0],
+    corners[2],
+    corners[3],
+  ])
+  const surface = new Mesh(
+    surfaceGeometry,
+    new MeshBasicMaterial({
+      color,
+      side: DoubleSide,
+      transparent: true,
+      opacity: fillOpacity,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  )
+  surface.renderOrder = 20
+
+  const edgeGeometry = new BufferGeometry()
+  edgeGeometry.setFromPoints([
+    corners[0],
+    corners[1],
+    corners[1],
+    corners[2],
+    corners[2],
+    corners[3],
+    corners[3],
+    corners[0],
+  ])
+  const edges = new LineSegments(
+    edgeGeometry,
+    new LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.96,
+      depthTest: true,
+      depthWrite: false,
+    }),
+  )
+  edges.renderOrder = 21
+
+  const normalLength = Math.max(
+    Math.min(Math.abs(width), Math.abs(height)) * 0.35,
+    2,
+  )
+  const normalGeometry = new BufferGeometry().setFromPoints([
+    center,
+    center.clone().addScaledVector(normal, normalLength),
+  ])
+  const normalLine = new LineSegments(
+    normalGeometry,
+    new LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  )
+  normalLine.renderOrder = 22
+  root.add(surface, edges, normalLine)
+  return root
 }
 
 function createAxisLabel(text: string, color: string): Sprite {
@@ -527,6 +645,7 @@ function createComponentNode(
   edges.name = `component-edges-${component.component_id}`
   edges.renderOrder = 100 + index
 
+  const emitterOverlayRoot = new Group()
   const materialOverlayRoot = new Group()
   const roiOverlayRoot = new Group()
   const transformOverlayRoot = new Group()
@@ -536,6 +655,7 @@ function createComponentNode(
   group.add(
     surface,
     edges,
+    emitterOverlayRoot,
     materialOverlayRoot,
     roiOverlayRoot,
     transformOverlayRoot,
@@ -546,6 +666,7 @@ function createComponentNode(
     component,
     depthPriority: index,
     edges,
+    emitterOverlayRoot,
     group,
     materialOverlayRoot,
     roiOverlayRoot,
@@ -564,12 +685,14 @@ export function ThreeViewerCanvas({
   roiFaceIds,
   roiScopes,
   onRoiBoxSelection,
+  onCameraFrameChange,
   onStatusMessage,
 }: ThreeViewerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
+  const onCameraFrameChangeRef = useRef(onCameraFrameChange)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
@@ -588,6 +711,8 @@ export function ThreeViewerCanvas({
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
   )
+  const emitters = useWorkspaceStore(workspaceSelectors.emitters)
+  const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
 
   useEffect(() => {
@@ -597,6 +722,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     onRoiBoxSelectionRef.current = onRoiBoxSelection
   }, [onRoiBoxSelection])
+
+  useEffect(() => {
+    onCameraFrameChangeRef.current = onCameraFrameChange
+  }, [onCameraFrameChange])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -650,10 +779,12 @@ export function ThreeViewerCanvas({
     }
 
     const modelRoot = new Group()
+    const placementRoot = new Group()
+    placementRoot.name = 'ray-tracing-placement-root'
     const roiPreviewRoot = new Group()
     roiPreviewRoot.name = 'roi-preview-root'
     roiPreviewRoot.visible = false
-    threeScene.add(modelRoot, roiPreviewRoot)
+    threeScene.add(modelRoot, roiPreviewRoot, placementRoot)
     threeScene.add(new HemisphereLight(0xe7f5ff, 0x182337, 2.5))
     const keyLight = new DirectionalLight(0xffffff, 3.2)
     keyLight.position.set(1.5, -2.2, 3.4)
@@ -704,6 +835,7 @@ export function ThreeViewerCanvas({
       grid,
       modelRoot,
       nodes,
+      placementRoot,
       raycaster: new Raycaster(),
       renderer,
       roiSelectionCameraPose: null,
@@ -732,6 +864,12 @@ export function ThreeViewerCanvas({
     resizeObserver.observe(canvas)
     resize()
     fitCamera(runtime, 'Iso')
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+
+    const emitCameraFrame = () => {
+      onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+    }
+    controls.addEventListener('end', emitCameraFrame)
 
     let animationFrame = 0
     const animate = () => {
@@ -986,6 +1124,7 @@ export function ThreeViewerCanvas({
     }
     const handleDoubleClick = () => {
       fitCamera(runtime, 'Fit')
+      emitCameraFrame()
       onStatusMessage('Camera preset · Fit')
     }
     const handlePointerCancel = () => {
@@ -1012,6 +1151,7 @@ export function ThreeViewerCanvas({
       canvas.removeEventListener('pointercancel', handlePointerCancel)
       canvas.removeEventListener('dblclick', handleDoubleClick)
       canvas.removeEventListener('contextmenu', preventContextMenu)
+      controls.removeEventListener('end', emitCameraFrame)
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
@@ -1024,6 +1164,7 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
     fitCamera(runtime, cameraPreset)
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [cameraPreset, cameraRequestId, scene])
 
   useEffect(() => {
@@ -1244,6 +1385,70 @@ export function ThreeViewerCanvas({
       }
     }
 
+    clearGroup(runtime.placementRoot)
+    for (const emitter of emitters) {
+      if (
+        !emitter.enabled ||
+        emitter.emitter_type === 'face' ||
+        !emitter.center ||
+        !emitter.u_axis ||
+        !emitter.v_axis ||
+        !emitter.width_mm ||
+        !emitter.height_mm
+      ) {
+        continue
+      }
+      const fallbackNormal = new Vector3(...emitter.u_axis)
+        .cross(new Vector3(...emitter.v_axis))
+        .normalize()
+        .toArray()
+      runtime.placementRoot.add(
+        createPlacementPlane(
+          `emitter-plane-${emitter.emitter_id}`,
+          emitter.center,
+          emitter.u_axis,
+          emitter.v_axis,
+          emitter.custom_normal ?? fallbackNormal,
+          emitter.width_mm,
+          emitter.height_mm,
+          0xf59e0b,
+          emitter.normal_flip,
+          0.2,
+        ),
+      )
+    }
+    for (const receiver of receivers) {
+      if (
+        !receiver.enabled ||
+        !receiver.u_axis ||
+        !receiver.v_axis
+      ) {
+        continue
+      }
+      runtime.placementRoot.add(
+        createPlacementPlane(
+          `receiver-plane-${receiver.receiver_id}`,
+          receiver.center,
+          receiver.u_axis,
+          receiver.v_axis,
+          receiver.normal,
+          receiver.width_mm,
+          receiver.height_mm,
+          0x22d3ee,
+          receiver.normal_flip,
+          0.06,
+        ),
+      )
+    }
+
+    const emitterFaceSet = new Set(
+      emitters
+        .filter(
+          (emitter) =>
+            emitter.enabled && emitter.emitter_type === 'face',
+        )
+        .flatMap((emitter) => emitter.face_indices),
+    )
     const roiFaceSet = new Set(roiFaceIds)
     for (const [componentId, node] of runtime.nodes) {
       const isSelected = selectedComponentIds.includes(componentId)
@@ -1296,10 +1501,45 @@ export function ThreeViewerCanvas({
           ? 1
           : 0.72
 
+      clearGroup(node.emitterOverlayRoot)
       clearGroup(node.materialOverlayRoot)
       clearGroup(node.roiOverlayRoot)
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
+
+      const componentEmitterFaceIds = node.component.face_indices.filter(
+        (faceId) => emitterFaceSet.has(faceId),
+      )
+      if (componentEmitterFaceIds.length > 0) {
+        const bundle = createFaceGeometry(
+          scene,
+          componentEmitterFaceIds,
+          node.center,
+        )
+        if (bundle.faceIds.length > 0) {
+          const overlay = new Mesh(
+            bundle.geometry,
+            new MeshStandardMaterial({
+              color: 0xf59e0b,
+              emissive: 0x7c2d12,
+              emissiveIntensity: 0.65,
+              roughness: 0.5,
+              side: DoubleSide,
+              transparent: true,
+              opacity: 0.78,
+              depthWrite: false,
+              polygonOffset: true,
+              polygonOffsetFactor: -3,
+              polygonOffsetUnits: -3,
+            }),
+          )
+          overlay.name = `emitter-highlight-${componentId}`
+          overlay.renderOrder = 8
+          node.emitterOverlayRoot.add(overlay)
+        } else {
+          bundle.geometry.dispose()
+        }
+      }
 
       const componentRoiFaceIds = node.component.face_indices.filter(
         (faceId) => roiFaceSet.has(faceId),
@@ -1400,14 +1640,17 @@ export function ThreeViewerCanvas({
       }
     }
     runtime.showGrid = renderMode !== 'Wireframe'
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
+    emitters,
     hiddenComponentIds,
     materialAssignments,
     renderMode,
     roiBoxSelectionArmed,
     roiFaceIds,
     roiScopes,
+    receivers,
     scene,
     selectedComponentIds,
     transformRules,
