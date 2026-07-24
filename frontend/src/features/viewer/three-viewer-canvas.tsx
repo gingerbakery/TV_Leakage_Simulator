@@ -593,8 +593,8 @@ export function ThreeViewerCanvas({
         44,
         Math.min(
           Math.round(112 * (runtime.axisScalePercent / 100)),
-          Math.floor(viewportWidth * 0.28),
-          Math.floor(viewportHeight * 0.28),
+          Math.floor(viewportWidth * 0.34),
+          Math.floor(viewportHeight * 0.34),
         ),
       )
       const gizmoX = 14

@@ -56,9 +56,10 @@ describe('Step 07·08 feature editors', () => {
       name: 'Axis size',
     })
     expect(axisSize).toHaveProperty('value', '100')
-    fireEvent.change(axisSize, { target: { value: '125' } })
-    expect(axisSize).toHaveProperty('value', '125')
-    expect(screen.getByText('125%')).not.toBeNull()
+    expect(axisSize).toHaveProperty('max', '180')
+    fireEvent.change(axisSize, { target: { value: '180' } })
+    expect(axisSize).toHaveProperty('value', '180')
+    expect(screen.getByText('180%')).not.toBeNull()
 
     act(() => {
       workspaceStore.getState().actions.setSelectedComponentIds([1])

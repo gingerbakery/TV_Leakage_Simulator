@@ -14,7 +14,7 @@
 - X red, Y green, Z blue shaft·arrow head·문자 label을 표시한다.
 - main camera의 position·up을 따라 gizmo 방향을 동기화한다.
 - 상단 도구막대에 `Axis size` 슬라이더를 복원했다.
-  - 범위: 50%~150%
+  - 범위: 50%~180%
   - 기본값: 100%
   - 화면 픽셀 기준 크기만 변경하며 모델 카메라는 변경하지 않는다.
 - gizmo geometry·label texture를 Viewer cleanup 때 함께 해제한다.
@@ -23,7 +23,7 @@
 
 - `npm run typecheck`
 - `npm run lint`
-- `npm test` — 8 files, 28 tests
+- `npm test` — 8 files, 28 tests, Axis size 최대 180% 확인
 - `npm run build`
 - `npm audit --audit-level=high` — 취약점 0건
 - 우측 하단 STEP(50,944 faces, 4 components) Chrome 검증

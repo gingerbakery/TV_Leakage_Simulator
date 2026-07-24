@@ -143,7 +143,7 @@ export function ViewerWorkspace({
                 aria-label="Axis size"
                 type="range"
                 min="50"
-                max="150"
+                max="180"
                 step="5"
                 value={axisScalePercent}
                 className="h-1.5 w-20 cursor-pointer accent-primary"
