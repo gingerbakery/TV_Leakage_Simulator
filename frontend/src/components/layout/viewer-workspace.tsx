@@ -73,6 +73,7 @@ interface ViewerWorkspaceProps {
   rayTraceResult?: RayTraceResult | null
   rayTraceResultOpen?: boolean
   onRayTraceResultOpenChange?(open: boolean): void
+  editingComponentId?: number | null
   onEditMaterial?(request: ComponentEditorRequest): void
   onEditTransform?(request: ComponentEditorRequest): void
   onDeleteComponent?(request: ComponentEditorRequest): void
@@ -86,6 +87,7 @@ export function ViewerWorkspace({
   rayTraceResult,
   rayTraceResultOpen = false,
   onRayTraceResultOpenChange,
+  editingComponentId,
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
@@ -420,6 +422,7 @@ export function ViewerWorkspace({
                     roiFaceIds={activeRoiFaceIds}
                     roiScopes={roiScopes}
                     rayTraceResult={rayTraceResult}
+                    editingComponentId={editingComponentId}
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
                     onComponentContextMenu={setContextTarget}

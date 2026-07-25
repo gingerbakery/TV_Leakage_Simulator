@@ -165,6 +165,12 @@ export function SimulatorShell() {
           rayTraceResult={rayTraceResult}
           rayTraceResultOpen={rayTraceResultOpen}
           onRayTraceResultOpenChange={setRayTraceResultOpen}
+          editingComponentId={
+            componentDialog?.type === 'material' ||
+            componentDialog?.type === 'transform'
+              ? componentDialog.componentId
+              : null
+          }
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
           }

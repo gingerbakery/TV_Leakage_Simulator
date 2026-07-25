@@ -213,6 +213,11 @@ describe('Step 07·08 feature editors', () => {
         componentName="Cover Deco"
       />,
     )
+    expect(
+      screen
+        .getByRole('dialog', { name: 'Material assignment' })
+        .hasAttribute('data-floating-panel'),
+    ).toBe(true)
 
     fireEvent.change(screen.getByLabelText('Base material'), {
       target: { value: 'black_powder_coated_aluminum' },
@@ -245,6 +250,11 @@ describe('Step 07·08 feature editors', () => {
         componentName="Cover Deco"
       />,
     )
+    expect(
+      screen
+        .getByRole('dialog', { name: 'Transform editor' })
+        .hasAttribute('data-floating-panel'),
+    ).toBe(true)
 
     fireEvent.change(screen.getByRole('spinbutton', { name: 'x' }), {
       target: { value: '2.5' },
@@ -287,21 +297,52 @@ describe('Step 07·08 feature editors', () => {
         name: 'Add datum plane emitter',
       }),
     )
+    expect(workspaceStore.getState().placementPreviewEmitter).toEqual(
+      expect.objectContaining({
+        emitter_type: 'datum_plane',
+        center: [30, 30, 10],
+      }),
+    )
+    expect(
+      screen
+        .getByRole('dialog', { name: 'Datum plane emitter' })
+        .hasAttribute('data-floating-panel'),
+    ).toBe(true)
     fireEvent.change(
       screen.getByRole('spinbutton', { name: 'Emitter rays' }),
       { target: { value: '2500' } },
     )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Center X' }),
+      { target: { value: '12.5' } },
+    )
+    expect(workspaceStore.getState().placementPreviewEmitter?.center).toEqual(
+      [12.5, 30, 10],
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
+    expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
 
     fireEvent.click(
       screen.getByRole('button', {
         name: 'Add current view receiver',
       }),
     )
+    expect(workspaceStore.getState().placementPreviewReceiver).toEqual(
+      expect.objectContaining({
+        placement_mode: 'current_view',
+        center: [10, 20, 130],
+      }),
+    )
+    expect(
+      screen
+        .getByRole('dialog', { name: 'Current view receiver' })
+        .hasAttribute('data-floating-panel'),
+    ).toBe(true)
     fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), {
       target: { value: 'Camera RX' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Add receiver' }))
+    expect(workspaceStore.getState().placementPreviewReceiver).toBeNull()
 
     expect(workspaceStore.getState().emitters).toEqual([
       expect.objectContaining({

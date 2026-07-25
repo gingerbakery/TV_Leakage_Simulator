@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
+
 import { createWorkspaceStore } from './workspace-store'
 
 describe('workspace store', () => {
@@ -76,6 +78,36 @@ describe('workspace store', () => {
 
     expect(first.getState().selectedComponentIds).toEqual([7])
     expect(second.getState().selectedComponentIds).toEqual([])
+  })
+
+  it('does not publish unchanged placement preview objects', () => {
+    const store = createWorkspaceStore()
+    const { actions } = store.getState()
+    const preview = createDatumReceiver(
+      '__preview_receiver__',
+      [10, 20, 30],
+      [0, 0, 0],
+    )
+    let updateCount = 0
+    const unsubscribe = store.subscribe(() => {
+      updateCount += 1
+    })
+
+    actions.setPlacementPreviewReceiver(preview)
+    expect(updateCount).toBe(1)
+
+    actions.setPlacementPreviewReceiver({
+      ...preview,
+      center: [...preview.center],
+    })
+    expect(updateCount).toBe(1)
+
+    actions.setPlacementPreviewReceiver({
+      ...preview,
+      center: [10, 20, 31],
+    })
+    expect(updateCount).toBe(2)
+    unsubscribe()
   })
 
   it('owns component, material, and transform feature state', () => {

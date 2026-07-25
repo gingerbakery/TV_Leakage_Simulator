@@ -149,6 +149,7 @@ export function TransformEditorDialog({
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
+      floating
       title="Transform editor"
       description={
         component

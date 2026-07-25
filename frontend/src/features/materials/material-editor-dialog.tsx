@@ -158,6 +158,7 @@ export function MaterialEditorDialog({
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
+      floating
       title="Material assignment"
       description={
         component

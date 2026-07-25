@@ -109,6 +109,7 @@ interface ThreeViewerCanvasProps {
   roiFaceIds: number[]
   roiScopes: RoiScope[]
   rayTraceResult?: RayTraceResult | null
+  editingComponentId?: number | null
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
   onComponentContextMenu?(target: ViewerComponentContextTarget): void
@@ -312,6 +313,7 @@ function createPlacementPlane(
   color: number,
   normalFlip: boolean,
   fillOpacity: number,
+  alwaysVisible = false,
 ): Group {
   const root = new Group()
   root.name = name
@@ -345,12 +347,12 @@ function createPlacementPlane(
       side: DoubleSide,
       transparent: true,
       opacity: fillOpacity,
-      depthTest: true,
+      depthTest: !alwaysVisible,
       depthWrite: false,
       toneMapped: false,
     }),
   )
-  surface.renderOrder = 20
+  surface.renderOrder = alwaysVisible ? 82 : 20
 
   const edgeGeometry = new BufferGeometry()
   edgeGeometry.setFromPoints([
@@ -369,11 +371,11 @@ function createPlacementPlane(
       color,
       transparent: true,
       opacity: 0.96,
-      depthTest: true,
+      depthTest: !alwaysVisible,
       depthWrite: false,
     }),
   )
-  edges.renderOrder = 21
+  edges.renderOrder = alwaysVisible ? 83 : 21
 
   const normalLength = MathUtils.clamp(
     Math.min(Math.abs(width), Math.abs(height)) * 0.18,
@@ -936,6 +938,7 @@ export function ThreeViewerCanvas({
   roiFaceIds,
   roiScopes,
   rayTraceResult,
+  editingComponentId,
   onRoiBoxSelection,
   onCameraFrameChange,
   onComponentContextMenu,
@@ -979,6 +982,12 @@ export function ThreeViewerCanvas({
   )
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
+  const placementPreviewEmitter = useWorkspaceStore(
+    workspaceSelectors.placementPreviewEmitter,
+  )
+  const placementPreviewReceiver = useWorkspaceStore(
+    workspaceSelectors.placementPreviewReceiver,
+  )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
 
   useEffect(() => {
@@ -1803,7 +1812,13 @@ export function ThreeViewerCanvas({
     }
 
     clearGroup(runtime.placementRoot)
-    for (const emitter of emitters) {
+    const placementEmitters = placementPreviewEmitter
+      ? [...emitters, placementPreviewEmitter]
+      : emitters
+    const placementReceivers = placementPreviewReceiver
+      ? [...receivers, placementPreviewReceiver]
+      : receivers
+    for (const emitter of placementEmitters) {
       if (
         !emitter.enabled ||
         emitter.emitter_type === 'face' ||
@@ -1830,11 +1845,12 @@ export function ThreeViewerCanvas({
           emitter.height_mm,
           0xf59e0b,
           emitter.normal_flip,
-          0.2,
+          emitter === placementPreviewEmitter ? 0.4 : 0.2,
+          emitter === placementPreviewEmitter,
         ),
       )
     }
-    for (const receiver of receivers) {
+    for (const receiver of placementReceivers) {
       if (
         !receiver.enabled ||
         !receiver.u_axis ||
@@ -1853,7 +1869,8 @@ export function ThreeViewerCanvas({
           receiver.height_mm,
           0x22d3ee,
           receiver.normal_flip,
-          0.06,
+          receiver === placementPreviewReceiver ? 0.24 : 0.06,
+          receiver === placementPreviewReceiver,
         ),
       )
     }
@@ -1872,9 +1889,11 @@ export function ThreeViewerCanvas({
     const selectedFaceSet = new Set(selectedFaceIds)
     const roiFaceSet = new Set(roiFaceIds)
     for (const [componentId, node] of runtime.nodes) {
+      const isEditing = editingComponentId === componentId
       const isSelected =
-        !emitterFaceSelectionArmed &&
-        selectedComponentIds.includes(componentId)
+        isEditing ||
+        (!emitterFaceSelectionArmed &&
+          selectedComponentIds.includes(componentId))
       const isUnavailable =
         hiddenComponentIds.includes(componentId) ||
         deletedComponentIds.includes(componentId)
@@ -1894,11 +1913,20 @@ export function ThreeViewerCanvas({
         ]
       const style = viewerMaterialStyle(partAssignment, fallbackColor)
       const displayColor = style.color.clone()
-      if (isSelected) displayColor.lerp(new Color(0x38bdf8), 0.58)
+      const highlightColor = isEditing ? 0xfacc15 : 0x38bdf8
+      if (isSelected) {
+        displayColor.lerp(new Color(highlightColor), isEditing ? 0.7 : 0.58)
+      }
 
       node.surface.material.color.copy(displayColor)
-      node.surface.material.emissive.set(isSelected ? 0x082f49 : 0x000000)
-      node.surface.material.emissiveIntensity = isSelected ? 0.72 : 0
+      node.surface.material.emissive.set(
+        isEditing ? 0x713f12 : isSelected ? 0x082f49 : 0x000000,
+      )
+      node.surface.material.emissiveIntensity = isSelected
+        ? isEditing
+          ? 0.9
+          : 0.72
+        : 0
       node.surface.material.metalness = style.metalness
       node.surface.material.roughness = style.roughness
       const isWireframe = renderMode === 'Wireframe'
@@ -1917,7 +1945,7 @@ export function ThreeViewerCanvas({
         surfaceDepthUnits(node.depthPriority)
       node.surface.visible = true
       node.edges.visible = renderMode !== 'Surface'
-      node.edges.material.color.set(isSelected ? 0x38bdf8 : 0xb9d5e8)
+      node.edges.material.color.set(isSelected ? highlightColor : 0xb9d5e8)
       node.edges.material.opacity = isSelected
         ? 1
         : isWireframe
@@ -2140,8 +2168,11 @@ export function ThreeViewerCanvas({
     deletedComponentIds,
     emitterFaceSelectionArmed,
     emitters,
+    editingComponentId,
     hiddenComponentIds,
     materialAssignments,
+    placementPreviewEmitter,
+    placementPreviewReceiver,
     renderMode,
     roiBoxSelectionArmed,
     roiFaceIds,

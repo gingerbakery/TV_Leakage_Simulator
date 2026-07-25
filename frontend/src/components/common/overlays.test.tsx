@@ -167,4 +167,38 @@ describe('common overlays', () => {
       expect(document.activeElement).toBe(trigger)
     })
   })
+
+  it('keeps a floating settings dialog non-modal and draggable', async () => {
+    render(
+      <AppDialog
+        open
+        floating
+        onOpenChange={vi.fn()}
+        title="Floating settings"
+      >
+        <div>Editor content</div>
+      </AppDialog>,
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Floating settings',
+    })
+    const header = dialog.querySelector('[data-slot="dialog-header"]')
+
+    expect(dialog.getAttribute('aria-modal')).toBeNull()
+    expect(dialog.hasAttribute('data-floating-panel')).toBe(true)
+    expect(
+      document.querySelector('[data-slot="dialog-overlay"]'),
+    ).toBeNull()
+    expect(header).not.toBeNull()
+
+    fireEvent.pointerDown(header!, { clientX: 20, clientY: 70 })
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 150 })
+    fireEvent.pointerUp(window)
+
+    await waitFor(() => {
+      expect(dialog.style.left).toBe('112px')
+      expect(dialog.style.top).toBe('144px')
+    })
+  })
 })

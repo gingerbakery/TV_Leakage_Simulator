@@ -135,6 +135,8 @@ export interface WorkspaceSnapshot {
   roiDraftLabel: string
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
+  placementPreviewEmitter: EmitterSpec | null
+  placementPreviewReceiver: ReceiverSpec | null
   rayTraceConfig: RayTraceConfigRequest
   activeRayTraceJobId: string | null
   rayPathDisplayFilters: RayPathDisplayFilters
@@ -171,6 +173,8 @@ export interface WorkspaceActions {
   upsertReceiver(receiver: ReceiverSpec): void
   setReceiverEnabled(receiverId: string, enabled: boolean): void
   removeReceiver(receiverId: string): void
+  setPlacementPreviewEmitter(emitter: EmitterSpec | null): void
+  setPlacementPreviewReceiver(receiver: ReceiverSpec | null): void
   setRayTraceConfig(config: RayTraceConfigRequest): void
   setActiveRayTraceJobId(jobId: string | null): void
   setRayPathDisplayFilter(
@@ -337,6 +341,18 @@ function invalidateRayTraceState() {
   }
 }
 
+function samePlacementPreview(
+  current: EmitterSpec | ReceiverSpec | null,
+  next: EmitterSpec | ReceiverSpec | null,
+): boolean {
+  return (
+    current === next ||
+    (current !== null &&
+      next !== null &&
+      JSON.stringify(current) === JSON.stringify(next))
+  )
+}
+
 function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
   return {
     selectedFaceIds: [],
@@ -354,6 +370,8 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     roiDraftLabel: '',
     emitters: [],
     receivers: [],
+    placementPreviewEmitter: null,
+    placementPreviewReceiver: null,
     rayTraceConfig: { ...defaultRayTraceConfig },
     activeRayTraceJobId: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
@@ -663,6 +681,26 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...invalidateRayTraceState(),
         }))
       },
+      setPlacementPreviewEmitter: (placementPreviewEmitter) => {
+        set((state) =>
+          samePlacementPreview(
+            state.placementPreviewEmitter,
+            placementPreviewEmitter,
+          )
+            ? state
+            : { placementPreviewEmitter },
+        )
+      },
+      setPlacementPreviewReceiver: (placementPreviewReceiver) => {
+        set((state) =>
+          samePlacementPreview(
+            state.placementPreviewReceiver,
+            placementPreviewReceiver,
+          )
+            ? state
+            : { placementPreviewReceiver },
+        )
+      },
       setRayTraceConfig: (rayTraceConfig) => {
         set({
           rayTraceConfig: normalizeRayTraceConfig(rayTraceConfig),
@@ -729,6 +767,10 @@ export const workspaceSelectors = {
   roiDraftLabel: (state: WorkspaceStore) => state.roiDraftLabel,
   emitters: (state: WorkspaceStore) => state.emitters ?? [],
   receivers: (state: WorkspaceStore) => state.receivers ?? [],
+  placementPreviewEmitter: (state: WorkspaceStore) =>
+    state.placementPreviewEmitter ?? null,
+  placementPreviewReceiver: (state: WorkspaceStore) =>
+    state.placementPreviewReceiver ?? null,
   rayTraceConfig: (state: WorkspaceStore) =>
     state.rayTraceConfig ?? defaultRayTraceConfig,
   activeRayTraceJobId: (state: WorkspaceStore) =>

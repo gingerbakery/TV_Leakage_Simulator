@@ -172,6 +172,7 @@ function EmitterDialog({
     useState<EmitterDistribution>('lambertian')
   const [sigma, setSigma] = useState(12)
   const [normalFlip, setNormalFlip] = useState(false)
+  const actions = useWorkspaceStore(workspaceSelectors.actions)
 
   useEffect(() => {
     if (!open) return
@@ -181,6 +182,34 @@ function EmitterDialog({
 
   const canApply =
     mode === 'datum_plane' || selectedFaceIds.length > 0
+  const previewEmitter = useMemo(() => {
+    if (!open || mode !== 'datum_plane') return null
+    const emitter = createDatumEmitter(
+      '__placement_preview_emitter__',
+      center,
+      rotation,
+    )
+    const axes = planeAxesFromRotation(rotation)
+    return {
+      ...emitter,
+      center,
+      u_axis: axes.uAxis,
+      v_axis: axes.vAxis,
+      custom_normal: axes.normal,
+      width_mm: Math.max(0.001, width),
+      height_mm: Math.max(0.001, height),
+      normal_flip: normalFlip,
+    }
+  }, [center, height, mode, normalFlip, open, rotation, width])
+
+  useEffect(() => {
+    actions.setPlacementPreviewEmitter(previewEmitter)
+  }, [actions, previewEmitter])
+
+  useEffect(
+    () => () => actions.setPlacementPreviewEmitter(null),
+    [actions],
+  )
 
   const handleApply = () => {
     if (!canApply) return
@@ -217,13 +246,7 @@ function EmitterDialog({
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
-      modal={mode !== 'face'}
-      keepOpenOnInteractOutside={mode === 'face'}
-      contentClassName={
-        mode === 'face'
-          ? 'left-auto right-5 top-24 max-h-[calc(100vh-7rem)] w-[min(25rem,calc(100vw-2rem))] translate-x-0 translate-y-0 sm:max-w-md'
-          : undefined
-      }
+      floating
       title={
         mode === 'face' ? 'CAD surface emitter' : 'Datum plane emitter'
       }
@@ -390,6 +413,7 @@ function ReceiverDialog({
   const [acceptance, setAcceptance] = useState(90)
   const [viewDistance, setViewDistance] = useState(100)
   const [normalFlip, setNormalFlip] = useState(false)
+  const actions = useWorkspaceStore(workspaceSelectors.actions)
 
   useEffect(() => {
     if (!open) return
@@ -398,6 +422,55 @@ function ReceiverDialog({
   }, [defaultCenter, open])
 
   const canApply = mode === 'datum_plane' || cameraFrame !== null
+  const previewReceiver = useMemo(() => {
+    if (!open) return null
+    const receiver =
+      mode === 'current_view' && cameraFrame
+        ? createCurrentViewReceiver(
+            '__placement_preview_receiver__',
+            cameraFrame,
+            Math.max(0.001, viewDistance),
+          )
+        : createDatumReceiver(
+            '__placement_preview_receiver__',
+            center,
+            rotation,
+          )
+    const axes = planeAxesFromRotation(rotation)
+    return {
+      ...receiver,
+      ...(mode === 'datum_plane'
+        ? {
+            center,
+            normal: axes.normal,
+            u_axis: axes.uAxis,
+            v_axis: axes.vAxis,
+          }
+        : {}),
+      width_mm: Math.max(0.001, width),
+      height_mm: Math.max(0.001, height),
+      normal_flip: normalFlip,
+    }
+  }, [
+    cameraFrame,
+    center,
+    height,
+    mode,
+    normalFlip,
+    open,
+    rotation,
+    viewDistance,
+    width,
+  ])
+
+  useEffect(() => {
+    actions.setPlacementPreviewReceiver(previewReceiver)
+  }, [actions, previewReceiver])
+
+  useEffect(
+    () => () => actions.setPlacementPreviewReceiver(null),
+    [actions],
+  )
 
   const handleApply = () => {
     if (!canApply) return
@@ -438,6 +511,7 @@ function ReceiverDialog({
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
+      floating
       title={
         mode === 'current_view'
           ? 'Current view receiver'
