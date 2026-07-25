@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -41,6 +42,9 @@ const sizeClasses: Record<AppDialogSize, string> = {
   lg: 'sm:max-w-2xl',
 }
 
+const floatingPanelGap = 12
+const floatingPanelTop = 64
+
 export function AppDialog({
   open,
   onOpenChange,
@@ -62,8 +66,35 @@ export function AppDialog({
     panelX: number
     panelY: number
   } | null>(null)
-  const [position, setPosition] = useState({ x: 12, y: 64 })
+  const wasDraggedRef = useRef(false)
+  const [position, setPosition] = useState({
+    x: floatingPanelGap,
+    y: floatingPanelTop,
+  })
   const isModal = modal && !floating
+
+  useLayoutEffect(() => {
+    if (!open || !floating || wasDraggedRef.current) return
+
+    const viewer = document.querySelector<HTMLElement>(
+      '[data-viewer-workspace]',
+    )
+    const viewerBounds = viewer?.getBoundingClientRect()
+    if (!viewerBounds || viewerBounds.width <= 0) return
+
+    const panelWidth =
+      contentRef.current?.getBoundingClientRect().width ?? 340
+    setPosition({
+      x: Math.max(
+        floatingPanelGap,
+        Math.min(
+          viewerBounds.left + floatingPanelGap,
+          window.innerWidth - panelWidth - floatingPanelGap,
+        ),
+      ),
+      y: floatingPanelTop,
+    })
+  }, [floating, open])
 
   useEffect(() => {
     if (!open || !floating) return
@@ -105,6 +136,7 @@ export function AppDialog({
 
   const beginDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!floating) return
+    wasDraggedRef.current = true
     dragRef.current = {
       pointerX: event.clientX,
       pointerY: event.clientY,

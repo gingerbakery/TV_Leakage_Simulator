@@ -37,8 +37,9 @@ Workflow sidebar와 Viewer workspace를 React 레이아웃으로 옮기고,
 
 실제 `ScenePayload.components`를 Tree에 연결하고 선택·표시·해석 상태,
 Material assignment와 Transform rule 편집 흐름을 React로 이전했다.
-Material·Transform 편집창은 Viewer를 가리지 않는 이동식 패널로 열리며,
-편집 중인 component는 모델에서 노란색으로 계속 강조한다.
+Material·Transform 편집창은 메인 메뉴를 가리지 않도록 Viewer 왼쪽에
+배치되는 이동식 패널로 열리며, 편집 중인 component는 모델에서 노란색으로
+계속 강조한다.
 
 ## 8. Three.js Viewer·선택 연동 — 완료
 
@@ -82,9 +83,9 @@ queued·preparing·tracing·completed·failed 상태, ray 수, 경과·잔여 �
 CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동작한다. 한 번
 클릭하면 연결된 동일 평면 patch를 선택하며, Emitter·Receiver 기준면에는
 방향 화살표를 함께 표시한다.
-Datum Emitter와 Datum·Current View Receiver 설정도 같은 이동식 비모달
-패널을 사용한다. 좌표·회전·크기를 바꾸는 동안 기준면과 방향을 Viewer에
-실시간 미리보기로 표시한다.
+Datum Emitter와 Datum·Current View Receiver 설정도 Viewer 왼쪽에서
+시작하는 같은 이동식 비모달 패널을 사용한다. 좌표·회전·크기를 바꾸는
+동안 기준면과 방향을 Viewer에 실시간 미리보기로 표시한다.
 
 ## 11. Result·광선 시각화 — 완료
 

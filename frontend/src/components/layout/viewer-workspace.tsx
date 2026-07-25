@@ -222,7 +222,10 @@ export function ViewerWorkspace({
   }
 
   return (
-    <main className="flex min-h-[42rem] min-w-0 flex-col bg-sim-viewer lg:min-h-0">
+    <main
+      data-viewer-workspace
+      className="flex min-h-[42rem] min-w-0 flex-col bg-sim-viewer lg:min-h-0"
+    >
       <div className="border-b border-border bg-background/65 px-3 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

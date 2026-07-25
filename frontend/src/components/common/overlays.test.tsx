@@ -35,7 +35,10 @@ if (!Element.prototype.hasPointerCapture) {
   Element.prototype.releasePointerCapture = () => undefined
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('common overlays', () => {
   it('opens a confirmation dialog and runs the confirmed action', async () => {
@@ -169,15 +172,43 @@ describe('common overlays', () => {
   })
 
   it('keeps a floating settings dialog non-modal and draggable', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: HTMLElement) {
+        const isViewer = this.hasAttribute('data-viewer-workspace')
+        const left = isViewer
+          ? 352
+          : Number.parseFloat(this.style.left || '0')
+        const top = isViewer
+          ? 52
+          : Number.parseFloat(this.style.top || '0')
+        const width = isViewer ? 1568 : 340
+        const height = isViewer ? 1028 : 600
+        return {
+          x: left,
+          y: top,
+          left,
+          top,
+          width,
+          height,
+          right: left + width,
+          bottom: top + height,
+          toJSON: () => undefined,
+        }
+      },
+    )
+
     render(
-      <AppDialog
-        open
-        floating
-        onOpenChange={vi.fn()}
-        title="Floating settings"
-      >
-        <div>Editor content</div>
-      </AppDialog>,
+      <>
+        <main data-viewer-workspace />
+        <AppDialog
+          open
+          floating
+          onOpenChange={vi.fn()}
+          title="Floating settings"
+        >
+          <div>Editor content</div>
+        </AppDialog>
+      </>,
     )
 
     const dialog = screen.getByRole('dialog', {
@@ -191,13 +222,15 @@ describe('common overlays', () => {
       document.querySelector('[data-slot="dialog-overlay"]'),
     ).toBeNull()
     expect(header).not.toBeNull()
+    expect(dialog.style.left).toBe('364px')
+    expect(dialog.style.top).toBe('64px')
 
-    fireEvent.pointerDown(header!, { clientX: 20, clientY: 70 })
-    fireEvent.pointerMove(window, { clientX: 120, clientY: 150 })
+    fireEvent.pointerDown(header!, { clientX: 380, clientY: 70 })
+    fireEvent.pointerMove(window, { clientX: 480, clientY: 150 })
     fireEvent.pointerUp(window)
 
     await waitFor(() => {
-      expect(dialog.style.left).toBe('112px')
+      expect(dialog.style.left).toBe('464px')
       expect(dialog.style.top).toBe('144px')
     })
   })
