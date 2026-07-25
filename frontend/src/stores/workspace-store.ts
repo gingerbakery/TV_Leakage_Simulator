@@ -96,6 +96,28 @@ export interface RoiScopeInput {
   point?: Vector3Value
 }
 
+export type RayPathDisplayFilter =
+  | 'receiver_direct'
+  | 'receiver_reflected'
+  | 'direct'
+  | 'specular'
+  | 'lambertian'
+  | 'gaussian'
+
+export type RayPathDisplayFilters = Record<
+  RayPathDisplayFilter,
+  boolean
+>
+
+export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
+  receiver_direct: true,
+  receiver_reflected: true,
+  direct: true,
+  specular: true,
+  lambertian: true,
+  gaussian: true,
+}
+
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
   selectedFaceIds: number[]
@@ -115,6 +137,7 @@ export interface WorkspaceSnapshot {
   receivers: ReceiverSpec[]
   rayTraceConfig: RayTraceConfigRequest
   activeRayTraceJobId: string | null
+  rayPathDisplayFilters: RayPathDisplayFilters
 }
 
 export interface WorkspaceActions {
@@ -150,6 +173,13 @@ export interface WorkspaceActions {
   removeReceiver(receiverId: string): void
   setRayTraceConfig(config: RayTraceConfigRequest): void
   setActiveRayTraceJobId(jobId: string | null): void
+  setRayPathDisplayFilter(
+    filter: RayPathDisplayFilter,
+    visible: boolean,
+  ): void
+  setRayPathDisplayFilters(
+    filters: Partial<RayPathDisplayFilters>,
+  ): void
   clearSceneState(): void
   resetWorkspace(): void
 }
@@ -326,6 +356,7 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     receivers: [],
     rayTraceConfig: { ...defaultRayTraceConfig },
     activeRayTraceJobId: null,
+    rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
   }
 }
 
@@ -641,6 +672,22 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       setActiveRayTraceJobId: (activeRayTraceJobId) => {
         set({ activeRayTraceJobId })
       },
+      setRayPathDisplayFilter: (filter, visible) => {
+        set((state) => ({
+          rayPathDisplayFilters: {
+            ...state.rayPathDisplayFilters,
+            [filter]: visible,
+          },
+        }))
+      },
+      setRayPathDisplayFilters: (filters) => {
+        set((state) => ({
+          rayPathDisplayFilters: {
+            ...state.rayPathDisplayFilters,
+            ...filters,
+          },
+        }))
+      },
       clearSceneState: () => {
         set(createSceneSnapshot())
       },
@@ -686,5 +733,7 @@ export const workspaceSelectors = {
     state.rayTraceConfig ?? defaultRayTraceConfig,
   activeRayTraceJobId: (state: WorkspaceStore) =>
     state.activeRayTraceJobId,
+  rayPathDisplayFilters: (state: WorkspaceStore) =>
+    state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
   actions: (state: WorkspaceStore) => state.actions,
 }

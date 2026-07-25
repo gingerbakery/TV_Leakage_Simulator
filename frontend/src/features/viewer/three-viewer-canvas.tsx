@@ -37,8 +37,17 @@ import {
 } from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
-import type { SceneComponent, ScenePayload } from '@/api'
+import type {
+  RayTraceResult,
+  SceneComponent,
+  ScenePayload,
+} from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
+import {
+  buildRayPathVisualization,
+  rayPathFilterOrder,
+  rayPathStyles,
+} from '@/features/results/ray-paths'
 import {
   findBaseMaterial,
   findSurfaceProperty,
@@ -99,6 +108,7 @@ interface ThreeViewerCanvasProps {
   roiBoxSelectionArmed: boolean
   roiFaceIds: number[]
   roiScopes: RoiScope[]
+  rayTraceResult?: RayTraceResult | null
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
   onComponentContextMenu?(target: ViewerComponentContextTarget): void
@@ -127,6 +137,7 @@ interface ViewerRuntime {
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
   placementRoot: Group
+  rayPathRoot: Group
   raycaster: Raycaster
   renderer: WebGLRenderer
   roiSelectionCameraPose: CameraPose | null
@@ -924,6 +935,7 @@ export function ThreeViewerCanvas({
   roiBoxSelectionArmed,
   roiFaceIds,
   roiScopes,
+  rayTraceResult,
   onRoiBoxSelection,
   onCameraFrameChange,
   onComponentContextMenu,
@@ -955,6 +967,9 @@ export function ThreeViewerCanvas({
   )
   const deletedComponentIds = useWorkspaceStore(
     workspaceSelectors.deletedComponentIds,
+  )
+  const rayPathDisplayFilters = useWorkspaceStore(
+    workspaceSelectors.rayPathDisplayFilters,
   )
   const materialAssignments = useWorkspaceStore(
     workspaceSelectors.materialAssignments,
@@ -1048,10 +1063,17 @@ export function ThreeViewerCanvas({
     const modelRoot = new Group()
     const placementRoot = new Group()
     placementRoot.name = 'ray-tracing-placement-root'
+    const rayPathRoot = new Group()
+    rayPathRoot.name = 'ray-path-overlay-root'
     const roiPreviewRoot = new Group()
     roiPreviewRoot.name = 'roi-preview-root'
     roiPreviewRoot.visible = false
-    threeScene.add(modelRoot, roiPreviewRoot, placementRoot)
+    threeScene.add(
+      modelRoot,
+      roiPreviewRoot,
+      placementRoot,
+      rayPathRoot,
+    )
     threeScene.add(new HemisphereLight(0xe7f5ff, 0x182337, 2.5))
     const keyLight = new DirectionalLight(0xffffff, 3.2)
     keyLight.position.set(1.5, -2.2, 3.4)
@@ -1103,6 +1125,7 @@ export function ThreeViewerCanvas({
       modelRoot,
       nodes,
       placementRoot,
+      rayPathRoot,
       raycaster: new Raycaster(),
       renderer,
       roiSelectionCameraPose: null,
@@ -2130,6 +2153,52 @@ export function ThreeViewerCanvas({
     transformRules,
     onStatusMessage,
   ])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.rayPathRoot)
+    if (!rayTraceResult) return
+
+    const visualization = buildRayPathVisualization(
+      rayTraceResult.stored_paths,
+      rayPathDisplayFilters,
+    )
+    for (const filter of rayPathFilterOrder) {
+      const segments = visualization.groups[filter]
+      if (segments.length === 0) continue
+      const positions = new Float32Array(segments.length * 6)
+      let offset = 0
+      for (const [start, end] of segments) {
+        positions.set(start, offset)
+        positions.set(end, offset + 3)
+        offset += 6
+      }
+      const geometry = new BufferGeometry()
+      geometry.setAttribute(
+        'position',
+        new Float32BufferAttribute(positions, 3),
+      )
+      const style = rayPathStyles[filter]
+      const lines = new LineSegments(
+        geometry,
+        new LineBasicMaterial({
+          color: style.color,
+          transparent: true,
+          opacity: style.opacity,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      lines.name = `ray-path-${filter}`
+      lines.renderOrder = 84
+      runtime.rayPathRoot.add(lines)
+    }
+    onStatusMessage(
+      `Ray paths · ${visualization.visiblePathCount}/${visualization.totalPathCount} visible`,
+    )
+  }, [onStatusMessage, rayPathDisplayFilters, rayTraceResult])
 
   return (
     <div

@@ -1,5 +1,6 @@
 export {
   createWorkspaceStore,
+  defaultRayPathDisplayFilters,
   defaultRayTraceConfig,
   useWorkspaceStore,
   workspaceSelectors,
@@ -10,6 +11,8 @@ export type {
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,
+  RayPathDisplayFilter,
+  RayPathDisplayFilters,
   RoiClipBox,
   RoiComponentClip,
   RoiProjectionPlane,

@@ -1,4 +1,4 @@
-import type { ScenePayload } from '@/api'
+import type { RayTraceJob, ScenePayload } from '@/api'
 import {
   BoxSelect,
   ChevronRight,
@@ -21,6 +21,7 @@ import {
   RayTracingPanel,
   type ViewerCameraFrame,
 } from '@/features/raytracing'
+import { ResultPanel } from '@/features/results'
 import { RoiSelectionPanel } from '@/features/roi'
 import { TransformRulePanel } from '@/features/transforms'
 import { Badge } from '@/components/ui/badge'
@@ -57,6 +58,8 @@ interface WorkflowSidebarProps {
   cameraFrame: ViewerCameraFrame | null
   isSceneLoading?: boolean
   sceneErrorMessage?: string
+  rayTraceJob?: RayTraceJob
+  onOpenRayTraceResult(): void
   onEditMaterial(request: ComponentEditorRequest): void
   onEditTransform(request: ComponentEditorRequest): void
   onDeleteComponent(request: ComponentEditorRequest): void
@@ -114,6 +117,8 @@ export function WorkflowSidebar({
   cameraFrame,
   isSceneLoading = false,
   sceneErrorMessage,
+  rayTraceJob,
+  onOpenRayTraceResult,
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
@@ -169,6 +174,15 @@ export function WorkflowSidebar({
       return <RayTracingPanel scene={scene} cameraFrame={cameraFrame} />
     }
 
+    if (activeSection === 'result') {
+      return (
+        <ResultPanel
+          job={rayTraceJob}
+          onOpenAnalysis={onOpenRayTraceResult}
+        />
+      )
+    }
+
     return (
       <>
         <p className="text-xs leading-5 text-muted-foreground">
@@ -189,7 +203,18 @@ export function WorkflowSidebar({
     activeSection === 'components' ||
     activeSection === 'material' ||
     activeSection === 'transform' ||
-    activeSection === 'ray-tracing'
+    activeSection === 'ray-tracing' ||
+    activeSection === 'result'
+  const migrationBadgeText =
+    activeSection === 'roi'
+      ? 'Migrated · 09'
+      : activeSection === 'ray-tracing'
+        ? 'Migrated · 10'
+        : activeSection === 'result'
+          ? 'Migrated · 11'
+          : isMigratedSection
+            ? 'Migrated · 07'
+            : 'Queued'
 
   return (
     <aside className="border-b border-border bg-sidebar lg:min-h-0 lg:border-r lg:border-b-0">
@@ -281,13 +306,7 @@ export function WorkflowSidebar({
                       : 'border-border text-muted-foreground',
                   )}
                 >
-                  {activeSection === 'roi'
-                    ? 'Migrated · 09'
-                    : activeSection === 'ray-tracing'
-                      ? 'Migrated · 10'
-                    : isMigratedSection
-                      ? 'Migrated · 07'
-                      : 'Queued'}
+                  {migrationBadgeText}
                 </Badge>
               </div>
             </CardHeader>

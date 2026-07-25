@@ -5,7 +5,7 @@ import {
   useMemo,
   useState,
 } from 'react'
-import type { ScenePayload } from '@/api'
+import type { RayTraceResult, ScenePayload } from '@/api'
 import {
   BoxSelect,
   CircleDot,
@@ -32,6 +32,7 @@ import type {
   ViewerRenderMode,
 } from '@/features/viewer'
 import type { ViewerCameraFrame } from '@/features/raytracing'
+import { RayTraceResultWindow } from '@/features/results'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -69,6 +70,9 @@ interface ViewerWorkspaceProps {
   isSceneLoading?: boolean
   sceneErrorMessage?: string
   onCameraFrameChange?(frame: ViewerCameraFrame): void
+  rayTraceResult?: RayTraceResult | null
+  rayTraceResultOpen?: boolean
+  onRayTraceResultOpenChange?(open: boolean): void
   onEditMaterial?(request: ComponentEditorRequest): void
   onEditTransform?(request: ComponentEditorRequest): void
   onDeleteComponent?(request: ComponentEditorRequest): void
@@ -79,6 +83,9 @@ export function ViewerWorkspace({
   isSceneLoading = false,
   sceneErrorMessage,
   onCameraFrameChange,
+  rayTraceResult,
+  rayTraceResultOpen = false,
+  onRayTraceResultOpenChange,
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
@@ -219,7 +226,7 @@ export function ViewerWorkspace({
           <div>
             <h1 className="text-sm font-semibold">3D Viewer</h1>
             <p className="text-[0.7rem] text-muted-foreground">
-              Three.js mesh · ROI, Emitter and Receiver overlays · Step 10
+              Three.js mesh · ROI, Emitter, Receiver and ray overlays · Step 11
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -412,6 +419,7 @@ export function ViewerWorkspace({
                     roiBoxSelectionArmed={roiBoxSelectionArmed}
                     roiFaceIds={activeRoiFaceIds}
                     roiScopes={roiScopes}
+                    rayTraceResult={rayTraceResult}
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
                     onComponentContextMenu={setContextTarget}
@@ -449,6 +457,13 @@ export function ViewerWorkspace({
               ) : null}
             </>
           )}
+          <RayTraceResultWindow
+            open={rayTraceResultOpen}
+            result={rayTraceResult ?? null}
+            onOpenChange={(open) =>
+              onRayTraceResultOpenChange?.(open)
+            }
+          />
         </div>
       </div>
 
@@ -458,7 +473,7 @@ export function ViewerWorkspace({
           <CircleDot className="size-3 text-primary" />
           {scene
             ? `${visibleComponentCount} visible · ${selectedComponentIds.length} component · ${selectedFaceIds.length} face · ${activeRoiFaceIds.length} ROI`
-            : 'Three.js Viewer · Step 10'}
+            : 'Three.js Viewer · Step 11'}
         </span>
       </footer>
     </main>

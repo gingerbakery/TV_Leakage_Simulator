@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { useSceneQuery } from '@/api'
+import { useEffect, useRef, useState } from 'react'
+import { useRayTraceJobQuery, useSceneQuery } from '@/api'
 import { Box, CircleDot, Info } from 'lucide-react'
 
 import { AppDialog, ConfirmationDialog } from '@/components/common'
@@ -27,6 +27,7 @@ export function SimulatorShell() {
     useState<WorkflowSectionId>('components')
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
+  const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)
   const [componentDialog, setComponentDialog] = useState<{
     type: ComponentDialogType
     componentId: number
@@ -37,12 +38,20 @@ export function SimulatorShell() {
   } | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
+  const lastOpenedResultRunIdRef = useRef('')
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const nameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const activeRayTraceJobId = useWorkspaceStore(
+    workspaceSelectors.activeRayTraceJobId,
+  )
   const sceneQuery = useSceneQuery(activeCad?.path ?? '')
+  const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
+  const rayTraceJob = rayTraceJobQuery.data
+  const rayTraceResult =
+    rayTraceJob?.status === 'completed' ? rayTraceJob.result : null
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
   const activeComponent =
@@ -53,6 +62,16 @@ export function SimulatorShell() {
   const activeComponentName = activeComponent
     ? getComponentDisplayName(activeComponent, nameOverrides)
     : ''
+
+  useEffect(() => {
+    if (!rayTraceResult) {
+      setRayTraceResultOpen(false)
+      return
+    }
+    if (lastOpenedResultRunIdRef.current === rayTraceResult.run_id) return
+    lastOpenedResultRunIdRef.current = rayTraceResult.run_id
+    setRayTraceResultOpen(true)
+  }, [rayTraceResult])
 
   const openFeatureNotice = (title: string, description: string) => {
     if (document.activeElement instanceof HTMLElement) {
@@ -91,7 +110,7 @@ export function SimulatorShell() {
             variant="outline"
             className="hidden border-primary/30 bg-primary/10 text-primary md:inline-flex"
           >
-            Migration · Features 10
+            Migration · Features 11
           </Badge>
         </div>
         <div className="flex items-center gap-2">
@@ -124,6 +143,10 @@ export function SimulatorShell() {
           cameraFrame={viewerCameraFrame}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
+          rayTraceJob={rayTraceJob}
+          onOpenRayTraceResult={() => {
+            if (rayTraceResult) setRayTraceResultOpen(true)
+          }}
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
           }
@@ -139,6 +162,9 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onCameraFrameChange={setViewerCameraFrame}
+          rayTraceResult={rayTraceResult}
+          rayTraceResultOpen={rayTraceResultOpen}
+          onRayTraceResultOpenChange={setRayTraceResultOpen}
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
           }

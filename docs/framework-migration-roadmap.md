@@ -81,10 +81,15 @@ CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동�
 클릭하면 연결된 동일 평면 patch를 선택하며, Emitter·Receiver 기준면에는
 방향 화살표를 함께 표시한다.
 
-## 11. Result·광선 시각화 — 예정
+## 11. Result·광선 시각화 — 완료
 
-Direct·reflected ray와 component contribution 결과를 Viewer overlay,
-요약 지표 및 결과 창으로 이전한다.
+완료된 ray tracing job의 핵심 지표와 component contribution을 Result
+사이드바와 이동·크기 조절 가능한 분석 창으로 이전했다. Surface optical,
+Multi-bounce, Receiver heatmap도 탭별로 확인할 수 있다.
+
+저장된 광선 경로는 Viewer 위에 Direct·Specular·Lambertian·Gaussian 및
+Receiver direct·reflected 색상으로 표시한다. 여섯 표시 필터와 빠른 preset은
+재계산 없이 overlay만 갱신하며 현재 표시 경로 수를 함께 보여준다.
 
 ## 12. Python API 서버 분리 — 예정
 
