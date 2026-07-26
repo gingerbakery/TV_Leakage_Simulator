@@ -69,6 +69,10 @@ clipping해 새 교차 vertex를 생성하고, component별 폐곡선 loop를
 정렬하고 완료 후에는 위치·target·up·near/far를 포함한 선택 전 카메라
 화면을 그대로 복원한다. 절단 surface의 평면 셰이딩과 Wireframe 전용
 재질·깊이 범위로 회전 중 경계 물결, 면 노이즈와 깜빡임을 방지한다.
+ROI 절단 surface와 section cap에도 component 식별 정보를 유지해 Viewer
+직접 선택, Tree 선택, Material·Transform 대상 강조가 같은 화면에 표시된다.
+원본 face가 없는 section cap은 component 선택만 허용하고 CAD surface
+Emitter 면으로는 지정하지 않는다.
 
 ## 10. Emitter·Receiver·Ray tracing 실행 — 완료
 

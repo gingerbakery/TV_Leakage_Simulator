@@ -361,6 +361,27 @@ export function ViewerWorkspace({
             >
               {renderMode}
             </Badge>
+            {!emitterFaceSelectionArmed &&
+            !editingComponent &&
+            selectedComponentIds.length > 0 ? (
+              <Badge className="border border-amber-400/60 bg-amber-400/20 text-amber-200">
+                Component ·{' '}
+                {selectedComponentIds
+                  .map((componentId) => {
+                    const component = components.find(
+                      (candidate) =>
+                        candidate.component_id === componentId,
+                    )
+                    return component
+                      ? getComponentDisplayName(
+                          component,
+                          componentNameOverrides,
+                        )
+                      : componentId
+                  })
+                  .join(', ')}
+              </Badge>
+            ) : null}
             {emitterFaceSelectionArmed ? (
               <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
                 {selectedFaceIds.length > 0

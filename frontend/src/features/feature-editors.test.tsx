@@ -90,6 +90,9 @@ describe('Step 07·08 feature editors', () => {
 
     expect(screen.getByText('Face 0')).not.toBeNull()
     expect(
+      screen.getByText('Component · STEP Solid 1'),
+    ).not.toBeNull()
+    expect(
       screen.getByText('2 visible · 1 component · 1 face · 0 ROI'),
     ).not.toBeNull()
   })

@@ -143,6 +143,7 @@ interface ViewerRuntime {
   renderer: WebGLRenderer
   roiSelectionCameraPose: CameraPose | null
   roiSelectionPreset: RoiCameraPreset | null
+  roiSelectionRoot: Group
   roiPreviewKey: string
   roiPreviewRoot: Group
   scene: Scene
@@ -1077,9 +1078,13 @@ export function ThreeViewerCanvas({
     const roiPreviewRoot = new Group()
     roiPreviewRoot.name = 'roi-preview-root'
     roiPreviewRoot.visible = false
+    const roiSelectionRoot = new Group()
+    roiSelectionRoot.name = 'roi-selection-overlay-root'
+    roiSelectionRoot.visible = false
     threeScene.add(
       modelRoot,
       roiPreviewRoot,
+      roiSelectionRoot,
       placementRoot,
       rayPathRoot,
     )
@@ -1139,6 +1144,7 @@ export function ThreeViewerCanvas({
       renderer,
       roiSelectionCameraPose: null,
       roiSelectionPreset: null,
+      roiSelectionRoot,
       roiPreviewKey: '',
       roiPreviewRoot,
       scene: threeScene,
@@ -1313,7 +1319,12 @@ export function ThreeViewerCanvas({
         ? runtime.roiPreviewRoot.children.filter(
             (child): child is Mesh<BufferGeometry, Material> =>
               child instanceof Mesh &&
-              Array.isArray(child.geometry.userData.sourceFaceIds),
+              (Array.isArray(
+                child.geometry.userData.sourceFaceIds,
+              ) ||
+                Array.isArray(
+                  child.geometry.userData.componentIds,
+                )),
           )
         : [...nodes.values()]
             .filter((node) => node.group.visible)
@@ -1329,16 +1340,32 @@ export function ThreeViewerCanvas({
           (hit.object.geometry.userData.sourceFaceIds as
             | number[]
             | undefined)
-        const faceId = sourceFaceIds?.[hitFaceIndex]
-        if (faceId === undefined || !Number.isSafeInteger(faceId)) {
-          continue
-        }
+        const componentIds =
+          (hit.object.userData.componentIds as number[] | undefined) ??
+          (hit.object.geometry.userData.componentIds as
+            | number[]
+            | undefined)
+        const sourceFaceId = sourceFaceIds?.[hitFaceIndex]
+        const faceId =
+          typeof sourceFaceId === 'number' &&
+          Number.isSafeInteger(sourceFaceId)
+          ? sourceFaceId
+          : null
         const objectComponentId = Number(
           hit.object.userData.componentId,
         )
-        const componentId = Number.isSafeInteger(objectComponentId)
-          ? objectComponentId
-          : scene.mesh.face_component_ids[faceId]
+        const fallbackComponentId =
+          componentIds?.[hitFaceIndex] ??
+          (faceId === null
+            ? null
+            : scene.mesh.face_component_ids[faceId])
+        const componentId =
+          Number.isSafeInteger(objectComponentId)
+            ? objectComponentId
+            : typeof fallbackComponentId === 'number' &&
+                Number.isSafeInteger(fallbackComponentId)
+              ? fallbackComponentId
+              : null
         if (
           componentId === null ||
           !Number.isSafeInteger(componentId)
@@ -1467,6 +1494,12 @@ export function ThreeViewerCanvas({
       const { componentId, faceId } = hit
 
       if (emitterFaceSelectionArmedRef.current) {
+        if (faceId === null) {
+          onStatusMessage(
+            `Emitter surface picking · Component ${componentId}의 ROI 절단면은 원본 CAD face가 아니므로 발광면으로 선택할 수 없습니다.`,
+          )
+          return
+        }
         const component = scene.components.find(
           (candidate) => candidate.component_id === componentId,
         )
@@ -1505,13 +1538,17 @@ export function ThreeViewerCanvas({
 
       if (additive) {
         actions.toggleSelectedComponentId(componentId)
-        actions.toggleSelectedFaceId(faceId)
+        if (faceId !== null) actions.toggleSelectedFaceId(faceId)
       } else {
         actions.setSelectedComponentIds([componentId])
-        actions.setSelectedFaceIds([faceId])
+        actions.setSelectedFaceIds(
+          faceId === null ? [] : [faceId],
+        )
       }
       onStatusMessage(
-        `Viewer picking · Component ${componentId} · Face ${faceId}`,
+        faceId === null
+          ? `Viewer picking · Component ${componentId} · ROI section cap`
+          : `Viewer picking · Component ${componentId} · Face ${faceId}`,
       )
     }
     const handleDoubleClick = () => {
@@ -1808,6 +1845,190 @@ export function ThreeViewerCanvas({
       runtime.modelRoot.visible = true
       if (!roiBoxSelectionArmed) {
         restoreRoiSelectionCameraPose(runtime)
+      }
+    }
+
+    if (!runtime.roiSelectionRoot) {
+      runtime.roiSelectionRoot = new Group()
+      runtime.roiSelectionRoot.name = 'roi-selection-overlay-root'
+      runtime.scene.add(runtime.roiSelectionRoot)
+    }
+    clearGroup(runtime.roiSelectionRoot)
+    runtime.roiSelectionRoot.visible = false
+    const selectedRoiComponentIds = new Set(
+      editingComponentId === null ||
+        editingComponentId === undefined
+        ? selectedComponentIds
+        : [...selectedComponentIds, editingComponentId],
+    )
+    const activeRoiFaceIds = [
+      ...new Set(
+        activeBoxScopes.flatMap((scope) =>
+          scope.components.flatMap(
+            (component) => component.faceIds,
+          ),
+        ),
+      ),
+    ]
+    const activeRoiFaceSet = new Set(activeRoiFaceIds)
+    const selectionFaceIds = emitterFaceSelectionArmed
+      ? selectedFaceIds.filter((faceId) =>
+          activeRoiFaceSet.has(faceId),
+        )
+      : [
+          ...new Set(
+            activeBoxScopes.flatMap((scope) =>
+              scope.components
+                .filter((component) =>
+                  selectedRoiComponentIds.has(
+                    component.componentId,
+                  ),
+                )
+                .flatMap((component) => component.faceIds),
+            ),
+          ),
+        ]
+
+    if (
+      showRoiPreview &&
+      runtime.roiPreviewRoot.visible &&
+      selectionFaceIds.length > 0
+    ) {
+      const selectionClipBoxes = activeBoxScopes.flatMap((scope) =>
+        scope.clipBox ? [scope.clipBox] : [],
+      )
+      const selectedComponentIdsForOverlay = new Set(
+        selectionFaceIds.flatMap((faceId) => {
+          const componentId =
+            scene.mesh.face_component_ids[faceId]
+          return componentId === null ? [] : [componentId]
+        }),
+      )
+      const unavailableSelectionComponentIds = [
+        ...hiddenComponentIds,
+        ...deletedComponentIds,
+        ...scene.components
+          .map((component) => component.component_id)
+          .filter(
+            (componentId) =>
+              !selectedComponentIdsForOverlay.has(componentId),
+          ),
+      ]
+      const selectedClipped = buildRoiClippedGeometries(
+        scene,
+        selectionFaceIds,
+        selectionClipBoxes,
+        unavailableSelectionComponentIds,
+      )
+      if (selectedClipped) {
+        const selectionColor = emitterFaceSelectionArmed
+          ? 0xf59e0b
+          : editingComponentId !== null &&
+              editingComponentId !== undefined
+            ? 0xfbbf24
+            : 0xfacc15
+        const selectionOpacity = emitterFaceSelectionArmed
+          ? 0.9
+          : editingComponentId !== null &&
+              editingComponentId !== undefined
+            ? 0.46
+            : 0.72
+        const createSelectionMaterial = () =>
+          new MeshBasicMaterial({
+            color: selectionColor,
+            side: DoubleSide,
+            transparent: true,
+            opacity: selectionOpacity,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          })
+        const selectedSurface = new Mesh(
+          selectedClipped.surfaceGeometry,
+          createSelectionMaterial(),
+        )
+        selectedSurface.name = 'roi-selected-surface'
+        selectedSurface.renderOrder = emitterFaceSelectionArmed
+          ? 94
+          : 90
+        runtime.roiSelectionRoot.add(selectedSurface)
+
+        if (selectedClipped.capGeometry) {
+          const selectedCaps = new Mesh(
+            selectedClipped.capGeometry,
+            createSelectionMaterial(),
+          )
+          selectedCaps.name = 'roi-selected-section-caps'
+          selectedCaps.renderOrder = selectedSurface.renderOrder
+          runtime.roiSelectionRoot.add(selectedCaps)
+        }
+
+        if (
+          emitterFaceSelectionArmed &&
+          selectedClipped.featureEdgeGeometry
+        ) {
+          selectedClipped.featureEdgeGeometry.dispose()
+        }
+        const selectionEdgeGeometries = [
+          emitterFaceSelectionArmed
+            ? null
+            : selectedClipped.featureEdgeGeometry,
+          selectedClipped.capEdgeGeometry,
+        ].filter(
+          (
+            geometry,
+          ): geometry is BufferGeometry => geometry !== null,
+        )
+        for (const [
+          edgeIndex,
+          edgeGeometry,
+        ] of selectionEdgeGeometries.entries()) {
+          const selectedEdges = new LineSegments(
+            edgeGeometry,
+            new LineBasicMaterial({
+              color: selectionColor,
+              transparent: true,
+              opacity: 1,
+              depthTest: false,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          )
+          selectedEdges.name = `roi-selected-edges-${edgeIndex}`
+          selectedEdges.renderOrder =
+            selectedSurface.renderOrder + 1
+          runtime.roiSelectionRoot.add(selectedEdges)
+        }
+
+        if (emitterFaceSelectionArmed) {
+          const frame = resolveFacePlacementFrame(
+            scene,
+            selectionFaceIds,
+          )
+          const selectedBounds =
+            selectedClipped.surfaceGeometry.boundingBox
+          if (frame && selectedBounds) {
+            const direction = createDirectionArrow(
+              'roi-selected-emitter-direction',
+              selectedBounds.getCenter(new Vector3()),
+              new Vector3(...frame.normal),
+              MathUtils.clamp(
+                Math.min(frame.width, frame.height) * 0.18,
+                2,
+                18,
+              ),
+              selectionColor,
+            )
+            direction.traverse((child) => {
+              child.renderOrder = Math.max(
+                child.renderOrder,
+                96,
+              )
+            })
+            runtime.roiSelectionRoot.add(direction)
+          }
+        }
+        runtime.roiSelectionRoot.visible = true
       }
     }
 

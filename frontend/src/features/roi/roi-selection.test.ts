@@ -208,6 +208,16 @@ describe('ROI selection', () => {
     expect(clipped?.openChainCount).toBe(0)
     expect(clipped?.capLoopCount).toBe(2)
     expect(clipped?.capGeometry).not.toBeNull()
+    const surfaceComponentIds = clipped?.surfaceGeometry.userData
+      .componentIds as number[] | undefined
+    expect(surfaceComponentIds).toHaveLength(
+      clipped?.clippedTriangleCount ?? 0,
+    )
+    expect(new Set(surfaceComponentIds)).toEqual(new Set([1]))
+    const capComponentIds = clipped?.capGeometry?.userData
+      .componentIds as number[] | undefined
+    expect(capComponentIds?.length).toBeGreaterThan(0)
+    expect(new Set(capComponentIds)).toEqual(new Set([1]))
 
     const positions = clipped?.surfaceGeometry.getAttribute('position')
     const xValues = Array.from(

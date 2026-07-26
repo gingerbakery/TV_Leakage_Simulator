@@ -42,6 +42,7 @@ interface BoundaryEdge {
 interface PlaneEdgeGroup {
   planeName: PlaneName
   boxIndex: number
+  componentId: number
   edges: BoundaryEdge[]
 }
 
@@ -658,6 +659,9 @@ export function buildRoiClippedGeometries(
   surfaceGeometry.computeBoundingBox()
   surfaceGeometry.computeBoundingSphere()
   surfaceGeometry.userData.sourceFaceIds = sourceFaceIds
+  surfaceGeometry.userData.componentIds = triangleRecords.map(
+    (triangle) => triangle.componentId,
+  )
 
   const edgeRecords = new Map<string, BoundaryEdge>()
   for (const triangle of triangleRecords) {
@@ -712,6 +716,7 @@ export function buildRoiClippedGeometries(
     const group = planeGroups.get(key) ?? {
       planeName,
       boxIndex: edge.boxIndex,
+      componentId: edge.componentId,
       edges: [],
     }
     group.edges.push(edge)
@@ -720,6 +725,7 @@ export function buildRoiClippedGeometries(
 
   const capPositions: number[] = []
   const capIndices: number[] = []
+  const capComponentIds: number[] = []
   const capEdgePositions: number[] = []
   let capLoopCount = 0
   let openChainCount = 0
@@ -783,6 +789,7 @@ export function buildRoiClippedGeometries(
         continue
       }
       loop.pop()
+      const capTriangleCountBefore = capIndices.length / 3
       if (
         appendClipCap(
           loop,
@@ -793,6 +800,16 @@ export function buildRoiClippedGeometries(
           group.planeName,
         )
       ) {
+        const capTriangleCountAfter = capIndices.length / 3
+        capComponentIds.push(
+          ...Array.from(
+            {
+              length:
+                capTriangleCountAfter - capTriangleCountBefore,
+            },
+            () => group.componentId,
+          ),
+        )
         capLoopCount += 1
       }
     }
@@ -809,6 +826,7 @@ export function buildRoiClippedGeometries(
     capGeometry.computeVertexNormals()
     capGeometry.computeBoundingBox()
     capGeometry.computeBoundingSphere()
+    capGeometry.userData.componentIds = capComponentIds
     capGeometry.userData.roiCapLoopCount = capLoopCount
     capGeometry.userData.roiCapOpenChainCount = openChainCount
   }
