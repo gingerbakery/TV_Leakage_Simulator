@@ -413,16 +413,24 @@ function createDirectionArrow(
 ): Group {
   const root = new Group()
   root.name = name
-  const arrowHeadLength = MathUtils.clamp(
-    normalLength * 0.4,
-    1.2,
-    7.5,
+  const arrowLength = MathUtils.clamp(
+    normalLength * 0.45,
+    0.8,
+    10,
   )
-  const shaftLength = Math.max(normalLength - arrowHeadLength, 0.6)
+  const arrowHeadLength = MathUtils.clamp(
+    arrowLength * 0.24,
+    0.25,
+    1.8,
+  )
+  const shaftLength = Math.max(
+    arrowLength - arrowHeadLength,
+    0.45,
+  )
   const shaftRadius = MathUtils.clamp(
-    normalLength * 0.04,
-    0.08,
-    0.5,
+    arrowLength * 0.025,
+    0.035,
+    0.14,
   )
   const shaft = new Mesh(
     new CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 12),
@@ -443,9 +451,9 @@ function createDirectionArrow(
   shaft.renderOrder = 22
   const arrowHead = new Mesh(
     new ConeGeometry(
-      arrowHeadLength * 0.58,
+      arrowHeadLength * 0.38,
       arrowHeadLength,
-      20,
+      4,
     ),
     new MeshBasicMaterial({
       color,
@@ -459,13 +467,14 @@ function createDirectionArrow(
       .clone()
       .addScaledVector(
         normal,
-        normalLength - arrowHeadLength / 2,
+        arrowLength - arrowHeadLength / 2,
       ),
   )
   arrowHead.quaternion.setFromUnitVectors(
     new Vector3(0, 1, 0),
     normal,
   )
+  arrowHead.rotateY(Math.PI / 4)
   arrowHead.renderOrder = 23
   root.add(shaft, arrowHead)
   return root
