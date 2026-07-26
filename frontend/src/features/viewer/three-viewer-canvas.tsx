@@ -191,6 +191,8 @@ const componentPalette = [
 
 const wireframeSurfaceOpacity = 0.65
 const selectedWireframeSurfaceOpacity = 0.78
+const emitterOverlayColor = 0xfacc15
+const receiverOverlayColor = 0xa78bfa
 
 const roiCameraPresetConfig: Record<
   RoiCameraPreset,
@@ -412,31 +414,39 @@ function createDirectionArrow(
   const root = new Group()
   root.name = name
   const arrowHeadLength = MathUtils.clamp(
-    normalLength * 0.28,
-    0.7,
-    5,
+    normalLength * 0.4,
+    1.2,
+    7.5,
   )
-  const shaftLength = Math.max(
-    normalLength - arrowHeadLength,
-    normalLength * 0.55,
+  const shaftLength = Math.max(normalLength - arrowHeadLength, 0.6)
+  const shaftRadius = MathUtils.clamp(
+    normalLength * 0.04,
+    0.08,
+    0.5,
   )
-  const normalGeometry = new BufferGeometry().setFromPoints([
-    center,
-    center.clone().addScaledVector(normal, shaftLength),
-  ])
-  const normalLine = new LineSegments(
-    normalGeometry,
-    new LineBasicMaterial({
+  const shaft = new Mesh(
+    new CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 12),
+    new MeshBasicMaterial({
       color,
-      transparent: true,
-      opacity: 1,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     }),
   )
-  normalLine.renderOrder = 22
+  shaft.position.copy(
+    center.clone().addScaledVector(normal, shaftLength / 2),
+  )
+  shaft.quaternion.setFromUnitVectors(
+    new Vector3(0, 1, 0),
+    normal,
+  )
+  shaft.renderOrder = 22
   const arrowHead = new Mesh(
-    new ConeGeometry(arrowHeadLength * 0.38, arrowHeadLength, 12),
+    new ConeGeometry(
+      arrowHeadLength * 0.58,
+      arrowHeadLength,
+      20,
+    ),
     new MeshBasicMaterial({
       color,
       depthTest: false,
@@ -457,7 +467,7 @@ function createDirectionArrow(
     normal,
   )
   arrowHead.renderOrder = 23
-  root.add(normalLine, arrowHead)
+  root.add(shaft, arrowHead)
   return root
 }
 
@@ -466,6 +476,7 @@ function createFacePatchBoundary(
   faceIds: Iterable<number>,
   center: Vector3,
   normal: Vector3,
+  alwaysVisible = true,
 ): LineSegments<BufferGeometry, LineBasicMaterial> | null {
   const edges = new Map<
     string,
@@ -513,7 +524,7 @@ function createFacePatchBoundary(
       color: 0xfbbf24,
       transparent: true,
       opacity: 1,
-      depthTest: false,
+      depthTest: !alwaysVisible,
       depthWrite: false,
     }),
   )
@@ -2108,6 +2119,15 @@ export function ThreeViewerCanvas({
       }
     }
 
+    const enabledFaceEmitters = emitters.filter(
+      (emitter) =>
+        emitter.enabled && emitter.emitter_type === 'face',
+    )
+    const enabledFaceEmitterSets = enabledFaceEmitters.map((emitter) => ({
+      emitter,
+      faceIds: new Set(emitter.face_indices),
+    }))
+
     clearGroup(runtime.placementRoot)
     const placementEmitters = placementPreviewEmitter
       ? [...emitters, placementPreviewEmitter]
@@ -2140,7 +2160,7 @@ export function ThreeViewerCanvas({
           emitter.custom_normal ?? fallbackNormal,
           emitter.width_mm,
           emitter.height_mm,
-          0xf59e0b,
+          emitterOverlayColor,
           emitter.normal_flip,
           emitter === placementPreviewEmitter ? 0.4 : 0.2,
           emitter === placementPreviewEmitter,
@@ -2164,22 +2184,143 @@ export function ThreeViewerCanvas({
           receiver.normal,
           receiver.width_mm,
           receiver.height_mm,
-          0x22d3ee,
+          receiverOverlayColor,
           receiver.normal_flip,
-          receiver === placementPreviewReceiver ? 0.24 : 0.06,
+          receiver === placementPreviewReceiver ? 0.34 : 0.14,
           receiver === placementPreviewReceiver,
         ),
       )
     }
 
-    const enabledFaceEmitters = emitters.filter(
-      (emitter) =>
-        emitter.enabled && emitter.emitter_type === 'face',
-    )
-    const enabledFaceEmitterSets = enabledFaceEmitters.map((emitter) => ({
-      emitter,
-      faceIds: new Set(emitter.face_indices),
-    }))
+    if (showRoiPreview && runtime.roiPreviewRoot.visible) {
+      const roiClipBoxes = activeBoxScopes.flatMap((scope) =>
+        scope.clipBox ? [scope.clipBox] : [],
+      )
+      for (const { emitter, faceIds } of enabledFaceEmitterSets) {
+        const componentFaceGroups = new Map<number, number[]>()
+        for (const faceId of faceIds) {
+          if (!activeRoiFaceSet.has(faceId)) continue
+          const componentId =
+            scene.mesh.face_component_ids[faceId]
+          if (
+            componentId === null ||
+            !Number.isSafeInteger(componentId)
+          ) {
+            continue
+          }
+          const group = componentFaceGroups.get(componentId) ?? []
+          group.push(faceId)
+          componentFaceGroups.set(componentId, group)
+        }
+
+        for (const [componentId, emitterFaceIds] of componentFaceGroups) {
+          const unavailableComponentIds = [
+            ...hiddenComponentIds,
+            ...deletedComponentIds,
+            ...scene.components
+              .map((component) => component.component_id)
+              .filter((candidateId) => candidateId !== componentId),
+          ]
+          const clippedEmitter = buildRoiClippedGeometries(
+            scene,
+            emitterFaceIds,
+            roiClipBoxes,
+            unavailableComponentIds,
+            roiPointTransform,
+          )
+          if (!clippedEmitter) continue
+
+          const emitterRoot = new Group()
+          emitterRoot.name = `roi-emitter-reference-${emitter.emitter_id}-${componentId}`
+          const emitterSurface = new Mesh(
+            clippedEmitter.surfaceGeometry,
+            new MeshStandardMaterial({
+              color: emitterOverlayColor,
+              emissive: 0x713f12,
+              emissiveIntensity: 0.32,
+              roughness: 0.5,
+              side: DoubleSide,
+              transparent: true,
+              opacity: 0.52,
+              depthTest: true,
+              depthWrite: false,
+              polygonOffset: true,
+              polygonOffsetFactor: -5,
+              polygonOffsetUnits: -5,
+            }),
+          )
+          emitterSurface.name = `${emitterRoot.name}-surface`
+          emitterSurface.renderOrder = 38
+          const emitterBoundary = new LineSegments(
+            new EdgesGeometry(clippedEmitter.surfaceGeometry, 24),
+            new LineBasicMaterial({
+              color: 0xfef08a,
+              transparent: true,
+              opacity: 0.96,
+              depthTest: true,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          )
+          emitterBoundary.name = `${emitterRoot.name}-boundary`
+          emitterBoundary.renderOrder = 39
+          emitterRoot.add(emitterSurface, emitterBoundary)
+
+          const frame = resolveFacePlacementFrame(
+            scene,
+            emitterFaceIds,
+          )
+          const emitterBounds =
+            clippedEmitter.surfaceGeometry.boundingBox
+          if (frame && emitterBounds) {
+            let directionNormal = new Vector3(...frame.normal)
+            if (roiPointTransform) {
+              const transformedCenter = roiPointTransform(
+                componentId,
+                frame.center,
+              )
+              const transformedNormalEnd = roiPointTransform(
+                componentId,
+                [
+                  frame.center[0] + frame.normal[0],
+                  frame.center[1] + frame.normal[1],
+                  frame.center[2] + frame.normal[2],
+                ],
+              )
+              directionNormal = new Vector3(
+                transformedNormalEnd[0] - transformedCenter[0],
+                transformedNormalEnd[1] - transformedCenter[1],
+                transformedNormalEnd[2] - transformedCenter[2],
+              ).normalize()
+            }
+            directionNormal.multiplyScalar(
+              emitter.normal_flip ? -1 : 1,
+            )
+            const direction = createDirectionArrow(
+              `${emitterRoot.name}-direction`,
+              emitterBounds.getCenter(new Vector3()),
+              directionNormal,
+              MathUtils.clamp(
+                Math.min(frame.width, frame.height) * 0.22,
+                3,
+                22,
+              ),
+              emitterOverlayColor,
+            )
+            direction.traverse((child) => {
+              child.renderOrder = Math.max(child.renderOrder, 97)
+            })
+            emitterRoot.add(direction)
+          }
+
+          clippedEmitter.capGeometry?.dispose()
+          clippedEmitter.capEdgeGeometry?.dispose()
+          clippedEmitter.featureEdgeGeometry?.dispose()
+          runtime.placementRoot.add(emitterRoot)
+        }
+      }
+    }
+
     const emitterFaceSet = new Set(
       enabledFaceEmitters.flatMap((emitter) => emitter.face_indices),
     )
@@ -2304,13 +2445,14 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshStandardMaterial({
-              color: 0xf59e0b,
+              color: emitterOverlayColor,
               emissive: 0x7c2d12,
-              emissiveIntensity: 0.65,
+              emissiveIntensity: 0.42,
               roughness: 0.5,
               side: DoubleSide,
               transparent: true,
-              opacity: 0.78,
+              opacity: 0.54,
+              depthTest: true,
               depthWrite: false,
               polygonOffset: true,
               polygonOffsetFactor: -3,
@@ -2345,6 +2487,7 @@ export function ThreeViewerCanvas({
           emitterFaceIds,
           node.center,
           new Vector3(...frame.normal),
+          false,
         )
         if (boundary) reference.add(boundary)
         reference.add(
@@ -2357,7 +2500,7 @@ export function ThreeViewerCanvas({
               2,
               18,
             ),
-            0xf59e0b,
+            emitterOverlayColor,
           ),
         )
         node.emitterOverlayRoot.add(reference)
