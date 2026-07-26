@@ -51,6 +51,9 @@ interface RayTracingPanelProps {
 type EmitterCreationMode = 'face' | 'datum_plane'
 type ReceiverCreationMode = 'datum_plane' | 'current_view'
 
+const receiverDefaultSizeMm = 30
+const currentViewDefaultDistanceMm = 30
+
 const inputClassName =
   'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 const fieldLabelClassName = 'space-y-1 text-[0.68rem] font-medium'
@@ -406,12 +409,14 @@ function ReceiverDialog({
   const [displayName, setDisplayName] = useState('')
   const [center, setCenter] = useState<Vec3>(defaultCenter)
   const [rotation, setRotation] = useState<Vec3>([0, 0, 0])
-  const [width, setWidth] = useState(30)
-  const [height, setHeight] = useState(30)
+  const [width, setWidth] = useState(receiverDefaultSizeMm)
+  const [height, setHeight] = useState(receiverDefaultSizeMm)
   const [resolutionX, setResolutionX] = useState(80)
   const [resolutionY, setResolutionY] = useState(24)
   const [acceptance, setAcceptance] = useState(90)
-  const [viewDistance, setViewDistance] = useState(100)
+  const [viewDistance, setViewDistance] = useState(
+    currentViewDefaultDistanceMm,
+  )
   const [normalFlip, setNormalFlip] = useState(false)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
 
@@ -419,7 +424,12 @@ function ReceiverDialog({
     if (!open) return
     setCenter(defaultCenter)
     setRotation([0, 0, 0])
-  }, [defaultCenter, open])
+    setWidth(receiverDefaultSizeMm)
+    setHeight(receiverDefaultSizeMm)
+    if (mode === 'current_view') {
+      setViewDistance(currentViewDefaultDistanceMm)
+    }
+  }, [defaultCenter, mode, open])
 
   const canApply = mode === 'datum_plane' || cameraFrame !== null
   const previewReceiver = useMemo(() => {
@@ -611,6 +621,13 @@ function ReceiverDialog({
             onChange={setAcceptance}
           />
         </div>
+        {mode === 'current_view' ? (
+          <p className="text-[0.68rem] leading-4 text-muted-foreground">
+            기본 수광면은 {receiverDefaultSizeMm} ×{' '}
+            {receiverDefaultSizeMm} mm이며, View distance는 모델 중심에서
+            카메라 방향으로 떨어진 거리입니다.
+          </p>
+        ) : null}
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"

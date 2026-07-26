@@ -330,7 +330,9 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().placementPreviewReceiver).toEqual(
       expect.objectContaining({
         placement_mode: 'current_view',
-        center: [10, 20, 130],
+        center: [10, 20, 60],
+        width_mm: 30,
+        height_mm: 30,
       }),
     )
     expect(
@@ -338,6 +340,15 @@ describe('Step 07·08 feature editors', () => {
         .getByRole('dialog', { name: 'Current view receiver' })
         .hasAttribute('data-floating-panel'),
     ).toBe(true)
+    expect(
+      screen.getByRole('spinbutton', { name: 'View distance (mm)' }),
+    ).toHaveProperty('value', '30')
+    expect(
+      screen.getByRole('spinbutton', { name: 'Receiver width (mm)' }),
+    ).toHaveProperty('value', '30')
+    expect(
+      screen.getByRole('spinbutton', { name: 'Receiver height (mm)' }),
+    ).toHaveProperty('value', '30')
     fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), {
       target: { value: 'Camera RX' },
     })
@@ -356,7 +367,10 @@ describe('Step 07·08 feature editors', () => {
         receiver_id: 'receiver_001',
         display_name: 'Camera RX',
         placement_mode: 'current_view',
-        center: [10, 20, 130],
+        center: [10, 20, 60],
+        view_distance_mm: 30,
+        width_mm: 30,
+        height_mm: 30,
       }),
     ])
     expect(

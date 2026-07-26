@@ -2035,6 +2035,7 @@ export function ThreeViewerCanvas({
         (faceId) => selectedFaceSet.has(faceId),
       )
       if (componentSelectedFaceIds.length > 0) {
+        const isEmitterSurfaceDraft = emitterFaceSelectionArmed
         const bundle = createFaceGeometry(
           scene,
           componentSelectedFaceIds,
@@ -2044,21 +2045,62 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshBasicMaterial({
-              color: 0xfbbf24,
+              color: isEmitterSurfaceDraft ? 0xf59e0b : 0xfbbf24,
               side: DoubleSide,
               transparent: true,
-              opacity: 0.86,
-              depthTest: true,
+              opacity: isEmitterSurfaceDraft ? 0.94 : 0.86,
+              depthTest: !isEmitterSurfaceDraft,
               depthWrite: false,
               polygonOffset: true,
-              polygonOffsetFactor: -4,
-              polygonOffsetUnits: -4,
+              polygonOffsetFactor: -6,
+              polygonOffsetUnits: -6,
               toneMapped: false,
             }),
           )
           overlay.name = `selected-face-highlight-${componentId}`
-          overlay.renderOrder = 12
+          overlay.renderOrder = isEmitterSurfaceDraft ? 84 : 12
           node.selectionOverlayRoot.add(overlay)
+
+          if (isEmitterSurfaceDraft) {
+            const frame = resolveFacePlacementFrame(
+              scene,
+              componentSelectedFaceIds,
+            )
+            if (frame) {
+              const normal = new Vector3(...frame.normal)
+              const boundary = createFacePatchBoundary(
+                scene,
+                componentSelectedFaceIds,
+                node.center,
+                normal,
+              )
+              if (boundary) {
+                boundary.name = `selected-emitter-boundary-${componentId}`
+                boundary.renderOrder = 85
+                node.selectionOverlayRoot.add(boundary)
+              }
+              const localCenter = new Vector3(
+                frame.center[0] - node.center.x,
+                frame.center[1] - node.center.y,
+                frame.center[2] - node.center.z,
+              )
+              const direction = createDirectionArrow(
+                `selected-emitter-direction-${componentId}`,
+                localCenter,
+                normal,
+                MathUtils.clamp(
+                  Math.min(frame.width, frame.height) * 0.18,
+                  2,
+                  18,
+                ),
+                0xf59e0b,
+              )
+              direction.traverse((child) => {
+                child.renderOrder = Math.max(child.renderOrder, 86)
+              })
+              node.selectionOverlayRoot.add(direction)
+            }
+          }
         } else {
           bundle.geometry.dispose()
         }

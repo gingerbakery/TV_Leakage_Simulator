@@ -125,6 +125,9 @@ export function ViewerWorkspace({
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
   )
+  const emitterFaceSelectionArmed = useWorkspaceStore(
+    workspaceSelectors.emitterFaceSelectionArmed,
+  )
   const roiDraftLabel = useWorkspaceStore(
     workspaceSelectors.roiDraftLabel,
   )
@@ -346,11 +349,14 @@ export function ViewerWorkspace({
               {renderMode}
             </Badge>
             {selectedFaceIds.length > 0 ? (
-              <Badge className="bg-warning/15 text-warning">
-                Face {selectedFaceIds[0]}
-                {selectedFaceIds.length > 1
-                  ? ` +${selectedFaceIds.length - 1}`
-                  : ''}
+              <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
+                {emitterFaceSelectionArmed
+                  ? `Emitter surface · ${selectedFaceIds.length.toLocaleString()} triangles`
+                  : `Face ${selectedFaceIds[0]}${
+                      selectedFaceIds.length > 1
+                        ? ` +${selectedFaceIds.length - 1}`
+                        : ''
+                    }`}
               </Badge>
             ) : null}
             {activeRoiFaceIds.length > 0 ? (

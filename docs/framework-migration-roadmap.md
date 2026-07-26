@@ -81,11 +81,14 @@ queued·preparing·tracing·completed·failed 상태, ray 수, 경과·잔여 �
 표시한다. 설정이 바뀌면 이전 결과 job을 무효화하고 다시 계산하도록 했다.
 
 CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동작한다. 한 번
-클릭하면 연결된 동일 평면 patch를 선택하며, Emitter·Receiver 기준면에는
-방향 화살표를 함께 표시한다.
+클릭하면 연결된 동일 평면 patch를 선택하며, 선택 중인 발광면은 주황색
+채움·경계선·normal 화살표와 triangle 수 배지로 명확히 구분한다.
+Emitter·Receiver 기준면에는 방향 화살표를 함께 표시한다.
 Datum Emitter와 Datum·Current View Receiver 설정도 Viewer 왼쪽에서
 시작하는 같은 이동식 비모달 패널을 사용한다. 좌표·회전·크기를 바꾸는
-동안 기준면과 방향을 Viewer에 실시간 미리보기로 표시한다.
+동안 기준면과 방향을 Viewer에 실시간 미리보기로 표시한다. Current View
+Receiver는 30 × 30 mm와 모델 중심 기준 30 mm 거리를 기본값으로 사용해
+수광면이 카메라 근접면에서 화면 전체를 덮지 않게 한다.
 
 ## 11. Result·광선 시각화 — 완료
 
