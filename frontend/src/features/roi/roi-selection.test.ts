@@ -227,6 +227,33 @@ describe('ROI selection', () => {
     expect(Math.min(...xValues)).toBeCloseTo(0.25)
     expect(Math.max(...xValues)).toBeCloseTo(0.75)
 
+    const transformed = buildRoiClippedGeometries(
+      scene,
+      cubeFaces.map((_, index) => index),
+      [{ xMin: 0.25, xMax: 0.75, yMin: -1, yMax: 2 }],
+      [],
+      (componentId, point) =>
+        componentId === 1
+          ? [point[0], point[1], point[2] + 3]
+          : [point[0], point[1], point[2]],
+    )
+    expect(transformed?.openChainCount).toBe(0)
+    expect(transformed?.capLoopCount).toBe(2)
+    const transformedPositions =
+      transformed?.surfaceGeometry.getAttribute('position')
+    const transformedZValues = Array.from(
+      { length: transformedPositions?.count ?? 0 },
+      (_, index) => transformedPositions?.getZ(index) ?? 0,
+    )
+    expect(Math.min(...transformedZValues)).toBeCloseTo(3)
+    expect(Math.max(...transformedZValues)).toBeCloseTo(4)
+    expect(
+      new Set(
+        transformed?.surfaceGeometry.userData
+          .componentIds as number[],
+      ),
+    ).toEqual(new Set([1]))
+
     const yzClipped = buildRoiClippedGeometries(
       scene,
       cubeFaces.map((_, index) => index),
@@ -283,6 +310,10 @@ describe('ROI selection', () => {
     clipped?.capGeometry?.dispose()
     clipped?.capEdgeGeometry?.dispose()
     clipped?.featureEdgeGeometry?.dispose()
+    transformed?.surfaceGeometry.dispose()
+    transformed?.capGeometry?.dispose()
+    transformed?.capEdgeGeometry?.dispose()
+    transformed?.featureEdgeGeometry?.dispose()
     yzClipped?.surfaceGeometry.dispose()
     yzClipped?.capGeometry?.dispose()
     yzClipped?.capEdgeGeometry?.dispose()

@@ -13,6 +13,10 @@ import type {
 } from '@/stores'
 
 type Point3 = [number, number, number]
+export type RoiComponentPointTransform = (
+  componentId: number,
+  point: Readonly<Point3>,
+) => Point3
 type AxisIndex = 0 | 1 | 2
 type AxisName = 'x' | 'y' | 'z'
 type PlaneName =
@@ -529,6 +533,7 @@ function buildFeatureEdgeGeometry(
   scene: ScenePayload,
   boxes: RoiClipBox[],
   unavailableComponentIds: Set<number>,
+  transformPoint?: RoiComponentPointTransform,
 ): BufferGeometry | null {
   const positions: number[] = []
   for (const segment of scene.mesh.feature_edge_segments) {
@@ -538,10 +543,17 @@ function buildFeatureEdgeGeometry(
     ) {
       continue
     }
+    const componentId = segment.component_id
+    const start = transformPoint
+      ? transformPoint(componentId, segment.start)
+      : ([...segment.start] as Point3)
+    const end = transformPoint
+      ? transformPoint(componentId, segment.end)
+      : ([...segment.end] as Point3)
     for (const box of boxes) {
       const clipped = clipFeatureSegment(
-        [...segment.start] as Point3,
-        [...segment.end] as Point3,
+        start,
+        end,
         box,
       )
       if (!clipped) continue
@@ -562,6 +574,7 @@ export function buildRoiClippedGeometries(
   faceFilter: number[],
   boxes: RoiClipBox[],
   unavailableComponentIds: Iterable<number> = [],
+  transformPoint?: RoiComponentPointTransform,
 ): RoiClippedGeometryBundle | null {
   const clipBoxes = normalizeRoiClipBoxes(boxes)
   if (clipBoxes.length === 0 || faceFilter.length === 0) return null
@@ -598,10 +611,14 @@ export function buildRoiClippedGeometries(
     ) {
       continue
     }
-    const trianglePoints = triangle.map(
-      (vertexIndex) =>
-        [...scene.mesh.vertices[vertexIndex]] as Point3,
-    )
+    const trianglePoints = triangle.map((vertexIndex) => {
+      const point = [
+        ...scene.mesh.vertices[vertexIndex],
+      ] as Point3
+      return transformPoint
+        ? transformPoint(componentId, point)
+        : point
+    })
     for (
       let boxIndex = 0;
       boxIndex < clipBoxes.length;
@@ -848,6 +865,7 @@ export function buildRoiClippedGeometries(
       scene,
       clipBoxes,
       unavailable,
+      transformPoint,
     ),
     capLoopCount,
     openChainCount,

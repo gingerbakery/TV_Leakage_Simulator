@@ -73,6 +73,9 @@ ROI 절단 surface와 section cap에도 component 식별 정보를 유지해 Vie
 직접 선택, Tree 선택, Material·Transform 대상 강조가 같은 화면에 표시된다.
 원본 face가 없는 section cap은 component 선택만 허용하고 CAD surface
 Emitter 면으로는 지정하지 않는다.
+활성 component Transform은 source face/component ID를 바꾸지 않은 채
+원본 component 중심 기준 move·tilt 행렬을 먼저 적용하고, 변환된 좌표로
+ROI surface·section cap·feature edge를 다시 절단해 표시한다.
 
 ## 10. Emitter·Receiver·Ray tracing 실행 — 완료
 

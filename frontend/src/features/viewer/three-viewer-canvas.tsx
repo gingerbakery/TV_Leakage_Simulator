@@ -10,6 +10,7 @@ import {
   DirectionalLight,
   DoubleSide,
   EdgesGeometry,
+  Euler,
   Float32BufferAttribute,
   GridHelper,
   Group,
@@ -17,6 +18,7 @@ import {
   LineBasicMaterial,
   LineSegments,
   MathUtils,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -52,7 +54,10 @@ import {
   findBaseMaterial,
   findSurfaceProperty,
 } from '@/features/materials'
-import { buildRoiClippedGeometries } from '@/features/roi/roi-clipped-geometry'
+import {
+  buildRoiClippedGeometries,
+  type RoiComponentPointTransform,
+} from '@/features/roi/roi-clipped-geometry'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -779,6 +784,58 @@ function applyComponentTransform(
     MathUtils.degToRad(rule.tilt.y),
     MathUtils.degToRad(rule.tilt.z),
   )
+}
+
+function createRoiPointTransform(
+  runtime: ViewerRuntime,
+  transformRules: ComponentTransformRule[],
+): RoiComponentPointTransform | undefined {
+  const matrices = new Map<number, Matrix4>()
+  for (const rule of transformRules) {
+    if (
+      !rule.enabled ||
+      rule.targetType !== 'component' ||
+      matrices.has(rule.componentId)
+    ) {
+      continue
+    }
+    const node = runtime.nodes.get(rule.componentId)
+    if (!node) continue
+    const rotation = new Matrix4().makeRotationFromEuler(
+      new Euler(
+        MathUtils.degToRad(rule.tilt.x),
+        MathUtils.degToRad(rule.tilt.y),
+        MathUtils.degToRad(rule.tilt.z),
+      ),
+    )
+    const matrix = new Matrix4()
+      .makeTranslation(
+        node.center.x + rule.move.x,
+        node.center.y + rule.move.y,
+        node.center.z + rule.move.z,
+      )
+      .multiply(rotation)
+      .multiply(
+        new Matrix4().makeTranslation(
+          -node.center.x,
+          -node.center.y,
+          -node.center.z,
+        ),
+      )
+    matrices.set(rule.componentId, matrix)
+  }
+  if (matrices.size === 0) return undefined
+
+  return (componentId, point) => {
+    const matrix = matrices.get(componentId)
+    if (!matrix) return [point[0], point[1], point[2]]
+    const transformed = new Vector3(
+      point[0],
+      point[1],
+      point[2],
+    ).applyMatrix4(matrix)
+    return [transformed.x, transformed.y, transformed.z]
+  }
 }
 
 function fitCamera(
@@ -1672,6 +1729,10 @@ export function ThreeViewerCanvas({
     )
     const showRoiPreview =
       activeBoxScopes.length > 0 && !roiBoxSelectionArmed
+    const roiPointTransform = createRoiPointTransform(
+      runtime,
+      transformRules,
+    )
     const previewKey = JSON.stringify({
       scopes: activeBoxScopes.map((scope) => ({
         id: scope.id,
@@ -1683,6 +1744,16 @@ export function ThreeViewerCanvas({
       hiddenComponentIds,
       deletedComponentIds,
       renderMode,
+      componentTransforms: transformRules
+        .filter(
+          (rule) =>
+            rule.enabled && rule.targetType === 'component',
+        )
+        .map((rule) => ({
+          componentId: rule.componentId,
+          move: rule.move,
+          tilt: rule.tilt,
+        })),
     })
 
     if (showRoiPreview && runtime.roiPreviewKey !== previewKey) {
@@ -1705,6 +1776,7 @@ export function ThreeViewerCanvas({
         boxFaceIds,
         clipBoxes,
         [...hiddenComponentIds, ...deletedComponentIds],
+        roiPointTransform,
       )
       if (clipped && clipped.openChainCount === 0) {
         const isWireframe = renderMode === 'Wireframe'
@@ -1919,6 +1991,7 @@ export function ThreeViewerCanvas({
         selectionFaceIds,
         selectionClipBoxes,
         unavailableSelectionComponentIds,
+        roiPointTransform,
       )
       if (selectedClipped) {
         const selectionColor = emitterFaceSelectionArmed
@@ -1926,21 +1999,24 @@ export function ThreeViewerCanvas({
           : editingComponentId !== null &&
               editingComponentId !== undefined
             ? 0xfbbf24
-            : 0xfacc15
+            : 0xf6c453
         const selectionOpacity = emitterFaceSelectionArmed
-          ? 0.9
+          ? 0.52
           : editingComponentId !== null &&
               editingComponentId !== undefined
-            ? 0.46
-            : 0.72
+            ? 0.28
+            : 0.22
         const createSelectionMaterial = () =>
           new MeshBasicMaterial({
             color: selectionColor,
             side: DoubleSide,
             transparent: true,
             opacity: selectionOpacity,
-            depthTest: false,
+            depthTest: true,
             depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -4,
+            polygonOffsetUnits: -4,
             toneMapped: false,
           })
         const selectedSurface = new Mesh(
@@ -1988,8 +2064,8 @@ export function ThreeViewerCanvas({
             new LineBasicMaterial({
               color: selectionColor,
               transparent: true,
-              opacity: 1,
-              depthTest: false,
+              opacity: emitterFaceSelectionArmed ? 1 : 0.88,
+              depthTest: true,
               depthWrite: false,
               toneMapped: false,
             }),
@@ -2187,9 +2263,12 @@ export function ThreeViewerCanvas({
             color: 0xf59e0b,
             side: DoubleSide,
             transparent: true,
-            opacity: 0.28,
-            depthTest: false,
+            opacity: 0.18,
+            depthTest: true,
             depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -4,
+            polygonOffsetUnits: -4,
             toneMapped: false,
           }),
         )
@@ -2201,8 +2280,8 @@ export function ThreeViewerCanvas({
           new LineBasicMaterial({
             color: 0xfbbf24,
             transparent: true,
-            opacity: 1,
-            depthTest: false,
+            opacity: 0.9,
+            depthTest: true,
             depthWrite: false,
             toneMapped: false,
           }),
