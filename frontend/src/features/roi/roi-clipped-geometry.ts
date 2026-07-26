@@ -298,6 +298,7 @@ function appendClipCap(
   capIndices: number[],
   capEdgePositions: number[],
   planeName: PlaneName,
+  outputPointTransform?: (point: Vector3) => Vector3,
 ): boolean {
   const cleanLoop = simplifyClipLoop(loop, surfacePositions)
   if (cleanLoop.length < 3) return false
@@ -312,13 +313,16 @@ function appendClipCap(
   })
   const triangles = ShapeUtils.triangulateShape(contour, [])
   if (triangles.length === 0) return false
+  const outputPoints = outputPointTransform
+    ? points.map(outputPointTransform)
+    : points
   const baseIndex = capPositions.length / 3
-  for (const point of points) {
+  for (const point of outputPoints) {
     capPositions.push(point.x, point.y, point.z)
   }
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index]
-    const next = points[(index + 1) % points.length]
+  for (let index = 0; index < outputPoints.length; index += 1) {
+    const current = outputPoints[index]
+    const next = outputPoints[(index + 1) % outputPoints.length]
     capEdgePositions.push(
       current.x,
       current.y,
@@ -544,12 +548,8 @@ function buildFeatureEdgeGeometry(
       continue
     }
     const componentId = segment.component_id
-    const start = transformPoint
-      ? transformPoint(componentId, segment.start)
-      : ([...segment.start] as Point3)
-    const end = transformPoint
-      ? transformPoint(componentId, segment.end)
-      : ([...segment.end] as Point3)
+    const start = [...segment.start] as Point3
+    const end = [...segment.end] as Point3
     for (const box of boxes) {
       const clipped = clipFeatureSegment(
         start,
@@ -557,7 +557,13 @@ function buildFeatureEdgeGeometry(
         box,
       )
       if (!clipped) continue
-      positions.push(...clipped[0], ...clipped[1])
+      const outputStart = transformPoint
+        ? transformPoint(componentId, clipped[0])
+        : clipped[0]
+      const outputEnd = transformPoint
+        ? transformPoint(componentId, clipped[1])
+        : clipped[1]
+      positions.push(...outputStart, ...outputEnd)
     }
   }
   if (positions.length === 0) return null
@@ -584,6 +590,7 @@ export function buildRoiClippedGeometries(
   const sourceFaceIds: number[] = []
   const triangleRecords: TriangleRecord[] = []
   const vertexMaps = clipBoxes.map(() => new Map<string, number>())
+  const vertexComponentIds: number[] = []
 
   const addVertex = (
     boxIndex: number,
@@ -596,6 +603,7 @@ export function buildRoiClippedGeometries(
     if (existing !== undefined) return existing
     const vertexIndex = positions.length / 3
     positions.push(...point)
+    vertexComponentIds.push(componentId)
     vertexMap.set(key, vertexIndex)
     return vertexIndex
   }
@@ -611,14 +619,10 @@ export function buildRoiClippedGeometries(
     ) {
       continue
     }
-    const trianglePoints = triangle.map((vertexIndex) => {
-      const point = [
-        ...scene.mesh.vertices[vertexIndex],
-      ] as Point3
-      return transformPoint
-        ? transformPoint(componentId, point)
-        : point
-    })
+    const trianglePoints = triangle.map(
+      (vertexIndex) =>
+        [...scene.mesh.vertices[vertexIndex]] as Point3,
+    )
     for (
       let boxIndex = 0;
       boxIndex < clipBoxes.length;
@@ -666,10 +670,28 @@ export function buildRoiClippedGeometries(
   }
   if (indices.length === 0) return null
 
+  const outputPositions: number[] = []
+  for (
+    let coordinateIndex = 0;
+    coordinateIndex < positions.length;
+    coordinateIndex += 3
+  ) {
+    const vertexIndex = coordinateIndex / 3
+    const point = [
+      positions[coordinateIndex],
+      positions[coordinateIndex + 1],
+      positions[coordinateIndex + 2],
+    ] as Point3
+    outputPositions.push(
+      ...(transformPoint
+        ? transformPoint(vertexComponentIds[vertexIndex], point)
+        : point),
+    )
+  }
   const surfaceGeometry = new BufferGeometry()
   surfaceGeometry.setAttribute(
     'position',
-    new Float32BufferAttribute(positions, 3),
+    new Float32BufferAttribute(outputPositions, 3),
   )
   surfaceGeometry.setIndex(indices)
   surfaceGeometry.computeVertexNormals()
@@ -815,6 +837,15 @@ export function buildRoiClippedGeometries(
           capIndices,
           capEdgePositions,
           group.planeName,
+          transformPoint
+            ? (point) => {
+                const transformed = transformPoint(
+                  group.componentId,
+                  [point.x, point.y, point.z],
+                )
+                return new Vector3(...transformed)
+              }
+            : undefined,
         )
       ) {
         const capTriangleCountAfter = capIndices.length / 3

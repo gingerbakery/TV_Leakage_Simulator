@@ -44,6 +44,8 @@ interface ComponentTreePanelProps {
 interface ComponentTreeRowProps {
   component: SceneComponent
   displayName: string
+  roiAreaMm2?: number
+  roiFaceCount?: number
   selected: boolean
   visible: boolean
   traceable: boolean
@@ -55,6 +57,8 @@ interface ComponentTreeRowProps {
 function ComponentTreeRow({
   component,
   displayName,
+  roiAreaMm2,
+  roiFaceCount,
   selected,
   visible,
   traceable,
@@ -190,6 +194,11 @@ function ComponentTreeRow({
                   <span className="truncate text-xs font-semibold">
                     {displayName}
                   </span>
+                  {roiFaceCount !== undefined ? (
+                    <Badge variant="outline" className="h-4 px-1 text-[0.55rem]">
+                      ROI
+                    </Badge>
+                  ) : null}
                   {component.is_truncated ? (
                     <Badge variant="outline" className="h-4 px-1 text-[0.55rem]">
                       partial
@@ -197,8 +206,9 @@ function ComponentTreeRow({
                   ) : null}
                 </span>
                 <span className="mt-1 block text-[0.65rem] leading-4 text-muted-foreground">
-                  {component.face_count.toLocaleString()} faces ·{' '}
-                  {formatArea(component.area_mm2)} mm²
+                  {(roiFaceCount ?? component.face_count).toLocaleString()}{' '}
+                  {roiFaceCount !== undefined ? 'ROI ' : ''}faces ·{' '}
+                  {formatArea(roiAreaMm2 ?? component.area_mm2)} mm²
                 </span>
               </button>
             )}
@@ -296,9 +306,26 @@ export function ComponentTreePanel({
   const nameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
+  const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+
+  const activeRoiFaceIdsByComponent = new Map<number, Set<number>>()
+  for (const scope of roiScopes) {
+    if (!scope.active) continue
+    for (const component of scope.components) {
+      const faceIds =
+        activeRoiFaceIdsByComponent.get(component.componentId) ??
+        new Set<number>()
+      component.faceIds.forEach((faceId) => faceIds.add(faceId))
+      activeRoiFaceIdsByComponent.set(component.componentId, faceIds)
+    }
+  }
+  const hasActiveRoi = activeRoiFaceIdsByComponent.size > 0
 
   const availableComponents = (scene?.components ?? []).filter(
-    (component) => !deletedComponentIds.includes(component.component_id),
+    (component) =>
+      !deletedComponentIds.includes(component.component_id) &&
+      (!hasActiveRoi ||
+        activeRoiFaceIdsByComponent.has(component.component_id)),
   )
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase()
   const filteredComponents = availableComponents.filter((component) =>
@@ -361,6 +388,14 @@ export function ComponentTreePanel({
       <div className="space-y-1.5" aria-label="Component tree">
         {filteredComponents.map((component) => {
           const componentId = component.component_id
+          const roiFaceIds = activeRoiFaceIdsByComponent.get(componentId)
+          const roiAreaMm2 = roiFaceIds
+            ? [...roiFaceIds].reduce(
+                (sum, faceId) =>
+                  sum + (scene.mesh.face_areas_mm2[faceId] ?? 0),
+                0,
+              )
+            : undefined
           return (
             <ComponentTreeRow
               key={componentId}
@@ -369,6 +404,8 @@ export function ComponentTreePanel({
                 component,
                 nameOverrides,
               )}
+              roiAreaMm2={roiAreaMm2}
+              roiFaceCount={roiFaceIds?.size}
               selected={selectedComponentIds.includes(componentId)}
               visible={!hiddenComponentIds.includes(componentId)}
               traceable={!excludedComponentIds.includes(componentId)}

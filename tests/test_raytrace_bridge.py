@@ -36,6 +36,32 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(mesh.metadata(0)["source_face_index"], 0)
         self.assertEqual(mesh.metadata(0)["component_id"], 7)
 
+    def test_component_rotation_uses_viewer_bbox_center_pivot(self) -> None:
+        scene_mesh = {
+            "vertices": [
+                [0.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+            "faces": [[0, 1, 2]],
+            "face_component_ids": [7],
+            "face_material_ids": ["default"],
+        }
+
+        mesh = build_transformed_mesh(
+            scene_mesh,
+            [{
+                "target_type": "component",
+                "object_id": 7,
+                "enabled": True,
+                "move": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "tilt": {"x": 0.0, "y": 0.0, "z": 180.0},
+            }],
+        )
+
+        self.assertAlmostEqual(mesh.face_vertices(0)[0][0], 4.0)
+        self.assertAlmostEqual(mesh.face_vertices(0)[0][1], 2.0)
+
     def test_direct_input_requires_emitter_and_receiver(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least one emitter"):
             build_direct_trace_input(self.scene_mesh, {"emitters": [], "receivers": []})
@@ -181,6 +207,38 @@ class RoiFilteringTests(unittest.TestCase):
         # trimmed mesh's face 0 regardless of the remap's internal detail.
         self.assertEqual(trace_input.emitters[0].face_indices, [0])
         self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 0)
+
+    def test_roi_transform_material_emitter_receiver_pipeline_stays_aligned(self) -> None:
+        payload = self._payload(
+            roi_faces=[0],
+            extra_assignments=[{
+                "assignment_id": "part_7",
+                "target_type": "part",
+                "component_id": 7,
+                "profile_id": "black_profile",
+            }],
+        )
+        payload["optical_profiles"] = [{
+            "profile_id": "black_profile",
+            "reflectance": 0.1,
+        }]
+        payload["transform_rules"] = [{
+            "rule_id": "move_7",
+            "target_type": "component",
+            "object_id": 7,
+            "enabled": True,
+            "move": {"x": 1.5, "y": 0.0, "z": 0.0},
+            "tilt": {"x": 0.0, "y": 0.0, "z": 0.0},
+        }]
+
+        trace_input = build_direct_trace_input(self.scene_mesh, payload)
+
+        self.assertEqual(len(trace_input.mesh.faces), 1)
+        self.assertEqual(trace_input.mesh.face_vertices(0)[0], (1.5, 0.0, 0.0))
+        self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 0)
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+        self.assertEqual(trace_input.receivers[0].receiver_id, "r1")
+        self.assertEqual(trace_input.optical_assignments[0].component_id, 7)
 
     def test_roi_faces_excluding_all_emitter_faces_raises(self) -> None:
         with self.assertRaisesRegex(ValueError, "no faces left inside the selected ROI"):

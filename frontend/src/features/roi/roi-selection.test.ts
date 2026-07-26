@@ -254,6 +254,40 @@ describe('ROI selection', () => {
       ),
     ).toEqual(new Set([1]))
 
+    const translatedAcrossClipPlane = buildRoiClippedGeometries(
+      scene,
+      cubeFaces.map((_, index) => index),
+      [{ xMin: 0.25, xMax: 0.75, yMin: -1, yMax: 2 }],
+      [],
+      (componentId, point) =>
+        componentId === 1
+          ? [point[0] + 1.5, point[1], point[2]]
+          : [point[0], point[1], point[2]],
+    )
+    expect(translatedAcrossClipPlane).not.toBeNull()
+    expect(translatedAcrossClipPlane?.openChainCount).toBe(0)
+    expect(translatedAcrossClipPlane?.capLoopCount).toBe(2)
+    const translatedPositions =
+      translatedAcrossClipPlane?.surfaceGeometry.getAttribute(
+        'position',
+      )
+    const translatedXValues = Array.from(
+      { length: translatedPositions?.count ?? 0 },
+      (_, index) => translatedPositions?.getX(index) ?? 0,
+    )
+    expect(Math.min(...translatedXValues)).toBeCloseTo(1.75)
+    expect(Math.max(...translatedXValues)).toBeCloseTo(2.25)
+    const translatedCapPositions =
+      translatedAcrossClipPlane?.capGeometry?.getAttribute(
+        'position',
+      )
+    const translatedCapXValues = Array.from(
+      { length: translatedCapPositions?.count ?? 0 },
+      (_, index) => translatedCapPositions?.getX(index) ?? 0,
+    )
+    expect(Math.min(...translatedCapXValues)).toBeCloseTo(1.75)
+    expect(Math.max(...translatedCapXValues)).toBeCloseTo(2.25)
+
     const yzClipped = buildRoiClippedGeometries(
       scene,
       cubeFaces.map((_, index) => index),

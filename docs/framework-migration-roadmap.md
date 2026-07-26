@@ -73,9 +73,13 @@ ROI 절단 surface와 section cap에도 component 식별 정보를 유지해 Vie
 직접 선택, Tree 선택, Material·Transform 대상 강조가 같은 화면에 표시된다.
 원본 face가 없는 section cap은 component 선택만 허용하고 CAD surface
 Emitter 면으로는 지정하지 않는다.
-활성 component Transform은 source face/component ID를 바꾸지 않은 채
-원본 component 중심 기준 move·tilt 행렬을 먼저 적용하고, 변환된 좌표로
-ROI surface·section cap·feature edge를 다시 절단해 표시한다.
+활성 component Transform은 source face/component ID를 바꾸지 않는다.
+원본 좌표에서 ROI surface·section cap·feature edge를 먼저 완성한 뒤,
+Viewer와 Python 계산 계층이 공유하는 component bounding-box 중심 기준
+move·tilt 행렬을 절단 solid 전체에 적용한다. 이동 후 기존 ROI 박스로
+재절단하지 않으므로 section cap의 열린 경계와 지그재그 회귀를 방지한다.
+활성 ROI가 있으면 Component Tree와 Transform·Material 편집기는 ROI에
+참여한 component와 해당 ROI face 수·면적을 기준으로 대상을 표시한다.
 
 ## 10. Emitter·Receiver·Ray tracing 실행 — 완료
 
@@ -88,6 +92,9 @@ Material assignment, component Transform, 해석 제외 component와 활성 ROI�
 `RayTraceRequest`로 조립하며 `/api/raytrace/start`와 300 ms polling으로
 queued·preparing·tracing·completed·failed 상태, ray 수, 경과·잔여 시간을
 표시한다. 설정이 바뀌면 이전 결과 job을 무효화하고 다시 계산하도록 했다.
+ROI → component X +1.5 mm Transform → part Material → CAD surface Emitter
+→ Current View Receiver → ray tracing의 전체 계약을 실제 CAD와 Python API
+양쪽에서 회귀 검증했다.
 
 CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동작한다. 한 번
 클릭하면 연결된 동일 평면 patch를 선택하며, 선택 중인 발광면은 주황색

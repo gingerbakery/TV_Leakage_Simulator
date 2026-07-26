@@ -228,6 +228,92 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().hiddenComponentIds).toEqual([])
   })
 
+  it('shows only active ROI component subsets in the component tree', () => {
+    const scene = createSceneFixture()
+    act(() => {
+      workspaceStore.getState().actions.addRoiScope({
+        label: 'cover-only',
+        source: 'box',
+        view: 'front_xy',
+        clipBox: { xMin: 0, xMax: 30, yMin: 0, yMax: 30 },
+        components: [
+          {
+            componentId: 1,
+            componentName: 'STEP Solid 1',
+            faceIds: [0],
+            areaMm2: 1800,
+            bboxMin: { x: 0, y: 0, z: 0 },
+            bboxMax: { x: 30, y: 30, z: 10 },
+          },
+        ],
+      })
+    })
+
+    render(
+      <ComponentTreePanel
+        scene={scene}
+        onEditMaterial={vi.fn()}
+        onEditTransform={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('1 components')).not.toBeNull()
+    expect(screen.getByText('1 ROI faces · 1,800 mm²')).not.toBeNull()
+    expect(
+      screen.queryByRole('button', { name: 'Select STEP Solid 2' }),
+    ).toBeNull()
+  })
+
+  it('shows the active ROI subset in Transform and Material editors', () => {
+    const component = createSceneFixture().components[0]
+    act(() => {
+      workspaceStore.getState().actions.addRoiScope({
+        label: 'cover-only',
+        source: 'box',
+        view: 'front_xy',
+        clipBox: { xMin: 0, xMax: 30, yMin: 0, yMax: 30 },
+        components: [
+          {
+            componentId: 1,
+            componentName: 'STEP Solid 1',
+            faceIds: [0],
+            areaMm2: 1800,
+            bboxMin: { x: 0, y: 0, z: 0 },
+            bboxMax: { x: 30, y: 30, z: 10 },
+          },
+        ],
+      })
+    })
+
+    const transformView = render(
+      <TransformEditorDialog
+        open
+        onOpenChange={vi.fn()}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+    expect(
+      screen.getByRole('dialog', { name: 'Transform editor' })
+        .textContent,
+    ).toContain('1 ROI faces')
+    transformView.unmount()
+
+    render(
+      <MaterialEditorDialog
+        open
+        onOpenChange={vi.fn()}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+    expect(
+      screen.getByRole('dialog', { name: 'Material assignment' })
+        .textContent,
+    ).toContain('1 ROI faces')
+  })
+
   it('creates a compiled part material assignment', () => {
     const component = createSceneFixture().components[0]
     render(

@@ -134,9 +134,6 @@ def build_transformed_mesh(
     faces = scene_mesh.get("faces") or []
     component_ids = scene_mesh.get("face_component_ids") or [None] * len(faces)
     material_ids = scene_mesh.get("face_material_ids") or ["default"] * len(faces)
-    face_centroids = scene_mesh.get("face_centroids") or [
-        _triangle_centroid(vertices, face) for face in faces
-    ]
     if len(component_ids) != len(faces):
         raise ValueError("face_component_ids must match face count")
     excluded_components: Set[int] = {
@@ -150,17 +147,32 @@ def build_transformed_mesh(
         and rule.get("target_type", "component") == "component"
         and rule.get("object_id") is not None
     }
-    component_face_indices: Dict[int, List[int]] = {}
+    component_bounds: Dict[int, List[List[float]]] = {}
     for face_index, component_id in enumerate(component_ids):
         if component_id is None:
             continue
         normalized_component_id = int(component_id)
         if normalized_component_id in excluded_components:
             continue
-        component_face_indices.setdefault(normalized_component_id, []).append(face_index)
+        bounds = component_bounds.setdefault(
+            normalized_component_id,
+            [
+                [math.inf, math.inf, math.inf],
+                [-math.inf, -math.inf, -math.inf],
+            ],
+        )
+        for vertex_index in faces[face_index]:
+            point = vertices[int(vertex_index)]
+            for axis in range(3):
+                coordinate = float(point[axis])
+                bounds[0][axis] = min(bounds[0][axis], coordinate)
+                bounds[1][axis] = max(bounds[1][axis], coordinate)
     pivots = {
-        component_id: _average_points([face_centroids[index] for index in indices])
-        for component_id, indices in component_face_indices.items()
+        component_id: tuple(
+            (bounds[0][axis] + bounds[1][axis]) / 2.0
+            for axis in range(3)
+        )
+        for component_id, bounds in component_bounds.items()
     }
 
     mesh = TriangleMesh()
@@ -186,17 +198,6 @@ def build_transformed_mesh(
             {"source_face_index": face_index, "component_id": component_id},
         )
     return mesh
-
-
-def _triangle_centroid(vertices: List[List[float]], face: List[int]) -> Vec3:
-    points = [vertices[int(index)] for index in face]
-    return tuple(sum(float(point[axis]) for point in points) / 3.0 for axis in range(3))  # type: ignore[return-value]
-
-
-def _average_points(points: List[List[float]]) -> Vec3:
-    if not points:
-        return (0.0, 0.0, 0.0)
-    return tuple(sum(float(point[axis]) for point in points) / len(points) for axis in range(3))  # type: ignore[return-value]
 
 
 def _transform_point(point: Vec3, pivot: Vec3, rule: Dict[str, Any]) -> Vec3:

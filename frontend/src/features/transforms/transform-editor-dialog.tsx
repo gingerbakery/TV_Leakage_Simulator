@@ -59,6 +59,7 @@ export function TransformEditorDialog({
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
   )
+  const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const [targetType, setTargetType] =
     useState<TransformTargetType>('component')
@@ -75,6 +76,21 @@ export function TransformEditorDialog({
     () => selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId)),
     [componentFaceIds, selectedFaceIds],
   )
+  const activeRoiFaceCount = useMemo(() => {
+    if (!component) return null
+    const activeScopes = roiScopes.filter((scope) => scope.active)
+    if (activeScopes.length === 0) return null
+    return new Set(
+      activeScopes.flatMap((scope) =>
+        scope.components
+          .filter(
+            (entry) =>
+              entry.componentId === component.component_id,
+          )
+          .flatMap((entry) => entry.faceIds),
+      ),
+    ).size
+  }, [component, roiScopes])
   const ruleId = component
     ? buildRuleId(component.component_id, targetType, targetFaceIds)
     : ''
@@ -201,7 +217,10 @@ export function TransformEditorDialog({
               </div>
             </div>
             <Badge variant="outline">
-              {component?.face_count.toLocaleString() ?? 0} faces
+              {activeRoiFaceCount === null
+                ? component?.face_count.toLocaleString() ?? 0
+                : activeRoiFaceCount.toLocaleString()}{' '}
+              {activeRoiFaceCount === null ? 'faces' : 'ROI faces'}
             </Badge>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">

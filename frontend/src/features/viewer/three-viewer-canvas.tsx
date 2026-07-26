@@ -724,7 +724,8 @@ function createOrientationGizmo(): Group {
   return gizmo
 }
 
-function clearGroup(group: Group): void {
+function clearGroup(group: Group | undefined): void {
+  if (!group) return
   for (const child of [...group.children]) {
     group.remove(child)
     disposeObject(child)
@@ -1797,6 +1798,16 @@ export function ThreeViewerCanvas({
           move: rule.move,
           tilt: rule.tilt,
         })),
+      materialAssignments: materialAssignments
+        .filter((assignment) => assignment.enabled)
+        .map((assignment) => ({
+          assignmentId: assignment.assignmentId,
+          componentId: assignment.componentId,
+          targetType: assignment.targetType,
+          faceIds: assignment.faceIds,
+          baseMaterialId: assignment.baseMaterialId,
+          surfaceId: assignment.surfaceId,
+        })),
     })
 
     if (showRoiPreview && runtime.roiPreviewKey !== previewKey) {
@@ -1927,6 +1938,64 @@ export function ThreeViewerCanvas({
           capEdges.name = 'roi-cap-edges'
           capEdges.renderOrder = 4
           runtime.roiPreviewRoot.add(capEdges)
+        }
+
+        if (renderMode !== 'Wireframe') {
+          const boxFaceIdSet = new Set(boxFaceIds)
+          const roiMaterialAssignments = materialAssignments
+            .filter((assignment) => assignment.enabled)
+            .sort((left, right) => {
+              if (left.targetType === right.targetType) return 0
+              return left.targetType === 'part' ? -1 : 1
+            })
+          for (const [
+            assignmentIndex,
+            assignment,
+          ] of roiMaterialAssignments.entries()) {
+            const assignmentFaceIds =
+              assignment.targetType === 'part'
+                ? boxFaceIds.filter(
+                    (faceId) =>
+                      scene.mesh.face_component_ids[faceId] ===
+                      assignment.componentId,
+                  )
+                : assignment.faceIds.filter((faceId) =>
+                    boxFaceIdSet.has(faceId),
+                  )
+            if (assignmentFaceIds.length === 0) continue
+
+            const assignmentGeometry = buildRoiClippedGeometries(
+              scene,
+              assignmentFaceIds,
+              clipBoxes,
+              [...hiddenComponentIds, ...deletedComponentIds],
+              roiPointTransform,
+            )
+            if (!assignmentGeometry) continue
+
+            const componentIndex = scene.components.findIndex(
+              (component) =>
+                component.component_id === assignment.componentId,
+            )
+            const fallbackColor =
+              componentPalette[
+                Math.max(0, componentIndex) % componentPalette.length
+              ]
+            const overlay = new Mesh(
+              assignmentGeometry.surfaceGeometry,
+              faceOverlayMaterial(
+                viewerMaterialStyle(assignment, fallbackColor),
+                1,
+              ),
+            )
+            overlay.name = `roi-material-${assignment.assignmentId}`
+            overlay.renderOrder = 10 + assignmentIndex
+            runtime.roiPreviewRoot.add(overlay)
+
+            assignmentGeometry.capGeometry?.dispose()
+            assignmentGeometry.capEdgeGeometry?.dispose()
+            assignmentGeometry.featureEdgeGeometry?.dispose()
+          }
         }
 
         runtime.roiPreviewRoot.userData.capLoopCount =

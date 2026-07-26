@@ -78,7 +78,7 @@ describe('ray tracing model', () => {
           targetType: 'component',
           selectionMethod: 'click',
           faceIds: [],
-          move: { x: 1, y: 0, z: 0 },
+          move: { x: 1.5, y: 0, z: 0 },
           tilt: { x: 0, y: 0, z: 5 },
           enabled: true,
         },
@@ -115,6 +115,14 @@ describe('ray tracing model', () => {
       component_id: 1,
       target_type: 'part',
     })
-    expect(request.transform_rules).toHaveLength(1)
+    expect(request.emitters).toHaveLength(2)
+    expect(request.receivers).toHaveLength(1)
+    expect(request.transform_rules).toEqual([
+      expect.objectContaining({
+        target_type: 'component',
+        object_id: 1,
+        move: { x: 1.5, y: 0, z: 0 },
+      }),
+    ])
   })
 })
