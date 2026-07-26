@@ -96,8 +96,8 @@ CAD surface 선택창은 Viewer 조작을 막지 않는 플로팅 패널로 동�
 overlay보다 높은 순서로 렌더링한다.
 저장 후에는 Full CAD와 ROI 절단 화면 모두에 노란 발광면·외곽선·방향
 화살표를 유지한다. Receiver 기준면은 component와 구별되는 보라색으로
-표시하며, Emitter·Receiver 공통 방향 표시는 짧은 원통형 shaft와 작은
-4면 피라미드 화살촉을 사용한다.
+표시하며, Emitter·Receiver 공통 방향 표시는 완전히 불투명한 얇은 선과
+작은 열린 V자 촉만 사용해 모델을 가리지 않고 방향만 보여준다.
 Datum Emitter와 Datum·Current View Receiver 설정도 Viewer 왼쪽에서
 시작하는 같은 이동식 비모달 패널을 사용한다. 좌표·회전·크기를 바꾸는
 동안 기준면과 방향을 Viewer에 실시간 미리보기로 표시한다. Current View

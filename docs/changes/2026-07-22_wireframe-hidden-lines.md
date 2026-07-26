@@ -13,6 +13,16 @@
 - 숨은선 레이어는 Wireframe에서만 활성화하며 Surface와 Surface + Edge 모드에서는 숨긴다.
 - CAD feature edge만 사용하므로 adaptive mesh의 내부 삼각형 선은 숨은선에도 표시되지 않는다.
 
+## React Viewer 이식 보완
+
+- Full CAD와 ROI 절단 solid 모두 셰이딩 재질 대신 깊이를 기록하는 75%
+  불투명도의 `MeshBasicMaterial` 면을 Wireframe 전용으로 사용한다.
+- 실제 보이는 CAD feature edge는 82%, 뒤에 가려진 원본 feature edge는
+  16%로 분리했다. 절단용으로 새로 생긴 section cap 경계는 숨은선
+  레이어에 넣지 않아 내부 단면처럼 보이는 잘못된 형체를 방지한다.
+- ROI section cap의 보이는 외곽선은 72%로 유지하고, CAD surface Emitter의
+  면 강조는 Wireframe에서 16%로 낮춰 원래 모서리 판독을 방해하지 않게 했다.
+
 ## 표시 원칙
 
 - 보이는 경계선: 밝고 선명하게 표시

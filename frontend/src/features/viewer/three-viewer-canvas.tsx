@@ -128,11 +128,13 @@ interface ComponentRenderNode {
   edges: LineSegments<BufferGeometry, LineBasicMaterial>
   emitterOverlayRoot: Group
   group: Group
+  hiddenEdges: LineSegments<BufferGeometry, LineBasicMaterial>
   materialOverlayRoot: Group
   roiOverlayRoot: Group
   selectionOverlayRoot: Group
   surface: Mesh<BufferGeometry, MeshStandardMaterial>
   transformOverlayRoot: Group
+  wireframeFill: Mesh<BufferGeometry, MeshBasicMaterial>
 }
 
 interface ViewerRuntime {
@@ -189,8 +191,8 @@ const componentPalette = [
   0x64748b, 0x526b7a, 0x475569, 0x5b6473, 0x45606d, 0x667085,
 ]
 
-const wireframeSurfaceOpacity = 0.65
-const selectedWireframeSurfaceOpacity = 0.78
+const wireframeSurfaceOpacity = 0.75
+const selectedWireframeSurfaceOpacity = 0.82
 const emitterOverlayColor = 0xfacc15
 const receiverOverlayColor = 0xa78bfa
 
@@ -413,70 +415,59 @@ function createDirectionArrow(
 ): Group {
   const root = new Group()
   root.name = name
+  const direction = normal.clone().normalize()
   const arrowLength = MathUtils.clamp(
-    normalLength * 0.45,
-    0.8,
-    10,
+    normalLength * 0.28,
+    0.45,
+    5.5,
   )
   const arrowHeadLength = MathUtils.clamp(
-    arrowLength * 0.24,
-    0.25,
-    1.8,
+    arrowLength * 0.2,
+    0.12,
+    0.85,
   )
-  const shaftLength = Math.max(
-    arrowLength - arrowHeadLength,
-    0.45,
+  const arrowHeadWidth = MathUtils.clamp(
+    arrowLength * 0.11,
+    0.07,
+    0.48,
   )
-  const shaftRadius = MathUtils.clamp(
-    arrowLength * 0.025,
-    0.035,
-    0.14,
-  )
-  const shaft = new Mesh(
-    new CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 12),
-    new MeshBasicMaterial({
+  const reference =
+    Math.abs(direction.z) < 0.9
+      ? new Vector3(0, 0, 1)
+      : new Vector3(1, 0, 0)
+  const side = new Vector3()
+    .crossVectors(direction, reference)
+    .normalize()
+  const tip = center.clone().addScaledVector(direction, arrowLength)
+  const headBase = tip
+    .clone()
+    .addScaledVector(direction, -arrowHeadLength)
+  const left = headBase
+    .clone()
+    .addScaledVector(side, arrowHeadWidth)
+  const right = headBase
+    .clone()
+    .addScaledVector(side, -arrowHeadWidth)
+  const arrow = new LineSegments(
+    new BufferGeometry().setFromPoints([
+      center,
+      tip,
+      tip,
+      left,
+      tip,
+      right,
+    ]),
+    new LineBasicMaterial({
       color,
+      transparent: false,
+      opacity: 1,
       depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   )
-  shaft.position.copy(
-    center.clone().addScaledVector(normal, shaftLength / 2),
-  )
-  shaft.quaternion.setFromUnitVectors(
-    new Vector3(0, 1, 0),
-    normal,
-  )
-  shaft.renderOrder = 22
-  const arrowHead = new Mesh(
-    new ConeGeometry(
-      arrowHeadLength * 0.38,
-      arrowHeadLength,
-      4,
-    ),
-    new MeshBasicMaterial({
-      color,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  )
-  arrowHead.position.copy(
-    center
-      .clone()
-      .addScaledVector(
-        normal,
-        arrowLength - arrowHeadLength / 2,
-      ),
-  )
-  arrowHead.quaternion.setFromUnitVectors(
-    new Vector3(0, 1, 0),
-    normal,
-  )
-  arrowHead.rotateY(Math.PI / 4)
-  arrowHead.renderOrder = 23
-  root.add(shaft, arrowHead)
+  arrow.renderOrder = 23
+  root.add(arrow)
   return root
 }
 
@@ -972,6 +963,34 @@ function createComponentNode(
   )
   edges.name = `component-edges-${component.component_id}`
   edges.renderOrder = 100 + index
+  const hiddenEdges = new LineSegments(
+    edgeGeometry.clone(),
+    new LineBasicMaterial({
+      color: 0x8aa4b8,
+      transparent: true,
+      opacity: 0.16,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  )
+  hiddenEdges.name = `component-hidden-edges-${component.component_id}`
+  hiddenEdges.renderOrder = 80 + index
+  hiddenEdges.visible = false
+  const wireframeFill = new Mesh(
+    bundle.geometry.clone(),
+    new MeshBasicMaterial({
+      color: 0x263b4d,
+      transparent: true,
+      opacity: wireframeSurfaceOpacity,
+      side: DoubleSide,
+      depthTest: true,
+      depthWrite: true,
+      toneMapped: false,
+    }),
+  )
+  wireframeFill.name = `component-wirefill-${component.component_id}`
+  wireframeFill.renderOrder = index
+  wireframeFill.visible = false
 
   const emitterOverlayRoot = new Group()
   const materialOverlayRoot = new Group()
@@ -983,6 +1002,8 @@ function createComponentNode(
   group.position.copy(bundle.center)
   group.add(
     surface,
+    wireframeFill,
+    hiddenEdges,
     edges,
     emitterOverlayRoot,
     materialOverlayRoot,
@@ -998,11 +1019,13 @@ function createComponentNode(
     edges,
     emitterOverlayRoot,
     group,
+    hiddenEdges,
     materialOverlayRoot,
     roiOverlayRoot,
     selectionOverlayRoot,
     surface,
     transformOverlayRoot,
+    wireframeFill,
   }
 }
 
@@ -1861,12 +1884,27 @@ export function ThreeViewerCanvas({
 
         const showEdges = renderMode !== 'Surface'
         if (showEdges && clipped.featureEdgeGeometry) {
+          if (isWireframe) {
+            const hiddenFeatureEdges = new LineSegments(
+              clipped.featureEdgeGeometry.clone(),
+              new LineBasicMaterial({
+                color: 0x8aa4b8,
+                transparent: true,
+                opacity: 0.16,
+                depthTest: false,
+                depthWrite: false,
+              }),
+            )
+            hiddenFeatureEdges.name = 'roi-hidden-feature-edges'
+            hiddenFeatureEdges.renderOrder = 2
+            runtime.roiPreviewRoot.add(hiddenFeatureEdges)
+          }
           const featureEdges = new LineSegments(
             clipped.featureEdgeGeometry,
             new LineBasicMaterial({
               color: 0xd7edf8,
               transparent: true,
-              opacity: isWireframe ? 0.96 : 0.74,
+              opacity: isWireframe ? 0.82 : 0.74,
               depthTest: true,
               depthWrite: false,
             }),
@@ -1881,7 +1919,7 @@ export function ThreeViewerCanvas({
             new LineBasicMaterial({
               color: 0xe0f2fe,
               transparent: true,
-              opacity: 0.9,
+              opacity: isWireframe ? 0.72 : 0.9,
               depthTest: true,
               depthWrite: false,
             }),
@@ -2250,7 +2288,7 @@ export function ThreeViewerCanvas({
               roughness: 0.5,
               side: DoubleSide,
               transparent: true,
-              opacity: 0.52,
+              opacity: renderMode === 'Wireframe' ? 0.16 : 0.52,
               depthTest: true,
               depthWrite: false,
               polygonOffset: true,
@@ -2346,6 +2384,38 @@ export function ThreeViewerCanvas({
         deletedComponentIds.includes(componentId)
       node.group.visible = !isUnavailable
       applyComponentTransform(node, transformRules)
+      if (!node.wireframeFill) {
+        node.wireframeFill = new Mesh(
+          node.surface.geometry.clone(),
+          new MeshBasicMaterial({
+            color: 0x263b4d,
+            transparent: true,
+            opacity: wireframeSurfaceOpacity,
+            side: DoubleSide,
+            depthTest: true,
+            depthWrite: true,
+            toneMapped: false,
+          }),
+        )
+        node.wireframeFill.name = `component-wirefill-${componentId}`
+        node.wireframeFill.renderOrder = node.depthPriority
+        node.group.add(node.wireframeFill)
+      }
+      if (!node.hiddenEdges) {
+        node.hiddenEdges = new LineSegments(
+          node.edges.geometry.clone(),
+          new LineBasicMaterial({
+            color: 0x8aa4b8,
+            transparent: true,
+            opacity: 0.16,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        )
+        node.hiddenEdges.name = `component-hidden-edges-${componentId}`
+        node.hiddenEdges.renderOrder = 80 + node.depthPriority
+        node.group.add(node.hiddenEdges)
+      }
 
       const partAssignment = materialAssignments.find(
         (assignment) =>
@@ -2377,26 +2447,31 @@ export function ThreeViewerCanvas({
       node.surface.material.metalness = style.metalness
       node.surface.material.roughness = style.roughness
       const isWireframe = renderMode === 'Wireframe'
-      if (node.surface.material.transparent !== isWireframe) {
-        node.surface.material.transparent = isWireframe
+      if (node.surface.material.transparent) {
+        node.surface.material.transparent = false
         node.surface.material.needsUpdate = true
       }
-      node.surface.material.opacity = isWireframe
-        ? isSelected
-          ? selectedWireframeSurfaceOpacity
-          : wireframeSurfaceOpacity
-        : 1
+      node.surface.material.opacity = 1
       node.surface.material.depthWrite = true
       node.surface.material.polygonOffsetFactor = 0
       node.surface.material.polygonOffsetUnits =
         surfaceDepthUnits(node.depthPriority)
-      node.surface.visible = true
+      node.surface.visible = !isWireframe
+      node.wireframeFill.visible = isWireframe
+      node.wireframeFill.material.color.set(
+        isSelected ? 0x36556a : 0x263b4d,
+      )
+      node.wireframeFill.material.opacity = isSelected
+        ? selectedWireframeSurfaceOpacity
+        : wireframeSurfaceOpacity
+      node.hiddenEdges.visible = isWireframe
+      node.hiddenEdges.material.opacity = 0.16
       node.edges.visible = renderMode !== 'Surface'
       node.edges.material.color.set(isSelected ? highlightColor : 0xb9d5e8)
       node.edges.material.opacity = isSelected
         ? 1
         : isWireframe
-          ? 1
+          ? 0.82
           : 0.72
 
       clearGroup(node.emitterOverlayRoot)
@@ -2460,7 +2535,7 @@ export function ThreeViewerCanvas({
               roughness: 0.5,
               side: DoubleSide,
               transparent: true,
-              opacity: 0.54,
+              opacity: renderMode === 'Wireframe' ? 0.16 : 0.54,
               depthTest: true,
               depthWrite: false,
               polygonOffset: true,
