@@ -6,10 +6,14 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  Aperture,
   Eye,
   EyeOff,
+  Lightbulb,
   Move3D,
   Palette,
+  Pencil,
+  Power,
   ScanLine,
   ScanSearch,
   Trash2,
@@ -49,6 +53,19 @@ export interface ViewerComponentActionMenuProps {
   wheelTarget?: HTMLElement | null
   onOpenChange(open: boolean): void
   onAction(action: ComponentContextAction): void
+}
+
+export type RayObjectContextAction = 'edit' | 'enabled' | 'delete'
+
+export interface ViewerRayObjectActionMenuProps {
+  kind: 'emitter' | 'receiver'
+  objectId: string
+  open: boolean
+  position: { x: number; y: number }
+  enabled: boolean
+  wheelTarget?: HTMLElement | null
+  onOpenChange(open: boolean): void
+  onAction(action: RayObjectContextAction): void
 }
 
 export function ComponentContextMenu({
@@ -249,6 +266,140 @@ export function ViewerComponentActionMenu({
           <span className="ml-auto text-xs tracking-widest text-muted-foreground">
             T
           </span>
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          className={`${itemClassName} text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive`}
+          onClick={() => select('delete')}
+        >
+          <Trash2 />
+          Delete…
+        </button>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+export function ViewerRayObjectActionMenu({
+  kind,
+  objectId,
+  open,
+  position,
+  enabled,
+  wheelTarget,
+  onOpenChange,
+  onAction,
+}: ViewerRayObjectActionMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+      ?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onOpenChange(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onOpenChange, open])
+
+  if (!open || typeof document === 'undefined') return null
+
+  const left = Math.max(
+    8,
+    Math.min(position.x, window.innerWidth - 272),
+  )
+  const top = Math.max(
+    8,
+    Math.min(position.y, window.innerHeight - 190),
+  )
+  const select = (action: RayObjectContextAction) => {
+    onAction(action)
+    onOpenChange(false)
+  }
+  const forwardWheel = (event: ReactWheelEvent) => {
+    const WheelEventType =
+      wheelTarget?.ownerDocument.defaultView?.WheelEvent
+    if (!wheelTarget || !WheelEventType) return
+    event.stopPropagation()
+    wheelTarget.dispatchEvent(
+      new WheelEventType('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        ctrlKey: event.ctrlKey,
+        deltaMode: event.deltaMode,
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaZ: event.deltaZ,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+      }),
+    )
+  }
+  const itemClassName =
+    'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0'
+  const Icon = kind === 'emitter' ? Lightbulb : Aperture
+  const label = kind === 'emitter' ? 'Emitter' : 'Receiver'
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50"
+      onPointerDown={() => onOpenChange(false)}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onOpenChange(false)
+      }}
+      onWheel={forwardWheel}
+    >
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`${label} actions for ${objectId}`}
+        className="fixed w-64 rounded-lg border border-border bg-popover/98 p-1 text-popover-foreground shadow-2xl shadow-black/40 ring-1 ring-foreground/10"
+        style={{ left, top }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+      >
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          <Icon className="size-4 text-primary" />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">
+              {objectId}
+            </span>
+            <span className="block text-[0.7rem] text-muted-foreground">
+              {label} · {enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </span>
+        </div>
+        <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('edit')}
+        >
+          <Pencil />
+          Edit settings
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClassName}
+          onClick={() => select('enabled')}
+        >
+          <Power />
+          {enabled ? 'Disable' : 'Enable'}
         </button>
         <div className="-mx-1 my-1 h-px bg-border" />
         <button

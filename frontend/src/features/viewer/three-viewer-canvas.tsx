@@ -40,6 +40,7 @@ import {
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
 import type {
+  EmitterSpec,
   RayTraceResult,
   SceneComponent,
   ScenePayload,
@@ -104,6 +105,14 @@ export interface ViewerComponentContextTarget {
   returnFocusElement: HTMLElement | null
 }
 
+export interface ViewerRayObjectContextTarget {
+  clientX: number
+  clientY: number
+  id: string
+  kind: 'emitter' | 'receiver'
+  returnFocusElement: HTMLElement | null
+}
+
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
   axisScalePercent: number
@@ -118,6 +127,7 @@ interface ThreeViewerCanvasProps {
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
   onComponentContextMenu?(target: ViewerComponentContextTarget): void
+  onRayObjectContextMenu?(target: ViewerRayObjectContextTarget): void
   onStatusMessage(message: string): void
 }
 
@@ -1044,6 +1054,7 @@ export function ThreeViewerCanvas({
   onRoiBoxSelection,
   onCameraFrameChange,
   onComponentContextMenu,
+  onRayObjectContextMenu,
   onStatusMessage,
 }: ThreeViewerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -1052,9 +1063,11 @@ export function ThreeViewerCanvas({
   const emitterFaceSelectionArmedRef = useRef(false)
   const selectedFaceIdsRef = useRef<number[]>([])
   const selectedComponentIdsRef = useRef<number[]>([])
+  const emittersRef = useRef<EmitterSpec[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
   const onComponentContextMenuRef = useRef(onComponentContextMenu)
+  const onRayObjectContextMenuRef = useRef(onRayObjectContextMenu)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
@@ -1105,6 +1118,10 @@ export function ThreeViewerCanvas({
   }, [selectedComponentIds])
 
   useEffect(() => {
+    emittersRef.current = emitters
+  }, [emitters])
+
+  useEffect(() => {
     roiBoxSelectionArmedRef.current = roiBoxSelectionArmed
   }, [roiBoxSelectionArmed])
 
@@ -1119,6 +1136,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     onComponentContextMenuRef.current = onComponentContextMenu
   }, [onComponentContextMenu])
+
+  useEffect(() => {
+    onRayObjectContextMenuRef.current = onRayObjectContextMenu
+  }, [onRayObjectContextMenu])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1478,6 +1499,38 @@ export function ThreeViewerCanvas({
       return null
     }
 
+    const resolveRayObjectHit = (
+      clientX: number,
+      clientY: number,
+    ): { id: string; kind: 'emitter' | 'receiver' } | null => {
+      const rect = canvas.getBoundingClientRect()
+      const pointer = new Vector2(
+        ((clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1,
+      )
+      runtime.raycaster.setFromCamera(pointer, camera)
+      const hits = runtime.raycaster.intersectObjects(
+        runtime.placementRoot.children,
+        true,
+      )
+      for (const hit of hits) {
+        let object: Object3D | null = hit.object
+        while (object && object !== runtime.placementRoot) {
+          const kind = object.userData.rayObjectKind
+          const id = object.userData.rayObjectId
+          if (
+            (kind === 'emitter' || kind === 'receiver') &&
+            typeof id === 'string' &&
+            !id.startsWith('__placement_preview_')
+          ) {
+            return { id, kind }
+          }
+          object = object.parent
+        }
+      }
+      return null
+    }
+
     let pointerDown: { x: number; y: number } | null = null
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
@@ -1677,8 +1730,50 @@ export function ThreeViewerCanvas({
         return
       }
 
+      const rayObjectHit = resolveRayObjectHit(
+        event.clientX,
+        event.clientY,
+      )
+      if (rayObjectHit) {
+        onRayObjectContextMenuRef.current?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          ...rayObjectHit,
+          returnFocusElement: canvas,
+        })
+        onStatusMessage(
+          `${rayObjectHit.kind === 'emitter' ? 'Emitter' : 'Receiver'} menu · ${rayObjectHit.id}`,
+        )
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
       const hit = resolveSurfaceHit(event.clientX, event.clientY)
       if (!hit) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      const faceEmitter =
+        hit.faceId === null
+          ? null
+          : emittersRef.current.find(
+              (emitter) =>
+                emitter.enabled &&
+                emitter.emitter_type === 'face' &&
+                emitter.face_indices.includes(hit.faceId as number),
+            ) ?? null
+      if (faceEmitter) {
+        onRayObjectContextMenuRef.current?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          id: faceEmitter.emitter_id,
+          kind: 'emitter',
+          returnFocusElement: canvas,
+        })
+        onStatusMessage(`Emitter menu · ${faceEmitter.emitter_id}`)
         event.preventDefault()
         event.stopPropagation()
         return
@@ -1810,7 +1905,11 @@ export function ThreeViewerCanvas({
         })),
     })
 
-    if (showRoiPreview && runtime.roiPreviewKey !== previewKey) {
+    if (
+      showRoiPreview &&
+      (runtime.roiPreviewKey !== previewKey ||
+        runtime.roiPreviewRoot.children.length === 0)
+    ) {
       const shouldInitialFit = runtime.roiPreviewKey.length === 0
       clearGroup(runtime.roiPreviewRoot)
       const boxFaceIds = [
@@ -2246,10 +2345,24 @@ export function ThreeViewerCanvas({
 
     clearGroup(runtime.placementRoot)
     const placementEmitters = placementPreviewEmitter
-      ? [...emitters, placementPreviewEmitter]
+      ? [
+          ...emitters.filter(
+            (emitter) =>
+              emitter.emitter_id !==
+              placementPreviewEmitter.emitter_id,
+          ),
+          placementPreviewEmitter,
+        ]
       : emitters
     const placementReceivers = placementPreviewReceiver
-      ? [...receivers, placementPreviewReceiver]
+      ? [
+          ...receivers.filter(
+            (receiver) =>
+              receiver.receiver_id !==
+              placementPreviewReceiver.receiver_id,
+          ),
+          placementPreviewReceiver,
+        ]
       : receivers
     for (const emitter of placementEmitters) {
       if (
@@ -2267,21 +2380,22 @@ export function ThreeViewerCanvas({
         .cross(new Vector3(...emitter.v_axis))
         .normalize()
         .toArray()
-      runtime.placementRoot.add(
-        createPlacementPlane(
-          `emitter-plane-${emitter.emitter_id}`,
-          emitter.center,
-          emitter.u_axis,
-          emitter.v_axis,
-          emitter.custom_normal ?? fallbackNormal,
-          emitter.width_mm,
-          emitter.height_mm,
-          emitterOverlayColor,
-          emitter.normal_flip,
-          emitter === placementPreviewEmitter ? 0.4 : 0.2,
-          emitter === placementPreviewEmitter,
-        ),
+      const emitterPlane = createPlacementPlane(
+        `emitter-plane-${emitter.emitter_id}`,
+        emitter.center,
+        emitter.u_axis,
+        emitter.v_axis,
+        emitter.custom_normal ?? fallbackNormal,
+        emitter.width_mm,
+        emitter.height_mm,
+        emitterOverlayColor,
+        emitter.normal_flip,
+        emitter === placementPreviewEmitter ? 0.4 : 0.2,
+        emitter === placementPreviewEmitter,
       )
+      emitterPlane.userData.rayObjectKind = 'emitter'
+      emitterPlane.userData.rayObjectId = emitter.emitter_id
+      runtime.placementRoot.add(emitterPlane)
     }
     for (const receiver of placementReceivers) {
       if (
@@ -2291,21 +2405,22 @@ export function ThreeViewerCanvas({
       ) {
         continue
       }
-      runtime.placementRoot.add(
-        createPlacementPlane(
-          `receiver-plane-${receiver.receiver_id}`,
-          receiver.center,
-          receiver.u_axis,
-          receiver.v_axis,
-          receiver.normal,
-          receiver.width_mm,
-          receiver.height_mm,
-          receiverOverlayColor,
-          receiver.normal_flip,
-          receiver === placementPreviewReceiver ? 0.34 : 0.14,
-          receiver === placementPreviewReceiver,
-        ),
+      const receiverPlane = createPlacementPlane(
+        `receiver-plane-${receiver.receiver_id}`,
+        receiver.center,
+        receiver.u_axis,
+        receiver.v_axis,
+        receiver.normal,
+        receiver.width_mm,
+        receiver.height_mm,
+        receiverOverlayColor,
+        receiver.normal_flip,
+        receiver === placementPreviewReceiver ? 0.34 : 0.14,
+        receiver === placementPreviewReceiver,
       )
+      receiverPlane.userData.rayObjectKind = 'receiver'
+      receiverPlane.userData.rayObjectId = receiver.receiver_id
+      runtime.placementRoot.add(receiverPlane)
     }
 
     if (showRoiPreview && runtime.roiPreviewRoot.visible) {
@@ -2348,6 +2463,8 @@ export function ThreeViewerCanvas({
 
           const emitterRoot = new Group()
           emitterRoot.name = `roi-emitter-reference-${emitter.emitter_id}-${componentId}`
+          emitterRoot.userData.rayObjectKind = 'emitter'
+          emitterRoot.userData.rayObjectId = emitter.emitter_id
           const emitterSurface = new Mesh(
             clippedEmitter.surfaceGeometry,
             new MeshStandardMaterial({

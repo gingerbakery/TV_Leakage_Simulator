@@ -17,7 +17,9 @@ import {
 
 import {
   type ComponentContextAction,
+  type RayObjectContextAction,
   ViewerComponentActionMenu,
+  ViewerRayObjectActionMenu,
 } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -29,9 +31,13 @@ import type {
   RoiBoxSelectionResult,
   ViewerCameraPreset,
   ViewerComponentContextTarget,
+  ViewerRayObjectContextTarget,
   ViewerRenderMode,
 } from '@/features/viewer'
-import type { ViewerCameraFrame } from '@/features/raytracing'
+import type {
+  RayObjectEditRequest,
+  ViewerCameraFrame,
+} from '@/features/raytracing'
 import { RayTraceResultWindow } from '@/features/results'
 import {
   getActiveRoiFaceIds,
@@ -78,6 +84,7 @@ interface ViewerWorkspaceProps {
   onEditMaterial?(request: ComponentEditorRequest): void
   onEditTransform?(request: ComponentEditorRequest): void
   onDeleteComponent?(request: ComponentEditorRequest): void
+  onEditRayObject?(request: RayObjectEditRequest): void
 }
 
 export function ViewerWorkspace({
@@ -93,6 +100,7 @@ export function ViewerWorkspace({
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
+  onEditRayObject,
 }: ViewerWorkspaceProps) {
   const [cameraPreset, setCameraPreset] =
     useState<ViewerCameraPreset>('Iso')
@@ -105,6 +113,8 @@ export function ViewerWorkspace({
   )
   const [contextTarget, setContextTarget] =
     useState<ViewerComponentContextTarget | null>(null)
+  const [rayObjectContextTarget, setRayObjectContextTarget] =
+    useState<ViewerRayObjectContextTarget | null>(null)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
   )
@@ -124,6 +134,8 @@ export function ViewerWorkspace({
     workspaceSelectors.componentNameOverrides,
   )
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const emitters = useWorkspaceStore(workspaceSelectors.emitters)
+  const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
   )
@@ -195,6 +207,18 @@ export function ViewerWorkspace({
       component.component_id === contextTarget?.componentId,
   )
   const contextComponentId = contextComponent?.component_id
+  const contextRayObject =
+    rayObjectContextTarget?.kind === 'emitter'
+      ? emitters.find(
+          (emitter) =>
+            emitter.emitter_id === rayObjectContextTarget.id,
+        )
+      : rayObjectContextTarget?.kind === 'receiver'
+        ? receivers.find(
+            (receiver) =>
+              receiver.receiver_id === rayObjectContextTarget.id,
+          )
+        : null
   const editingComponent = components.find(
     (component) => component.component_id === editingComponentId,
   )
@@ -235,6 +259,32 @@ export function ViewerWorkspace({
     if (action === 'material') onEditMaterial?.(request)
     else if (action === 'transform') onEditTransform?.(request)
     else onDeleteComponent?.(request)
+  }
+  const handleRayObjectContextAction = (
+    action: RayObjectContextAction,
+  ) => {
+    if (!rayObjectContextTarget || !contextRayObject) return
+    const { id, kind } = rayObjectContextTarget
+    if (action === 'edit') {
+      onEditRayObject?.({ id, kind })
+      return
+    }
+    if (action === 'enabled') {
+      if (kind === 'emitter') {
+        actions.setEmitterEnabled(id, !contextRayObject.enabled)
+      } else {
+        actions.setReceiverEnabled(id, !contextRayObject.enabled)
+      }
+      setStatusMessage(
+        `${kind === 'emitter' ? 'Emitter' : 'Receiver'} ${id} · ${contextRayObject.enabled ? 'Disabled' : 'Enabled'}`,
+      )
+      return
+    }
+    if (kind === 'emitter') actions.removeEmitter(id)
+    else actions.removeReceiver(id)
+    setStatusMessage(
+      `${kind === 'emitter' ? 'Emitter' : 'Receiver'} ${id} 삭제`,
+    )
   }
 
   return (
@@ -478,7 +528,14 @@ export function ViewerWorkspace({
                     editingComponentId={editingComponentId}
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
-                    onComponentContextMenu={setContextTarget}
+                    onComponentContextMenu={(target) => {
+                      setRayObjectContextTarget(null)
+                      setContextTarget(target)
+                    }}
+                    onRayObjectContextMenu={(target) => {
+                      setContextTarget(null)
+                      setRayObjectContextTarget(target)
+                    }}
                     onStatusMessage={setStatusMessage}
                   />
                 </Suspense>
@@ -509,6 +566,25 @@ export function ViewerWorkspace({
                     if (!open) setContextTarget(null)
                   }}
                   onAction={handleContextAction}
+                />
+              ) : null}
+              {contextRayObject && rayObjectContextTarget ? (
+                <ViewerRayObjectActionMenu
+                  open
+                  kind={rayObjectContextTarget.kind}
+                  objectId={rayObjectContextTarget.id}
+                  position={{
+                    x: rayObjectContextTarget.clientX,
+                    y: rayObjectContextTarget.clientY,
+                  }}
+                  enabled={contextRayObject.enabled}
+                  wheelTarget={
+                    rayObjectContextTarget.returnFocusElement
+                  }
+                  onOpenChange={(open) => {
+                    if (!open) setRayObjectContextTarget(null)
+                  }}
+                  onAction={handleRayObjectContextAction}
                 />
               ) : null}
             </>

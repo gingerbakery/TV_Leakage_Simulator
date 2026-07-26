@@ -12,7 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ComponentTreePanel } from '@/features/components'
 import { AppProviders } from '@/app/providers'
 import { MaterialEditorDialog } from '@/features/materials'
-import { RayTracingPanel } from '@/features/raytracing'
+import {
+  createFaceEmitter,
+  RayTracingPanel,
+} from '@/features/raytracing'
 import { RoiSelectionPanel } from '@/features/roi'
 import { TransformEditorDialog } from '@/features/transforms'
 import { ViewerWorkspace } from '@/components/layout/viewer-workspace'
@@ -22,6 +25,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 vi.mock('@/features/viewer', () => ({
   ThreeViewerCanvas: ({
     onComponentContextMenu,
+    onRayObjectContextMenu,
   }: {
     onComponentContextMenu?(target: {
       clientX: number
@@ -29,17 +33,34 @@ vi.mock('@/features/viewer', () => ({
       componentId: number
       returnFocusElement: HTMLElement
     }): void
+    onRayObjectContextMenu?(target: {
+      clientX: number
+      clientY: number
+      id: string
+      kind: 'emitter' | 'receiver'
+      returnFocusElement: HTMLElement
+    }): void
   }) => (
     <canvas
       aria-label="Interactive 3D CAD viewer"
-      onContextMenu={(event) =>
+      onContextMenu={(event) => {
+        if (event.shiftKey) {
+          onRayObjectContextMenu?.({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            id: 'emitter_001',
+            kind: 'emitter',
+            returnFocusElement: event.currentTarget,
+          })
+          return
+        }
         onComponentContextMenu?.({
           clientX: event.clientX,
           clientY: event.clientY,
           componentId: 1,
           returnFocusElement: event.currentTarget,
         })
-      }
+      }}
     />
   ),
 }))
@@ -139,6 +160,40 @@ describe('Step 07·08 feature editors', () => {
       returnFocusElement: viewer,
     })
     expect(workspaceStore.getState().selectedComponentIds).toEqual([1])
+  })
+
+  it('opens Emitter settings from the Viewer context menu', async () => {
+    const onEditRayObject = vi.fn()
+    act(() => {
+      workspaceStore.getState().actions.upsertEmitter({
+        ...createFaceEmitter('emitter_001', [0]),
+        ray_count: 2500,
+      })
+    })
+    render(
+      <ViewerWorkspace
+        scene={createSceneFixture()}
+        onEditRayObject={onEditRayObject}
+      />,
+    )
+    const viewer = await screen.findByLabelText(
+      'Interactive 3D CAD viewer',
+    )
+
+    fireEvent.contextMenu(viewer, { shiftKey: true })
+    expect(
+      await screen.findByRole('menu', {
+        name: 'Emitter actions for emitter_001',
+      }),
+    ).not.toBeNull()
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'Edit settings' }),
+    )
+
+    expect(onEditRayObject).toHaveBeenCalledWith({
+      id: 'emitter_001',
+      kind: 'emitter',
+    })
   })
 
   it('adds and activates a coordinate ROI scope', () => {
@@ -482,6 +537,73 @@ describe('Step 07·08 feature editors', () => {
         view_distance_mm: 30,
         width_mm: 30,
         height_mm: 30,
+      }),
+    ])
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit emitter_001' }),
+    )
+    expect(
+      screen.getByRole('dialog', { name: 'Edit emitter_001' }),
+    ).not.toBeNull()
+    expect(
+      screen.getByRole('spinbutton', { name: 'Emitter rays' }),
+    ).toHaveProperty('value', '2500')
+    expect(
+      screen.getByRole('spinbutton', { name: 'Center X' }),
+    ).toHaveProperty('value', '12.5')
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Emitter rays' }),
+      { target: { value: '3500' } },
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', {
+        name: 'Emitter width (mm)',
+      }),
+      { target: { value: '24' } },
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save emitter' }),
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit receiver_001' }),
+    )
+    expect(
+      screen.getByRole('dialog', { name: 'Edit Camera RX' }),
+    ).not.toBeNull()
+    expect(
+      screen.getByRole('spinbutton', {
+        name: 'Receiver width (mm)',
+      }),
+    ).toHaveProperty('value', '30')
+    fireEvent.change(
+      screen.getByRole('spinbutton', {
+        name: 'Receiver width (mm)',
+      }),
+      { target: { value: '42' } },
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'View distance (mm)' }),
+      { target: { value: '45' } },
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save receiver' }),
+    )
+
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_id: 'emitter_001',
+        ray_count: 3500,
+        width_mm: 24,
+      }),
+    ])
+    expect(workspaceStore.getState().receivers).toEqual([
+      expect.objectContaining({
+        receiver_id: 'receiver_001',
+        center: [10, 20, 75],
+        view_distance_mm: 45,
+        width_mm: 42,
       }),
     ])
     expect(

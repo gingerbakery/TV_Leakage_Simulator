@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
@@ -15,8 +15,10 @@ import {
   CircleDot,
   Lightbulb,
   LoaderCircle,
+  Pencil,
   Play,
   Plus,
+  RefreshCw,
   Trash2,
 } from 'lucide-react'
 
@@ -40,12 +42,20 @@ import {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
+
+export interface RayObjectEditRequest {
+  id: string
+  kind: 'emitter' | 'receiver'
+}
 
 interface RayTracingPanelProps {
   scene?: ScenePayload
   cameraFrame: ViewerCameraFrame | null
+  editRequest?: RayObjectEditRequest | null
+  onEditRequestHandled?(): void
 }
 
 type EmitterCreationMode = 'face' | 'datum_plane'
@@ -150,6 +160,7 @@ function EmitterDialog({
   scene,
   selectedFaceIds,
   existingIds,
+  initialEmitter,
   onOpenChange,
   onApply,
 }: {
@@ -158,6 +169,7 @@ function EmitterDialog({
   scene?: ScenePayload
   selectedFaceIds: number[]
   existingIds: string[]
+  initialEmitter?: EmitterSpec | null
   onOpenChange(open: boolean): void
   onApply(emitter: EmitterSpec): void
 }) {
@@ -179,16 +191,38 @@ function EmitterDialog({
 
   useEffect(() => {
     if (!open) return
-    setCenter(defaultCenter)
-    setRotation([0, 0, 0])
-  }, [defaultCenter, open])
+    setCenter(initialEmitter?.center ?? defaultCenter)
+    setRotation(
+      rotationFromPlaneAxes(
+        initialEmitter?.u_axis ?? null,
+        initialEmitter?.v_axis ?? null,
+        initialEmitter?.custom_normal ?? null,
+      ),
+    )
+    setWidth(initialEmitter?.width_mm ?? 20)
+    setHeight(initialEmitter?.height_mm ?? 20)
+    setPowerMode(initialEmitter?.power_mode ?? 'total')
+    setPower(initialEmitter?.power_lumen ?? 1)
+    setPowerDensity(
+      initialEmitter?.power_density_lm_per_m2 ?? 100,
+    )
+    setRayCount(initialEmitter?.ray_count ?? 10_000)
+    setDistribution(
+      initialEmitter?.direction_distribution ?? 'lambertian',
+    )
+    setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
+    setNormalFlip(initialEmitter?.normal_flip ?? false)
+  }, [defaultCenter, initialEmitter, open])
 
+  const emitterFaceIds =
+    initialEmitter?.face_indices ?? selectedFaceIds
   const canApply =
-    mode === 'datum_plane' || selectedFaceIds.length > 0
+    mode === 'datum_plane' || emitterFaceIds.length > 0
   const previewEmitter = useMemo(() => {
     if (!open || mode !== 'datum_plane') return null
     const emitter = createDatumEmitter(
-      '__placement_preview_emitter__',
+      initialEmitter?.emitter_id ??
+        '__placement_preview_emitter__',
       center,
       rotation,
     )
@@ -202,8 +236,18 @@ function EmitterDialog({
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
+      enabled: initialEmitter?.enabled ?? true,
     }
-  }, [center, height, mode, normalFlip, open, rotation, width])
+  }, [
+    center,
+    height,
+    initialEmitter,
+    mode,
+    normalFlip,
+    open,
+    rotation,
+    width,
+  ])
 
   useEffect(() => {
     actions.setPlacementPreviewEmitter(previewEmitter)
@@ -216,13 +260,16 @@ function EmitterDialog({
 
   const handleApply = () => {
     if (!canApply) return
-    const emitterId = nextSpecId('emitter', existingIds)
+    const emitterId =
+      initialEmitter?.emitter_id ??
+      nextSpecId('emitter', existingIds)
     const emitter =
       mode === 'face'
-        ? createFaceEmitter(emitterId, selectedFaceIds)
+        ? createFaceEmitter(emitterId, emitterFaceIds)
         : createDatumEmitter(emitterId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
     onApply({
+      ...initialEmitter,
       ...emitter,
       ...(mode === 'datum_plane'
         ? {
@@ -241,6 +288,7 @@ function EmitterDialog({
       direction_distribution: distribution,
       gaussian_sigma_deg: Math.max(0.1, sigma),
       normal_flip: normalFlip,
+      enabled: initialEmitter?.enabled ?? true,
     })
     onOpenChange(false)
   }
@@ -251,7 +299,11 @@ function EmitterDialog({
       onOpenChange={onOpenChange}
       floating
       title={
-        mode === 'face' ? 'CAD surface emitter' : 'Datum plane emitter'
+        initialEmitter
+          ? `Edit ${initialEmitter.emitter_id}`
+          : mode === 'face'
+            ? 'CAD surface emitter'
+            : 'Datum plane emitter'
       }
       description={
         mode === 'face'
@@ -265,7 +317,7 @@ function EmitterDialog({
             Cancel
           </Button>
           <Button disabled={!canApply} onClick={handleApply}>
-            Add emitter
+            {initialEmitter ? 'Save emitter' : 'Add emitter'}
           </Button>
         </>
       }
@@ -274,11 +326,13 @@ function EmitterDialog({
         {mode === 'face' ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="text-xs font-semibold">
-              Selected faces · {selectedFaceIds.length.toLocaleString()}
+              {initialEmitter ? 'Emitter faces' : 'Selected faces'} ·{' '}
+              {emitterFaceIds.length.toLocaleString()}
             </div>
             <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-              이 패널을 열어 둔 채 Viewer 면을 클릭하세요. Shift를 누르면
-              여러 면을 추가 선택할 수 있습니다.
+              {initialEmitter
+                ? '기존 CAD 발광면은 유지됩니다. 발광면을 교체하려면 새 CAD surface Emitter를 생성하세요.'
+                : '이 패널을 열어 둔 채 Viewer 면을 클릭하세요. Shift를 누르면 여러 면을 추가 선택할 수 있습니다.'}
             </p>
           </div>
         ) : (
@@ -394,6 +448,7 @@ function ReceiverDialog({
   scene,
   cameraFrame,
   existingIds,
+  initialReceiver,
   onOpenChange,
   onApply,
 }: {
@@ -402,6 +457,7 @@ function ReceiverDialog({
   scene?: ScenePayload
   cameraFrame: ViewerCameraFrame | null
   existingIds: string[]
+  initialReceiver?: ReceiverSpec | null
   onOpenChange(open: boolean): void
   onApply(receiver: ReceiverSpec): void
 }) {
@@ -417,32 +473,86 @@ function ReceiverDialog({
   const [viewDistance, setViewDistance] = useState(
     currentViewDefaultDistanceMm,
   )
+  const [capturedFrame, setCapturedFrame] =
+    useState<ViewerCameraFrame | null>(null)
   const [normalFlip, setNormalFlip] = useState(false)
+  const cameraFrameRef = useRef(cameraFrame)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
 
   useEffect(() => {
-    if (!open) return
-    setCenter(defaultCenter)
-    setRotation([0, 0, 0])
-    setWidth(receiverDefaultSizeMm)
-    setHeight(receiverDefaultSizeMm)
-    if (mode === 'current_view') {
-      setViewDistance(currentViewDefaultDistanceMm)
-    }
-  }, [defaultCenter, mode, open])
+    cameraFrameRef.current = cameraFrame
+  }, [cameraFrame])
 
-  const canApply = mode === 'datum_plane' || cameraFrame !== null
+  useEffect(() => {
+    if (!open) return
+    const initialDistance =
+      initialReceiver?.view_distance_mm ??
+      currentViewDefaultDistanceMm
+    setDisplayName(initialReceiver?.display_name ?? '')
+    setCenter(initialReceiver?.center ?? defaultCenter)
+    setRotation(
+      rotationFromPlaneAxes(
+        initialReceiver?.u_axis ?? null,
+        initialReceiver?.v_axis ?? null,
+        initialReceiver?.normal ?? null,
+      ),
+    )
+    setWidth(initialReceiver?.width_mm ?? receiverDefaultSizeMm)
+    setHeight(initialReceiver?.height_mm ?? receiverDefaultSizeMm)
+    setResolutionX(initialReceiver?.resolution[0] ?? 80)
+    setResolutionY(initialReceiver?.resolution[1] ?? 24)
+    setAcceptance(initialReceiver?.acceptance_angle_deg ?? 90)
+    setViewDistance(initialDistance)
+    setNormalFlip(initialReceiver?.normal_flip ?? false)
+    if (mode === 'current_view' && initialReceiver) {
+      const normal =
+        initialReceiver.base_normal ?? initialReceiver.normal
+      const uAxis =
+        initialReceiver.base_u_axis ??
+        initialReceiver.u_axis
+      const vAxis =
+        initialReceiver.base_v_axis ??
+        initialReceiver.v_axis
+      const baseCenter =
+        initialReceiver.base_center ?? initialReceiver.center
+      setCapturedFrame(
+        uAxis && vAxis
+          ? {
+              target: [
+                baseCenter[0] + normal[0] * initialDistance,
+                baseCenter[1] + normal[1] * initialDistance,
+                baseCenter[2] + normal[2] * initialDistance,
+              ],
+              normal: [...normal],
+              uAxis: [...uAxis],
+              vAxis: [...vAxis],
+            }
+          : cameraFrameRef.current,
+      )
+    } else {
+      setCapturedFrame(cameraFrameRef.current)
+    }
+  }, [
+    defaultCenter,
+    initialReceiver,
+    mode,
+    open,
+  ])
+
+  const canApply = mode === 'datum_plane' || capturedFrame !== null
   const previewReceiver = useMemo(() => {
     if (!open) return null
     const receiver =
-      mode === 'current_view' && cameraFrame
+      mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
-            '__placement_preview_receiver__',
-            cameraFrame,
+            initialReceiver?.receiver_id ??
+              '__placement_preview_receiver__',
+            capturedFrame,
             Math.max(0.001, viewDistance),
           )
         : createDatumReceiver(
-            '__placement_preview_receiver__',
+            initialReceiver?.receiver_id ??
+              '__placement_preview_receiver__',
             center,
             rotation,
           )
@@ -460,11 +570,13 @@ function ReceiverDialog({
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
+      enabled: initialReceiver?.enabled ?? true,
     }
   }, [
-    cameraFrame,
+    capturedFrame,
     center,
     height,
+    initialReceiver,
     mode,
     normalFlip,
     open,
@@ -484,17 +596,20 @@ function ReceiverDialog({
 
   const handleApply = () => {
     if (!canApply) return
-    const receiverId = nextSpecId('receiver', existingIds)
+    const receiverId =
+      initialReceiver?.receiver_id ??
+      nextSpecId('receiver', existingIds)
     const receiver =
-      mode === 'current_view' && cameraFrame
+      mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
             receiverId,
-            cameraFrame,
+            capturedFrame,
             Math.max(0.001, viewDistance),
           )
         : createDatumReceiver(receiverId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
     onApply({
+      ...initialReceiver,
       ...receiver,
       display_name: displayName.trim() || receiverId,
       ...(mode === 'datum_plane'
@@ -513,6 +628,7 @@ function ReceiverDialog({
       ],
       acceptance_angle_deg: Math.max(0.1, Math.min(180, acceptance)),
       normal_flip: normalFlip,
+      enabled: initialReceiver?.enabled ?? true,
     })
     onOpenChange(false)
   }
@@ -523,9 +639,11 @@ function ReceiverDialog({
       onOpenChange={onOpenChange}
       floating
       title={
-        mode === 'current_view'
-          ? 'Current view receiver'
-          : 'Datum plane receiver'
+        initialReceiver
+          ? `Edit ${initialReceiver.display_name}`
+          : mode === 'current_view'
+            ? 'Current view receiver'
+            : 'Datum plane receiver'
       }
       description={
         mode === 'current_view'
@@ -539,7 +657,7 @@ function ReceiverDialog({
             Cancel
           </Button>
           <Button disabled={!canApply} onClick={handleApply}>
-            Add receiver
+            {initialReceiver ? 'Save receiver' : 'Add receiver'}
           </Button>
         </>
       }
@@ -574,15 +692,27 @@ function ReceiverDialog({
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="flex items-center gap-2 text-xs font-semibold">
               <Camera className="size-3.5 text-primary" />
-              {cameraFrame ? 'Current camera captured' : 'Camera unavailable'}
+              {capturedFrame ? 'Receiver view captured' : 'Camera unavailable'}
             </div>
-            <div className="mt-3 max-w-40">
-              <NumberField
-                label="View distance (mm)"
-                value={viewDistance}
-                min={0.001}
-                onChange={setViewDistance}
-              />
+            <div className="mt-3 flex items-end gap-2">
+              <div className="max-w-40 flex-1">
+                <NumberField
+                  label="View distance (mm)"
+                  value={viewDistance}
+                  min={0.001}
+                  onChange={setViewDistance}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!cameraFrame}
+                onClick={() => setCapturedFrame(cameraFrame)}
+              >
+                <RefreshCw />
+                Use current camera
+              </Button>
             </div>
           </div>
         )}
@@ -652,11 +782,17 @@ function formatDuration(seconds: number | null | undefined): string {
 export function RayTracingPanel({
   scene,
   cameraFrame,
+  editRequest = null,
+  onEditRequestHandled,
 }: RayTracingPanelProps) {
   const [emitterMode, setEmitterMode] =
     useState<EmitterCreationMode | null>(null)
   const [receiverMode, setReceiverMode] =
     useState<ReceiverCreationMode | null>(null)
+  const [editingEmitterId, setEditingEmitterId] =
+    useState<string | null>(null)
+  const [editingReceiverId, setEditingReceiverId] =
+    useState<string | null>(null)
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -681,6 +817,14 @@ export function RayTracingPanel({
   )
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const editingEmitter =
+    emitters.find(
+      (emitter) => emitter.emitter_id === editingEmitterId,
+    ) ?? null
+  const editingReceiver =
+    receivers.find(
+      (receiver) => receiver.receiver_id === editingReceiverId,
+    ) ?? null
   const startMutation = useStartRayTraceMutation()
   const jobQuery = useRayTraceJobQuery(activeJobId)
   const job = jobQuery.data
@@ -705,6 +849,41 @@ export function RayTracingPanel({
     () => () => actions.setEmitterFaceSelectionArmed(false),
     [actions],
   )
+
+  useEffect(() => {
+    if (!editRequest) return
+    actions.setEmitterFaceSelectionArmed(false)
+    actions.setSelectedFaceIds([])
+    actions.setSelectedComponentIds([])
+    if (
+      editRequest.kind === 'emitter' &&
+      emitters.some(
+        (emitter) => emitter.emitter_id === editRequest.id,
+      )
+    ) {
+      setReceiverMode(null)
+      setEditingReceiverId(null)
+      setEmitterMode(null)
+      setEditingEmitterId(editRequest.id)
+    } else if (
+      editRequest.kind === 'receiver' &&
+      receivers.some(
+        (receiver) => receiver.receiver_id === editRequest.id,
+      )
+    ) {
+      setEmitterMode(null)
+      setEditingEmitterId(null)
+      setReceiverMode(null)
+      setEditingReceiverId(editRequest.id)
+    }
+    onEditRequestHandled?.()
+  }, [
+    actions,
+    editRequest,
+    emitters,
+    onEditRequestHandled,
+    receivers,
+  ])
 
   const updateConfig = (patch: Partial<RayTraceConfigRequest>) => {
     actions.setRayTraceConfig({ ...config, ...patch })
@@ -758,6 +937,7 @@ export function RayTracingPanel({
             aria-label="Add CAD surface emitter"
             disabled={!scene || isRunning}
             onClick={() => {
+              setEditingEmitterId(null)
               actions.setSelectedFaceIds([])
               actions.setSelectedComponentIds([])
               actions.setEmitterFaceSelectionArmed(true)
@@ -773,6 +953,7 @@ export function RayTracingPanel({
             aria-label="Add datum plane emitter"
             disabled={!scene || isRunning}
             onClick={() => {
+              setEditingEmitterId(null)
               actions.setEmitterFaceSelectionArmed(false)
               setEmitterMode('datum_plane')
             }}
@@ -819,6 +1000,21 @@ export function RayTracingPanel({
                 <Button
                   variant="ghost"
                   size="icon-xs"
+                  aria-label={`Edit ${emitter.emitter_id}`}
+                  disabled={isRunning}
+                  onClick={() => {
+                    actions.setEmitterFaceSelectionArmed(false)
+                    actions.setSelectedFaceIds([])
+                    actions.setSelectedComponentIds([])
+                    setEmitterMode(null)
+                    setEditingEmitterId(emitter.emitter_id)
+                  }}
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
                   aria-label={`Delete ${emitter.emitter_id}`}
                   disabled={isRunning}
                   onClick={() =>
@@ -847,7 +1043,10 @@ export function RayTracingPanel({
             size="sm"
             aria-label="Add datum plane receiver"
             disabled={!scene || isRunning}
-            onClick={() => setReceiverMode('datum_plane')}
+            onClick={() => {
+              setEditingReceiverId(null)
+              setReceiverMode('datum_plane')
+            }}
           >
             <Plus />
             Datum plane
@@ -857,7 +1056,10 @@ export function RayTracingPanel({
             size="sm"
             aria-label="Add current view receiver"
             disabled={!scene || !cameraFrame || isRunning}
-            onClick={() => setReceiverMode('current_view')}
+            onClick={() => {
+              setEditingReceiverId(null)
+              setReceiverMode('current_view')
+            }}
           >
             <Camera />
             Current view
@@ -896,6 +1098,18 @@ export function RayTracingPanel({
                     {receiver.width_mm} × {receiver.height_mm} mm
                   </div>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Edit ${receiver.receiver_id}`}
+                  disabled={isRunning}
+                  onClick={() => {
+                    setReceiverMode(null)
+                    setEditingReceiverId(receiver.receiver_id)
+                  }}
+                >
+                  <Pencil />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon-xs"
@@ -1088,17 +1302,25 @@ export function RayTracingPanel({
       </section>
 
       <EmitterDialog
-        open={emitterMode !== null}
-        mode={emitterMode ?? 'face'}
+        open={emitterMode !== null || editingEmitter !== null}
+        mode={
+          editingEmitter
+            ? editingEmitter.emitter_type === 'face'
+              ? 'face'
+              : 'datum_plane'
+            : emitterMode ?? 'face'
+        }
         scene={scene}
         selectedFaceIds={selectedFaceIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
+        initialEmitter={editingEmitter}
         onOpenChange={(open) => {
           if (!open) {
             actions.setEmitterFaceSelectionArmed(false)
             actions.setSelectedFaceIds([])
             actions.setSelectedComponentIds([])
             setEmitterMode(null)
+            setEditingEmitterId(null)
           }
         }}
         onApply={(emitter) => {
@@ -1108,13 +1330,23 @@ export function RayTracingPanel({
         }}
       />
       <ReceiverDialog
-        open={receiverMode !== null}
-        mode={receiverMode ?? 'datum_plane'}
+        open={receiverMode !== null || editingReceiver !== null}
+        mode={
+          editingReceiver
+            ? editingReceiver.placement_mode === 'current_view'
+              ? 'current_view'
+              : 'datum_plane'
+            : receiverMode ?? 'datum_plane'
+        }
         scene={scene}
         cameraFrame={cameraFrame}
         existingIds={receivers.map((receiver) => receiver.receiver_id)}
+        initialReceiver={editingReceiver}
         onOpenChange={(open) => {
-          if (!open) setReceiverMode(null)
+          if (!open) {
+            setReceiverMode(null)
+            setEditingReceiverId(null)
+          }
         }}
         onApply={actions.upsertReceiver}
       />

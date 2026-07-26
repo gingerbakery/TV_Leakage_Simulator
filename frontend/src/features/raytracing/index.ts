@@ -1,4 +1,5 @@
 export { RayTracingPanel } from './ray-tracing-panel'
+export type { RayObjectEditRequest } from './ray-tracing-panel'
 export {
   buildRayTraceRequest,
   createCurrentViewReceiver,
@@ -7,6 +8,7 @@ export {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rotationFromPlaneAxes,
 } from './ray-tracing-model'
 export type {
   RayTraceRequestSource,

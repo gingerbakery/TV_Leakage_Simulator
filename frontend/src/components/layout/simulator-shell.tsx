@@ -13,7 +13,10 @@ import { Button } from '@/components/ui/button'
 import type { ComponentEditorRequest } from '@/features/components'
 import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
-import type { ViewerCameraFrame } from '@/features/raytracing'
+import type {
+  RayObjectEditRequest,
+  ViewerCameraFrame,
+} from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import {
   useWorkspaceStore,
@@ -28,6 +31,8 @@ export function SimulatorShell() {
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)
+  const [rayObjectEditRequest, setRayObjectEditRequest] =
+    useState<RayObjectEditRequest | null>(null)
   const [componentDialog, setComponentDialog] = useState<{
     type: ComponentDialogType
     componentId: number
@@ -144,6 +149,10 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           rayTraceJob={rayTraceJob}
+          rayObjectEditRequest={rayObjectEditRequest}
+          onRayObjectEditRequestHandled={() =>
+            setRayObjectEditRequest(null)
+          }
           onOpenRayTraceResult={() => {
             if (rayTraceResult) setRayTraceResultOpen(true)
           }}
@@ -186,6 +195,10 @@ export function SimulatorShell() {
           onDeleteComponent={(request) =>
             openComponentDialog('delete', request)
           }
+          onEditRayObject={(request) => {
+            setActiveSection('ray-tracing')
+            setRayObjectEditRequest(request)
+          }}
         />
       </div>
 

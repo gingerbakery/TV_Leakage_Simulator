@@ -10,6 +10,7 @@ import {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rotationFromPlaneAxes,
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
@@ -20,6 +21,23 @@ describe('ray tracing model', () => {
     const axes = planeAxesFromRotation([90, 0, 0])
     expect(axes.normal[1]).toBeCloseTo(-1)
     expect(axes.vAxis[2]).toBeCloseTo(1)
+    const rotation = rotationFromPlaneAxes(
+      axes.uAxis,
+      axes.vAxis,
+      axes.normal,
+    )
+    expect(rotation[0]).toBeCloseTo(90)
+    expect(rotation[1]).toBeCloseTo(0)
+    expect(rotation[2]).toBeCloseTo(0)
+    const compoundAxes = planeAxesFromRotation([20, -30, 45])
+    const compoundRotation = rotationFromPlaneAxes(
+      compoundAxes.uAxis,
+      compoundAxes.vAxis,
+      compoundAxes.normal,
+    )
+    expect(compoundRotation[0]).toBeCloseTo(20)
+    expect(compoundRotation[1]).toBeCloseTo(-30)
+    expect(compoundRotation[2]).toBeCloseTo(45)
 
     const receiver = createCurrentViewReceiver(
       'receiver_001',

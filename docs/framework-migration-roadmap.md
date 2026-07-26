@@ -111,6 +111,13 @@ Datum Emitter와 Datum·Current View Receiver 설정도 Viewer 왼쪽에서
 Receiver는 30 × 30 mm와 모델 중심 기준 30 mm 거리를 기본값으로 사용해
 수광면이 카메라 근접면에서 화면 전체를 덮지 않게 한다.
 
+생성된 Emitter·Receiver 목록에는 설정 편집 버튼을 제공하며, 생성에 사용한
+같은 비모달 패널을 기존 값으로 다시 열어 ID를 유지한 채 ray 수, 출력,
+좌표·회전, 크기, 해상도와 수광각을 수정한다. Current View Receiver는 기존
+카메라 프레임을 유지해 열리며 필요할 때만 `Use current camera`로 갱신한다.
+Viewer의 CAD 발광면·가상 발광면·수광면을 우클릭하면 설정 편집,
+활성화/비활성화와 삭제 메뉴를 바로 사용할 수 있다.
+
 ## 11. Result·광선 시각화 — 완료
 
 완료된 ray tracing job의 핵심 지표와 component contribution을 Result

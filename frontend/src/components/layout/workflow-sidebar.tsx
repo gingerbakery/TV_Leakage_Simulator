@@ -19,6 +19,7 @@ import {
 import { MaterialAssignmentPanel } from '@/features/materials'
 import {
   RayTracingPanel,
+  type RayObjectEditRequest,
   type ViewerCameraFrame,
 } from '@/features/raytracing'
 import { ResultPanel } from '@/features/results'
@@ -59,6 +60,8 @@ interface WorkflowSidebarProps {
   isSceneLoading?: boolean
   sceneErrorMessage?: string
   rayTraceJob?: RayTraceJob
+  rayObjectEditRequest?: RayObjectEditRequest | null
+  onRayObjectEditRequestHandled?(): void
   onOpenRayTraceResult(): void
   onEditMaterial(request: ComponentEditorRequest): void
   onEditTransform(request: ComponentEditorRequest): void
@@ -118,6 +121,8 @@ export function WorkflowSidebar({
   isSceneLoading = false,
   sceneErrorMessage,
   rayTraceJob,
+  rayObjectEditRequest,
+  onRayObjectEditRequestHandled,
   onOpenRayTraceResult,
   onEditMaterial,
   onEditTransform,
@@ -171,7 +176,14 @@ export function WorkflowSidebar({
     }
 
     if (activeSection === 'ray-tracing') {
-      return <RayTracingPanel scene={scene} cameraFrame={cameraFrame} />
+      return (
+        <RayTracingPanel
+          scene={scene}
+          cameraFrame={cameraFrame}
+          editRequest={rayObjectEditRequest}
+          onEditRequestHandled={onRayObjectEditRequestHandled}
+        />
+      )
     }
 
     if (activeSection === 'result') {

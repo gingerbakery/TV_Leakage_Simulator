@@ -41,6 +41,10 @@ function toRadians(value: number): number {
   return (value * Math.PI) / 180
 }
 
+function toDegrees(value: number): number {
+  return (value * 180) / Math.PI
+}
+
 function rotateX([x, y, z]: Vec3, angle: number): Vec3 {
   const cosine = Math.cos(angle)
   const sine = Math.sin(angle)
@@ -79,6 +83,31 @@ export function planeAxesFromRotation(rotationDeg: Vec3): {
     vAxis: rotateVector([0, 1, 0], rotationDeg),
     normal: rotateVector([0, 0, 1], rotationDeg),
   }
+}
+
+export function rotationFromPlaneAxes(
+  uAxis: Vec3 | null,
+  vAxis: Vec3 | null,
+  normal: Vec3 | null,
+): Vec3 {
+  if (!uAxis || !vAxis || !normal) return [0, 0, 0]
+  const rotationY = Math.asin(
+    Math.max(-1, Math.min(1, -uAxis[2])),
+  )
+  const cosineY = Math.cos(rotationY)
+  const rotationX =
+    Math.abs(cosineY) > 1e-7
+      ? Math.atan2(vAxis[2], normal[2])
+      : 0
+  const rotationZ =
+    Math.abs(cosineY) > 1e-7
+      ? Math.atan2(uAxis[1], uAxis[0])
+      : Math.atan2(-vAxis[0], vAxis[1])
+  return [
+    toDegrees(rotationX),
+    toDegrees(rotationY),
+    toDegrees(rotationZ),
+  ]
 }
 
 export function nextSpecId(
