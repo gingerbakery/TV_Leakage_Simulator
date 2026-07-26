@@ -94,6 +94,20 @@ describe('Step 07·08 feature editors', () => {
     ).not.toBeNull()
   })
 
+  it('shows the active component editor target in the Viewer', async () => {
+    render(
+      <ViewerWorkspace
+        scene={createSceneFixture()}
+        editingComponentId={1}
+        editingComponentMode="transform"
+      />,
+    )
+
+    expect(
+      await screen.findByText('Transform target · STEP Solid 1'),
+    ).not.toBeNull()
+  })
+
   it('restores component actions on the Viewer context menu', async () => {
     const onEditMaterial = vi.fn()
     render(
@@ -121,6 +135,7 @@ describe('Step 07·08 feature editors', () => {
       componentId: 1,
       returnFocusElement: viewer,
     })
+    expect(workspaceStore.getState().selectedComponentIds).toEqual([1])
   })
 
   it('adds and activates a coordinate ROI scope', () => {
@@ -201,6 +216,13 @@ describe('Step 07·08 feature editors', () => {
     expect(
       screen.getByRole('button', { name: 'Select Cover Deco' }),
     ).not.toBeNull()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Material for Cover Deco' }),
+    )
+    expect(workspaceStore.getState().selectedComponentIds).toEqual([1])
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+    expect(workspaceStore.getState().hiddenComponentIds).toEqual([])
   })
 
   it('creates a compiled part material assignment', () => {

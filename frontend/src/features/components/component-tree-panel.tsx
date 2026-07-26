@@ -74,6 +74,22 @@ function ComponentTreeRow({
     returnFocusElement: rowRef.current,
   })
 
+  const prepareEditorTarget = () => {
+    actions.setSelectedComponentIds([componentId])
+    actions.setSelectedFaceIds([])
+    if (!visible) actions.toggleComponentVisibility(componentId)
+  }
+
+  const editMaterial = () => {
+    prepareEditorTarget()
+    onEditMaterial(request())
+  }
+
+  const editTransform = () => {
+    prepareEditorTarget()
+    onEditTransform(request())
+  }
+
   const beginRename = () => {
     cancelRenameRef.current = false
     setNameDraft(displayName)
@@ -104,9 +120,9 @@ function ComponentTreeRow({
     } else if (action === 'traceability') {
       actions.toggleComponentTraceability(componentId)
     } else if (action === 'material') {
-      onEditMaterial(request())
+      editMaterial()
     } else if (action === 'transform') {
-      onEditTransform(request())
+      editTransform()
     } else {
       onDelete(request())
     }
@@ -205,7 +221,7 @@ function ComponentTreeRow({
             size="icon-xs"
             aria-label={`Material for ${displayName}`}
             title="Material"
-            onClick={() => onEditMaterial(request())}
+            onClick={editMaterial}
           >
             <Palette />
           </Button>
@@ -215,7 +231,7 @@ function ComponentTreeRow({
             size="icon-xs"
             aria-label={`Transform ${displayName}`}
             title="Transform"
-            onClick={() => onEditTransform(request())}
+            onClick={editTransform}
           >
             <Move3D />
           </Button>

@@ -74,6 +74,7 @@ interface ViewerWorkspaceProps {
   rayTraceResultOpen?: boolean
   onRayTraceResultOpenChange?(open: boolean): void
   editingComponentId?: number | null
+  editingComponentMode?: 'material' | 'transform' | null
   onEditMaterial?(request: ComponentEditorRequest): void
   onEditTransform?(request: ComponentEditorRequest): void
   onDeleteComponent?(request: ComponentEditorRequest): void
@@ -88,6 +89,7 @@ export function ViewerWorkspace({
   rayTraceResultOpen = false,
   onRayTraceResultOpenChange,
   editingComponentId,
+  editingComponentMode,
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
@@ -193,6 +195,15 @@ export function ViewerWorkspace({
       component.component_id === contextTarget?.componentId,
   )
   const contextComponentId = contextComponent?.component_id
+  const editingComponent = components.find(
+    (component) => component.component_id === editingComponentId,
+  )
+  const editingComponentName = editingComponent
+    ? getComponentDisplayName(
+        editingComponent,
+        componentNameOverrides,
+      )
+    : ''
   const handleContextAction = (action: ComponentContextAction) => {
     if (contextComponentId === undefined) return
 
@@ -219,6 +230,8 @@ export function ViewerWorkspace({
       componentId: contextComponentId,
       returnFocusElement: contextTarget?.returnFocusElement ?? null,
     }
+    actions.setSelectedComponentIds([contextComponentId])
+    actions.setSelectedFaceIds([])
     if (action === 'material') onEditMaterial?.(request)
     else if (action === 'transform') onEditTransform?.(request)
     else onDeleteComponent?.(request)
@@ -348,15 +361,25 @@ export function ViewerWorkspace({
             >
               {renderMode}
             </Badge>
-            {selectedFaceIds.length > 0 ? (
+            {emitterFaceSelectionArmed ? (
               <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
-                {emitterFaceSelectionArmed
+                {selectedFaceIds.length > 0
                   ? `Emitter surface · ${selectedFaceIds.length.toLocaleString()} triangles`
-                  : `Face ${selectedFaceIds[0]}${
-                      selectedFaceIds.length > 1
-                        ? ` +${selectedFaceIds.length - 1}`
-                        : ''
-                    }`}
+                  : 'Emitter surface · click a face'}
+              </Badge>
+            ) : selectedFaceIds.length > 0 ? (
+              <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
+                Face {selectedFaceIds[0]}
+                {selectedFaceIds.length > 1
+                  ? ` +${selectedFaceIds.length - 1}`
+                  : ''}
+              </Badge>
+            ) : editingComponent && editingComponentMode ? (
+              <Badge className="border border-amber-400/60 bg-amber-400/20 text-amber-200">
+                {editingComponentMode === 'transform'
+                  ? 'Transform target'
+                  : 'Material target'}{' '}
+                · {editingComponentName}
               </Badge>
             ) : null}
             {activeRoiFaceIds.length > 0 ? (

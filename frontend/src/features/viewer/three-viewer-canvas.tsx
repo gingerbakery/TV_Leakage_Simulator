@@ -1959,6 +1959,38 @@ export function ThreeViewerCanvas({
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
+      if (isEditing && !emitterFaceSelectionArmed) {
+        const targetSurface = new Mesh(
+          node.surface.geometry.clone(),
+          new MeshBasicMaterial({
+            color: 0xf59e0b,
+            side: DoubleSide,
+            transparent: true,
+            opacity: 0.28,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        targetSurface.name = `editor-target-surface-${componentId}`
+        targetSurface.renderOrder = 88
+
+        const targetEdges = new LineSegments(
+          node.edges.geometry.clone(),
+          new LineBasicMaterial({
+            color: 0xfbbf24,
+            transparent: true,
+            opacity: 1,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        targetEdges.name = `editor-target-edges-${componentId}`
+        targetEdges.renderOrder = 89
+        node.selectionOverlayRoot.add(targetSurface, targetEdges)
+      }
+
       const componentEmitterFaceIds = node.component.face_indices.filter(
         (faceId) => emitterFaceSet.has(faceId),
       )
@@ -2058,7 +2090,7 @@ export function ThreeViewerCanvas({
             }),
           )
           overlay.name = `selected-face-highlight-${componentId}`
-          overlay.renderOrder = isEmitterSurfaceDraft ? 84 : 12
+          overlay.renderOrder = isEmitterSurfaceDraft ? 94 : 12
           node.selectionOverlayRoot.add(overlay)
 
           if (isEmitterSurfaceDraft) {
@@ -2076,7 +2108,7 @@ export function ThreeViewerCanvas({
               )
               if (boundary) {
                 boundary.name = `selected-emitter-boundary-${componentId}`
-                boundary.renderOrder = 85
+                boundary.renderOrder = 95
                 node.selectionOverlayRoot.add(boundary)
               }
               const localCenter = new Vector3(
@@ -2096,7 +2128,7 @@ export function ThreeViewerCanvas({
                 0xf59e0b,
               )
               direction.traverse((child) => {
-                child.renderOrder = Math.max(child.renderOrder, 86)
+                child.renderOrder = Math.max(child.renderOrder, 96)
               })
               node.selectionOverlayRoot.add(direction)
             }

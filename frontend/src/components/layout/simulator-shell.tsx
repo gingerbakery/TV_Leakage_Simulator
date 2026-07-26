@@ -171,6 +171,12 @@ export function SimulatorShell() {
               ? componentDialog.componentId
               : null
           }
+          editingComponentMode={
+            componentDialog?.type === 'material' ||
+            componentDialog?.type === 'transform'
+              ? componentDialog.type
+              : null
+          }
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
           }
