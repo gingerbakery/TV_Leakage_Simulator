@@ -90,6 +90,37 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertIn("boot_token", dev_response.json())
         self.assertEqual(ping_response.text, "pong")
 
+    def test_production_frontend_is_served_from_same_origin(self):
+        frontend_dist = (
+            Path(self.temp_dir.name) / "frontend" / "dist"
+        )
+        assets_dir = frontend_dist / "assets"
+        assets_dir.mkdir(parents=True)
+        (frontend_dist / "index.html").write_text(
+            "<html><body>React production shell</body></html>",
+            encoding="utf-8",
+        )
+        (assets_dir / "app.js").write_text(
+            "window.__APP_READY__ = true",
+            encoding="utf-8",
+        )
+        client = TestClient(create_app(self.runtime))
+        try:
+            root_response = client.get("/")
+            asset_response = client.get("/assets/app.js")
+            route_response = client.get("/workspace/result")
+            unknown_api_response = client.get("/api/unknown")
+        finally:
+            client.close()
+
+        self.assertEqual(root_response.status_code, 200)
+        self.assertIn("React production shell", root_response.text)
+        self.assertEqual(asset_response.status_code, 200)
+        self.assertIn("__APP_READY__", asset_response.text)
+        self.assertEqual(route_response.status_code, 200)
+        self.assertIn("React production shell", route_response.text)
+        self.assertEqual(unknown_api_response.status_code, 404)
+
     def test_scene_endpoint_caches_mesh_and_returns_token(self):
         response = self.client.get(
             "/api/scene",

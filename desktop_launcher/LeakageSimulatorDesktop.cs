@@ -61,7 +61,7 @@ namespace LeakageSimulatorDesktop
                 Height = 24,
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI", 12f, FontStyle.Bold),
-                Text = "Starting embedded web UI...",
+                Text = "Starting React desktop UI...",
             };
 
             _hintLabel = new Label
@@ -189,6 +189,8 @@ namespace LeakageSimulatorDesktop
         {
             string pythonExe = Path.Combine(appRoot, "_tools", "python313", "python.exe");
             string runWeb = Path.Combine(appRoot, "run_web.py");
+            string runApi = Path.Combine(appRoot, "run_api.py");
+            string frontendIndex = Path.Combine(appRoot, "frontend", "dist", "index.html");
             if (!File.Exists(pythonExe))
             {
                 throw new FileNotFoundException("Embedded Python was not found.", pythonExe);
@@ -197,6 +199,14 @@ namespace LeakageSimulatorDesktop
             if (!File.Exists(runWeb))
             {
                 throw new FileNotFoundException("run_web.py was not found.", runWeb);
+            }
+            if (!File.Exists(runApi))
+            {
+                throw new FileNotFoundException("run_api.py was not found.", runApi);
+            }
+            if (!File.Exists(frontendIndex))
+            {
+                throw new FileNotFoundException("React production UI was not found.", frontendIndex);
             }
         }
 

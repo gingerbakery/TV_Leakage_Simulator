@@ -8,11 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-MATPLOTLIB_CACHE = Path(tempfile.gettempdir()) / "tv_leakage_matplotlib"
-MATPLOTLIB_CACHE.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("MPLCONFIGDIR", str(MATPLOTLIB_CACHE))
-
-import matplotlib.pyplot as plt
 import numpy as np
 
 from leakage_simulator.geometry import TriangleMesh
@@ -179,6 +174,13 @@ def summarize(model: str, result) -> dict:
 
 
 def create_report(summaries: list[dict], blocker_summary: dict) -> Path:
+    matplotlib_cache = (
+        Path(tempfile.gettempdir()) / "tv_leakage_matplotlib"
+    )
+    matplotlib_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
+    import matplotlib.pyplot as plt
+
     figure = plt.figure(figsize=(15, 8.5), constrained_layout=True, facecolor="white")
     figure.suptitle(
         "RT-2C One-Bounce Reflection Validation",

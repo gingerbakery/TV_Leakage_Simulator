@@ -7,7 +7,7 @@
 대상 저장소:
 
 - `https://github.com/gingerbakery/TV_Leakage_Simulator`
-- 기준 브랜치: `main`
+- 기준 브랜치: `codex/framework-migration`
 
 > GitHub의 `Download ZIP`에는 GitHub에 커밋하고 push한 파일만 포함된다. 사외 PC에만 있는 미커밋 변경 사항은 포함되지 않는다.
 
@@ -16,6 +16,7 @@
 사내 PC에 다음 프로그램이 필요하다.
 
 - Python 3.13 계열 64비트(검증 버전: Python 3.13.3)
+- Node.js와 npm(소스에서 React UI를 빌드할 때만 필요)
 - Visual Studio Code
 - Microsoft Edge 또는 Google Chrome
 
@@ -26,7 +27,7 @@ Python 설치 시 `Add python.exe to PATH` 항목을 선택한다. 설치 후에
 사외 인터넷 PC에서 다음 순서로 진행한다.
 
 1. GitHub 저장소에 접속한다.
-2. 브랜치가 `main`인지 확인한다.
+2. 브랜치가 `codex/framework-migration`인지 확인한다.
 3. `Code` 버튼을 누른다.
 4. `Download ZIP`을 선택한다.
 5. 다운로드한 `TV_Leakage_Simulator-main.zip`을 회사에서 허용한 보안 절차와 전달 수단으로 사내 PC에 옮긴다.
@@ -51,8 +52,10 @@ Python 설치 시 `Add python.exe to PATH` 항목을 선택한다. 설치 후에
 
    ```text
    run_web.py
+   run_api.py
    check_cad_import.py
    requirements-dev.txt
+   frontend
    src
    samples
    ```
@@ -101,6 +104,15 @@ OCP OK
 
 > 이미 활성화된 Python 환경에서 `python` 명령으로 OCP 확인이 성공했다면, 이후 명령의 `.\.venv\Scripts\python.exe` 대신 `python`을 사용해도 된다.
 
+### 5.5 React 의존성 설치와 production build
+
+```powershell
+npm --prefix frontend install
+npm --prefix frontend run build
+```
+
+`frontend\dist\index.html`이 생성되면 정상이다.
+
 ## 6. CAD import 기능 확인
 
 프로젝트에 포함된 STEP 샘플 파일로 실제 CAD import를 검사한다.
@@ -132,9 +144,9 @@ python -u run_web.py --port 8788
 정상 실행 예시:
 
 ```text
-run web ui v0.9.11 at http://127.0.0.1:8788
+TV Leakage Simulator API v0.13.0 at http://127.0.0.1:8788
 health: http://127.0.0.1:8788/health
-Press Ctrl + C to stop
+OpenAPI: http://127.0.0.1:8788/api/docs
 ```
 
 서버가 실행 중인 터미널은 닫지 않는다. Edge 또는 Chrome을 열어 다음 주소로 접속한다.
@@ -152,7 +164,7 @@ http://127.0.0.1:8788/health
 정상 응답 예시:
 
 ```text
-ok web_ui_version=0.9.11
+ok api_version=0.13.0
 ```
 
 8788 포트가 이미 사용 중이면 프로그램이 8789 등 다른 포트를 선택할 수 있다. 이 경우 터미널에 실제로 표시된 주소로 접속한다.
@@ -218,6 +230,8 @@ python --version
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -c "import cadquery, OCP; print('OCP OK')"
+npm --prefix frontend install
+npm --prefix frontend run build
 .\.venv\Scripts\python.exe check_cad_import.py --cad ".\samples\tv_leakage_full_assembled_no_gap.stp" --output-dir ".\outputs" --no-dialog
 ```
 

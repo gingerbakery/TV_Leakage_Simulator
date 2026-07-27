@@ -7,10 +7,11 @@ from typing import Any
 
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from .runtime import ApiRuntime
 
-API_VERSION = "0.12.0"
+API_VERSION = "0.13.0"
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -34,9 +35,23 @@ def create_app(
         openapi_url="/api/openapi.json",
     )
     application.state.api_runtime = api_runtime
+    frontend_dist = api_runtime.root / "frontend" / "dist"
+    frontend_index = frontend_dist / "index.html"
+    frontend_assets = frontend_dist / "assets"
+    if frontend_assets.is_dir():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=frontend_assets),
+            name="frontend-assets",
+        )
 
-    @application.get("/", response_class=JSONResponse)
-    def root_status() -> dict[str, Any]:
+    @application.get("/")
+    def root_status() -> Any:
+        if frontend_index.is_file():
+            return FileResponse(
+                frontend_index,
+                media_type="text/html",
+            )
         return {
             "ok": True,
             "service": "tv-leakage-simulator-api",
@@ -136,6 +151,40 @@ def create_app(
             media_type=media_type or "application/octet-stream",
             filename=path.name,
             content_disposition_type="inline",
+        )
+
+    @application.get(
+        "/{spa_path:path}",
+        include_in_schema=False,
+    )
+    def frontend_route(spa_path: str) -> Any:
+        reserved_prefixes = (
+            "api/",
+            "outputs/",
+        )
+        reserved_paths = {
+            "_ping",
+            "dev-status",
+            "health",
+        }
+        if (
+            spa_path.startswith(reserved_prefixes)
+            or spa_path in reserved_paths
+        ):
+            return PlainTextResponse("Not found", status_code=404)
+        if not frontend_index.is_file():
+            return PlainTextResponse("Not found", status_code=404)
+
+        requested_path = (frontend_dist / spa_path).resolve()
+        try:
+            requested_path.relative_to(frontend_dist.resolve())
+        except ValueError:
+            return PlainTextResponse("Not found", status_code=404)
+        if requested_path.is_file():
+            return FileResponse(requested_path)
+        return FileResponse(
+            frontend_index,
+            media_type="text/html",
         )
 
     return application

@@ -10,7 +10,7 @@
 - BSDF 실데이터 연결 방식 구체화
 - material assignment의 저장 포맷 확정
 - viewer에서 face 다중 선택 UX 고도화
-- release 패키지 경량화 전략
+- 사내 배포용 EXE 코드 서명과 버전 업데이트 정책
 - clone 후 실행 부트스트랩 절차 정리
 
 ## 단계 리마인드
@@ -26,11 +26,8 @@
   - Retroreflective lobe 및 측정 BSDF
 
 ### 전체 프론트엔드/백엔드 프레임워크 전환
-- ray tracing 핵심 기능과 데이터 계약이 안정화되는 시점에 전환 필요성을 다시 평가한다.
-- 고려 중인 구성:
-  - Next.js(React) + TypeScript
-  - Tailwind CSS + shadcn/ui
-  - Zustand
-  - Three.js 또는 React Three Fiber
-  - backend/database 구조 재검토
-- Three.js viewer는 전체 전환보다 먼저 적용되어 현재 사용 중이다.
+- React + TypeScript, Tailwind CSS, shadcn/ui, Zustand, Three.js와 FastAPI
+  전환은 13단계까지 완료되었다.
+- v0.10.0 경량 데스크톱 패키지에서 React production UI와 Python 계산
+  서버의 통합 기동을 검증했다.
+- 후속 운영 과제는 `main` 병합, 사내 PC 배포 검증, 코드 서명이다.

@@ -79,8 +79,18 @@ npm install
 npm run dev
 ```
 
-React 개발 주소는 `http://127.0.0.1:5173/`이며, 기존 인라인 UI가 필요한
-동안에는 별도로 `python run_web.py`를 실행할 수 있습니다.
+React 개발 주소는 `http://127.0.0.1:5173/`입니다.
+
+production 단일 서버는 다음과 같이 확인합니다.
+
+```powershell
+npm run build
+cd ..
+python run_web.py --port 8787 --strict-port
+```
+
+이 경우 FastAPI가 `frontend/dist`와 `/api`를 동일한
+`http://127.0.0.1:8787/`에서 제공합니다.
 
 ## 검증 명령
 

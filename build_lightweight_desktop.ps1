@@ -1,5 +1,5 @@
 param(
-    [string]$OutputName = "leakage_simulator_desktop_v0.9.11_lite"
+    [string]$OutputName = "leakage_simulator_desktop_v0.10.0_lite"
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,9 +49,12 @@ function Test-PackagedWebServer([string]$PythonExe, [string]$AppRoot) {
         while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited) {
             try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
-                if ($health -match "ok web_ui_version=0.9.11") {
-                    $healthy = $true
-                    break
+                if ($health -match "^ok api_version=") {
+                    $rootResponse = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -TimeoutSec 5
+                    if ($rootResponse.Content -match "<title>TV Leakage Simulator</title>") {
+                        $healthy = $true
+                        break
+                    }
                 }
             }
             catch {
@@ -102,12 +105,23 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDir "_uploads") -Force | Ou
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "desktop_runtime") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "docs") -Force | Out-Null
 
-Write-Host "[1/8] Copying minimal Python runtime..."
+Write-Host "[1/9] Building React production UI..."
+$FrontendDir = Join-Path $Root "frontend"
+$FrontendDist = Join-Path $FrontendDir "dist"
+& npm --prefix $FrontendDir run build
+if ($LASTEXITCODE -ne 0) {
+    throw "React production build failed."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $FrontendDist "index.html"))) {
+    throw "React production index was not generated."
+}
+
+Write-Host "[2/9] Copying minimal Python runtime..."
 Get-ChildItem -LiteralPath $SourcePython -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $TargetPython -Force
 }
 
-Write-Host "[2/8] Copying STEP and ray tracing dependencies..."
+Write-Host "[3/9] Copying STEP, FastAPI and ray tracing dependencies..."
 $RuntimePackages = @(
     "OCP",
     "cadquery_ocp",
@@ -116,7 +130,41 @@ $RuntimePackages = @(
     "cadquery_ocp_proxy-7.9.3.1.1.dist-info",
     "numpy",
     "numpy-2.4.6.dist-info",
-    "numpy.libs"
+    "numpy.libs",
+    "annotated_doc",
+    "annotated_doc-0.0.4.dist-info",
+    "annotated_types",
+    "annotated_types-0.8.0.dist-info",
+    "anyio",
+    "anyio-4.14.2.dist-info",
+    "click",
+    "click-8.4.2.dist-info",
+    "colorama",
+    "colorama-0.4.6.dist-info",
+    "fastapi",
+    "fastapi-0.140.0.dist-info",
+    "h11",
+    "h11-0.16.0.dist-info",
+    "httpcore2",
+    "httpcore2-2.9.1.dist-info",
+    "httpx2",
+    "httpx2-2.9.1.dist-info",
+    "idna",
+    "idna-3.18.dist-info",
+    "pydantic",
+    "pydantic-2.13.4.dist-info",
+    "pydantic_core",
+    "pydantic_core-2.46.4.dist-info",
+    "starlette",
+    "starlette-1.3.1.dist-info",
+    "truststore",
+    "truststore-0.10.4.dist-info",
+    "typing_extensions.py",
+    "typing_extensions-4.16.0.dist-info",
+    "typing_inspection",
+    "typing_inspection-0.4.2.dist-info",
+    "uvicorn",
+    "uvicorn-0.51.0.dist-info"
 )
 foreach ($package in $RuntimePackages) {
     Copy-RequiredPath (Join-Path $SourceSitePackages $package) $TargetSitePackages
@@ -133,11 +181,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "OCP dependency closure copy failed."
 }
 
-Write-Host "[3/8] Copying simulator application files..."
+Write-Host "[4/9] Copying simulator application files..."
 Copy-RequiredPath (Join-Path $Root "src") $OutputDir
-Copy-RequiredPath (Join-Path $Root "web") $OutputDir
 Copy-RequiredPath (Join-Path $Root "samples") $OutputDir
+Copy-RequiredPath $FrontendDist (Join-Path $OutputDir "frontend\dist")
 Copy-Item -LiteralPath (Join-Path $Root "run_web.py") -Destination $OutputDir -Force
+Copy-Item -LiteralPath (Join-Path $Root "run_api.py") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "check_cad_import.py") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "COMPANY_PC_QUICK_START.md") -Destination $OutputDir -Force
@@ -164,7 +213,7 @@ if (-not $WebViewSource) {
     throw "WebView2 managed DLLs were not found."
 }
 
-Write-Host "[4/8] Building desktop launcher..."
+Write-Host "[5/9] Building desktop launcher..."
 $WebViewCore = Join-Path $WebViewSource "Microsoft.Web.WebView2.Core.dll"
 $WebViewWinForms = Join-Path $WebViewSource "Microsoft.Web.WebView2.WinForms.dll"
 $WebViewLoaderCandidates = @(
@@ -192,12 +241,12 @@ Copy-Item -LiteralPath $WebViewWinForms -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewLoader -Destination $OutputDir -Force
 
 @"
-TV Leakage Simulator Desktop Lite v0.9.11
+TV Leakage Simulator Desktop Lite v0.10.0
 
 1. Double-click LeakageSimulator.exe.
 2. Wait until the simulator window opens.
 3. Import STEP/STP CAD from Model Import.
-4. Emitter, Receiver, optical property, RT-2C reflection, PERF-1 and PERF-2 BVH are included.
+4. React UI, ROI, Material, Transform, Emitter, Receiver and ray result visualization are included.
 
 Important:
 - Keep all files and folders together.
@@ -205,9 +254,9 @@ Important:
 - If embedded WebView2 is unavailable, the launcher opens the local UI in the default browser.
 "@ | Set-Content -LiteralPath (Join-Path $OutputDir "START_HERE.txt") -Encoding utf8
 
-Write-Host "[5/8] Validating minimal runtime and STEP import..."
+Write-Host "[6/9] Validating minimal runtime, FastAPI and STEP import..."
 $TargetPythonExe = Join-Path $TargetPython "python.exe"
-& $TargetPythonExe -c "import OCP, numpy; print('runtime ok', numpy.__version__)"
+& $TargetPythonExe -c "import OCP, fastapi, numpy, uvicorn; print('runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
 if ($LASTEXITCODE -ne 0) {
     throw "Minimal Python runtime import validation failed."
 }
@@ -223,13 +272,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "Ray tracing regression tests failed with the minimal runtime."
 }
 
-Write-Host "[6/8] Cleaning generated cache files..."
+Write-Host "[7/9] Cleaning generated cache files..."
 Get-ChildItem -LiteralPath $OutputDir -Recurse -Directory -Filter "__pycache__" | ForEach-Object {
     Remove-Item -LiteralPath $_.FullName -Recurse -Force
 }
 Get-ChildItem -LiteralPath (Join-Path $OutputDir "outputs") -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
-Write-Host "[7/8] Creating ZIP package..."
+Write-Host "[8/9] Creating ZIP package..."
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory(
     $OutputDir,
@@ -245,8 +294,11 @@ try {
     $requiredEntries = @(
         "$OutputName/LeakageSimulator.exe",
         "$OutputName/run_web.py",
+        "$OutputName/run_api.py",
+        "$OutputName/frontend/dist/index.html",
         "$OutputName/_tools/python313/python.exe",
         "$OutputName/_tools/python313/Lib/site-packages/OCP/__init__.py",
+        "$OutputName/_tools/python313/Lib/site-packages/fastapi/__init__.py",
         "$OutputName/WebView2Loader.dll"
     )
     $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
@@ -260,7 +312,7 @@ finally {
     $archive.Dispose()
 }
 
-Write-Host "[8/8] Extracting ZIP and validating STEP import again..."
+Write-Host "[9/9] Extracting ZIP and validating integrated React server..."
 $VerifyDir = Join-Path $ReleaseRoot ("_verify_" + $OutputName)
 $resolvedVerify = [System.IO.Path]::GetFullPath($VerifyDir)
 if (-not $resolvedVerify.StartsWith($resolvedRelease, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -274,7 +326,7 @@ try {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $VerifyDir)
     $ExtractedRoot = Join-Path $VerifyDir $OutputName
     $ExtractedPython = Join-Path $ExtractedRoot "_tools\python313\python.exe"
-    & $ExtractedPython -c "import OCP, numpy; print('extracted runtime ok', numpy.__version__)"
+    & $ExtractedPython -c "import OCP, fastapi, numpy, uvicorn; print('extracted runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
     if ($LASTEXITCODE -ne 0) {
         throw "Extracted ZIP runtime validation failed."
     }

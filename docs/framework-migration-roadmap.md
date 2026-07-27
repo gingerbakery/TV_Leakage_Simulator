@@ -137,10 +137,17 @@ React가 사용하는 `/api`, `/health`, `/dev-status`, `/_ping`, `/outputs`
 
 계산은 기존 `build_scene_payload`, `build_direct_trace_input`,
 `run_direct_ray_trace`를 그대로 재사용하므로 1~11단계 데이터 계약과 계산
-결과는 바뀌지 않는다. 기존 `run_web.py` 인라인 UI와 데스크톱 실행 경로는
-13단계 최종 전환 전까지 호환용으로 보존한다.
+결과는 바뀌지 않는다. 이 단계에서는 기존 인라인 UI를 호환용으로 유지했고,
+13단계 완료 시 `run_web_legacy.py`로 이동해 배포 경로에서 제거했다.
 
-## 13. 데스크톱 패키징·최종 전환 — 예정
+## 13. 데스크톱 패키징·최종 전환 — 완료
 
-React production build와 Python API를 WebView2 실행기에 통합하고 회귀
-검증 후 기존 인라인 UI를 대체한다.
+React production build를 FastAPI와 같은 origin에서 제공하고 기존
+`LeakageSimulator.exe` WebView2 런처가 이 통합 주소를 열도록 전환했다.
+`run_web.py`는 새 통합 서버의 호환 진입점이며, 이전 580 KB 인라인 UI는
+`run_web_legacy.py`에 참조용으로만 남아 배포물에는 포함하지 않는다.
+
+경량 패키징은 React assets, FastAPI·Uvicorn, Python 계산 코어와 OCP
+런타임을 함께 조립한다. 생성된 v0.10.0 ZIP을 다시 해제한 환경에서
+106,352-face STEP Import, Python 회귀 84개, 통합 React 루트와 JS asset,
+EXE 런처의 내장 서버 health check를 확인했다.

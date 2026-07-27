@@ -2,7 +2,7 @@
 setlocal
 
 set "ROOT=%~dp0"
-set "OUTDIR=%ROOT%release\leakage_simulator_desktop_v0.1"
+set "OUTDIR=%ROOT%release\leakage_simulator_desktop_v0.10.0"
 set "CS=%ROOT%desktop_launcher\LeakageSimulatorDesktop.cs"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 set "WV2_DIR=C:\Program Files\Microsoft Office\root\Office16\ADDINS\Microsoft Power Query for Excel Integrated\bin"
@@ -30,6 +30,20 @@ if not exist "%WV2_LOADER%" (
   exit /b 1
 )
 
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo [ERR] npm was not found. Install Node.js before packaging.
+  exit /b 1
+)
+
+echo [INFO] Building React production UI...
+call npm --prefix "%ROOT%frontend" run build
+if errorlevel 1 exit /b 1
+if not exist "%ROOT%frontend\dist\index.html" (
+  echo [ERR] React production index was not generated.
+  exit /b 1
+)
+
 if exist "%OUTDIR%" rmdir /s /q "%OUTDIR%"
 mkdir "%OUTDIR%"
 mkdir "%OUTDIR%\desktop_runtime"
@@ -50,11 +64,13 @@ copy "%WV2_CORE%" "%OUTDIR%\" >nul
 copy "%WV2_WINFORMS%" "%OUTDIR%\" >nul
 copy "%WV2_LOADER%" "%OUTDIR%\" >nul
 copy "%ROOT%run_web.py" "%OUTDIR%\" >nul
+copy "%ROOT%run_api.py" "%OUTDIR%\" >nul
 copy "%ROOT%README.md" "%OUTDIR%\" >nul
 copy "%ROOT%COMPANY_PC_QUICK_START.md" "%OUTDIR%\" >nul
 if exist "%ROOT%check_cad_import.py" copy "%ROOT%check_cad_import.py" "%OUTDIR%\" >nul
 
 xcopy "%ROOT%src" "%OUTDIR%\src\" /E /I /Y >nul
+xcopy "%ROOT%frontend\dist" "%OUTDIR%\frontend\dist\" /E /I /Y >nul
 xcopy "%ROOT%_tools\python313" "%OUTDIR%\_tools\python313\" /E /I /Y >nul
 
 if exist "%ROOT%samples" xcopy "%ROOT%samples" "%OUTDIR%\samples\" /E /I /Y >nul

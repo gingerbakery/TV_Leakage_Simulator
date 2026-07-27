@@ -36,13 +36,18 @@ npm run dev
 
 브라우저 주소: `http://127.0.0.1:5173/`
 
-### 2. 기존 인라인 웹 UI
-- 주요 파일: `run_web.py`
-- 13단계 최종 패키징 전까지 데스크톱 호환 경로로 보존
+### 2. React production 통합 서버
+- `frontend` production build와 FastAPI를 한 포트에서 실행한다.
 
 ```powershell
-python run_web.py
+npm --prefix frontend install
+npm --prefix frontend run build
+python run_web.py --port 8787 --strict-port
 ```
+
+브라우저 주소: `http://127.0.0.1:8787/`
+
+기존 인라인 UI 소스는 `run_web_legacy.py`에 참조용으로만 보존한다.
 
 ### 3. CLI 실행
 - 주요 파일: `run.py`
@@ -68,10 +73,11 @@ python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 .\build_lightweight_desktop.bat
 ```
 
-- 출력: `release/leakage_simulator_desktop_v0.9.11_lite/`
-- 전달용 ZIP: `release/leakage_simulator_desktop_v0.9.11_lite.zip`
+- 출력: `release/leakage_simulator_desktop_v0.10.0_lite/`
+- 전달용 ZIP: `release/leakage_simulator_desktop_v0.10.0_lite.zip`
 - 사용자는 압축 해제 후 `LeakageSimulator.exe`만 더블클릭
-- STEP/STP import, 현재 Web UI, RT-2C 반사/산란, PERF-1, PERF-2 BVH 포함
+- React UI, FastAPI, STEP/STP import, ROI, Material, Transform,
+  Emitter·Receiver, 광선 결과 시각화 포함
 - X_T 직접 import와 legacy matplotlib PNG export는 경량판 범위에서 제외
 
 ## 저장소 구조
@@ -82,7 +88,9 @@ python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 - `run_api.py`
   - React용 FastAPI 서버 진입점
 - `run_web.py`
-  - 기존 인라인 UI의 호환 엔트리
+  - React production + FastAPI 통합 서버의 호환 엔트리
+- `run_web_legacy.py`
+  - 배포에서 제외되는 이전 인라인 UI 참조 소스
 - `desktop_launcher/`
   - 내장 WebView 데스크톱 런처 소스
 - `docs/`

@@ -10,7 +10,11 @@ from typing import Dict, Iterable
 
 ROOT = Path(__file__).resolve().parent
 WATCH_DIRS = [ROOT / "src", ROOT / "docs"]
-WATCH_FILES = [ROOT / "run_web.py", ROOT / "run_web_dev.py"]
+WATCH_FILES = [
+    ROOT / "run_api.py",
+    ROOT / "run_web.py",
+    ROOT / "run_web_dev.py",
+]
 WATCH_SUFFIXES = {".py", ".md"}
 PORT = os.environ.get("LEAKAGE_WEB_PORT", "8788").strip() or "8788"
 
@@ -43,9 +47,17 @@ def snapshot() -> Dict[str, int]:
 def start_server() -> subprocess.Popen:
     env = os.environ.copy()
     env["LEAKAGE_WEB_PORT"] = PORT
-    command = [sys.executable, "run_web.py"]
-    print("[DEV] starting web UI on http://127.0.0.1:{0}".format(PORT), flush=True)
-    return subprocess.Popen(command, cwd=str(ROOT), env=env)
+    print(
+        "[DEV] starting FastAPI on http://127.0.0.1:{0}".format(
+            PORT
+        ),
+        flush=True,
+    )
+    return subprocess.Popen(
+        [sys.executable, "run_api.py"],
+        cwd=str(ROOT),
+        env=env,
+    )
 
 
 def stop_server(process: subprocess.Popen) -> None:

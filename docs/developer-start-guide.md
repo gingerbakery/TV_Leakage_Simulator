@@ -66,16 +66,18 @@ npm install
 npm run dev
 ```
 
-### 2. 기존 인라인 UI
+### 2. production 통합 서버
 
 ```powershell
-python run_web.py
+npm --prefix frontend run build
+python run_web.py --port 8787 --strict-port
 ```
 
-- 13단계 데스크톱 패키징 전까지 호환 용도로 유지한다.
+- React 정적 파일과 FastAPI가 같은 주소에서 실행된다.
+- 기존 인라인 UI는 `run_web_legacy.py`에 참조용으로만 보존한다.
 
 ### 3. 테스트/시연용
-- release 패키지가 있으면 EXE 더블클릭
+- v0.10.0 release ZIP을 해제하고 `LeakageSimulator.exe`를 더블클릭
 
 ## 작업 원칙
 - 코드 변경 시 관련 문서도 함께 갱신

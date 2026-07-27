@@ -59,6 +59,10 @@
 
 ```powershell
 .\_tools\python313\python.exe --version
+if (-not (Test-Path .\frontend\dist\index.html)) {
+    npm --prefix frontend install
+    npm --prefix frontend run build
+}
 .\_tools\python313\python.exe run_web.py
 ```
 
@@ -75,6 +79,8 @@ python -m pip install -r requirements-dev.txt
 3. 실행 확인
 
 ```powershell
+npm --prefix frontend install
+npm --prefix frontend run build
 python run_web.py
 ```
 
@@ -88,7 +94,7 @@ python --version
 - 핵심 패키지 확인
 
 ```powershell
-python -c "import cadquery, OCP, matplotlib, numpy, PIL; print(cadquery.__version__)"
+python -c "import cadquery, fastapi, OCP, numpy, uvicorn; print(cadquery.__version__)"
 ```
 
 ## 다른 개발자에게 공유할 때 꼭 같이 알려줄 내용
