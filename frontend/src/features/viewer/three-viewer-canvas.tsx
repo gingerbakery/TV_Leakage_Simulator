@@ -773,6 +773,9 @@ function faceOverlayMaterial(
     color: style.color,
     metalness: style.metalness,
     roughness: style.roughness,
+    // Material overlays follow CAD triangle normals so hard edges remain
+    // crisp after ROI clipping instead of showing interpolated bands.
+    flatShading: true,
     side: DoubleSide,
     transparent: opacity < 1,
     opacity,

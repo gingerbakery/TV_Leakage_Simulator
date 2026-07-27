@@ -208,6 +208,37 @@ describe('ROI selection', () => {
     expect(clipped?.openChainCount).toBe(0)
     expect(clipped?.capLoopCount).toBe(2)
     expect(clipped?.capGeometry).not.toBeNull()
+    expect(clipped?.surfaceGeometry.index).toBeNull()
+    const surfaceNormals =
+      clipped?.surfaceGeometry.getAttribute('normal')
+    const triangleNormalKeys = new Set<string>()
+    for (
+      let vertexIndex = 0;
+      vertexIndex < (surfaceNormals?.count ?? 0);
+      vertexIndex += 3
+    ) {
+      const first = [
+        surfaceNormals?.getX(vertexIndex) ?? 0,
+        surfaceNormals?.getY(vertexIndex) ?? 0,
+        surfaceNormals?.getZ(vertexIndex) ?? 0,
+      ]
+      const second = [
+        surfaceNormals?.getX(vertexIndex + 1) ?? 0,
+        surfaceNormals?.getY(vertexIndex + 1) ?? 0,
+        surfaceNormals?.getZ(vertexIndex + 1) ?? 0,
+      ]
+      const third = [
+        surfaceNormals?.getX(vertexIndex + 2) ?? 0,
+        surfaceNormals?.getY(vertexIndex + 2) ?? 0,
+        surfaceNormals?.getZ(vertexIndex + 2) ?? 0,
+      ]
+      expect(second).toEqual(first)
+      expect(third).toEqual(first)
+      triangleNormalKeys.add(
+        first.map((value) => value.toFixed(4)).join(':'),
+      )
+    }
+    expect(triangleNormalKeys.size).toBeGreaterThan(1)
     const surfaceComponentIds = clipped?.surfaceGeometry.userData
       .componentIds as number[] | undefined
     expect(surfaceComponentIds).toHaveLength(

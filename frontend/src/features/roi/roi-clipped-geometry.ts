@@ -688,12 +688,18 @@ export function buildRoiClippedGeometries(
         : point),
     )
   }
-  const surfaceGeometry = new BufferGeometry()
-  surfaceGeometry.setAttribute(
+  const indexedSurfaceGeometry = new BufferGeometry()
+  indexedSurfaceGeometry.setAttribute(
     'position',
     new Float32BufferAttribute(outputPositions, 3),
   )
-  surfaceGeometry.setIndex(indices)
+  indexedSurfaceGeometry.setIndex(indices)
+  // Clipping shares position vertices to build watertight section caps.
+  // The rendered surface must not share normals across separate CAD
+  // triangles: averaging them across hard edges creates scalloped bands
+  // when a lit material is assigned.
+  const surfaceGeometry = indexedSurfaceGeometry.toNonIndexed()
+  indexedSurfaceGeometry.dispose()
   surfaceGeometry.computeVertexNormals()
   surfaceGeometry.computeBoundingBox()
   surfaceGeometry.computeBoundingSphere()
