@@ -34,6 +34,9 @@ describe('Step 11 result UI', () => {
 
     expect(screen.getByText('12.000%')).not.toBeNull()
     expect(screen.getByText('2/2')).not.toBeNull()
+    expect(
+      Object.values(workspaceStore.getState().rayPathDisplayFilters),
+    ).toEqual([true, true, false, false, false, false])
     fireEvent.click(screen.getByRole('button', { name: 'All off' }))
     expect(screen.getByText('0/2')).not.toBeNull()
     expect(

@@ -79,6 +79,6 @@ Receiver의 `depths`는 `0=직접광`, `1=1회 반사`, `2=2회 반사` 방식�
 - 반사 면의 `reflection_emitted_flux_lumen`은 Receiver 도달, 차단, 이탈 결과로 분해할 수 있어야 한다.
 
 ## 현재 범위와 다음 단계
-- 현재 계약은 RT-3의 직접광과 `max_depth=1~3` 다회 반사를 집계한다.
+- 현재 계약은 RT-3의 직접광과 `max_depth=0~20` 다회 반사를 집계한다.
 - RT-2D-B에서는 이 계약을 이용해 UI 기여도 표, 정렬, 필터, CSV/리포트를 구현한다.
 - RT-3에서 `depths` 집계를 추가했으며 `rt-contribution.v1`의 기존 필드는 전체 bounce 누적 합계로 유지한다.

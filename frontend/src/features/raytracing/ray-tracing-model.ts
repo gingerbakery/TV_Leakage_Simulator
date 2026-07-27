@@ -216,25 +216,37 @@ export function createCurrentViewReceiver(
   receiverId: string,
   frame: ViewerCameraFrame,
   distanceMm: number,
+  positionOffset: Vec3 = [0, 0, 0],
+  tiltDeg: Vec3 = [0, 0, 0],
 ): ReceiverSpec {
   const distance = Math.max(0.001, distanceMm)
-  const center: Vec3 = [
+  const baseCenter: Vec3 = [
     frame.target[0] - frame.normal[0] * distance,
     frame.target[1] - frame.normal[1] * distance,
     frame.target[2] - frame.normal[2] * distance,
   ]
+  const center: Vec3 = [
+    baseCenter[0] + positionOffset[0],
+    baseCenter[1] + positionOffset[1],
+    baseCenter[2] + positionOffset[2],
+  ]
+  const normal = rotateVector(frame.normal, tiltDeg)
+  const uAxis = rotateVector(frame.uAxis, tiltDeg)
+  const vAxis = rotateVector(frame.vAxis, tiltDeg)
   return {
     ...createDatumReceiver(receiverId, center, [0, 0, 0]),
     placement_mode: 'current_view',
     center,
-    normal: [...frame.normal],
-    u_axis: [...frame.uAxis],
-    v_axis: [...frame.vAxis],
+    normal,
+    u_axis: uAxis,
+    v_axis: vAxis,
     view_distance_mm: distance,
-    base_center: center,
+    base_center: baseCenter,
     base_u_axis: [...frame.uAxis],
     base_v_axis: [...frame.vAxis],
     base_normal: [...frame.normal],
+    position_offset_mm: [...positionOffset],
+    tilt_xyz_deg: [...tiltDeg],
   }
 }
 

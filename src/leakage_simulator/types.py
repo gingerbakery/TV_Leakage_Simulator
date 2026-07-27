@@ -92,6 +92,7 @@ OPTICAL_ASSIGNMENT_TARGET_TYPES = ("part", "faces")
 TERMINATION_MODES = ("threshold", "russian_roulette")
 CONTRIBUTION_MODES = ("summary", "detailed")
 INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
+MAX_REFLECTION_DEPTH = 20
 
 
 @dataclass
@@ -493,6 +494,10 @@ class RayTraceConfig:
         self.max_depth = int(self.max_depth)
         if self.max_depth < 0:
             raise ValueError("max_depth must be non-negative")
+        if self.max_depth > MAX_REFLECTION_DEPTH:
+            raise ValueError(
+                f"max_depth must not exceed {MAX_REFLECTION_DEPTH}"
+            )
         self.seed = int(self.seed)
         self.min_energy = require_non_negative(self.min_energy, "min_energy")
         self.epsilon_mm = require_positive(self.epsilon_mm, "epsilon_mm")

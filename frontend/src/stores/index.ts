@@ -2,6 +2,7 @@ export {
   createWorkspaceStore,
   defaultRayPathDisplayFilters,
   defaultRayTraceConfig,
+  maxReflectionDepth,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,

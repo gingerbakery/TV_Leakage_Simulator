@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import { createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
 
-import { createWorkspaceStore } from './workspace-store'
+import {
+  createWorkspaceStore,
+  maxReflectionDepth,
+} from './workspace-store'
 
 describe('workspace store', () => {
   it('normalizes selection IDs and supports toggling', () => {
@@ -78,6 +81,25 @@ describe('workspace store', () => {
 
     expect(first.getState().selectedComponentIds).toEqual([7])
     expect(second.getState().selectedComponentIds).toEqual([])
+  })
+
+  it('accepts deep-cavity reflection settings and clamps the V1 limit', () => {
+    const store = createWorkspaceStore()
+    const { actions } = store.getState()
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      max_depth: 10,
+    })
+    expect(store.getState().rayTraceConfig.max_depth).toBe(10)
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      max_depth: maxReflectionDepth + 50,
+    })
+    expect(store.getState().rayTraceConfig.max_depth).toBe(
+      maxReflectionDepth,
+    )
   })
 
   it('does not publish unchanged placement preview objects', () => {
@@ -236,6 +258,7 @@ describe('workspace store', () => {
       enabled: true,
     })
     actions.setActiveRayTraceJobId('job-1')
+    actions.setEmitterRayCount(2500)
     actions.setEmitterEnabled('emitter_001', false)
 
     expect(store.getState()).toMatchObject({
@@ -243,6 +266,7 @@ describe('workspace store', () => {
         {
           emitter_id: 'emitter_001',
           face_indices: [2, 4],
+          ray_count: 2500,
           enabled: false,
         },
       ],

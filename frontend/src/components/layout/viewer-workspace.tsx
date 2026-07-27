@@ -372,29 +372,6 @@ export function ViewerWorkspace({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 border-b border-border bg-background/40">
-        {[
-          ['Face', scene?.metadata.face_count.toLocaleString() ?? '0'],
-          ['Vertex', scene?.metadata.vertex_count.toLocaleString() ?? '0'],
-          [
-            'Mode',
-            scene ? (scene.metadata.synthetic ? 'Synthetic' : 'CAD') : '-',
-          ],
-        ].map(([label, value]) => (
-          <div
-            key={label}
-            className="border-r border-border px-3 py-2 last:border-r-0"
-          >
-            <div className="text-[0.62rem] tracking-wide text-muted-foreground uppercase">
-              {label}
-            </div>
-            <div className="mt-0.5 truncate text-xs font-semibold">
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-
       <div className="relative flex min-h-0 flex-1 p-3">
         <div className="relative flex min-h-[30rem] w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-[radial-gradient(circle_at_center,var(--sim-panel-raised)_0,transparent_58%)] lg:min-h-0">
           <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2">

@@ -602,6 +602,16 @@ describe('Step 07·08 feature editors', () => {
         name: 'Receiver width (mm)',
       }),
     ).toHaveProperty('value', '30')
+    expect(
+      screen.getByRole('spinbutton', {
+        name: 'Receiver center X',
+      }),
+    ).toHaveProperty('value', '10')
+    expect(
+      screen.getByRole('spinbutton', {
+        name: 'Receiver tilt Z',
+      }),
+    ).toHaveProperty('value', '0')
     fireEvent.change(
       screen.getByRole('spinbutton', {
         name: 'Receiver width (mm)',
@@ -611,6 +621,14 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(
       screen.getByRole('spinbutton', { name: 'View distance (mm)' }),
       { target: { value: '45' } },
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Receiver center X' }),
+      { target: { value: '14' } },
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Receiver tilt Z' }),
+      { target: { value: '15' } },
     )
     fireEvent.click(
       screen.getByRole('button', { name: 'Save receiver' }),
@@ -626,9 +644,11 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().receivers).toEqual([
       expect.objectContaining({
         receiver_id: 'receiver_001',
-        center: [10, 20, 75],
+        center: [14, 20, 75],
         view_distance_mm: 45,
         width_mm: 42,
+        position_offset_mm: [4, 0, 0],
+        tilt_xyz_deg: [0, 0, 15],
       }),
     ])
     expect(
@@ -684,5 +704,46 @@ describe('Step 07·08 feature editors', () => {
       workspaceStore.getState().emitterFaceSelectionArmed,
     ).toBe(false)
     expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+  })
+
+  it('updates every emitter ray count from Run options', () => {
+    act(() => {
+      workspaceStore.getState().actions.upsertEmitter({
+        ...createFaceEmitter('emitter_001', [0]),
+        ray_count: 2500,
+      })
+      workspaceStore.getState().actions.upsertEmitter({
+        ...createFaceEmitter('emitter_002', [1]),
+        ray_count: 5000,
+      })
+    })
+
+    render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+        />
+      </AppProviders>,
+    )
+
+    const runOptionRayCount = screen.getByRole('spinbutton', {
+      name: 'Run option emitter rays',
+    })
+    expect(runOptionRayCount).toHaveProperty('value', '2500')
+    expect(
+      screen.getByText(/Emitter별 Ray 수가 서로 다릅니다/),
+    ).not.toBeNull()
+
+    fireEvent.change(runOptionRayCount, {
+      target: { value: '6000' },
+    })
+
+    expect(
+      workspaceStore
+        .getState()
+        .emitters.map((emitter) => emitter.ray_count),
+    ).toEqual([6000, 6000])
+    expect(screen.getByText(/활성 Emitter 총합 12,000 rays/)).not.toBeNull()
   })
 })

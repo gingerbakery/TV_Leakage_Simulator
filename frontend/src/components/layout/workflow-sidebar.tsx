@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { RayTraceJob, ScenePayload } from '@/api'
 import {
   BoxSelect,
@@ -7,6 +8,7 @@ import {
   Palette,
   Play,
   ScanSearch,
+  Settings2,
   Target,
   Workflow,
 } from 'lucide-react'
@@ -39,14 +41,15 @@ import { cn } from '@/lib/utils'
 export type WorkflowSectionId =
   | 'roi'
   | 'components'
-  | 'transform'
-  | 'material'
   | 'ray-tracing'
   | 'result'
+  | 'applied-settings'
+
+type AppliedSettingsTab = 'material' | 'transform'
 
 interface WorkflowSection {
   id: WorkflowSectionId
-  step: string
+  step?: string
   label: string
   description: string
   icon: typeof Target
@@ -84,34 +87,36 @@ const workflowSections: WorkflowSection[] = [
     icon: Layers3,
   },
   {
-    id: 'transform',
-    step: '04',
-    label: 'Transform',
-    description: '부품의 move·tilt 규칙과 preview를 관리합니다.',
-    icon: Move3D,
-  },
-  {
-    id: 'material',
-    step: '05',
-    label: 'Material',
-    description: '표면 광학 속성과 부품 assignment를 관리합니다.',
-    icon: Palette,
-  },
-  {
     id: 'ray-tracing',
-    step: '06',
+    step: '04',
     label: 'Ray tracing',
     description: 'Emitter·Receiver와 계산 옵션을 구성합니다.',
     icon: Play,
   },
   {
     id: 'result',
-    step: '07',
+    step: '05',
     label: 'Result',
     description: 'Ray path, Receiver와 기여도 결과를 확인합니다.',
     icon: ScanSearch,
   },
 ]
+
+const appliedSettingsSection: WorkflowSection = {
+  id: 'applied-settings',
+  label: 'Applied Settings',
+  description:
+    'Component에 적용된 Material assignment와 Transform rule을 검토하고 관리합니다.',
+  icon: Settings2,
+}
+
+const sectionBadgeText: Record<WorkflowSectionId, string> = {
+  roi: 'Migrated · 09',
+  components: 'Migrated · 07',
+  'ray-tracing': 'Migrated · 10',
+  result: 'Migrated · 11',
+  'applied-settings': 'Applied',
+}
 
 export function WorkflowSidebar({
   activeSection,
@@ -128,9 +133,14 @@ export function WorkflowSidebar({
   onEditTransform,
   onDeleteComponent,
 }: WorkflowSidebarProps) {
+  const [appliedSettingsTab, setAppliedSettingsTab] =
+    useState<AppliedSettingsTab>('material')
   const activeSectionInfo =
-    workflowSections.find((section) => section.id === activeSection) ??
-    workflowSections[0]
+    activeSection === 'applied-settings'
+      ? appliedSettingsSection
+      : (workflowSections.find(
+          (section) => section.id === activeSection,
+        ) ?? workflowSections[0])
   const sceneStatus = isSceneLoading
     ? 'Loading scene and component tree…'
     : sceneErrorMessage
@@ -157,21 +167,67 @@ export function WorkflowSidebar({
       )
     }
 
-    if (activeSection === 'material') {
+    if (activeSection === 'applied-settings') {
       return (
-        <MaterialAssignmentPanel
-          scene={scene}
-          onEditMaterial={onEditMaterial}
-        />
-      )
-    }
+        <div>
+          <div
+            className="mb-3 grid grid-cols-2 gap-1 rounded-lg border border-border bg-background/35 p-1"
+            role="tablist"
+            aria-label="Applied settings views"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={appliedSettingsTab === 'material'}
+              className={cn(
+                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[0.68rem] font-medium transition-colors',
+                appliedSettingsTab === 'material'
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
+              )}
+              onClick={() => setAppliedSettingsTab('material')}
+            >
+              <Palette className="size-3.5" aria-hidden="true" />
+              Material
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={appliedSettingsTab === 'transform'}
+              className={cn(
+                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[0.68rem] font-medium transition-colors',
+                appliedSettingsTab === 'transform'
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
+              )}
+              onClick={() => setAppliedSettingsTab('transform')}
+            >
+              <Move3D className="size-3.5" aria-hidden="true" />
+              Transform
+            </button>
+          </div>
 
-    if (activeSection === 'transform') {
-      return (
-        <TransformRulePanel
-          scene={scene}
-          onEditTransform={onEditTransform}
-        />
+          <div
+            role="tabpanel"
+            aria-label={
+              appliedSettingsTab === 'material'
+                ? 'Material assignments'
+                : 'Transform rules'
+            }
+          >
+            {appliedSettingsTab === 'material' ? (
+              <MaterialAssignmentPanel
+                scene={scene}
+                onEditMaterial={onEditMaterial}
+              />
+            ) : (
+              <TransformRulePanel
+                scene={scene}
+                onEditTransform={onEditTransform}
+              />
+            )}
+          </div>
+        </div>
       )
     }
 
@@ -210,23 +266,7 @@ export function WorkflowSidebar({
     )
   })()
 
-  const isMigratedSection =
-    activeSection === 'roi' ||
-    activeSection === 'components' ||
-    activeSection === 'material' ||
-    activeSection === 'transform' ||
-    activeSection === 'ray-tracing' ||
-    activeSection === 'result'
-  const migrationBadgeText =
-    activeSection === 'roi'
-      ? 'Migrated · 09'
-      : activeSection === 'ray-tracing'
-        ? 'Migrated · 10'
-        : activeSection === 'result'
-          ? 'Migrated · 11'
-          : isMigratedSection
-            ? 'Migrated · 07'
-            : 'Queued'
+  const migrationBadgeText = sectionBadgeText[activeSection]
 
   return (
     <aside className="border-b border-border bg-sidebar lg:min-h-0 lg:border-r lg:border-b-0">
@@ -300,23 +340,63 @@ export function WorkflowSidebar({
             </nav>
           </section>
 
+          <button
+            type="button"
+            aria-label="Applied Settings"
+            aria-current={
+              activeSection === 'applied-settings' ? 'page' : undefined
+            }
+            className={cn(
+              'group flex min-h-12 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
+              activeSection === 'applied-settings'
+                ? 'border-primary/40 bg-primary/10 text-foreground'
+                : 'border-border/70 bg-background/25 text-muted-foreground hover:border-border hover:bg-muted/35 hover:text-foreground',
+            )}
+            onClick={() => onActiveSectionChange('applied-settings')}
+          >
+            <span
+              className={cn(
+                'flex size-7 shrink-0 items-center justify-center rounded-md border',
+                activeSection === 'applied-settings'
+                  ? 'border-primary/30 bg-primary/15 text-primary'
+                  : 'border-border bg-background/40',
+              )}
+            >
+              <Settings2 className="size-3.5" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium">
+                Applied Settings
+              </span>
+              <span className="block truncate text-[0.62rem] text-muted-foreground">
+                Material assignments · Transform rules
+              </span>
+            </span>
+            <ChevronRight
+              className={cn(
+                'hidden size-3.5 transition-transform lg:block',
+                activeSection === 'applied-settings' &&
+                  'translate-x-0.5 text-primary',
+              )}
+              aria-hidden="true"
+            />
+          </button>
+
           <Card
             size="sm"
             className="border-primary/20 bg-primary/5 shadow-none"
           >
             <CardHeader>
               <CardDescription>
-                Step {activeSectionInfo.step}
+                {activeSectionInfo.step
+                  ? `Step ${activeSectionInfo.step}`
+                  : 'Configuration review'}
               </CardDescription>
               <div className="flex items-center justify-between gap-2">
                 <CardTitle>{activeSectionInfo.label}</CardTitle>
                 <Badge
                   variant="outline"
-                  className={cn(
-                    isMigratedSection
-                      ? 'border-primary/25 bg-primary/8 text-primary'
-                      : 'border-border text-muted-foreground',
-                  )}
+                  className="border-primary/25 bg-primary/8 text-primary"
                 >
                   {migrationBadgeText}
                 </Badge>

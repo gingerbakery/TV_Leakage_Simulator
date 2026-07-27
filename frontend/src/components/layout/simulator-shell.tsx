@@ -75,6 +75,7 @@ export function SimulatorShell() {
     }
     if (lastOpenedResultRunIdRef.current === rayTraceResult.run_id) return
     lastOpenedResultRunIdRef.current = rayTraceResult.run_id
+    setActiveSection('result')
     setRayTraceResultOpen(true)
   }, [rayTraceResult])
 

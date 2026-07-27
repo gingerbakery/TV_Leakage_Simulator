@@ -152,9 +152,11 @@ interface ViewerRuntime {
   axisScalePercent: number
   camera: PerspectiveCamera
   controls: TrackballControls
+  globalOriginAxes: Group
   grid: GridHelper
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
+  originAxisBaseScale: number
   placementRoot: Group
   rayPathRoot: Group
   raycaster: Raycaster
@@ -647,7 +649,11 @@ function resolveFacePlacementFrame(
   }
 }
 
-function createAxisLabel(text: string, color: string): Sprite {
+function createAxisLabel(
+  text: string,
+  color: string,
+  depthTest = false,
+): Sprite {
   const canvas = document.createElement('canvas')
   canvas.width = 96
   canvas.height = 96
@@ -670,7 +676,7 @@ function createAxisLabel(text: string, color: string): Sprite {
     new SpriteMaterial({
       map: texture,
       transparent: true,
-      depthTest: false,
+      depthTest,
       depthWrite: false,
       toneMapped: false,
     }),
@@ -679,8 +685,9 @@ function createAxisLabel(text: string, color: string): Sprite {
   return label
 }
 
-function createOrientationGizmo(): Group {
+function createOrientationGizmo(depthTest = false): Group {
   const gizmo = new Group()
+  const renderOrder = depthTest ? 10 : 200
   const up = new Vector3(0, 1, 0)
   const axes = [
     {
@@ -706,7 +713,7 @@ function createOrientationGizmo(): Group {
   for (const axis of axes) {
     const material = new MeshBasicMaterial({
       color: axis.hex,
-      depthTest: false,
+      depthTest,
       depthWrite: false,
       toneMapped: false,
     })
@@ -716,7 +723,7 @@ function createOrientationGizmo(): Group {
     )
     shaft.position.copy(axis.direction).multiplyScalar(0.5)
     shaft.quaternion.setFromUnitVectors(up, axis.direction)
-    shaft.renderOrder = 200
+    shaft.renderOrder = renderOrder
     gizmo.add(shaft)
 
     const head = new Mesh(
@@ -725,12 +732,12 @@ function createOrientationGizmo(): Group {
     )
     head.position.copy(axis.direction)
     head.quaternion.setFromUnitVectors(up, axis.direction)
-    head.renderOrder = 201
+    head.renderOrder = renderOrder + 1
     gizmo.add(head)
 
-    const label = createAxisLabel(axis.name, axis.color)
+    const label = createAxisLabel(axis.name, axis.color, depthTest)
     label.position.copy(axis.direction).multiplyScalar(1.28)
-    label.renderOrder = 202
+    label.renderOrder = renderOrder + 2
     gizmo.add(label)
   }
 
@@ -1232,6 +1239,12 @@ export function ThreeViewerCanvas({
       bounds.size.z,
       1,
     )
+    const originAxisBaseScale = maxDimension * 0.1
+    const globalOriginAxes = createOrientationGizmo(true)
+    globalOriginAxes.name = 'global-origin-coordinate-axes'
+    globalOriginAxes.position.set(0, 0, 0)
+    globalOriginAxes.scale.setScalar(originAxisBaseScale)
+    threeScene.add(globalOriginAxes)
     const grid = new GridHelper(
       maxDimension * 1.8,
       18,
@@ -1264,9 +1277,11 @@ export function ThreeViewerCanvas({
       axisScalePercent: 50,
       camera,
       controls,
+      globalOriginAxes,
       grid,
       modelRoot,
       nodes,
+      originAxisBaseScale,
       placementRoot,
       rayPathRoot,
       raycaster: new Raycaster(),
@@ -1837,6 +1852,9 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
     runtime.axisScalePercent = axisScalePercent
+    runtime.globalOriginAxes.scale.setScalar(
+      runtime.originAxisBaseScale * (axisScalePercent / 50),
+    )
   }, [axisScalePercent])
 
   useEffect(() => {

@@ -315,7 +315,8 @@ RT-1 한계:
 
 ### Phase RT-3: 다중 bounce와 termination
 목표:
-- `max_depth = 1~3` 범위에서 다중 반사를 지원한다.
+- `max_depth = 0~20` 범위에서 다중 반사를 지원한다.
+- 빠른 검사는 1회, 일반 비교는 3회, 갇힌 고반사 구조는 10회를 권장하며 20회는 수렴 확인용으로 사용한다.
 - 에너지 threshold 기반 ray 종료를 적용한다.
 - 상태: backend, Web UI 입력, 합성 회귀 검증 및 시각 리포트 구현 완료.
 - 검증 보고서: `docs/rt3-multibounce-validation.md`

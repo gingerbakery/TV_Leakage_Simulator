@@ -56,6 +56,33 @@ describe('ray tracing model', () => {
     })
   })
 
+  it('applies Current View Receiver position and tilt adjustments', () => {
+    const receiver = createCurrentViewReceiver(
+      'receiver_001',
+      {
+        target: [10, 20, 30],
+        normal: [0, 0, -1],
+        uAxis: [1, 0, 0],
+        vAxis: [0, -1, 0],
+      },
+      50,
+      [4, -2, 3],
+      [0, 0, 90],
+    )
+
+    expect(receiver).toMatchObject({
+      base_center: [10, 20, 80],
+      center: [14, 18, 83],
+      position_offset_mm: [4, -2, 3],
+      tilt_xyz_deg: [0, 0, 90],
+    })
+    expect(receiver.u_axis?.[0]).toBeCloseTo(0)
+    expect(receiver.u_axis?.[1]).toBeCloseTo(1)
+    expect(receiver.v_axis?.[0]).toBeCloseTo(1)
+    expect(receiver.v_axis?.[1]).toBeCloseTo(0)
+    expect(receiver.normal).toEqual([0, 0, -1])
+  })
+
   it('includes active ROI, optical assignments, transforms and exclusions', () => {
     const scene = createSceneFixture()
     const emitter = createFaceEmitter('emitter_001', [0])

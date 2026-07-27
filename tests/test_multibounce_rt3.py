@@ -10,7 +10,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from leakage_simulator.geometry import TriangleMesh
 from leakage_simulator.raytracer import DirectRayTraceInput, run_direct_ray_trace
-from leakage_simulator.types import EmitterSpec, OpticalProfile, RayTraceConfig, ReceiverSpec
+from leakage_simulator.types import (
+    EmitterSpec,
+    MAX_REFLECTION_DEPTH,
+    OpticalProfile,
+    RayTraceConfig,
+    ReceiverSpec,
+)
 
 
 def add_mirror(
@@ -96,6 +102,81 @@ def two_bounce_input(
     )
 
 
+def add_corridor_wall(
+    mesh: TriangleMesh,
+    y_position: float,
+    material_id: str,
+    component_id: int,
+) -> None:
+    if y_position > 0.0:
+        points = [
+            (0.0, y_position, -2.0),
+            (21.0, y_position, -2.0),
+            (21.0, y_position, 2.0),
+            (0.0, y_position, 2.0),
+        ]
+    else:
+        points = [
+            (0.0, y_position, -2.0),
+            (0.0, y_position, 2.0),
+            (21.0, y_position, 2.0),
+            (21.0, y_position, -2.0),
+        ]
+    vertices = [mesh.add_vertex(value) for value in points]
+    metadata = {"component_id": component_id}
+    mesh.add_face(vertices[0], vertices[1], vertices[2], material_id, metadata)
+    mesh.add_face(vertices[0], vertices[2], vertices[3], material_id, metadata)
+
+
+def ten_bounce_corridor_input(max_depth: int) -> DirectRayTraceInput:
+    mesh = TriangleMesh()
+    add_corridor_wall(mesh, 1.0, "high_reflector", 301)
+    add_corridor_wall(mesh, -1.0, "high_reflector", 302)
+    inverse_root_two = 1.0 / math.sqrt(2.0)
+    emitter = EmitterSpec(
+        emitter_id="corridor_source",
+        emitter_type="datum_plane",
+        center=(0.0, 0.0, 0.0),
+        u_axis=(0.0, 0.0, 1.0),
+        v_axis=(inverse_root_two, -inverse_root_two, 0.0),
+        width_mm=0.001,
+        height_mm=0.001,
+        direction_distribution="gaussian",
+        gaussian_sigma_deg=0.001,
+        power_lumen=1.0,
+        ray_count=100,
+        seed=20260727,
+    )
+    receiver = ReceiverSpec(
+        receiver_id="corridor_observer",
+        center=(20.0, 0.0, 0.0),
+        normal=(-1.0, 0.0, 0.0),
+        width_mm=1.5,
+        height_mm=1.5,
+        resolution=(10, 10),
+    )
+    return DirectRayTraceInput(
+        mesh=mesh,
+        emitters=[emitter],
+        receivers=[receiver],
+        optical_profiles=[
+            OpticalProfile(
+                "high_reflector",
+                0.95,
+                scatter_model="specular",
+            ),
+        ],
+        config=RayTraceConfig(
+            ray_count=100,
+            max_depth=max_depth,
+            seed=73,
+            min_energy=1e-12,
+            contribution_mode="summary",
+            store_ray_paths=False,
+        ),
+    )
+
+
 class MultiBounceRT3Tests(unittest.TestCase):
     def test_second_reflection_requires_depth_two(self) -> None:
         depth_one = run_direct_ray_trace(two_bounce_input(max_depth=1))
@@ -165,6 +246,29 @@ class MultiBounceRT3Tests(unittest.TestCase):
         self.assertEqual(summary.components["101"]["continued_count"], 1000)
         self.assertEqual(summary.components["202"]["receiver_hit_count"], 1000)
         self.assertAlmostEqual(summary.reflected_receiver_flux_lumen, 0.4, places=6)
+
+    def test_ten_reflections_reach_receiver_in_high_reflectance_corridor(self) -> None:
+        depth_nine = run_direct_ray_trace(ten_bounce_corridor_input(max_depth=9))
+        depth_ten = run_direct_ray_trace(ten_bounce_corridor_input(max_depth=10))
+
+        self.assertEqual(depth_nine.receiver_hit_count, 0)
+        self.assertEqual(depth_ten.receiver_hit_count, 100)
+        self.assertAlmostEqual(
+            depth_ten.metrics["corridor_observer"]["total_flux_lumen"],
+            (0.95**10) / math.sqrt(2.0),
+            places=6,
+        )
+        self.assertEqual(
+            depth_ten.metrics["_reflection_summary"]["max_observed_depth"],
+            10,
+        )
+
+    def test_v1_reflection_depth_contract_accepts_twenty_and_rejects_more(self) -> None:
+        config = RayTraceConfig(max_depth=MAX_REFLECTION_DEPTH)
+
+        self.assertEqual(config.max_depth, 20)
+        with self.assertRaisesRegex(ValueError, "must not exceed 20"):
+            RayTraceConfig(max_depth=MAX_REFLECTION_DEPTH + 1)
 
 
 if __name__ == "__main__":

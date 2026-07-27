@@ -30,6 +30,7 @@ import { AppDialog } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  maxReflectionDepth,
   useWorkspaceStore,
   workspaceSelectors,
 } from '@/stores'
@@ -87,6 +88,7 @@ function sceneCenter(scene: ScenePayload | undefined): Vec3 {
 
 function NumberField({
   label,
+  ariaLabel,
   value,
   onChange,
   min,
@@ -95,6 +97,7 @@ function NumberField({
   disabled = false,
 }: {
   label: string
+  ariaLabel?: string
   value: number
   onChange(value: number): void
   min?: number
@@ -108,7 +111,7 @@ function NumberField({
       <input
         className={inputClassName}
         type="number"
-        aria-label={label}
+        aria-label={ariaLabel ?? label}
         value={value}
         min={min}
         max={max}
@@ -474,6 +477,8 @@ function ReceiverDialog({
   const [viewDistance, setViewDistance] = useState(
     currentViewDefaultDistanceMm,
   )
+  const [positionOffset, setPositionOffset] = useState<Vec3>([0, 0, 0])
+  const [tilt, setTilt] = useState<Vec3>([0, 0, 0])
   const [capturedFrame, setCapturedFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [normalFlip, setNormalFlip] = useState(false)
@@ -504,6 +509,8 @@ function ReceiverDialog({
     setResolutionY(initialReceiver?.resolution[1] ?? 24)
     setAcceptance(initialReceiver?.acceptance_angle_deg ?? 90)
     setViewDistance(initialDistance)
+    setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
+    setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
     setNormalFlip(initialReceiver?.normal_flip ?? false)
     if (mode === 'current_view' && initialReceiver) {
       const normal =
@@ -550,6 +557,8 @@ function ReceiverDialog({
               '__placement_preview_receiver__',
             capturedFrame,
             Math.max(0.001, viewDistance),
+            positionOffset,
+            tilt,
           )
         : createDatumReceiver(
             initialReceiver?.receiver_id ??
@@ -581,7 +590,9 @@ function ReceiverDialog({
     mode,
     normalFlip,
     open,
+    positionOffset,
     rotation,
+    tilt,
     viewDistance,
     width,
   ])
@@ -606,6 +617,8 @@ function ReceiverDialog({
             receiverId,
             capturedFrame,
             Math.max(0.001, viewDistance),
+            positionOffset,
+            tilt,
           )
         : createDatumReceiver(receiverId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
@@ -716,6 +729,36 @@ function ReceiverDialog({
                 Use current camera
               </Button>
             </div>
+            {capturedFrame && previewReceiver?.base_center ? (
+              <div className="mt-4 space-y-3 border-t border-primary/15 pt-3">
+                <VectorFields
+                  label="Center (mm)"
+                  labels={[
+                    'Receiver center X',
+                    'Receiver center Y',
+                    'Receiver center Z',
+                  ]}
+                  value={previewReceiver.center}
+                  onChange={(nextCenter) =>
+                    setPositionOffset([
+                      nextCenter[0] - previewReceiver.base_center![0],
+                      nextCenter[1] - previewReceiver.base_center![1],
+                      nextCenter[2] - previewReceiver.base_center![2],
+                    ])
+                  }
+                />
+                <VectorFields
+                  label="Tilt (deg)"
+                  labels={[
+                    'Receiver tilt X',
+                    'Receiver tilt Y',
+                    'Receiver tilt Z',
+                  ]}
+                  value={tilt}
+                  onChange={setTilt}
+                />
+              </div>
+            ) : null}
           </div>
         )}
         <div className="grid grid-cols-2 gap-2">
@@ -838,6 +881,15 @@ export function RayTracingPanel({
   const enabledEmitterCount = emitters.filter(
     (emitter) => emitter.enabled,
   ).length
+  const runOptionEmitterRayCount = emitters[0]?.ray_count ?? 10_000
+  const enabledEmitterRayCount = emitters
+    .filter((emitter) => emitter.enabled)
+    .reduce(
+      (total, emitter) => total + Math.max(1, emitter.ray_count),
+      0,
+    )
+  const hasMixedEmitterRayCounts =
+    new Set(emitters.map((emitter) => emitter.ray_count)).size > 1
   const enabledReceiverCount = receivers.filter(
     (receiver) => receiver.enabled,
   ).length
@@ -1135,11 +1187,31 @@ export function RayTracingPanel({
           Run options
         </div>
         <div className="grid grid-cols-2 gap-2">
+          <div className="col-span-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+            <NumberField
+              label="Emitter rays"
+              ariaLabel="Run option emitter rays"
+              value={runOptionEmitterRayCount}
+              min={1}
+              step={1000}
+              disabled={isRunning || emitters.length === 0}
+              onChange={(value) =>
+                actions.setEmitterRayCount(value)
+              }
+            />
+            <p className="mt-1.5 text-[0.62rem] leading-4 text-muted-foreground">
+              {hasMixedEmitterRayCounts
+                ? 'Emitter별 Ray 수가 서로 다릅니다. 값을 변경하면 모든 Emitter에 동일하게 적용됩니다. '
+                : '모든 등록 Emitter에 동일하게 적용됩니다. '}
+              활성 Emitter 총합{' '}
+              {enabledEmitterRayCount.toLocaleString()} rays
+            </p>
+          </div>
           <NumberField
-            label="Max reflection depth"
+            label={`Max reflections (0-${maxReflectionDepth})`}
             value={config.max_depth}
             min={0}
-            max={3}
+            max={maxReflectionDepth}
             step={1}
             disabled={isRunning}
             onChange={(value) =>
@@ -1212,6 +1284,10 @@ export function RayTracingPanel({
             </select>
           </label>
         </div>
+        <p className="text-[0.68rem] leading-relaxed text-muted-foreground">
+          1 for quick checks, 3 for general comparison, 10 for enclosed
+          high-reflectance paths, and 20 only for convergence checks.
+        </p>
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
@@ -1242,7 +1318,8 @@ export function RayTracingPanel({
         </Button>
         <p className="text-[0.65rem] leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·
-          ROI {roiScopes.filter((scope) => scope.active).length} scope
+          Rays {enabledEmitterRayCount.toLocaleString()} · ROI{' '}
+          {roiScopes.filter((scope) => scope.active).length} scope
         </p>
 
         {job ? (

@@ -61,9 +61,17 @@ describe('ray path visualization', () => {
   })
 
   it('builds independently filterable colored segment groups', () => {
+    const allVisible: RayPathDisplayFilters = {
+      receiver_direct: true,
+      receiver_reflected: true,
+      direct: true,
+      specular: true,
+      lambertian: true,
+      gaussian: true,
+    }
     const visualization = buildRayPathVisualization(
       [directReceiverPath, reflectedReceiverPath, reflectedMissPath],
-      defaultRayPathDisplayFilters,
+      allVisible,
     )
 
     expect(visualization).toMatchObject({
@@ -76,21 +84,15 @@ describe('ray path visualization', () => {
     expect(visualization.groups.gaussian).toHaveLength(1)
   })
 
-  it('applies the Receiver-only preset without recomputation', () => {
-    const receiverOnly: RayPathDisplayFilters = {
-      receiver_direct: true,
-      receiver_reflected: true,
-      direct: false,
-      specular: false,
-      lambertian: false,
-      gaussian: false,
-    }
+  it('shows only Receiver-reaching paths by default', () => {
     const visualization = buildRayPathVisualization(
       [directReceiverPath, reflectedReceiverPath, reflectedMissPath],
-      receiverOnly,
+      defaultRayPathDisplayFilters,
     )
 
     expect(visualization.visiblePathCount).toBe(2)
+    expect(visualization.groups.receiver_direct).toHaveLength(1)
+    expect(visualization.groups.receiver_reflected).toHaveLength(2)
     expect(visualization.groups.direct).toHaveLength(0)
     expect(visualization.groups.gaussian).toHaveLength(0)
   })

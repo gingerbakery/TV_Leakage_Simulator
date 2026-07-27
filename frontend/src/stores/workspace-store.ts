@@ -112,10 +112,10 @@ export type RayPathDisplayFilters = Record<
 export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   receiver_direct: true,
   receiver_reflected: true,
-  direct: true,
-  specular: true,
-  lambertian: true,
-  gaussian: true,
+  direct: false,
+  specular: false,
+  lambertian: false,
+  gaussian: false,
 }
 
 export interface WorkspaceSnapshot {
@@ -168,6 +168,7 @@ export interface WorkspaceActions {
   setEmitterFaceSelectionArmed(armed: boolean): void
   setRoiDraftLabel(label: string): void
   upsertEmitter(emitter: EmitterSpec): void
+  setEmitterRayCount(rayCount: number): void
   setEmitterEnabled(emitterId: string, enabled: boolean): void
   removeEmitter(emitterId: string): void
   upsertReceiver(receiver: ReceiverSpec): void
@@ -305,12 +306,17 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   max_stored_paths: 500,
 }
 
+export const maxReflectionDepth = 20
+
 function normalizeRayTraceConfig(
   config: RayTraceConfigRequest,
 ): RayTraceConfigRequest {
   return {
     ray_count: Math.max(1, Math.trunc(config.ray_count || 1)),
-    max_depth: Math.max(0, Math.min(3, Math.trunc(config.max_depth || 0))),
+    max_depth: Math.max(
+      0,
+      Math.min(maxReflectionDepth, Math.trunc(config.max_depth || 0)),
+    ),
     seed: Math.trunc(config.seed || 0),
     min_energy: Math.max(0, Number(config.min_energy) || 0),
     epsilon_mm: Math.max(1e-9, Number(config.epsilon_mm) || 1e-4),
@@ -631,6 +637,19 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ray_count: Math.max(1, Math.trunc(emitter.ray_count || 1)),
             },
           ],
+          ...invalidateRayTraceState(),
+        }))
+      },
+      setEmitterRayCount: (rayCount) => {
+        const normalizedRayCount = Math.max(
+          1,
+          Math.trunc(rayCount || 1),
+        )
+        set((state) => ({
+          emitters: state.emitters.map((emitter) => ({
+            ...emitter,
+            ray_count: normalizedRayCount,
+          })),
           ...invalidateRayTraceState(),
         }))
       },
