@@ -124,6 +124,7 @@ interface ThreeViewerCanvasProps {
   roiScopes: RoiScope[]
   rayTraceResult?: RayTraceResult | null
   editingComponentId?: number | null
+  editingComponentMode?: 'material' | 'transform' | null
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
   onComponentContextMenu?(target: ViewerComponentContextTarget): void
@@ -204,6 +205,7 @@ const componentPalette = [
 const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
 const emitterOverlayColor = 0xfacc15
+const emitterDirectionColor = 0xffb000
 const receiverOverlayColor = 0xa78bfa
 
 const roiCameraPresetConfig: Record<
@@ -331,6 +333,7 @@ function createPlacementPlane(
   width: number,
   height: number,
   color: number,
+  directionColor: number,
   normalFlip: boolean,
   fillOpacity: number,
   alwaysVisible = false,
@@ -410,7 +413,7 @@ function createPlacementPlane(
       center,
       normal,
       normalLength,
-      color,
+      directionColor,
     ),
   )
   return root
@@ -1054,6 +1057,7 @@ export function ThreeViewerCanvas({
   roiScopes,
   rayTraceResult,
   editingComponentId,
+  editingComponentMode,
   onRoiBoxSelection,
   onCameraFrameChange,
   onComponentContextMenu,
@@ -2274,16 +2278,25 @@ export function ThreeViewerCanvas({
         ) {
           selectedClipped.featureEdgeGeometry.dispose()
         }
-        const selectionEdgeGeometries = [
-          emitterFaceSelectionArmed
-            ? null
-            : selectedClipped.featureEdgeGeometry,
-          selectedClipped.capEdgeGeometry,
-        ].filter(
-          (
-            geometry,
-          ): geometry is BufferGeometry => geometry !== null,
-        )
+        const suppressMaterialTargetEdges =
+          editingComponentMode === 'material' &&
+          !emitterFaceSelectionArmed
+        const selectionEdgeGeometries = suppressMaterialTargetEdges
+          ? []
+          : [
+              emitterFaceSelectionArmed
+                ? null
+                : selectedClipped.featureEdgeGeometry,
+              selectedClipped.capEdgeGeometry,
+            ].filter(
+              (
+                geometry,
+              ): geometry is BufferGeometry => geometry !== null,
+            )
+        if (suppressMaterialTargetEdges) {
+          selectedClipped.featureEdgeGeometry?.dispose()
+          selectedClipped.capEdgeGeometry?.dispose()
+        }
         for (const [
           edgeIndex,
           edgeGeometry,
@@ -2322,7 +2335,7 @@ export function ThreeViewerCanvas({
                 2,
                 18,
               ),
-              selectionColor,
+              emitterDirectionColor,
             )
             direction.traverse((child) => {
               child.renderOrder = Math.max(
@@ -2392,6 +2405,7 @@ export function ThreeViewerCanvas({
         emitter.width_mm,
         emitter.height_mm,
         emitterOverlayColor,
+        emitterDirectionColor,
         emitter.normal_flip,
         emitter === placementPreviewEmitter ? 0.4 : 0.2,
         emitter === placementPreviewEmitter,
@@ -2416,6 +2430,7 @@ export function ThreeViewerCanvas({
         receiver.normal,
         receiver.width_mm,
         receiver.height_mm,
+        receiverOverlayColor,
         receiverOverlayColor,
         receiver.normal_flip,
         receiver === placementPreviewReceiver ? 0.34 : 0.14,
@@ -2541,7 +2556,7 @@ export function ThreeViewerCanvas({
                 3,
                 22,
               ),
-              emitterOverlayColor,
+              emitterDirectionColor,
             )
             direction.traverse((child) => {
               child.renderOrder = Math.max(child.renderOrder, 97)
@@ -2620,6 +2635,9 @@ export function ThreeViewerCanvas({
       const style = viewerMaterialStyle(partAssignment, fallbackColor)
       const displayColor = style.color.clone()
       const highlightColor = isEditing ? 0xfacc15 : 0x38bdf8
+      const showHighlightedEdges =
+        isSelected &&
+        !(isEditing && editingComponentMode === 'material')
       if (isSelected) {
         displayColor.lerp(new Color(highlightColor), isEditing ? 0.7 : 0.58)
       }
@@ -2656,8 +2674,10 @@ export function ThreeViewerCanvas({
       node.hiddenEdges.visible = isWireframe
       node.hiddenEdges.material.opacity = 0.16
       node.edges.visible = renderMode !== 'Surface'
-      node.edges.material.color.set(isSelected ? highlightColor : 0xb9d5e8)
-      node.edges.material.opacity = isSelected
+      node.edges.material.color.set(
+        showHighlightedEdges ? highlightColor : 0xb9d5e8,
+      )
+      node.edges.material.opacity = showHighlightedEdges
         ? 1
         : isWireframe
           ? 0.82
@@ -2689,20 +2709,23 @@ export function ThreeViewerCanvas({
         targetSurface.name = `editor-target-surface-${componentId}`
         targetSurface.renderOrder = 88
 
-        const targetEdges = new LineSegments(
-          node.edges.geometry.clone(),
-          new LineBasicMaterial({
-            color: 0xfbbf24,
-            transparent: true,
-            opacity: 0.9,
-            depthTest: true,
-            depthWrite: false,
-            toneMapped: false,
-          }),
-        )
-        targetEdges.name = `editor-target-edges-${componentId}`
-        targetEdges.renderOrder = 89
-        node.selectionOverlayRoot.add(targetSurface, targetEdges)
+        node.selectionOverlayRoot.add(targetSurface)
+        if (editingComponentMode !== 'material') {
+          const targetEdges = new LineSegments(
+            node.edges.geometry.clone(),
+            new LineBasicMaterial({
+              color: 0xfbbf24,
+              transparent: true,
+              opacity: 0.9,
+              depthTest: true,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          )
+          targetEdges.name = `editor-target-edges-${componentId}`
+          targetEdges.renderOrder = 89
+          node.selectionOverlayRoot.add(targetEdges)
+        }
       }
 
       const componentEmitterFaceIds = node.component.face_indices.filter(
@@ -2773,7 +2796,7 @@ export function ThreeViewerCanvas({
               2,
               18,
             ),
-            emitterOverlayColor,
+            emitterDirectionColor,
           ),
         )
         node.emitterOverlayRoot.add(reference)
@@ -2841,7 +2864,7 @@ export function ThreeViewerCanvas({
                   2,
                   18,
                 ),
-                0xf59e0b,
+                emitterDirectionColor,
               )
               direction.traverse((child) => {
                 child.renderOrder = Math.max(child.renderOrder, 96)
@@ -2959,6 +2982,7 @@ export function ThreeViewerCanvas({
     emitterFaceSelectionArmed,
     emitters,
     editingComponentId,
+    editingComponentMode,
     hiddenComponentIds,
     materialAssignments,
     placementPreviewEmitter,

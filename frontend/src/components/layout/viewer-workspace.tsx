@@ -526,6 +526,7 @@ export function ViewerWorkspace({
                     roiScopes={roiScopes}
                     rayTraceResult={rayTraceResult}
                     editingComponentId={editingComponentId}
+                    editingComponentMode={editingComponentMode}
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
                     onComponentContextMenu={(target) => {

@@ -24,9 +24,11 @@ import { createSceneFixture } from '@/test/scene-fixture'
 
 vi.mock('@/features/viewer', () => ({
   ThreeViewerCanvas: ({
+    editingComponentMode,
     onComponentContextMenu,
     onRayObjectContextMenu,
   }: {
+    editingComponentMode?: 'material' | 'transform' | null
     onComponentContextMenu?(target: {
       clientX: number
       clientY: number
@@ -43,6 +45,7 @@ vi.mock('@/features/viewer', () => ({
   }) => (
     <canvas
       aria-label="Interactive 3D CAD viewer"
+      data-editing-component-mode={editingComponentMode ?? ''}
       onContextMenu={(event) => {
         if (event.shiftKey) {
           onRayObjectContextMenu?.({
@@ -130,6 +133,11 @@ describe('Step 07·08 feature editors', () => {
     expect(
       await screen.findByText('Transform target · STEP Solid 1'),
     ).not.toBeNull()
+    expect(
+      screen
+        .getByLabelText('Interactive 3D CAD viewer')
+        .getAttribute('data-editing-component-mode'),
+    ).toBe('transform')
   })
 
   it('restores component actions on the Viewer context menu', async () => {
