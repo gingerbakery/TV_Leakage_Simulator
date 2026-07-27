@@ -128,10 +128,17 @@ Multi-bounce, Receiver heatmap도 탭별로 확인할 수 있다.
 Receiver direct·reflected 색상으로 표시한다. 여섯 표시 필터와 빠른 preset은
 재계산 없이 overlay만 갱신하며 현재 표시 경로 수를 함께 보여준다.
 
-## 12. Python API 서버 분리 — 예정
+## 12. Python API 서버 분리 — 완료
 
-`run_web.py`에 섞여 있는 HTTP·UI 책임을 FastAPI 계층으로 옮기고 계산
-모듈은 현재 Python 코어를 그대로 재사용한다.
+React가 사용하는 `/api`, `/health`, `/dev-status`, `/_ping`, `/outputs`
+계약을 `src/leakage_simulator/api/`의 FastAPI 계층으로 분리했다.
+`run_api.py`가 독립 서버 진입점을 제공하며 scene cache, CAD upload,
+비동기 ray tracing job과 output 전달 상태는 `ApiRuntime`이 소유한다.
+
+계산은 기존 `build_scene_payload`, `build_direct_trace_input`,
+`run_direct_ray_trace`를 그대로 재사용하므로 1~11단계 데이터 계약과 계산
+결과는 바뀌지 않는다. 기존 `run_web.py` 인라인 UI와 데스크톱 실행 경로는
+13단계 최종 전환 전까지 호환용으로 보존한다.
 
 ## 13. 데스크톱 패키징·최종 전환 — 예정
 

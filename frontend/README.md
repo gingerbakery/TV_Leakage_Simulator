@@ -14,7 +14,8 @@ TV 빛샘 시뮬레이터의 차세대 프론트엔드 작업 공간입니다.
 - Oxlint
 - 공통 TypeScript API client
 
-기존 `run_web.py` 화면과는 독립적으로 동작하며, CAD upload와 scene query,
+기존 `run_web.py` 화면과는 독립적으로 동작하며, `run_api.py`의 FastAPI
+서버를 통해 CAD upload와 scene query,
 Component Tree, ROI, Material assignment, Transform rule, Emitter·Receiver,
 비동기 Ray tracing job이 Python API와 React 작업 상태에 연결되어 있습니다.
 실제 Three.js Viewer는 CAD mesh와 선택, ROI solid, 광원·수광부 overlay를
@@ -47,6 +48,7 @@ Datum/Current view Receiver를 배치하고 Python 비동기 job 진행률을 �
 - `src/api/client.ts`: CAD upload, scene, ray trace, 상태 확인 함수
 - 개발 서버의 `/api`, `/health` 요청은 기본적으로 `127.0.0.1:8787`에 프록시
 - 다른 Python 서버 주소는 `.env.local`의 `VITE_API_PROXY_TARGET`으로 지정
+- Python API 문서: `http://127.0.0.1:8787/api/docs`
 
 ## 상태 관리 원칙
 
@@ -63,11 +65,22 @@ Datum/Current view Receiver를 배치하고 Python 비동기 job 진행률을 �
 
 ## 개발 명령
 
+터미널 1에서 Python API를 실행합니다.
+
+```powershell
+python run_api.py --port 8787 --strict-port
+```
+
+터미널 2에서 React 개발 서버를 실행합니다.
+
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
+
+React 개발 주소는 `http://127.0.0.1:5173/`이며, 기존 인라인 UI가 필요한
+동안에는 별도로 `python run_web.py`를 실행할 수 있습니다.
 
 ## 검증 명령
 

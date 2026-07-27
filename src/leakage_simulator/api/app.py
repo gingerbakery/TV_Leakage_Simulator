@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import mimetypes
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import Body, FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+
+from .runtime import ApiRuntime
+
+API_VERSION = "0.12.0"
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _error(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": message},
+    )
+
+
+def create_app(
+    runtime: ApiRuntime | None = None,
+) -> FastAPI:
+    api_runtime = runtime or ApiRuntime(ROOT)
+    boot_token = str(time.time_ns())
+    application = FastAPI(
+        title="TV Leakage Simulator API",
+        version=API_VERSION,
+        docs_url="/api/docs",
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
+    )
+    application.state.api_runtime = api_runtime
+
+    @application.get("/", response_class=JSONResponse)
+    def root_status() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "service": "tv-leakage-simulator-api",
+            "api_version": API_VERSION,
+            "docs": "/api/docs",
+        }
+
+    @application.get("/health", response_class=PlainTextResponse)
+    def health() -> str:
+        return "ok api_version={}".format(API_VERSION)
+
+    @application.get("/dev-status", response_class=JSONResponse)
+    def dev_status() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "web_ui_version": "api-{}".format(API_VERSION),
+            "api_version": API_VERSION,
+            "boot_token": boot_token,
+        }
+
+    @application.get("/_ping", response_class=PlainTextResponse)
+    def ping() -> str:
+        return "pong"
+
+    @application.get("/api/scene", response_class=JSONResponse)
+    def scene(cad: str = "") -> Any:
+        if not cad.strip():
+            return _error(400, "CAD file is required")
+        try:
+            return api_runtime.load_scene(cad)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
+    @application.post("/api/upload", response_class=JSONResponse)
+    async def upload(request: Request, filename: str = "") -> Any:
+        try:
+            content = await request.body()
+            return api_runtime.save_upload(filename, content)
+        except Exception as exc:
+            return PlainTextResponse(
+                "Upload failed: {}".format(exc),
+                status_code=400,
+            )
+
+    @application.post(
+        "/api/raytrace/start",
+        status_code=202,
+        response_class=JSONResponse,
+    )
+    def start_raytrace(
+        payload: dict[str, Any] = Body(...),
+    ) -> Any:
+        try:
+            return api_runtime.start_raytrace_job(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
+    @application.get(
+        "/api/raytrace/status",
+        response_class=JSONResponse,
+    )
+    def raytrace_status(job_id: str = "") -> Any:
+        job = api_runtime.raytrace_job_snapshot(job_id)
+        if job is None:
+            return _error(404, "Ray tracing job was not found")
+        return job
+
+    @application.post(
+        "/api/raytrace/direct",
+        response_class=JSONResponse,
+    )
+    def direct_raytrace(
+        payload: dict[str, Any] = Body(...),
+    ) -> Any:
+        try:
+            return api_runtime.run_raytrace_direct(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
+    @application.get("/outputs/{output_name}")
+    def output_file(output_name: str) -> Any:
+        try:
+            path = api_runtime.resolve_output_file(output_name)
+        except ValueError as exc:
+            return PlainTextResponse(str(exc), status_code=400)
+        if path is None:
+            return PlainTextResponse("Not found", status_code=404)
+        media_type, _ = mimetypes.guess_type(path.name)
+        return FileResponse(
+            path,
+            media_type=media_type or "application/octet-stream",
+            filename=path.name,
+            content_disposition_type="inline",
+        )
+
+    return application
+
+
+app = create_app()

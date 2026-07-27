@@ -20,9 +20,11 @@
 - Supabase를 포함한 backend/database 구조
 
 현재 상태:
-- 전체 프레임워크 전환은 보류 상태다.
-- 3D viewer만 Three.js로 먼저 전환하여 사용 중이다.
-- RT-2C 1회 반사와 RT-2D-A backend 기여도 집계가 완료되었으며 RT-2D-B 완료 후 전환 시점 재평가 조건을 다시 확인한다.
+- 프레임워크 전환 1~11단계가 완료되었다.
+- React + TypeScript UI와 Three.js Viewer가 현재 개발 화면으로 사용된다.
+- 12단계에서 React가 사용하는 Python API를 FastAPI 계층으로 분리했다.
+- 기존 `run_web.py` 인라인 UI는 13단계 데스크톱 최종 전환 전까지 호환
+  경로로만 유지한다.
 
 다시 검토할 조건:
 - RT-2C/RT-2D가 완료되어 ray tracing 핵심 workflow가 동작한다.
@@ -78,6 +80,8 @@
 - 실제 회사 TV ROI CAD의 end-to-end 시간을 측정한 뒤 Embree/Open3D/GPU 필요성을 다시 판단한다.
 - GPU 경로를 추가하더라도 GPU가 없는 PC에서 CPU fallback이 반드시 동작해야 한다.
 - 전체 프레임워크 전환 시점은 RT-2D와 계산 백엔드 경계가 안정화된 뒤 다시 알린다.
+- 전체 프레임워크 전환은 현재 12단계까지 진행되었으며, 다음 재검토 대상은
+  13단계 데스크톱 패키징과 기존 인라인 UI 제거 시점이다.
 - 다회 반사는 RT-2D-B 완료 직후 RT-3에서 `max_depth=1~3`으로 확장한다.
 - PERF-3A 단일 반사 Fast Path는 완료되었으며, Fast summary 기준 백만 ray `23.19초`를 기록했다.
 - PERF-3B batch/vectorization과 native/GPU backend는 실제 TV ROI CAD 성능 측정 후 재검토한다.

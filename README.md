@@ -10,28 +10,41 @@ TV 기구 개발 단계에서 발생 가능한 `빛샘(light leakage)`을 빠르
 
 ## 현재 제공 모드
 
-### 1. 웹 UI 프로토타입
-- 주요 파일: `run_web.py`
+### 1. React 개발 UI + FastAPI
+- 주요 파일:
+  - `frontend/`
+  - `run_api.py`
+  - `src/leakage_simulator/api/`
 - 목적:
   - CAD import
   - ROI 선택
-  - component / face 선택
-  - transform preview / apply
-  - material library UI mockup
+  - Component / Material / Transform
+  - Emitter / Receiver / Ray tracing
+  - Result 및 광선 경로 시각화
 
-실행 예시:
+실행 예시(터미널 2개):
+
+```powershell
+python run_api.py --port 8787 --strict-port
+```
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+브라우저 주소: `http://127.0.0.1:5173/`
+
+### 2. 기존 인라인 웹 UI
+- 주요 파일: `run_web.py`
+- 13단계 최종 패키징 전까지 데스크톱 호환 경로로 보존
 
 ```powershell
 python run_web.py
 ```
 
-또는 내장 Python 런타임 사용 예시:
-
-```powershell
-.\_tools\python313\python.exe run_web.py
-```
-
-### 2. CLI 실행
+### 3. CLI 실행
 - 주요 파일: `run.py`
 - 목적:
   - 시뮬레이션 코어 검증
@@ -43,7 +56,7 @@ python run_web.py
 python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 ```
 
-### 3. 데스크톱 EXE 패키지
+### 4. 데스크톱 EXE 패키지
 - 목적:
   - 더블클릭 기반 내부 시연
   - 웹 UI를 별도 브라우저 없이 내장 WebView 창에서 실행
@@ -63,9 +76,13 @@ python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 
 ## 저장소 구조
 - `src/leakage_simulator/`
-  - 코어 엔진, CAD import, ROI, gap, ray tracing, 렌더링
+  - 코어 엔진, CAD import, ROI, gap, ray tracing, 렌더링, FastAPI 계층
+- `frontend/`
+  - React + TypeScript UI
+- `run_api.py`
+  - React용 FastAPI 서버 진입점
 - `run_web.py`
-  - 웹 UI 프로토타입의 메인 엔트리
+  - 기존 인라인 UI의 호환 엔트리
 - `desktop_launcher/`
   - 내장 WebView 데스크톱 런처 소스
 - `docs/`

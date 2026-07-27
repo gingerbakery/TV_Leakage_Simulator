@@ -1,5 +1,8 @@
 cadquery==2.8.0
 cadquery-ocp==7.9.3.1.1
+fastapi==0.140.0
+httpx2==2.9.1
 matplotlib==3.11.0
 numpy==2.4.6
 pillow==12.3.0
+uvicorn==0.51.0

@@ -21,12 +21,13 @@
 ### CAD import / ROI 담당
 - `src/leakage_simulator/components.py`
 - `src/leakage_simulator/roi.py`
-- `run_web.py`의 ROI 관련 UI 구간
+- `frontend/src/features/cad/`
+- `frontend/src/features/roi/`
 
 ### Gap / Transform 담당
 - `src/leakage_simulator/gap.py`
 - `src/leakage_simulator/types.py`
-- `run_web.py`의 transform UI 구간
+- `frontend/src/features/transforms/`
 
 ### Ray trace / Brightness 담당
 - `src/leakage_simulator/raytracer.py`
@@ -35,8 +36,14 @@
 
 ### Material 담당
 - `src/leakage_simulator/materials.py`
-- `run_web.py`의 material UI 구간
+- `frontend/src/features/materials/`
 - `docs/material-library*.md`
+
+### API 담당
+- `run_api.py`
+- `src/leakage_simulator/api/app.py`
+- `src/leakage_simulator/api/runtime.py`
+- `frontend/src/api/`
 
 ### Desktop packaging 담당
 - `desktop_launcher/`
@@ -44,18 +51,28 @@
 
 ## 실행 방법
 
-### 1. 개발용
-- 시스템 Python이 준비되어 있으면:
+### 1. React + FastAPI 개발용
+- 터미널 1:
+
+```powershell
+python run_api.py --port 8787 --strict-port
+```
+
+- 터미널 2:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+### 2. 기존 인라인 UI
 
 ```powershell
 python run_web.py
 ```
 
-### 2. 별도 런타임이 있을 때
-
-```powershell
-.\_tools\python313\python.exe run_web.py
-```
+- 13단계 데스크톱 패키징 전까지 호환 용도로 유지한다.
 
 ### 3. 테스트/시연용
 - release 패키지가 있으면 EXE 더블클릭
