@@ -171,6 +171,36 @@ describe('common overlays', () => {
     })
   })
 
+  it('submits a settings dialog on plain Enter from a field', () => {
+    const onSubmit = vi.fn()
+
+    render(
+      <AppDialog
+        open
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+        title="Keyboard settings"
+        footer={<button type="button">Apply</button>}
+      >
+        <input aria-label="Setting value" />
+        <textarea aria-label="Setting notes" />
+      </AppDialog>,
+    )
+
+    fireEvent.keyDown(screen.getByLabelText('Setting value'), {
+      key: 'Enter',
+    })
+    expect(onSubmit).toHaveBeenCalledOnce()
+
+    fireEvent.keyDown(screen.getByLabelText('Setting notes'), {
+      key: 'Enter',
+    })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Apply' }), {
+      key: 'Enter',
+    })
+    expect(onSubmit).toHaveBeenCalledOnce()
+  })
+
   it('keeps a floating settings dialog non-modal and draggable', async () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
       function (this: HTMLElement) {

@@ -371,10 +371,11 @@ describe('Step 07·08 feature editors', () => {
 
   it('creates a compiled part material assignment', () => {
     const component = createSceneFixture().components[0]
+    const onOpenChange = vi.fn()
     render(
       <MaterialEditorDialog
         open
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         component={component}
         componentName="Cover Deco"
       />,
@@ -391,9 +392,9 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(screen.getByLabelText('Surface property'), {
       target: { value: 'corrosion_medium' },
     })
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Apply material' }),
-    )
+    fireEvent.keyDown(screen.getByLabelText('Surface property'), {
+      key: 'Enter',
+    })
 
     expect(workspaceStore.getState().materialAssignments).toEqual([
       expect.objectContaining({
@@ -404,14 +405,16 @@ describe('Step 07·08 feature editors', () => {
         surfaceId: 'corrosion_medium',
       }),
     ])
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
   it('creates a component transform rule with move and tilt vectors', () => {
     const component = createSceneFixture().components[0]
+    const onOpenChange = vi.fn()
     render(
       <TransformEditorDialog
         open
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         component={component}
         componentName="Cover Deco"
       />,
@@ -428,8 +431,9 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Rx' }), {
       target: { value: '5' },
     })
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Apply transform' }),
+    fireEvent.keyDown(
+      screen.getByRole('spinbutton', { name: 'Rx' }),
+      { key: 'Enter' },
     )
 
     expect(workspaceStore.getState().transformRules).toEqual([
@@ -441,6 +445,7 @@ describe('Step 07·08 feature editors', () => {
         tilt: { x: 5, y: 0, z: 0 },
       }),
     ])
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
   it('creates Emitter and Current View Receiver contracts for Step 10', () => {
@@ -485,8 +490,14 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().placementPreviewEmitter?.center).toEqual(
       [12.5, 30, 10],
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
+    fireEvent.keyDown(
+      screen.getByRole('spinbutton', { name: 'Center X' }),
+      { key: 'Enter' },
+    )
     expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
+    expect(
+      screen.queryByRole('dialog', { name: 'Datum plane emitter' }),
+    ).toBeNull()
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -518,8 +529,14 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), {
       target: { value: 'Camera RX' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Add receiver' }))
+    fireEvent.keyDown(
+      screen.getByRole('textbox', { name: 'Receiver name' }),
+      { key: 'Enter' },
+    )
     expect(workspaceStore.getState().placementPreviewReceiver).toBeNull()
+    expect(
+      screen.queryByRole('dialog', { name: 'Current view receiver' }),
+    ).toBeNull()
 
     expect(workspaceStore.getState().emitters).toEqual([
       expect.objectContaining({

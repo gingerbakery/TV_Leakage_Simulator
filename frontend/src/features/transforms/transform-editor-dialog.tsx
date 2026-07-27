@@ -174,6 +174,7 @@ export function TransformEditorDialog({
       }
       size="lg"
       returnFocusRef={returnFocusRef}
+      onSubmit={handleApply}
       footer={
         <>
           {currentRule ? (

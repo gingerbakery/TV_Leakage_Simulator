@@ -183,6 +183,7 @@ export function MaterialEditorDialog({
       }
       size="lg"
       returnFocusRef={returnFocusRef}
+      onSubmit={handleApply}
       footer={
         <>
           {currentAssignment ? (

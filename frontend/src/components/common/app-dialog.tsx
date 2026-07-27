@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -34,6 +35,7 @@ export interface AppDialogProps {
   keepOpenOnInteractOutside?: boolean
   contentClassName?: string
   floating?: boolean
+  onSubmit?(): void
 }
 
 const sizeClasses: Record<AppDialogSize, string> = {
@@ -58,6 +60,7 @@ export function AppDialog({
   keepOpenOnInteractOutside = false,
   contentClassName,
   floating = false,
+  onSubmit,
 }: AppDialogProps) {
   const contentRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{
@@ -146,6 +149,34 @@ export function AppDialog({
     event.preventDefault()
   }
 
+  const handleKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (
+      !onSubmit ||
+      event.key !== 'Enter' ||
+      event.defaultPrevented ||
+      event.nativeEvent.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey
+    ) {
+      return
+    }
+    const target = event.target as HTMLElement
+    if (
+      target.closest(
+        'button, a, textarea, [role="button"], [role="menuitem"], [contenteditable="true"], [data-enter-submit="false"]',
+      )
+    ) {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    onSubmit()
+  }
+
   return (
     <Dialog modal={isModal} open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -177,6 +208,7 @@ export function AppDialog({
             : undefined
         }
         data-floating-panel={floating ? '' : undefined}
+        onKeyDown={handleKeyDown}
       >
         <DialogHeader
           className={cn(

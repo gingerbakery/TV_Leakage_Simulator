@@ -311,6 +311,7 @@ function EmitterDialog({
           : 'CAD가 없는 공간에 좌표와 회전으로 가상 사각 발광면을 배치합니다.'
       }
       size="lg"
+      onSubmit={handleApply}
       footer={
         <>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -651,6 +652,7 @@ function ReceiverDialog({
           : '중심 좌표와 회전으로 가상 사각 수광면을 배치합니다.'
       }
       size="lg"
+      onSubmit={handleApply}
       footer={
         <>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
