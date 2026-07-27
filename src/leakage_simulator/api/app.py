@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .runtime import ApiRuntime
 
-API_VERSION = "0.13.0"
+API_VERSION = "1.0.0"
 ROOT = Path(__file__).resolve().parents[3]
 
 

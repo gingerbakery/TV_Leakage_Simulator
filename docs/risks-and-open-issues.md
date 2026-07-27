@@ -28,6 +28,6 @@
 ### 전체 프론트엔드/백엔드 프레임워크 전환
 - React + TypeScript, Tailwind CSS, shadcn/ui, Zustand, Three.js와 FastAPI
   전환은 13단계까지 완료되었다.
-- v0.10.0 경량 데스크톱 패키지에서 React production UI와 Python 계산
+- v1.0.0 경량 데스크톱 패키지에서 React production UI와 Python 계산
   서버의 통합 기동을 검증했다.
-- 후속 운영 과제는 `main` 병합, 사내 PC 배포 검증, 코드 서명이다.
+- `main` 최종 반영 후 남는 운영 과제는 사내 PC 배포 검증과 코드 서명이다.

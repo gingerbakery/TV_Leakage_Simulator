@@ -144,7 +144,7 @@ python -u run_web.py --port 8788
 정상 실행 예시:
 
 ```text
-TV Leakage Simulator API v0.13.0 at http://127.0.0.1:8788
+TV Leakage Simulator API v1.0.0 at http://127.0.0.1:8788
 health: http://127.0.0.1:8788/health
 OpenAPI: http://127.0.0.1:8788/api/docs
 ```
@@ -164,7 +164,7 @@ http://127.0.0.1:8788/health
 정상 응답 예시:
 
 ```text
-ok api_version=0.13.0
+ok api_version=1.0.0
 ```
 
 8788 포트가 이미 사용 중이면 프로그램이 8789 등 다른 포트를 선택할 수 있다. 이 경우 터미널에 실제로 표시된 주소로 접속한다.

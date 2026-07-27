@@ -77,7 +77,7 @@ python run_web.py --port 8787 --strict-port
 - 기존 인라인 UI는 `run_web_legacy.py`에 참조용으로만 보존한다.
 
 ### 3. 테스트/시연용
-- v0.10.0 release ZIP을 해제하고 `LeakageSimulator.exe`를 더블클릭
+- v1.0.0 release ZIP을 해제하고 `LeakageSimulator.exe`를 더블클릭
 
 ## 작업 원칙
 - 코드 변경 시 관련 문서도 함께 갱신

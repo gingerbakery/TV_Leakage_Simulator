@@ -19,17 +19,17 @@
 
 - 기존 인라인 HTML·JavaScript 서버는 `run_web_legacy.py`로 이동했다.
 - 최종 `run_web.py`는 새 통합 서버의 작은 호환 진입점이다.
-- `run_web_legacy.py`와 기존 `web/static`은 v0.10.0 배포물에 포함하지 않는다.
+- `run_web_legacy.py`와 기존 `web/static`은 v1.0.0 배포물에 포함하지 않는다.
 - 필요하면 Git 이력과 레거시 파일에서 이전 구현을 확인할 수 있다.
 
 ## 패키지
 
 - 폴더:
-  `release/leakage_simulator_desktop_v0.10.0_lite/`
+  `release/leakage_simulator_desktop_v1.0.0_lite/`
 - ZIP:
-  `release/leakage_simulator_desktop_v0.10.0_lite.zip`
+  `release/leakage_simulator_desktop_v1.0.0_lite.zip`
 - SHA-256:
-  `release/leakage_simulator_desktop_v0.10.0_lite.zip.sha256`
+  `release/leakage_simulator_desktop_v1.0.0_lite.zip.sha256`
 - 빌드 결과:
   - 압축 해제 폴더 353.5 MB
   - ZIP 98.5 MB

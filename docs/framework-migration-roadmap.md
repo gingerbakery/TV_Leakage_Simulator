@@ -148,6 +148,6 @@ React production build를 FastAPI와 같은 origin에서 제공하고 기존
 `run_web_legacy.py`에 참조용으로만 남아 배포물에는 포함하지 않는다.
 
 경량 패키징은 React assets, FastAPI·Uvicorn, Python 계산 코어와 OCP
-런타임을 함께 조립한다. 생성된 v0.10.0 ZIP을 다시 해제한 환경에서
+런타임을 함께 조립한다. 생성된 v1.0.0 ZIP을 다시 해제한 환경에서
 106,352-face STEP Import, Python 회귀 84개, 통합 React 루트와 JS asset,
 EXE 런처의 내장 서버 health check를 확인했다.

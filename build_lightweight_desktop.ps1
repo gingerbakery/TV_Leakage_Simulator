@@ -1,5 +1,5 @@
 param(
-    [string]$OutputName = "leakage_simulator_desktop_v0.10.0_lite"
+    [string]$OutputName = "leakage_simulator_desktop_v1.0.0_lite"
 )
 
 $ErrorActionPreference = "Stop"
@@ -241,7 +241,7 @@ Copy-Item -LiteralPath $WebViewWinForms -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewLoader -Destination $OutputDir -Force
 
 @"
-TV Leakage Simulator Desktop Lite v0.10.0
+TV Leakage Simulator Desktop Lite v1.0.0
 
 1. Double-click LeakageSimulator.exe.
 2. Wait until the simulator window opens.

@@ -115,7 +115,7 @@ export function SimulatorShell() {
             variant="outline"
             className="hidden border-primary/30 bg-primary/10 text-primary md:inline-flex"
           >
-            Migration · Complete
+            v1.0.0 · React
           </Badge>
         </div>
         <div className="flex items-center gap-2">

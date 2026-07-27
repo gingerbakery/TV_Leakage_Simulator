@@ -49,7 +49,7 @@ describe('SimulatorShell', () => {
     renderShell()
 
     expect(screen.getByText('Empty workspace')).not.toBeNull()
-    expect(screen.getByText('Migration · Complete')).not.toBeNull()
+    expect(screen.getByText('v1.0.0 · React')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Step 05 Material/ }))
 
     expect(screen.getByText('No assignments')).not.toBeNull()

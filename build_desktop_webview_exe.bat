@@ -2,7 +2,7 @@
 setlocal
 
 set "ROOT=%~dp0"
-set "OUTDIR=%ROOT%release\leakage_simulator_desktop_v0.10.0"
+set "OUTDIR=%ROOT%release\leakage_simulator_desktop_v1.0.0"
 set "CS=%ROOT%desktop_launcher\LeakageSimulatorDesktop.cs"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 set "WV2_DIR=C:\Program Files\Microsoft Office\root\Office16\ADDINS\Microsoft Power Query for Excel Integrated\bin"

@@ -73,8 +73,8 @@ python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 .\build_lightweight_desktop.bat
 ```
 
-- 출력: `release/leakage_simulator_desktop_v0.10.0_lite/`
-- 전달용 ZIP: `release/leakage_simulator_desktop_v0.10.0_lite.zip`
+- 출력: `release/leakage_simulator_desktop_v1.0.0_lite/`
+- 전달용 ZIP: `release/leakage_simulator_desktop_v1.0.0_lite.zip`
 - 사용자는 압축 해제 후 `LeakageSimulator.exe`만 더블클릭
 - React UI, FastAPI, STEP/STP import, ROI, Material, Transform,
   Emitter·Receiver, 광선 결과 시각화 포함

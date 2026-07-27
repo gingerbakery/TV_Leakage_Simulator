@@ -15,8 +15,8 @@
 
 ## 경량 STEP/STP 배포본
 - 빌드 명령: `.\build_lightweight_desktop.bat`
-- 출력 폴더: `release/leakage_simulator_desktop_v0.10.0_lite/`
-- 전달 파일: `release/leakage_simulator_desktop_v0.10.0_lite.zip`
+- 출력 폴더: `release/leakage_simulator_desktop_v1.0.0_lite/`
+- 전달 파일: `release/leakage_simulator_desktop_v1.0.0_lite.zip`
 - 사용자는 ZIP을 정상적으로 압축 해제한 뒤 `LeakageSimulator.exe`를 더블클릭한다.
 - 내장 WebView2 초기화가 실패하면 기본 브라우저로 local UI를 연다.
 
@@ -81,7 +81,7 @@
 
 ## 빌드
 - 사용 스크립트: `build_desktop_webview_exe.bat`
-- 출력 폴더: `release/leakage_simulator_desktop_v0.10.0`
+- 출력 폴더: `release/leakage_simulator_desktop_v1.0.0`
 - 권장 경량 스크립트: `build_lightweight_desktop.bat`
 
 ## 운영 권장
