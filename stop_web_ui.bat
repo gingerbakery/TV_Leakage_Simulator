@@ -2,7 +2,7 @@
 setlocal
 
 set "TARGET_PORT=%~1"
-if "%TARGET_PORT%"=="" set "TARGET_PORT=8787"
+if "%TARGET_PORT%"=="" set "TARGET_PORT=8788"
 
 echo [INFO] scanning LISTENING sockets on 127.0.0.1:%TARGET_PORT%
 set "KILLED=0"

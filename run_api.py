@@ -48,7 +48,7 @@ def _available_port(
 
 def run_server(
     host: str = "127.0.0.1",
-    port: int = 8787,
+    port: int = 8788,
     strict_port: bool = False,
 ) -> None:
     selected_port = _available_port(host, port, strict_port)
@@ -94,7 +94,7 @@ def main() -> None:
         default=int(
             os.environ.get("LEAKAGE_API_PORT")
             or os.environ.get("LEAKAGE_WEB_PORT")
-            or "8787"
+            or "8788"
         ),
     )
     parser.add_argument(

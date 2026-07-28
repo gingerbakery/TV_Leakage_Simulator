@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
+import time
 import traceback
 from datetime import datetime
 from typing import Optional
@@ -11,7 +13,6 @@ from typing import Optional
 ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.append(str(ROOT / "src"))
 
-from leakage_simulator.importers import import_geometry
 from leakage_simulator.roi import build_scene_payload
 
 
@@ -52,6 +53,12 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Do not open file picker when --cad is omitted",
     )
+    parser.add_argument(
+        "--fast-import",
+        action="store_true",
+        default=False,
+        help="Skip display-only ROI mesh subdivision for diagnosis",
+    )
     return parser.parse_args()
 
 
@@ -68,11 +75,20 @@ def main() -> int:
 
     cad_file = pathlib.Path(cad_path)
     print("[INFO] CAD file:", cad_file)
+    if args.fast_import:
+        os.environ["LEAKAGE_CAD_FAST_IMPORT"] = "1"
+        print("[INFO] Fast import diagnostic: ON")
     print("[INFO] Checking import...")
 
     try:
-        import_result = import_geometry(str(cad_file))
+        started_at = time.perf_counter()
         payload = build_scene_payload(str(cad_file))
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        elapsed_sec = time.perf_counter() - started_at
     except Exception:
         print("[ERR] Import failed with exception:")
         print(traceback.format_exc())
@@ -83,15 +99,25 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     summary_path = output_dir / f"import_check_{stamp}.json"
 
+    metadata = payload.get("metadata", {})
+    mesh = payload.get("mesh", {})
     summary = {
         "cad_path": str(cad_file),
-        "synthetic": import_result.synthetic,
-        "import_note": import_result.note,
-        "face_count": len(import_result.mesh.faces),
-        "vertex_count": len(import_result.mesh.vertices),
-        "receiver_face_hint_count": len(import_result.receiver_face_indices),
+        "file_size_mb": round(cad_file.stat().st_size / (1024 * 1024), 4),
+        "elapsed_sec": round(elapsed_sec, 4),
+        "scene_payload_mb": round(len(payload_json) / (1024 * 1024), 4),
+        "synthetic": bool(metadata.get("synthetic")),
+        "import_note": metadata.get("import_note", ""),
+        "import_timings_sec": metadata.get("import_timings_sec", {}),
+        "face_count": int(metadata.get("face_count", len(mesh.get("faces", [])))),
+        "vertex_count": int(
+            metadata.get("vertex_count", len(mesh.get("vertices", [])))
+        ),
+        "receiver_face_hint_count": len(
+            metadata.get("receiver_face_hint", [])
+        ),
         "object_count": len(payload.get("objects", [])),
-        "source_file": payload.get("metadata", {}).get("source_file", ""),
+        "source_file": metadata.get("source_file", ""),
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -101,6 +127,8 @@ def main() -> int:
     print("[INFO] faces     =", summary["face_count"])
     print("[INFO] vertices  =", summary["vertex_count"])
     print("[INFO] objects   =", summary["object_count"])
+    print("[INFO] payload   =", summary["scene_payload_mb"], "MB")
+    print("[INFO] elapsed   =", summary["elapsed_sec"], "sec")
     print("[INFO] summary   =", summary_path)
 
     if summary["synthetic"]:

@@ -59,6 +59,7 @@ export interface ScenePayload {
     source_file: string
     synthetic: boolean
     import_note: string
+    import_timings_sec?: Record<string, number>
     receiver_face_hint: number[]
     scene_token: string
   }

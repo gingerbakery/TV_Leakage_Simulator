@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Set
+import time
 
 from .components import build_face_groups
 from .geometry import TriangleMesh, build_feature_edge_segments
@@ -25,9 +26,31 @@ def resolve_receiver_faces(
 
 
 def build_scene_payload(cad_path: Optional[str]) -> Dict:
+    total_started_at = time.perf_counter()
+    import_started_at = time.perf_counter()
     import_result = import_geometry(cad_path)
+    import_sec = time.perf_counter() - import_started_at
+    print(
+        "[CAD] {:<24} {:>8.3f}s | {} faces".format(
+            "geometry import",
+            import_sec,
+            len(import_result.mesh.faces),
+        ),
+        flush=True,
+    )
     mesh = import_result.mesh
+    grouping_started_at = time.perf_counter()
     objects = build_face_groups(mesh, max_faces_per_object=None)
+    grouping_sec = time.perf_counter() - grouping_started_at
+    print(
+        "[CAD] {:<24} {:>8.3f}s | {} components".format(
+            "component grouping",
+            grouping_sec,
+            len(objects),
+        ),
+        flush=True,
+    )
+    arrays_started_at = time.perf_counter()
     face_to_component: Dict[int, int] = {}
     for item in objects:
         component_id = item["object_id"]
@@ -53,7 +76,16 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         step_component_id = mesh.metadata(face_index).get("step_component_id")
         if step_component_id is not None:
             step_component_to_component[int(step_component_id)] = component_id
+    arrays_sec = time.perf_counter() - arrays_started_at
+    print(
+        "[CAD] {:<24} {:>8.3f}s".format(
+            "scene mesh arrays",
+            arrays_sec,
+        ),
+        flush=True,
+    )
 
+    edges_started_at = time.perf_counter()
     source_feature_edges = import_result.feature_edge_segments
     if source_feature_edges is None:
         source_feature_edges = build_feature_edge_segments(mesh)
@@ -76,7 +108,27 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
                 "component_id": component_id,
             }
         )
-    return {
+    edges_sec = time.perf_counter() - edges_started_at
+    print(
+        "[CAD] {:<24} {:>8.3f}s | {} segments".format(
+            "scene feature edges",
+            edges_sec,
+            len(feature_edge_segments),
+        ),
+        flush=True,
+    )
+    timings = dict(import_result.timings_sec or {})
+    timings.update(
+        {
+            "geometry_import": import_sec,
+            "component_grouping": grouping_sec,
+            "scene_mesh_arrays": arrays_sec,
+            "scene_feature_edges": edges_sec,
+            "scene_payload_total": time.perf_counter()
+            - total_started_at,
+        }
+    )
+    payload = {
         "schema_version": "mesh-scene.v1",
         "units": {
             "length": "mm",
@@ -109,11 +161,20 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
             "source_file": cad_path or "",
             "synthetic": import_result.synthetic,
             "import_note": import_result.note,
+            "import_timings_sec": timings,
             "receiver_face_hint": import_result.receiver_face_indices[
                 : min(30, len(import_result.receiver_face_indices))
             ],
         },
     }
+    print(
+        "[CAD] {:<24} {:>8.3f}s | payload ready".format(
+            "scene payload total",
+            timings["scene_payload_total"],
+        ),
+        flush=True,
+    )
+    return payload
 
 
 # ---------------------------------------------------------------------------

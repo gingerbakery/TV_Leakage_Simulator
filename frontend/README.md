@@ -46,9 +46,9 @@ Datum/Current view Receiver를 배치하고 Python 비동기 job 진행률을 �
 - `src/api/types/`: scene, ray tracing, system API 요청·응답 계약
 - `src/api/http.ts`: JSON·텍스트 응답, 오류, 취소를 처리하는 공통 fetch 계층
 - `src/api/client.ts`: CAD upload, scene, ray trace, 상태 확인 함수
-- 개발 서버의 `/api`, `/health` 요청은 기본적으로 `127.0.0.1:8787`에 프록시
+- 개발 서버의 `/api`, `/health` 요청은 기본적으로 `127.0.0.1:8788`에 프록시
 - 다른 Python 서버 주소는 `.env.local`의 `VITE_API_PROXY_TARGET`으로 지정
-- Python API 문서: `http://127.0.0.1:8787/api/docs`
+- Python API 문서: `http://127.0.0.1:8788/api/docs`
 
 ## 상태 관리 원칙
 
@@ -68,7 +68,7 @@ Datum/Current view Receiver를 배치하고 Python 비동기 job 진행률을 �
 터미널 1에서 Python API를 실행합니다.
 
 ```powershell
-python run_api.py --port 8787 --strict-port
+python run_api.py --port 8788 --strict-port
 ```
 
 터미널 2에서 React 개발 서버를 실행합니다.
@@ -86,11 +86,11 @@ production 단일 서버는 다음과 같이 확인합니다.
 ```powershell
 npm run build
 cd ..
-python run_web.py --port 8787 --strict-port
+python run_web.py --port 8788 --strict-port
 ```
 
 이 경우 FastAPI가 `frontend/dist`와 `/api`를 동일한
-`http://127.0.0.1:8787/`에서 제공합니다.
+`http://127.0.0.1:8788/`에서 제공합니다.
 
 ## 검증 명령
 

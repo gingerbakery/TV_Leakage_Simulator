@@ -55,7 +55,7 @@
 - 터미널 1:
 
 ```powershell
-python run_api.py --port 8787 --strict-port
+python run_api.py --port 8788 --strict-port
 ```
 
 - 터미널 2:
@@ -70,7 +70,7 @@ npm run dev
 
 ```powershell
 npm --prefix frontend run build
-python run_web.py --port 8787 --strict-port
+python run_web.py --port 8788 --strict-port
 ```
 
 - React 정적 파일과 FastAPI가 같은 주소에서 실행된다.

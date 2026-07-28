@@ -25,7 +25,7 @@ TV 기구 개발 단계에서 발생 가능한 `빛샘(light leakage)`을 빠르
 실행 예시(터미널 2개):
 
 ```powershell
-python run_api.py --port 8787 --strict-port
+python run_api.py --port 8788 --strict-port
 ```
 
 ```powershell
@@ -42,10 +42,10 @@ npm run dev
 ```powershell
 npm --prefix frontend install
 npm --prefix frontend run build
-python run_web.py --port 8787 --strict-port
+python run_web.py --port 8788 --strict-port
 ```
 
-브라우저 주소: `http://127.0.0.1:8787/`
+브라우저 주소: `http://127.0.0.1:8788/`
 
 기존 인라인 UI 소스는 `run_web_legacy.py`에 참조용으로만 보존한다.
 

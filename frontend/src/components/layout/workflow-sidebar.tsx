@@ -146,7 +146,12 @@ export function WorkflowSidebar({
     : sceneErrorMessage
       ? 'Scene load failed'
       : scene
-        ? `${scene.metadata.face_count.toLocaleString()} faces · ${scene.metadata.component_count} components`
+        ? `${scene.metadata.face_count.toLocaleString()} faces · ${scene.metadata.component_count} components${
+            scene.metadata.import_timings_sec?.scene_payload_total !==
+            undefined
+              ? ` · ${scene.metadata.import_timings_sec.scene_payload_total.toFixed(1)}s`
+              : ''
+          }`
         : undefined
 
   const activePanel = (() => {

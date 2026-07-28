@@ -7,7 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiProxyTarget =
-    env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8787'
+    env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8788'
   const proxyOptions = {
     target: apiProxyTarget,
     changeOrigin: true,

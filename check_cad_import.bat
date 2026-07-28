@@ -1,12 +1,21 @@
 @echo off
 setlocal
 set "ROOT=%~dp0"
-set "PY=%ROOT%_tools\python313\python.exe"
+set "PY=%ROOT%.venv\Scripts\python.exe"
 
 if not exist "%PY%" (
-  echo [ERR] Embedded python not found: %PY%
-  pause
-  exit /b 1
+  set "PY=%ROOT%_tools\python313\python.exe"
+)
+
+if not exist "%PY%" (
+  where python >nul 2>nul
+  if errorlevel 1 (
+    echo [ERR] Python runtime not found.
+    echo Create .venv or install Python, then retry.
+    pause
+    exit /b 1
+  )
+  set "PY=python"
 )
 
 set "PATH=%ROOT%_tools\python313;%ROOT%_tools\python313\Scripts;%PATH%"

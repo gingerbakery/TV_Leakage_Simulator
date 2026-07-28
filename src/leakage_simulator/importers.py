@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
@@ -54,6 +56,21 @@ ROI_SUBDIVISION_MIN_EDGE_MM = 1.5
 ROI_SUBDIVISION_MAX_EDGE_MM = 5.0
 ROI_SUBDIVISION_MAX_FACES = 150_000
 ROI_SUBDIVISION_MAX_DEPTH = 9
+CAD_FAST_IMPORT_ENV = "LEAKAGE_CAD_FAST_IMPORT"
+
+
+def _cad_stage(
+    stage: str,
+    started_at: float,
+    detail: str = "",
+) -> float:
+    elapsed = time.perf_counter() - started_at
+    suffix = " | {}".format(detail) if detail else ""
+    print(
+        "[CAD] {:<24} {:>8.3f}s{}".format(stage, elapsed, suffix),
+        flush=True,
+    )
+    return elapsed
 
 
 def _ensure_cadquery_available() -> bool:
@@ -260,6 +277,17 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
 
 
 def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
+    if os.environ.get(CAD_FAST_IMPORT_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print(
+            "[CAD] ROI mesh subdivision skipped | fast import diagnostic",
+            flush=True,
+        )
+        return mesh, -1.0
     target_area = choose_adaptive_subdivision_area_mm2(
         mesh,
         target_divisions_across_diagonal=ROI_SUBDIVISION_TARGET_DIVISIONS,
@@ -274,6 +302,24 @@ def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
     )
 
 
+def _step_import_note(
+    engine: str,
+    target_area: float,
+    face_count: int,
+    detail: str = "",
+) -> str:
+    detail_suffix = ", {}".format(detail) if detail else ""
+    if target_area < 0.0:
+        return (
+            "STEP parsed with {} without ROI subdivision "
+            "(fast import diagnostic, {} faces{})."
+        ).format(engine, face_count, detail_suffix)
+    return (
+        "STEP parsed with {} and adaptively tessellated "
+        "(target area {:.4g} mm^2, {} faces{})."
+    ).format(engine, target_area, face_count, detail_suffix)
+
+
 @dataclass
 class ImportResult:
     mesh: TriangleMesh
@@ -282,6 +328,7 @@ class ImportResult:
     synthetic: bool
     note: str
     feature_edge_segments: Optional[List[Dict]] = None
+    timings_sec: Optional[Dict[str, float]] = None
 
 
 def import_geometry(file_path: Optional[str]) -> ImportResult:
@@ -423,12 +470,49 @@ def _import_stl_ascii(path: Path) -> ImportResult:
 
 
 def _import_step(path: Path) -> ImportResult:
-    if _ensure_ocp_available():
+    total_started_at = time.perf_counter()
+    print(
+        "[CAD] STEP import start       | {} ({:.2f} MB)".format(
+            path.name,
+            path.stat().st_size / (1024.0 * 1024.0),
+        ),
+        flush=True,
+    )
+    runtime_started_at = time.perf_counter()
+    has_ocp = _ensure_ocp_available()
+    runtime_sec = _cad_stage(
+        "OCP runtime load",
+        runtime_started_at,
+        "available={}".format(has_ocp),
+    )
+    if has_ocp:
         try:
-            return _import_step_ocp(path)
-        except Exception:
-            pass
-    if not _ensure_cadquery_available():
+            result = _import_step_ocp(path)
+            timings = dict(result.timings_sec or {})
+            timings["ocp_runtime_load"] = runtime_sec
+            timings["step_import_total"] = time.perf_counter() - total_started_at
+            result.timings_sec = timings
+            _cad_stage(
+                "STEP import complete",
+                total_started_at,
+                "{} faces".format(len(result.mesh.faces)),
+            )
+            return result
+        except Exception as exc:
+            _cad_stage(
+                "OCP import failed",
+                total_started_at,
+                "{}: {}".format(type(exc).__name__, exc),
+            )
+
+    cadquery_started_at = time.perf_counter()
+    has_cadquery = _ensure_cadquery_available()
+    cadquery_runtime_sec = _cad_stage(
+        "CadQuery runtime load",
+        cadquery_started_at,
+        "available={}".format(has_cadquery),
+    )
+    if not has_cadquery:
         mesh, emitters, receiver = generate_synthetic_leakage_scene()
         return ImportResult(
             mesh=mesh,
@@ -436,6 +520,11 @@ def _import_step(path: Path) -> ImportResult:
             receiver_face_indices=receiver,
             synthetic=True,
             note="CadQuery is not installed, so STEP import fell back to synthetic geometry.",
+            timings_sec={
+                "ocp_runtime_load": runtime_sec,
+                "cadquery_runtime_load": cadquery_runtime_sec,
+                "step_import_total": time.perf_counter() - total_started_at,
+            },
         )
 
     mesh = TriangleMesh()
@@ -443,9 +532,15 @@ def _import_step(path: Path) -> ImportResult:
     material_library = default_material_library()
     default_material = material_library["black_pc_resin"].material_id
 
+    cadquery_import_started_at = time.perf_counter()
     workplane = cq.importers.importStep(str(path))
     shape = workplane.val()
     vertices, triangles = shape.tessellate(0.5, 0.5)
+    cadquery_import_sec = _cad_stage(
+        "CadQuery STEP+tessellate",
+        cadquery_import_started_at,
+        "{} raw triangles".format(len(triangles)),
+    )
 
     vertex_index: List[int] = []
     for vertex in vertices:
@@ -470,52 +565,100 @@ def _import_step(path: Path) -> ImportResult:
             note="STEP parsed but tessellation produced no triangles; synthetic fallback used.",
         )
 
+    feature_started_at = time.perf_counter()
     feature_edge_segments = build_feature_edge_segments(mesh)
+    feature_sec = _cad_stage(
+        "feature edges",
+        feature_started_at,
+        "{} segments".format(len(feature_edge_segments)),
+    )
+    subdivision_started_at = time.perf_counter()
     mesh, target_area = _subdivide_step_mesh(mesh)
+    subdivision_sec = _cad_stage(
+        "ROI mesh subdivision",
+        subdivision_started_at,
+        "{} faces".format(len(mesh.faces)),
+    )
     receiver_faces = _guess_receiver_faces(mesh)
     return ImportResult(
         mesh=mesh,
         emitters=emitters,
         receiver_face_indices=receiver_faces,
         synthetic=False,
-        note=(
-            "STEP parsed with CadQuery and adaptively tessellated "
-            f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces)."
+        note=_step_import_note(
+            "CadQuery",
+            target_area,
+            len(mesh.faces),
         ),
         feature_edge_segments=feature_edge_segments,
+        timings_sec={
+            "ocp_runtime_load": runtime_sec,
+            "cadquery_runtime_load": cadquery_runtime_sec,
+            "cadquery_step_tessellate": cadquery_import_sec,
+            "feature_edges": feature_sec,
+            "roi_mesh_subdivision": subdivision_sec,
+            "step_import_total": time.perf_counter() - total_started_at,
+        },
     )
 
 
 def _import_step_ocp(path: Path) -> ImportResult:
+    timings: Dict[str, float] = {}
+    structure_started_at = time.perf_counter()
     named_colored_solids = None
     try:
         named_colored_solids = _read_step_named_colored_solids(path)
     except Exception:
         named_colored_solids = None
+    timings["ocp_product_structure"] = _cad_stage(
+        "OCP product structure",
+        structure_started_at,
+        "components={}".format(len(named_colored_solids or [])),
+    )
 
     shape = None
     if named_colored_solids:
         # Each solid was parsed independently via the XCAF document, so its
         # triangulation has to be computed on that same solid - meshing the
         # plain-reader shape below would not populate these faces at all.
+        tessellation_started_at = time.perf_counter()
         for solid, _name, _color in named_colored_solids:
             try:
                 BRepMesh_IncrementalMesh(solid, 0.5, False, 0.5, True).Perform()
             except Exception:
                 pass
+        timings["ocp_tessellation"] = _cad_stage(
+            "OCP tessellation",
+            tessellation_started_at,
+        )
     else:
+        read_started_at = time.perf_counter()
         reader = STEPControl_Reader()
         status = reader.ReadFile(str(path))
+        timings["ocp_step_read"] = _cad_stage(
+            "OCP STEP read",
+            read_started_at,
+        )
         if status != IFSelect_RetDone:
             raise RuntimeError("OCP STEP reader could not open file")
+        transfer_started_at = time.perf_counter()
         reader.TransferRoots()
         shape = reader.OneShape()
+        timings["ocp_transfer_roots"] = _cad_stage(
+            "OCP transfer roots",
+            transfer_started_at,
+        )
 
+        tessellation_started_at = time.perf_counter()
         mesh_builder = BRepMesh_IncrementalMesh(shape, 0.5, False, 0.5, True)
         try:
             mesh_builder.Perform()
         except Exception:
             pass
+        timings["ocp_tessellation"] = _cad_stage(
+            "OCP tessellation",
+            tessellation_started_at,
+        )
 
     mesh = TriangleMesh()
     emitters: List[EmitterConfig] = []
@@ -573,6 +716,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
                     receiver_faces.append(face_id)
         face_counter += 1
 
+    extraction_started_at = time.perf_counter()
     solid_counter = 0
     if named_colored_solids:
         # Product-structure path: solid/name/color came from the STEP file's
@@ -604,6 +748,11 @@ def _import_step_ocp(path: Path) -> ImportResult:
             face = TopoDS.Face_s(explorer.Current())
             import_face(face, 0, "STEP Body", None)
             explorer.Next()
+    timings["triangle_extraction"] = _cad_stage(
+        "triangle extraction",
+        extraction_started_at,
+        "{} raw faces".format(len(mesh.faces)),
+    )
 
     if not mesh.faces:
         fallback_mesh, fallback_emitters, fallback_receivers = generate_synthetic_leakage_scene()
@@ -615,10 +764,27 @@ def _import_step_ocp(path: Path) -> ImportResult:
             note="STEP parsed with OCP but tessellation produced no triangles; synthetic fallback used.",
         )
 
+    feature_started_at = time.perf_counter()
     feature_edge_segments = build_feature_edge_segments(mesh)
+    timings["feature_edges"] = _cad_stage(
+        "feature edges",
+        feature_started_at,
+        "{} segments".format(len(feature_edge_segments)),
+    )
+    subdivision_started_at = time.perf_counter()
     mesh, target_area = _subdivide_step_mesh(mesh)
+    timings["roi_mesh_subdivision"] = _cad_stage(
+        "ROI mesh subdivision",
+        subdivision_started_at,
+        "{} faces".format(len(mesh.faces)),
+    )
 
+    receiver_started_at = time.perf_counter()
     guessed_receivers = _guess_receiver_faces(mesh)
+    timings["receiver_hint"] = _cad_stage(
+        "receiver hint",
+        receiver_started_at,
+    )
     if guessed_receivers:
         receiver_faces = guessed_receivers
     naming_note = (
@@ -631,11 +797,14 @@ def _import_step_ocp(path: Path) -> ImportResult:
         emitters=emitters,
         receiver_face_indices=receiver_faces,
         synthetic=False,
-        note=(
-            "STEP parsed with OCP and adaptively tessellated "
-            f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces, {naming_note})."
+        note=_step_import_note(
+            "OCP",
+            target_area,
+            len(mesh.faces),
+            naming_note,
         ),
         feature_edge_segments=feature_edge_segments,
+        timings_sec=timings,
     )
 
 

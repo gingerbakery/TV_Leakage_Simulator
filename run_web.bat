@@ -30,7 +30,7 @@ if not exist "%ROOT%frontend\dist\index.html" (
 )
 
 set "PATH=%ROOT%_tools\python313;%ROOT%_tools\python313\Scripts;%PATH%"
-if "%PORT%"=="" set "PORT=8787"
+if "%PORT%"=="" set "PORT=8788"
 set "LEAKAGE_WEB_PORT=%PORT%"
 
 where.exe python

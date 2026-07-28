@@ -81,7 +81,29 @@ def create_app(
         if not cad.strip():
             return _error(400, "CAD file is required")
         try:
-            return api_runtime.load_scene(cad)
+            scene_started_at = time.perf_counter()
+            payload = api_runtime.load_scene(cad)
+            serialization_started_at = time.perf_counter()
+            response = JSONResponse(content=payload)
+            serialization_sec = (
+                time.perf_counter() - serialization_started_at
+            )
+            print(
+                "[CAD] {:<24} {:>8.3f}s | {:.2f} MB".format(
+                    "JSON serialization",
+                    serialization_sec,
+                    len(response.body) / (1024.0 * 1024.0),
+                ),
+                flush=True,
+            )
+            print(
+                "[CAD] {:<24} {:>8.3f}s | request complete".format(
+                    "API scene total",
+                    time.perf_counter() - scene_started_at,
+                ),
+                flush=True,
+            )
+            return response
         except (TypeError, ValueError) as exc:
             return _error(400, str(exc))
         except Exception as exc:
@@ -90,8 +112,27 @@ def create_app(
     @application.post("/api/upload", response_class=JSONResponse)
     async def upload(request: Request, filename: str = "") -> Any:
         try:
+            upload_started_at = time.perf_counter()
             content = await request.body()
-            return api_runtime.save_upload(filename, content)
+            body_sec = time.perf_counter() - upload_started_at
+            write_started_at = time.perf_counter()
+            result = api_runtime.save_upload(filename, content)
+            write_sec = time.perf_counter() - write_started_at
+            print(
+                "[CAD] upload received          {:>8.3f}s | {:.2f} MB".format(
+                    body_sec,
+                    len(content) / (1024.0 * 1024.0),
+                ),
+                flush=True,
+            )
+            print(
+                "[CAD] upload saved             {:>8.3f}s | {}".format(
+                    write_sec,
+                    result["display_name"],
+                ),
+                flush=True,
+            )
+            return result
         except Exception as exc:
             return PlainTextResponse(
                 "Upload failed: {}".format(exc),

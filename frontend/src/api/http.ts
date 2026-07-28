@@ -53,6 +53,13 @@ function messageFromPayload(
     }
   }
 
+  if (status === 502) {
+    return (
+      'Python API 서버 연결 실패(502). ' +
+      'API가 http://127.0.0.1:8788 에서 실행 중인지 확인하세요.'
+    )
+  }
+
   return `API request failed (${status}${statusText ? ` ${statusText}` : ''})`
 }
 

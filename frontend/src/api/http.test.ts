@@ -79,6 +79,25 @@ describe('createHttpClient', () => {
     })
   })
 
+  it('explains a development proxy 502 as an API port problem', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response('', {
+          status: 502,
+          statusText: 'Bad Gateway',
+        }),
+      )
+    const http = createHttpClient({ fetch: fetchMock })
+
+    await expect(http.requestJson('/api/scene')).rejects.toMatchObject({
+      kind: 'http',
+      status: 502,
+      message:
+        'Python API 서버 연결 실패(502). API가 http://127.0.0.1:8788 에서 실행 중인지 확인하세요.',
+    })
+  })
+
   it('reports malformed successful responses separately', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
