@@ -12,6 +12,7 @@ def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[
 
     step_groups: Dict[int, List[int]] = defaultdict(list)
     step_names: Dict[int, str] = {}
+    step_colors: Dict[int, Optional[str]] = {}
     for face_index in range(face_count):
         metadata = mesh.metadata(face_index)
         component_id = metadata.get("step_component_id")
@@ -20,6 +21,8 @@ def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[
         component_id = int(component_id)
         step_groups[component_id].append(face_index)
         step_names[component_id] = metadata.get("step_component_name") or "STEP Solid {}".format(component_id + 1)
+        if step_colors.get(component_id) is None:
+            step_colors[component_id] = metadata.get("step_component_color")
 
     if step_groups:
         return _build_group_items(
@@ -27,6 +30,7 @@ def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[
             [step_groups[key] for key in sorted(step_groups.keys())],
             [step_names[key] for key in sorted(step_groups.keys())],
             max_faces_per_object,
+            [step_colors[key] for key in sorted(step_groups.keys())],
         )
 
     adjacency: List[Set[int]] = [set() for _ in range(face_count)]
@@ -73,6 +77,7 @@ def _build_group_items(
     face_groups: List[List[int]],
     names: Optional[List[str]],
     max_faces_per_object: Optional[int],
+    colors: Optional[List[Optional[str]]] = None,
 ) -> List[Dict]:
     components: List[Dict] = []
     for group_index, face_indices in enumerate(face_groups):
@@ -112,6 +117,7 @@ def _build_group_items(
                 "bbox_min": [round(min_x, 3), round(min_y, 3), round(min_z, 3)],
                 "bbox_max": [round(max_x, 3), round(max_y, 3), round(max_z, 3)],
                 "is_truncated": is_truncated,
+                "color": colors[group_index] if colors else None,
             }
         )
 

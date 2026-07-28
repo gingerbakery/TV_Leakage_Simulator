@@ -27,6 +27,23 @@ TopLoc_Location = None
 TopoDS = None
 ocp_available = None
 
+# XCAF (product structure) reader - separate optional dependency set from the
+# plain STEPControl_Reader above. NX (and most other MCAD tools) writes each
+# component's name and color into the STEP AP214/AP242 product structure,
+# which only the CAF (CAD Application Framework) reader exposes; the plain
+# geometry-only reader used above cannot see it at all.
+STEPCAFControl_Reader = None
+TDocStd_Document = None
+XCAFApp_Application = None
+XCAFDoc_DocumentTool = None
+XCAFDoc_ColorType = None
+TDF_Label = None
+TDF_LabelSequence = None
+TDataStd_Name = None
+Quantity_Color = None
+TCollection_ExtendedString = None
+ocp_xcaf_available = None
+
 # STEP tessellation can leave flat panels as only one or two huge triangles.
 # Subdivision improves ROI picking resolution, but it does not improve the
 # underlying CAD curvature or ray-intersection accuracy. The current corner
@@ -90,6 +107,156 @@ def _ensure_ocp_available() -> bool:
     except Exception:  # pragma: no cover - optional dependency
         ocp_available = False
     return ocp_available
+
+
+def _ensure_ocp_xcaf_available() -> bool:
+    global STEPCAFControl_Reader, TDocStd_Document, XCAFApp_Application
+    global XCAFDoc_DocumentTool, XCAFDoc_ColorType
+    global TDF_Label, TDF_LabelSequence, TDataStd_Name
+    global Quantity_Color, TCollection_ExtendedString
+    global ocp_xcaf_available
+
+    if ocp_xcaf_available is not None:
+        return ocp_xcaf_available
+    try:
+        from OCP.STEPCAFControl import STEPCAFControl_Reader as ocp_cafreader
+        from OCP.TDocStd import TDocStd_Document as ocp_document
+        from OCP.XCAFApp import XCAFApp_Application as ocp_xcafapp
+        from OCP.XCAFDoc import (
+            XCAFDoc_DocumentTool as ocp_doctool,
+            XCAFDoc_ColorType as ocp_colortype,
+        )
+        from OCP.TDF import TDF_Label as ocp_label, TDF_LabelSequence as ocp_labelseq
+        from OCP.TDataStd import TDataStd_Name as ocp_name_attr
+        from OCP.Quantity import Quantity_Color as ocp_color
+        from OCP.TCollection import TCollection_ExtendedString as ocp_ext_string
+
+        STEPCAFControl_Reader = ocp_cafreader
+        TDocStd_Document = ocp_document
+        XCAFApp_Application = ocp_xcafapp
+        XCAFDoc_DocumentTool = ocp_doctool
+        XCAFDoc_ColorType = ocp_colortype
+        TDF_Label = ocp_label
+        TDF_LabelSequence = ocp_labelseq
+        TDataStd_Name = ocp_name_attr
+        Quantity_Color = ocp_color
+        TCollection_ExtendedString = ocp_ext_string
+        ocp_xcaf_available = True
+    except Exception:  # pragma: no cover - optional dependency
+        ocp_xcaf_available = False
+    return ocp_xcaf_available
+
+
+def _quantity_color_to_hex(color) -> Optional[str]:
+    try:
+        r = round(max(0.0, min(1.0, color.Red())) * 255)
+        g = round(max(0.0, min(1.0, color.Green())) * 255)
+        b = round(max(0.0, min(1.0, color.Blue())) * 255)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    return "#{:02x}{:02x}{:02x}".format(r, g, b)
+
+
+def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, str, Optional[str]]]]:
+    """Walks a STEP file's product structure (via XCAF) to recover each
+    component's authored name and display color, e.g. the "Component Name"
+    and body color set in NX before STEP export. Returns a flat list of
+    (solid_shape, name, hex_color) tuples in the file's assembled (global)
+    coordinate frame, or None if the file has no usable product structure
+    (falls back to the plain geometry-only reader in that case)."""
+    if not _ensure_ocp_xcaf_available():
+        return None
+
+    application = XCAFApp_Application.GetApplication_s()
+    document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
+    application.NewDocument(TCollection_ExtendedString("MDTV-XCAF"), document)
+
+    reader = STEPCAFControl_Reader()
+    reader.SetColorMode(True)
+    reader.SetNameMode(True)
+    reader.SetLayerMode(True)
+    status = reader.ReadFile(str(path))
+    if status != IFSelect_RetDone:
+        return None
+    if not reader.Transfer(document):
+        return None
+
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    color_tool = XCAFDoc_DocumentTool.ColorTool_s(document.Main())
+
+    def get_name(label) -> Optional[str]:
+        attr = TDataStd_Name()
+        if label.FindAttribute(TDataStd_Name.GetID_s(), attr):
+            text = attr.Get().ToExtString()
+            return text if text else None
+        return None
+
+    def get_color(shape) -> Optional[str]:
+        if shape is None or shape.IsNull():
+            return None
+        color = Quantity_Color()
+        for color_type in (
+            XCAFDoc_ColorType.XCAFDoc_ColorSurf,
+            XCAFDoc_ColorType.XCAFDoc_ColorGen,
+            XCAFDoc_ColorType.XCAFDoc_ColorCurv,
+        ):
+            if color_tool.GetColor(shape, color_type, color):
+                return _quantity_color_to_hex(color)
+        return None
+
+    results: List[Tuple[object, str, Optional[str]]] = []
+    part_counter = 0
+
+    def walk(label, accumulated_location, inherited_name, inherited_color) -> None:
+        nonlocal part_counter
+        if shape_tool.IsAssembly_s(label):
+            components = TDF_LabelSequence()
+            shape_tool.GetComponents_s(label, components)
+            for i in range(1, components.Length() + 1):
+                component_label = components.Value(i)
+                referred_label = TDF_Label()
+                is_reference = shape_tool.GetReferredShape_s(component_label, referred_label)
+                target_label = referred_label if is_reference else component_label
+                component_shape = shape_tool.GetShape_s(component_label)
+                if component_shape is None or component_shape.IsNull():
+                    continue
+                combined_location = accumulated_location.Multiplied(component_shape.Location())
+                walk(
+                    target_label,
+                    combined_location,
+                    get_name(component_label),
+                    get_color(component_shape),
+                )
+            return
+
+        prototype_shape = shape_tool.GetShape_s(label)
+        if prototype_shape is None or prototype_shape.IsNull():
+            return
+        located_shape = prototype_shape.Moved(accumulated_location)
+
+        part_counter += 1
+        name = inherited_name or get_name(label) or "STEP Part {}".format(part_counter)
+        color = inherited_color or get_color(prototype_shape)
+
+        solid_explorer = TopExp_Explorer(located_shape, TopAbs_SOLID)
+        found_solid = False
+        while solid_explorer.More():
+            results.append((TopoDS.Solid_s(solid_explorer.Current()), name, color))
+            found_solid = True
+            solid_explorer.Next()
+        if not found_solid:
+            try:
+                results.append((TopoDS.Solid_s(located_shape), name, color))
+            except Exception:
+                pass
+
+    free_shapes = TDF_LabelSequence()
+    shape_tool.GetFreeShapes(free_shapes)
+    identity_location = TopLoc_Location()
+    for i in range(1, free_shapes.Length() + 1):
+        walk(free_shapes.Value(i), identity_location, None, None)
+
+    return results if results else None
 
 
 def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
@@ -320,18 +487,35 @@ def _import_step(path: Path) -> ImportResult:
 
 
 def _import_step_ocp(path: Path) -> ImportResult:
-    reader = STEPControl_Reader()
-    status = reader.ReadFile(str(path))
-    if status != IFSelect_RetDone:
-        raise RuntimeError("OCP STEP reader could not open file")
-    reader.TransferRoots()
-    shape = reader.OneShape()
-
-    mesh_builder = BRepMesh_IncrementalMesh(shape, 0.5, False, 0.5, True)
+    named_colored_solids = None
     try:
-        mesh_builder.Perform()
+        named_colored_solids = _read_step_named_colored_solids(path)
     except Exception:
-        pass
+        named_colored_solids = None
+
+    shape = None
+    if named_colored_solids:
+        # Each solid was parsed independently via the XCAF document, so its
+        # triangulation has to be computed on that same solid - meshing the
+        # plain-reader shape below would not populate these faces at all.
+        for solid, _name, _color in named_colored_solids:
+            try:
+                BRepMesh_IncrementalMesh(solid, 0.5, False, 0.5, True).Perform()
+            except Exception:
+                pass
+    else:
+        reader = STEPControl_Reader()
+        status = reader.ReadFile(str(path))
+        if status != IFSelect_RetDone:
+            raise RuntimeError("OCP STEP reader could not open file")
+        reader.TransferRoots()
+        shape = reader.OneShape()
+
+        mesh_builder = BRepMesh_IncrementalMesh(shape, 0.5, False, 0.5, True)
+        try:
+            mesh_builder.Perform()
+        except Exception:
+            pass
 
     mesh = TriangleMesh()
     emitters: List[EmitterConfig] = []
@@ -351,7 +535,12 @@ def _import_step_ocp(path: Path) -> ImportResult:
 
     face_counter = 0
 
-    def import_face(face, component_index: int, component_name: str) -> None:
+    def import_face(
+        face,
+        component_index: int,
+        component_name: str,
+        component_color: Optional[str],
+    ) -> None:
         nonlocal face_counter
         location = TopLoc_Location()
         triangulation = BRep_Tool.Triangulation_s(face, location)
@@ -362,6 +551,15 @@ def _import_step_ocp(path: Path) -> ImportResult:
                 point = triangulation.Node(node_index).Transformed(transform)
                 vertex_map[node_index] = add_deduped_vertex(point.X(), point.Y(), point.Z())
 
+            metadata = {
+                "source": "step_ocp",
+                "face_index": face_counter,
+                "step_component_id": component_index,
+                "step_component_name": component_name,
+            }
+            if component_color:
+                metadata["step_component_color"] = component_color
+
             for tri_index in range(1, triangulation.NbTriangles() + 1):
                 a, b, c = triangulation.Triangle(tri_index).Get()
                 face_id = mesh.add_face(
@@ -369,35 +567,42 @@ def _import_step_ocp(path: Path) -> ImportResult:
                     vertex_map[b],
                     vertex_map[c],
                     default_material,
-                    {
-                        "source": "step_ocp",
-                        "face_index": face_counter,
-                        "step_component_id": component_index,
-                        "step_component_name": component_name,
-                    },
+                    dict(metadata),
                 )
                 if face_id % 13 == 0:
                     receiver_faces.append(face_id)
         face_counter += 1
 
-    solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
     solid_counter = 0
-    while solid_explorer.More():
-        solid_counter += 1
-        solid = solid_explorer.Current()
-        component_name = "STEP Solid {}".format(solid_counter)
-        face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
-        while face_explorer.More():
-            face = TopoDS.Face_s(face_explorer.Current())
-            import_face(face, solid_counter - 1, component_name)
-            face_explorer.Next()
-        solid_explorer.Next()
+    if named_colored_solids:
+        # Product-structure path: solid/name/color came from the STEP file's
+        # XCAF tree (e.g. NX "Component Name" and body color), so each solid
+        # already carries its real identity - no re-exploration needed.
+        for solid, component_name, component_color in named_colored_solids:
+            solid_counter += 1
+            face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+            while face_explorer.More():
+                face = TopoDS.Face_s(face_explorer.Current())
+                import_face(face, solid_counter - 1, component_name, component_color)
+                face_explorer.Next()
+    else:
+        solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+        while solid_explorer.More():
+            solid_counter += 1
+            solid = solid_explorer.Current()
+            component_name = "STEP Solid {}".format(solid_counter)
+            face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+            while face_explorer.More():
+                face = TopoDS.Face_s(face_explorer.Current())
+                import_face(face, solid_counter - 1, component_name, None)
+                face_explorer.Next()
+            solid_explorer.Next()
 
     if solid_counter == 0:
         explorer = TopExp_Explorer(shape, TopAbs_FACE)
         while explorer.More():
             face = TopoDS.Face_s(explorer.Current())
-            import_face(face, 0, "STEP Body")
+            import_face(face, 0, "STEP Body", None)
             explorer.Next()
 
     if not mesh.faces:
@@ -416,6 +621,11 @@ def _import_step_ocp(path: Path) -> ImportResult:
     guessed_receivers = _guess_receiver_faces(mesh)
     if guessed_receivers:
         receiver_faces = guessed_receivers
+    naming_note = (
+        "component names/colors read from STEP product structure"
+        if named_colored_solids
+        else "no STEP product structure found; generic solid names used"
+    )
     return ImportResult(
         mesh=mesh,
         emitters=emitters,
@@ -423,7 +633,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         synthetic=False,
         note=(
             "STEP parsed with OCP and adaptively tessellated "
-            f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces)."
+            f"(target area {target_area:.4g} mm^2, {len(mesh.faces)} faces, {naming_note})."
         ),
         feature_edge_segments=feature_edge_segments,
     )

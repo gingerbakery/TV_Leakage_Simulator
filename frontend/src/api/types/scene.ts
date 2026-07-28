@@ -29,6 +29,8 @@ export interface SceneComponent {
   bbox_min: Vec3
   bbox_max: Vec3
   is_truncated: boolean
+  /** Component's own display color as authored in the CAD file (e.g. NX body color), hex "#rrggbb". Null if the STEP file had none. */
+  color: string | null
 }
 
 export interface ScenePayload {

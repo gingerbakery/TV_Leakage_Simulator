@@ -153,13 +153,21 @@ function ComponentTreeRow({
         <div className="flex min-w-0 items-start gap-2">
           <span
             className={cn(
-              'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border',
+              'relative mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border',
               selected
                 ? 'border-primary/35 bg-primary/15 text-primary'
                 : 'border-border bg-muted/30 text-muted-foreground',
             )}
           >
             <Box className="size-3.5" aria-hidden="true" />
+            {component.color ? (
+              <span
+                className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border border-background"
+                style={{ backgroundColor: component.color }}
+                title={`CAD color ${component.color}`}
+                aria-hidden="true"
+              />
+            ) : null}
           </span>
           <div className="min-w-0 flex-1">
             {isRenaming ? (

@@ -204,6 +204,22 @@ const componentPalette = [
   0x64748b, 0x526b7a, 0x475569, 0x5b6473, 0x45606d, 0x667085,
 ]
 
+/**
+ * CAD-authored component color (e.g. NX body color, carried through STEP
+ * product structure) wins when present; otherwise cycles the fallback
+ * palette by component index, same as before CAD colors were read.
+ */
+function resolveComponentColor(
+  component: SceneComponent | undefined,
+  index: number,
+): number {
+  if (component?.color) {
+    const parsed = Number.parseInt(component.color.replace('#', ''), 16)
+    if (!Number.isNaN(parsed)) return parsed
+  }
+  return componentPalette[Math.max(0, index) % componentPalette.length]
+}
+
 const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
 const emitterOverlayColor = 0xfacc15
@@ -950,7 +966,7 @@ function createComponentNode(
 ): ComponentRenderNode {
   const bundle = createComponentGeometry(scene, component)
   const surfaceMaterial = new MeshStandardMaterial({
-    color: componentPalette[index % componentPalette.length],
+    color: resolveComponentColor(component, index),
     metalness: 0.12,
     roughness: 0.72,
     flatShading: false,
@@ -2101,10 +2117,10 @@ export function ThreeViewerCanvas({
               (component) =>
                 component.component_id === assignment.componentId,
             )
-            const fallbackColor =
-              componentPalette[
-                Math.max(0, componentIndex) % componentPalette.length
-              ]
+            const fallbackColor = resolveComponentColor(
+              componentIndex >= 0 ? scene.components[componentIndex] : undefined,
+              componentIndex,
+            )
             const overlay = new Mesh(
               assignmentGeometry.surfaceGeometry,
               faceOverlayMaterial(
@@ -2645,11 +2661,10 @@ export function ThreeViewerCanvas({
           assignment.componentId === componentId &&
           assignment.targetType === 'part',
       )
-      const fallbackColor =
-        componentPalette[
-          Math.max(0, scene.components.indexOf(node.component)) %
-            componentPalette.length
-        ]
+      const fallbackColor = resolveComponentColor(
+        node.component,
+        scene.components.indexOf(node.component),
+      )
       const style = viewerMaterialStyle(partAssignment, fallbackColor)
       const displayColor = style.color.clone()
       const highlightColor = isEditing ? 0xfacc15 : 0x38bdf8

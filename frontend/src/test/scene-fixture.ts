@@ -12,6 +12,7 @@ const components: SceneComponent[] = [
     bbox_min: [0, 0, 0],
     bbox_max: [60, 60, 10],
     is_truncated: false,
+    color: null,
   },
   {
     object_id: 2,
@@ -24,6 +25,7 @@ const components: SceneComponent[] = [
     bbox_min: [5, 5, 10],
     bbox_max: [55, 55, 20],
     is_truncated: false,
+    color: null,
   },
 ]
 
