@@ -2089,23 +2089,29 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"side-panel-body\">
           <div class=\"card\">
           <div class=\"step\">Step 2</div>
-          <h2>ROI (target faces)</h2>
+          <div class=\"section-title-with-help\">
+            <h2>ROI (target Body)</h2>
+            <span class=\"help-tip\" tabindex=\"0\" aria-label=\"ROI help\">?</span>
+            <div class=\"help-popover\">
+              위 \"+ ROI 추가\" 버튼을 누르고 박스를 드래그하거나, 좌표를 입력해서 ROI를 추가하세요.<br>
+              3D viewer 상단 카메라 버튼으로 정면(XY)/후면(-XY) 뷰 전환 가능합니다.<br>
+              여러 영역을 만들고 ROI List의 체크박스로 켜고 끄면서 분석할 수 있습니다.
+            </div>
+          </div>
           <div class=\"grid\">
             <div>
               <label>&nbsp;</label>
               <button id=\"roiBoxDragArmToggle\" type=\"button\" class=\"ghost\">+ ROI 추가 (클릭 후 드래그)</button>
             </div>
           </div>
-          <p class=\"small\" id=\"roiModeHint\">박스를 드래그하거나 좌표를 입력해서 ROI를 추가하세요. 여러 개 만들어두고 아래 목록의 체크박스로 켜고 끄면서 분석할 수 있습니다.</p>
+          <p class=\"small\" id=\"roiModeHint\"></p>
           <div id=\"roiBoxDragBlock\">
-            <p class=\"small\">위 \"+ ROI 추가\" 버튼을 누르면 3D viewer가 정면(XY)/후면(-XY) 뷰로 자동 전환됩니다. 그 상태에서 박스를 드래그하세요. Hide된 컴포넌트는 대상에서 제외됩니다. 선택이 끝나면 자동으로 원래 상태로 돌아가 화면 회전이 다시 가능합니다.<br />반대쪽 면(정면↔후면)을 보려면, 무장된 상태에서도 3D viewer 상단 카메라 버튼의 <b>\"XY\" / \"-XY\"</b>를 눌러 바로 전환할 수 있습니다 (마우스 드래그 회전만 잠겨있고, 이 버튼들은 잠기지 않습니다).</p>
             <div class=\"row\">
               <label>ROI 이름</label>
               <input id=\"roiScopeLabel\" type=\"text\" placeholder=\"ex) bottom-corner\" />
             </div>
           </div>
           <div id=\"roiPointBlock\">
-            <p class=\"small\">드래그가 잘 안 될 때의 보완 경로 - 좌표를 직접 입력하면 가장 가까운(보이는 컴포넌트 중) face를 찾습니다.</p>
             <div class=\"row\">
               <input id=\"roiPointX\" type=\"text\" placeholder=\"X (mm)\" style=\"width:31%\" />
               <input id=\"roiPointY\" type=\"text\" placeholder=\"Y (mm)\" style=\"width:31%\" />
@@ -2595,9 +2601,9 @@ def _build_html_form(material_options: str, version: str) -> str:
           <div class=\"viewer-tool-group\">
             <div class=\"tool-title\">Render mode</div>
             <div class=\"mode-buttons\" id=\"renderModeGroup\">
-              <button type=\"button\" class=\"mode-btn active\" data-render-mode=\"wireframe\">Wireframe</button>
+              <button type=\"button\" class=\"mode-btn\" data-render-mode=\"wireframe\">Wireframe</button>
               <button type=\"button\" class=\"mode-btn\" data-render-mode=\"surface\">Surface</button>
-              <button type=\"button\" class=\"mode-btn\" data-render-mode=\"surface_edges\">Surface + Edge</button>
+              <button type=\"button\" class=\"mode-btn active\" data-render-mode=\"surface_edges\">Surface + Edge</button>
             </div>
           </div>
           <div class=\"viewer-tool-group\">
@@ -4807,7 +4813,7 @@ def _build_html_form(material_options: str, version: str) -> str:
       gapTargetMode: 'component_move_gap',
       gapSelectionMethod: 'click',
       viewerEngine: 'three',
-      renderMode: 'wireframe',
+      renderMode: 'surface_edges',
       axisScalePercent: 100,
       inspectedFaceIndex: null,
       selectedGapFaces: new Set(),
@@ -6923,7 +6929,7 @@ def _build_html_form(material_options: str, version: str) -> str:
           : 'Drag/Middle drag = rotate, Wheel = zoom, Right click = component menu, Right drag = pan, Shift/Alt+drag = roll, F/Double-click = fit view.';
         return;
       }}
-      roiModeHint.textContent = '위 "+ ROI 추가" 버튼을 누르고 박스를 드래그하거나, 좌표를 입력해서 ROI를 추가하세요. 여러 개 만들어두고 아래 ROI List의 체크박스로 켜고 끄면서 분석할 수 있습니다.';
+      roiModeHint.textContent = '';
       viewerTip.textContent = state.roiBoxDragArmed
         ? '지금 Drag = ROI 박스 선택 (회전 잠금). Wheel = zoom, Right click = component menu, Right drag = pan, F = fit view.'
         : '지금은 Drag = 화면 회전입니다. ROI 박스를 그리려면 위 "+ ROI 추가" 버튼을 누르세요. Right click = component menu, F/Double-click = fit view.';
@@ -8924,25 +8930,17 @@ def _build_html_form(material_options: str, version: str) -> str:
       }}
       let html = '';
       for (const scope of state.roiScopes) {{
-        const faceCount = scope.components.reduce(function (sum, c) {{ return sum + c.faceIndices.length; }}, 0);
-        const areaSum = scope.components.reduce(function (sum, c) {{ return sum + c.areaMm2; }}, 0);
         html += '<div class=\"object-item\" data-roi-scope-id=\"' + scope.id + '\">'
           + '<div class=\"component-tree-row\">'
           + '<label class=\"component-row-main\" style=\"display:flex;align-items:center;gap:8px;cursor:pointer;\">'
           + '<input type=\"checkbox\" data-roi-scope-toggle=\"' + scope.id + '\"' + (scope.active ? ' checked' : '') + ' />'
-          + '<span class=\"name\">' + scope.scopeId + ' (' + scope.view + ') - face ' + faceCount
-          + '개 / ' + areaSum.toFixed(2) + ' mm2</span>'
+          + '<span class=\"name\">' + scope.scopeId + '</span>'
           + '</label>'
           + '<div class=\"component-row-actions\">'
           + '<button type=\"button\" class=\"mini-btn ghost\" data-roi-scope-delete=\"' + scope.id + '\">삭제</button>'
           + '</div>'
+          + '</div>'
           + '</div>';
-        for (const component of scope.components) {{
-          const label = component.componentName || ('component ' + component.componentId);
-          html += '<div class=\"meta\">' + label + ': face ' + component.faceIndices.length
-            + '개 / ' + component.areaMm2.toFixed(2) + ' mm2</div>';
-        }}
-        html += '</div>';
       }}
       roiScopeResults.innerHTML = html;
       for (const toggle of roiScopeResults.querySelectorAll('[data-roi-scope-toggle]')) {{
@@ -11975,7 +11973,7 @@ def _build_html_form(material_options: str, version: str) -> str:
     updateMaterialTargetSummary();
     updateRayTraceRunState();
     updateRayDisplayUI();
-    state.renderMode = 'wireframe';
+    state.renderMode = 'surface_edges';
     state.axisScalePercent = parseInt(axisScale.value, 10) || 100;
     state.previewOverlayEnabled = !!previewOverlayToggle.checked;
     axisScaleValue.textContent = state.axisScalePercent + '%';
