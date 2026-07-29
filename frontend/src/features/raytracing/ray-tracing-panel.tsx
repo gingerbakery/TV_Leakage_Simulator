@@ -29,6 +29,7 @@ import {
 import { AppDialog } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { NumberInput } from '@/components/ui/number-input'
 import {
   maxReflectionDepth,
   useWorkspaceStore,
@@ -108,16 +109,15 @@ function NumberField({
   return (
     <label className={fieldLabelClassName}>
       <span>{label}</span>
-      <input
+      <NumberInput
         className={inputClassName}
-        type="number"
         aria-label={ariaLabel ?? label}
         value={value}
         min={min}
         max={max}
         step={step}
         disabled={disabled}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onValueChange={onChange}
       />
     </label>
   )

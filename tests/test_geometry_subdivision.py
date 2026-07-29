@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -13,6 +14,10 @@ from leakage_simulator.geometry import (
     choose_adaptive_subdivision_area_mm2,
     estimate_subdivided_face_count,
     subdivide_flat_mesh,
+)
+from leakage_simulator.importers import (
+    ROI_SUBDIVISION_SKIPPED_DENSE_MESH,
+    _subdivide_step_mesh,
 )
 
 
@@ -50,6 +55,26 @@ class FeatureEdgeSegmentTests(unittest.TestCase):
 
 
 class SubdivideFlatMeshTests(unittest.TestCase):
+    def test_dense_native_mesh_skips_global_roi_subdivision(self) -> None:
+        mesh = TriangleMesh()
+        v0 = mesh.add_vertex((0.0, 0.0, 0.0))
+        v1 = mesh.add_vertex((100.0, 0.0, 0.0))
+        v2 = mesh.add_vertex((0.0, 100.0, 0.0))
+        mesh.add_face(v0, v1, v2, "mat", {})
+
+        with patch(
+            "leakage_simulator.importers."
+            "ROI_SUBDIVISION_AUTO_SKIP_RAW_FACES",
+            1,
+        ):
+            result, target_area = _subdivide_step_mesh(mesh)
+
+        self.assertIs(result, mesh)
+        self.assertEqual(
+            target_area,
+            ROI_SUBDIVISION_SKIPPED_DENSE_MESH,
+        )
+
     def test_small_face_is_left_untouched(self) -> None:
         mesh = TriangleMesh()
         v0 = mesh.add_vertex((0.0, 0.0, 0.0))

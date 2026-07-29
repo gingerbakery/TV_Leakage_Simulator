@@ -10,6 +10,7 @@ import { Box, MousePointer2, Rotate3D, ScanSearch } from 'lucide-react'
 import { AppDialog } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { NumberInput } from '@/components/ui/number-input'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -128,12 +129,11 @@ export function TransformEditorDialog({
     setter: (value: Vector3Value) => void,
     vector: Vector3Value,
     axis: Axis,
-    value: string,
+    value: number,
   ) => {
-    const parsed = Number(value)
     setter({
       ...vector,
-      [axis]: Number.isFinite(parsed) ? parsed : 0,
+      [axis]: Number.isFinite(value) ? value : 0,
     })
   }
 
@@ -335,7 +335,7 @@ interface VectorEditorProps {
   title: string
   unit: string
   vector: Vector3Value
-  onChange(axis: Axis, value: string): void
+  onChange(axis: Axis, value: number): void
 }
 
 function VectorEditor({
@@ -356,13 +356,11 @@ function VectorEditor({
               {title === 'Tilt' ? 'R' : ''}
               {axis}
             </span>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.1"
+            <NumberInput
+              step={0.1}
               className={inputClassName}
               value={vector[axis]}
-              onChange={(event) => onChange(axis, event.currentTarget.value)}
+              onValueChange={(value) => onChange(axis, value)}
             />
           </label>
         ))}

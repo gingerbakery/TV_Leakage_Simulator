@@ -56,7 +56,12 @@ ROI_SUBDIVISION_MIN_EDGE_MM = 1.5
 ROI_SUBDIVISION_MAX_EDGE_MM = 5.0
 ROI_SUBDIVISION_MAX_FACES = 150_000
 ROI_SUBDIVISION_MAX_DEPTH = 9
+ROI_SUBDIVISION_AUTO_SKIP_RAW_FACES = 50_000
+ROI_SUBDIVISION_SKIPPED_FAST = -1.0
+ROI_SUBDIVISION_SKIPPED_DENSE_MESH = -2.0
 CAD_FAST_IMPORT_ENV = "LEAKAGE_CAD_FAST_IMPORT"
+CAD_FORCE_ROI_SUBDIVISION_ENV = "LEAKAGE_CAD_FORCE_ROI_SUBDIVISION"
+CAD_SKIP_PRODUCT_METADATA_ENV = "LEAKAGE_CAD_SKIP_PRODUCT_METADATA"
 
 
 def _cad_stage(
@@ -71,6 +76,23 @@ def _cad_stage(
         flush=True,
     )
     return elapsed
+
+
+def _cad_stage_start(stage: str, detail: str = "") -> None:
+    suffix = " | {}".format(detail) if detail else ""
+    print(
+        "[CAD] {:<24} {:>8}{}".format(stage, "START", suffix),
+        flush=True,
+    )
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _ensure_cadquery_available() -> bool:
@@ -277,17 +299,22 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
 
 
 def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
-    if os.environ.get(CAD_FAST_IMPORT_ENV, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if _env_enabled(CAD_FAST_IMPORT_ENV):
         print(
             "[CAD] ROI mesh subdivision skipped | fast import diagnostic",
             flush=True,
         )
-        return mesh, -1.0
+        return mesh, ROI_SUBDIVISION_SKIPPED_FAST
+    if (
+        len(mesh.faces) >= ROI_SUBDIVISION_AUTO_SKIP_RAW_FACES
+        and not _env_enabled(CAD_FORCE_ROI_SUBDIVISION_ENV)
+    ):
+        print(
+            "[CAD] ROI mesh subdivision skipped | native mesh already dense "
+            "({} faces)".format(len(mesh.faces)),
+            flush=True,
+        )
+        return mesh, ROI_SUBDIVISION_SKIPPED_DENSE_MESH
     target_area = choose_adaptive_subdivision_area_mm2(
         mesh,
         target_divisions_across_diagonal=ROI_SUBDIVISION_TARGET_DIVISIONS,
@@ -309,7 +336,12 @@ def _step_import_note(
     detail: str = "",
 ) -> str:
     detail_suffix = ", {}".format(detail) if detail else ""
-    if target_area < 0.0:
+    if target_area == ROI_SUBDIVISION_SKIPPED_DENSE_MESH:
+        return (
+            "STEP parsed with {} using its native dense tessellation "
+            "({} faces{})."
+        ).format(engine, face_count, detail_suffix)
+    if target_area == ROI_SUBDIVISION_SKIPPED_FAST:
         return (
             "STEP parsed with {} without ROI subdivision "
             "(fast import diagnostic, {} faces{})."
@@ -479,6 +511,7 @@ def _import_step(path: Path) -> ImportResult:
         flush=True,
     )
     runtime_started_at = time.perf_counter()
+    _cad_stage_start("OCP runtime load")
     has_ocp = _ensure_ocp_available()
     runtime_sec = _cad_stage(
         "OCP runtime load",
@@ -606,10 +639,17 @@ def _import_step_ocp(path: Path) -> ImportResult:
     timings: Dict[str, float] = {}
     structure_started_at = time.perf_counter()
     named_colored_solids = None
-    try:
-        named_colored_solids = _read_step_named_colored_solids(path)
-    except Exception:
-        named_colored_solids = None
+    if _env_enabled(CAD_SKIP_PRODUCT_METADATA_ENV):
+        print(
+            "[CAD] OCP product structure skipped | metadata diagnostic",
+            flush=True,
+        )
+    else:
+        _cad_stage_start("OCP product structure")
+        try:
+            named_colored_solids = _read_step_named_colored_solids(path)
+        except Exception:
+            named_colored_solids = None
     timings["ocp_product_structure"] = _cad_stage(
         "OCP product structure",
         structure_started_at,
@@ -622,6 +662,10 @@ def _import_step_ocp(path: Path) -> ImportResult:
         # triangulation has to be computed on that same solid - meshing the
         # plain-reader shape below would not populate these faces at all.
         tessellation_started_at = time.perf_counter()
+        _cad_stage_start(
+            "OCP tessellation",
+            "components={}".format(len(named_colored_solids)),
+        )
         for solid, _name, _color in named_colored_solids:
             try:
                 BRepMesh_IncrementalMesh(solid, 0.5, False, 0.5, True).Perform()
@@ -633,6 +677,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
     else:
         read_started_at = time.perf_counter()
+        _cad_stage_start("OCP STEP read")
         reader = STEPControl_Reader()
         status = reader.ReadFile(str(path))
         timings["ocp_step_read"] = _cad_stage(
@@ -642,6 +687,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         if status != IFSelect_RetDone:
             raise RuntimeError("OCP STEP reader could not open file")
         transfer_started_at = time.perf_counter()
+        _cad_stage_start("OCP transfer roots")
         reader.TransferRoots()
         shape = reader.OneShape()
         timings["ocp_transfer_roots"] = _cad_stage(
@@ -650,6 +696,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
 
         tessellation_started_at = time.perf_counter()
+        _cad_stage_start("OCP tessellation")
         mesh_builder = BRepMesh_IncrementalMesh(shape, 0.5, False, 0.5, True)
         try:
             mesh_builder.Perform()
@@ -717,6 +764,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         face_counter += 1
 
     extraction_started_at = time.perf_counter()
+    _cad_stage_start("triangle extraction")
     solid_counter = 0
     if named_colored_solids:
         # Product-structure path: solid/name/color came from the STEP file's
@@ -765,6 +813,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
 
     feature_started_at = time.perf_counter()
+    _cad_stage_start("feature edges")
     feature_edge_segments = build_feature_edge_segments(mesh)
     timings["feature_edges"] = _cad_stage(
         "feature edges",
@@ -772,6 +821,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         "{} segments".format(len(feature_edge_segments)),
     )
     subdivision_started_at = time.perf_counter()
+    _cad_stage_start("ROI mesh subdivision")
     mesh, target_area = _subdivide_step_mesh(mesh)
     timings["roi_mesh_subdivision"] = _cad_stage(
         "ROI mesh subdivision",

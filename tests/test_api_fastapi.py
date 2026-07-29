@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import sys
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -136,6 +138,41 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertTrue(
             payload["metadata"]["scene_token"].startswith("scene_")
         )
+
+    def test_duplicate_scene_loads_share_one_active_import(self):
+        loader_started = threading.Event()
+        release_loader = threading.Event()
+        load_count = 0
+
+        def slow_loader(cad_path: str):
+            nonlocal load_count
+            load_count += 1
+            loader_started.set()
+            release_loader.wait(timeout=2.0)
+            return _scene_loader(cad_path)
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name),
+            scene_loader=slow_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=_trace_runner,
+        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(runtime.load_scene, "same.step")
+            self.assertTrue(loader_started.wait(timeout=1.0))
+            second = executor.submit(runtime.load_scene, "same.step")
+            time.sleep(0.05)
+            release_loader.set()
+            first_payload = first.result(timeout=2.0)
+            second_payload = second.result(timeout=2.0)
+
+        self.assertEqual(load_count, 1)
+        self.assertNotEqual(
+            first_payload["metadata"]["scene_token"],
+            second_payload["metadata"]["scene_token"],
+        )
+        runtime.load_scene("same.step")
+        self.assertEqual(load_count, 1)
 
     def test_upload_preserves_binary_contract_and_validates_suffix(self):
         response = self.client.post(

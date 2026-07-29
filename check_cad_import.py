@@ -59,6 +59,12 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Skip display-only ROI mesh subdivision for diagnosis",
     )
+    parser.add_argument(
+        "--skip-product-metadata",
+        action="store_true",
+        default=False,
+        help="Skip STEP component name/color parsing for diagnosis",
+    )
     return parser.parse_args()
 
 
@@ -78,6 +84,9 @@ def main() -> int:
     if args.fast_import:
         os.environ["LEAKAGE_CAD_FAST_IMPORT"] = "1"
         print("[INFO] Fast import diagnostic: ON")
+    if args.skip_product_metadata:
+        os.environ["LEAKAGE_CAD_SKIP_PRODUCT_METADATA"] = "1"
+        print("[INFO] Product metadata diagnostic: SKIPPED")
     print("[INFO] Checking import...")
 
     try:

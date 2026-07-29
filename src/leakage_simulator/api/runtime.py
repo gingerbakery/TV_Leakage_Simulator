@@ -24,6 +24,13 @@ TraceInputBuilder = Callable[
 TraceRunner = Callable[..., TraceResult]
 
 
+class _SceneLoadState:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.payload: Optional[dict[str, Any]] = None
+        self.error: Optional[Exception] = None
+
+
 class ApiRuntime:
     """Owns the short-lived state required by the local simulation API."""
 
@@ -46,6 +53,8 @@ class ApiRuntime:
         self._max_cached_scenes = max(1, max_cached_scenes)
         self._max_jobs = max(1, max_jobs)
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
+        self._scene_payload_cache: dict[str, dict[str, Any]] = {}
+        self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
         self._output_file_index: dict[str, Path] = {}
         self._state_lock = threading.RLock()
@@ -54,7 +63,59 @@ class ApiRuntime:
         cad_path = cad_path.strip()
         if not cad_path:
             raise ValueError("CAD file is required")
-        payload = self._scene_loader(cad_path)
+
+        cache_key = self._scene_cache_key(cad_path)
+        with self._state_lock:
+            payload = self._scene_payload_cache.get(cache_key)
+            load_state = self._scene_loads.get(cache_key)
+            is_loader = payload is None and load_state is None
+            if is_loader:
+                load_state = _SceneLoadState()
+                self._scene_loads[cache_key] = load_state
+
+        if payload is not None:
+            print(
+                "[CAD] scene payload cache hit  | {}".format(
+                    Path(cad_path).name,
+                ),
+                flush=True,
+            )
+        elif not is_loader:
+            print(
+                "[CAD] scene load coalesced     | waiting for active import",
+                flush=True,
+            )
+            if load_state is None:
+                raise RuntimeError("CAD scene load state is unavailable")
+            load_state.event.wait()
+            if load_state.error is not None:
+                raise RuntimeError(str(load_state.error)) from load_state.error
+            payload = load_state.payload
+            if payload is None:
+                raise RuntimeError("CAD scene import returned no payload")
+        else:
+            if load_state is None:
+                raise RuntimeError("CAD scene load state is unavailable")
+            try:
+                payload = self._scene_loader(cad_path)
+            except Exception as exc:
+                load_state.error = exc
+                with self._state_lock:
+                    self._scene_loads.pop(cache_key, None)
+                load_state.event.set()
+                raise
+            load_state.payload = payload
+            with self._state_lock:
+                self._scene_payload_cache[cache_key] = payload
+                while (
+                    len(self._scene_payload_cache)
+                    > self._max_cached_scenes
+                ):
+                    oldest_key = next(iter(self._scene_payload_cache))
+                    self._scene_payload_cache.pop(oldest_key, None)
+                self._scene_loads.pop(cache_key, None)
+            load_state.event.set()
+
         mesh = payload.get("mesh")
         if not isinstance(mesh, dict):
             raise ValueError("Scene payload is missing mesh data")
@@ -66,11 +127,14 @@ class ApiRuntime:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
 
-        metadata = payload.setdefault("metadata", {})
-        if not isinstance(metadata, dict):
+        response_payload = dict(payload)
+        raw_metadata = payload.get("metadata")
+        if not isinstance(raw_metadata, dict):
             raise ValueError("Scene payload metadata must be an object")
+        metadata = dict(raw_metadata)
         metadata["scene_token"] = scene_token
-        return payload
+        response_payload["metadata"] = metadata
+        return response_payload
 
     def save_upload(
         self,
@@ -174,6 +238,20 @@ class ApiRuntime:
                 "CAD scene cache expired. Reload the CAD model and run again"
             )
         return scene_mesh
+
+    @staticmethod
+    def _scene_cache_key(cad_path: str) -> str:
+        path = Path(cad_path)
+        try:
+            resolved = path.resolve()
+            stat = resolved.stat()
+        except OSError:
+            return cad_path
+        return "{}|{}|{}".format(
+            resolved,
+            stat.st_size,
+            stat.st_mtime_ns,
+        )
 
     def _update_raytrace_job(
         self,

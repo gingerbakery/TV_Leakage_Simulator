@@ -2,6 +2,7 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useEffect,
   useMemo,
   useState,
 } from 'react'
@@ -108,6 +109,10 @@ export function ViewerWorkspace({
   const [renderMode, setRenderMode] =
     useState<ViewerRenderMode>('Surface + Edge')
   const [axisScalePercent, setAxisScalePercent] = useState(50)
+  const [surfaceTransparencyPercent, setSurfaceTransparencyPercent] =
+    useState(0)
+  const [sceneLoadingElapsedSec, setSceneLoadingElapsedSec] =
+    useState(0)
   const [statusMessage, setStatusMessage] = useState(
     'CAD를 Import하면 Three.js Viewer에서 component와 face를 선택할 수 있습니다.',
   )
@@ -146,6 +151,22 @@ export function ViewerWorkspace({
     workspaceSelectors.roiDraftLabel,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+
+  useEffect(() => {
+    if (!isSceneLoading) {
+      setSceneLoadingElapsedSec(0)
+      return
+    }
+
+    const startedAt = Date.now()
+    setSceneLoadingElapsedSec(0)
+    const timer = window.setInterval(() => {
+      setSceneLoadingElapsedSec(
+        Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
+      )
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isSceneLoading])
   const activeRoiFaceIds = useMemo(
     () => getActiveRoiFaceIds(roiScopes, deletedComponentIds),
     [deletedComponentIds, roiScopes],
@@ -368,6 +389,40 @@ export function ViewerWorkspace({
                 {axisScalePercent}%
               </span>
             </label>
+            <label
+              className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/60 px-2 text-[0.65rem] text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45"
+              title={
+                renderMode === 'Wireframe'
+                  ? 'Surface 또는 Surface + Edge 모드에서 사용할 수 있습니다.'
+                  : 'CAD 표면을 투명하게 하여 내부 형상을 확인합니다.'
+              }
+            >
+              <span className="font-medium whitespace-nowrap">
+                Transparency
+              </span>
+              <input
+                aria-label="Surface transparency"
+                type="range"
+                min="0"
+                max="85"
+                step="5"
+                value={surfaceTransparencyPercent}
+                disabled={renderMode === 'Wireframe'}
+                className="h-1.5 w-20 cursor-pointer accent-primary disabled:cursor-not-allowed"
+                onChange={(event) => {
+                  const nextTransparency = Number(
+                    event.currentTarget.value,
+                  )
+                  setSurfaceTransparencyPercent(nextTransparency)
+                  setStatusMessage(
+                    `Surface transparency · ${nextTransparency}%`,
+                  )
+                }}
+              />
+              <span className="w-8 text-right font-semibold text-foreground">
+                {surfaceTransparencyPercent}%
+              </span>
+            </label>
           </div>
         </div>
       </div>
@@ -446,6 +501,18 @@ export function ViewerWorkspace({
               <div className="mt-1 text-xs text-muted-foreground">
                 Tessellation과 component metadata를 읽는 중입니다.
               </div>
+              <div className="mt-2 rounded-full border border-border bg-background/55 px-3 py-1 text-[0.68rem] tabular-nums text-muted-foreground">
+                {sceneLoadingElapsedSec < 60
+                  ? `${sceneLoadingElapsedSec}s elapsed`
+                  : `${Math.floor(sceneLoadingElapsedSec / 60)}m ${sceneLoadingElapsedSec % 60}s elapsed`}
+              </div>
+              {sceneLoadingElapsedSec >= 30 ? (
+                <p className="mt-3 max-w-sm text-[0.68rem] leading-5 text-muted-foreground">
+                  회사 PC에서 오래 멈추면 서버 창의 마지막
+                  {' [CAD] '}단계를 확인해 주세요. 동일 CAD의 중복 요청은
+                  자동으로 하나로 합쳐 처리합니다.
+                </p>
+              ) : null}
             </div>
           ) : sceneErrorMessage ? (
             <div className="relative z-10 max-w-md rounded-xl border border-destructive/35 bg-destructive/8 p-4 text-center">
@@ -495,6 +562,9 @@ export function ViewerWorkspace({
                   <ThreeViewerCanvas
                     scene={scene}
                     axisScalePercent={axisScalePercent}
+                    surfaceTransparencyPercent={
+                      surfaceTransparencyPercent
+                    }
                     cameraPreset={cameraPreset}
                     cameraRequestId={cameraRequestId}
                     renderMode={renderMode}

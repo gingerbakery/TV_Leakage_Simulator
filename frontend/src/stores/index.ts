@@ -26,6 +26,7 @@ export type {
   Vector3Value,
   WorkspaceActions,
   WorkspaceSnapshot,
+  WorkspaceProjectState,
   WorkspaceStore,
   WorkspaceStoreApi,
 } from './workspace-store'

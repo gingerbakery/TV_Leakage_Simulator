@@ -205,7 +205,11 @@ describe('Step 07·08 feature editors', () => {
   })
 
   it('adds and activates a coordinate ROI scope', () => {
-    render(<RoiSelectionPanel scene={createSceneFixture()} />)
+    render(
+      <AppProviders>
+        <RoiSelectionPanel scene={createSceneFixture()} />
+      </AppProviders>,
+    )
 
     fireEvent.change(screen.getByLabelText('ROI 이름'), {
       target: { value: 'rear-point' },
@@ -240,6 +244,33 @@ describe('Step 07·08 feature editors', () => {
 
     fireEvent.click(screen.getByLabelText('rear-point 활성화'))
     expect(workspaceStore.getState().roiScopes[0].active).toBe(false)
+  })
+
+  it('shows ROI explanations from title help tooltips', async () => {
+    render(
+      <AppProviders>
+        <RoiSelectionPanel scene={createSceneFixture()} />
+      </AppProviders>,
+    )
+
+    const boxHelp = screen.getByRole('button', {
+      name: '박스 드래그 도움말',
+    })
+    expect(
+      screen.getByRole('button', { name: 'ROI List 도움말' }),
+    ).not.toBeNull()
+    expect(
+      screen.getByRole('button', { name: '활성 ROI 도움말' }),
+    ).not.toBeNull()
+    expect(
+      screen.queryByText(/보이는 컴포넌트만 대상으로/),
+    ).toBeNull()
+
+    fireEvent.focus(boxHelp)
+
+    expect((await screen.findByRole('tooltip')).textContent).toContain(
+      '보이는 컴포넌트만 대상으로',
+    )
   })
 
   it('connects component selection, visibility, traceability, and rename to Zustand', () => {

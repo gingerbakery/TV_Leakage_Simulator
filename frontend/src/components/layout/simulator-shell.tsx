@@ -1,6 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react'
 import { useRayTraceJobQuery, useSceneQuery } from '@/api'
-import { Box, CircleDot, Info } from 'lucide-react'
+import {
+  Box,
+  CircleDot,
+  FolderOpen,
+  Info,
+  Save,
+} from 'lucide-react'
 
 import { AppDialog, ConfirmationDialog } from '@/components/common'
 import { ViewerWorkspace } from '@/components/layout/viewer-workspace'
@@ -13,6 +24,14 @@ import { Button } from '@/components/ui/button'
 import type { ComponentEditorRequest } from '@/features/components'
 import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
+import {
+  BitsamProjectError,
+  compareBitsamProjectScene,
+  createBitsamProject,
+  downloadBitsamProject,
+  readBitsamProjectFile,
+  type BitsamProject,
+} from '@/features/projects'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
@@ -21,6 +40,7 @@ import { TransformEditorDialog } from '@/features/transforms'
 import {
   useWorkspaceStore,
   workspaceSelectors,
+  workspaceStore,
 } from '@/stores'
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
@@ -41,8 +61,12 @@ export function SimulatorShell() {
     title: string
     description: string
   } | null>(null)
+  const [pendingProject, setPendingProject] =
+    useState<BitsamProject | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
+  const projectFileInputRef = useRef<HTMLInputElement>(null)
+  const projectLoadAttemptRef = useRef('')
   const lastOpenedResultRunIdRef = useRef('')
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const nameOverrides = useWorkspaceStore(
@@ -86,6 +110,98 @@ export function SimulatorShell() {
     setNoticeDialog({ title, description })
   }
 
+  useEffect(() => {
+    if (!pendingProject || !activeCad || !scene) return
+
+    const compatibility = compareBitsamProjectScene(
+      pendingProject,
+      scene,
+      activeCad,
+    )
+    if (!compatibility.compatible) {
+      const attemptKey = `${pendingProject.saved_at}:${scene.metadata.scene_token}`
+      if (projectLoadAttemptRef.current === attemptKey) return
+      projectLoadAttemptRef.current = attemptKey
+      openFeatureNotice(
+        'CAD 모델이 일치하지 않습니다',
+        [
+          `${pendingProject.cad.display_name} 모델을 불러온 뒤 다시 시도해 주세요.`,
+          ...compatibility.reasons,
+        ].join('\n'),
+      )
+      return
+    }
+
+    actions.restoreProjectState(pendingProject.workspace)
+    setPendingProject(null)
+    projectLoadAttemptRef.current = ''
+    openFeatureNotice(
+      'BITSAM 프로젝트 불러오기 완료',
+      [
+        `${pendingProject.project_name} 설정을 현재 CAD에 복원했습니다.`,
+        'ROI, Component 상태, Transform, Material, Emitter, Receiver와 Ray tracing 설정이 적용되었습니다.',
+        ...compatibility.warnings,
+      ].join('\n'),
+    )
+  }, [actions, activeCad, pendingProject, scene])
+
+  const handleSaveProject = () => {
+    if (!activeCad || !scene) {
+      openFeatureNotice(
+        '저장할 CAD가 없습니다',
+        'CAD 모델을 불러온 뒤 BITSAM 프로젝트를 저장해 주세요.',
+      )
+      return
+    }
+
+    try {
+      const project = createBitsamProject(
+        scene,
+        workspaceStore.getState(),
+      )
+      downloadBitsamProject(project)
+      openFeatureNotice(
+        'BITSAM 프로젝트 저장 완료',
+        `${project.project_name}.bitsam 파일을 다운로드했습니다. 원본 CAD 파일은 포함되지 않으므로 함께 보관해 주세요.`,
+      )
+    } catch (error) {
+      openFeatureNotice(
+        'BITSAM 프로젝트 저장 실패',
+        error instanceof Error
+          ? error.message
+          : '알 수 없는 오류가 발생했습니다.',
+      )
+    }
+  }
+
+  const handleLoadProject = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+
+    try {
+      const project = await readBitsamProjectFile(file)
+      projectLoadAttemptRef.current = ''
+      setPendingProject(project)
+      if (!activeCad || !scene) {
+        openFeatureNotice(
+          'BITSAM 프로젝트를 읽었습니다',
+          `${project.cad.display_name} CAD 파일을 Import하면 저장된 설정을 자동으로 복원합니다.`,
+        )
+      }
+    } catch (error) {
+      setPendingProject(null)
+      openFeatureNotice(
+        'BITSAM 프로젝트 불러오기 실패',
+        error instanceof BitsamProjectError
+          ? error.message
+          : '파일을 읽는 중 알 수 없는 오류가 발생했습니다.',
+      )
+    }
+  }
+
   const openComponentDialog = (
     type: ComponentDialogType,
     request: ComponentEditorRequest,
@@ -120,6 +236,39 @@ export function SimulatorShell() {
           </Badge>
         </div>
         <div className="flex items-center gap-2">
+          <input
+            ref={projectFileInputRef}
+            type="file"
+            accept=".bitsam,application/vnd.bitsam+json"
+            className="hidden"
+            aria-label="BITSAM project file"
+            onChange={handleLoadProject}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="Save BITSAM project"
+            disabled={!activeCad || !scene}
+            title={
+              activeCad && scene
+                ? '현재 시뮬레이션을 .bitsam 파일로 저장'
+                : 'CAD를 먼저 불러와 주세요'
+            }
+            onClick={handleSaveProject}
+          >
+            <Save data-icon="inline-start" />
+            <span className="hidden sm:inline">Save</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="Load BITSAM project"
+            title=".bitsam 시뮬레이션 파일 불러오기"
+            onClick={() => projectFileInputRef.current?.click()}
+          >
+            <FolderOpen data-icon="inline-start" />
+            <span className="hidden sm:inline">Load</span>
+          </Button>
           <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
             <CircleDot className="size-3 text-primary" aria-hidden="true" />
             API layer ready

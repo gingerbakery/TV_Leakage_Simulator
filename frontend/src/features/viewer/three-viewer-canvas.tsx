@@ -77,17 +77,17 @@ import {
   findCoplanarFacePatch,
   getSceneBounds,
 } from './scene-geometry'
+import {
+  cameraFovForPreset,
+  DEFAULT_CAMERA_FOV_DEGREES,
+  getAxisCameraPresetAxes,
+  surfaceOpacityFromTransparency,
+  type AxisCameraPreset,
+  type DisplayCameraPreset,
+} from './viewer-display'
 
-export type ViewerCameraPreset =
-  | 'Fit'
-  | 'Iso'
-  | 'XY'
-  | '-XY'
-  | 'YZ'
-  | '-YZ'
-  | 'ZX'
-  | '-ZX'
-type RoiCameraPreset = Exclude<ViewerCameraPreset, 'Fit' | 'Iso'>
+export type ViewerCameraPreset = DisplayCameraPreset
+type RoiCameraPreset = AxisCameraPreset
 export type ViewerRenderMode =
   | 'Wireframe'
   | 'Surface'
@@ -116,6 +116,7 @@ export interface ViewerRayObjectContextTarget {
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
   axisScalePercent: number
+  surfaceTransparencyPercent: number
   cameraPreset: ViewerCameraPreset
   cameraRequestId: number
   renderMode: ViewerRenderMode
@@ -172,6 +173,7 @@ interface ViewerRuntime {
 
 interface CameraPose {
   far: number
+  fov: number
   near: number
   position: Vector3
   target: Vector3
@@ -226,6 +228,17 @@ const emitterOverlayColor = 0xfacc15
 const emitterDirectionColor = 0xffb000
 const receiverOverlayColor = 0xa78bfa
 
+function cameraPresetVectors(preset: RoiCameraPreset): {
+  direction: Vector3
+  up: Vector3
+} {
+  const axes = getAxisCameraPresetAxes(preset)
+  return {
+    direction: new Vector3(...axes.direction),
+    up: new Vector3(...axes.up),
+  }
+}
+
 const roiCameraPresetConfig: Record<
   RoiCameraPreset,
   {
@@ -236,39 +249,33 @@ const roiCameraPresetConfig: Record<
   }
 > = {
   XY: {
-    direction: new Vector3(0, 0, 1),
+    ...cameraPresetVectors('XY'),
     plane: 'xy',
-    up: new Vector3(0, 1, 0),
     view: 'front_xy',
   },
   '-XY': {
-    direction: new Vector3(0, 0, -1),
+    ...cameraPresetVectors('-XY'),
     plane: 'xy',
-    up: new Vector3(0, -1, 0),
     view: 'back_neg_xy',
   },
   YZ: {
-    direction: new Vector3(1, 0, 0),
+    ...cameraPresetVectors('YZ'),
     plane: 'yz',
-    up: new Vector3(0, 0, 1),
     view: 'front_yz',
   },
   '-YZ': {
-    direction: new Vector3(-1, 0, 0),
+    ...cameraPresetVectors('-YZ'),
     plane: 'yz',
-    up: new Vector3(0, 0, 1),
     view: 'back_neg_yz',
   },
   ZX: {
-    direction: new Vector3(0, 1, 0),
+    ...cameraPresetVectors('ZX'),
     plane: 'zx',
-    up: new Vector3(0, 0, 1),
     view: 'front_zx',
   },
   '-ZX': {
-    direction: new Vector3(0, -1, 0),
+    ...cameraPresetVectors('-ZX'),
     plane: 'zx',
-    up: new Vector3(0, 0, 1),
     view: 'back_neg_zx',
   },
 }
@@ -903,6 +910,10 @@ function fitCamera(
   const center = bounds.getCenter(new Vector3())
   const size = bounds.getSize(new Vector3())
   const maxDimension = Math.max(size.x, size.y, size.z, 1)
+  runtime.camera.fov = cameraFovForPreset(
+    preset,
+    runtime.camera.fov,
+  )
   const verticalFov = MathUtils.degToRad(runtime.camera.fov)
   const horizontalFov =
     2 *
@@ -949,6 +960,7 @@ function restoreRoiSelectionCameraPose(
 
   runtime.camera.position.copy(pose.position)
   runtime.camera.up.copy(pose.up)
+  runtime.camera.fov = pose.fov
   runtime.camera.near = pose.near
   runtime.camera.far = pose.far
   runtime.camera.updateProjectionMatrix()
@@ -1072,6 +1084,7 @@ function createComponentNode(
 export function ThreeViewerCanvas({
   scene,
   axisScalePercent,
+  surfaceTransparencyPercent,
   cameraPreset,
   cameraRequestId,
   renderMode,
@@ -1134,6 +1147,9 @@ export function ThreeViewerCanvas({
     workspaceSelectors.placementPreviewReceiver,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const surfaceOpacity = surfaceOpacityFromTransparency(
+    surfaceTransparencyPercent,
+  )
 
   useEffect(() => {
     emitterFaceSelectionArmedRef.current = emitterFaceSelectionArmed
@@ -1209,7 +1225,12 @@ export function ThreeViewerCanvas({
       10,
     )
     orientationScene.add(createOrientationGizmo())
-    const camera = new PerspectiveCamera(42, 1, 0.01, 100000)
+    const camera = new PerspectiveCamera(
+      DEFAULT_CAMERA_FOV_DEGREES,
+      1,
+      0.01,
+      100000,
+    )
     camera.up.set(0, 0, 1)
     const controls = new TrackballControls(camera, canvas)
     controls.staticMoving = true
@@ -1882,6 +1903,7 @@ export function ThreeViewerCanvas({
       if (!runtime.roiSelectionCameraPose) {
         runtime.roiSelectionCameraPose = {
           far: runtime.camera.far,
+          fov: runtime.camera.fov,
           near: runtime.camera.near,
           position: runtime.camera.position.clone(),
           target: runtime.controls.target.clone(),
@@ -1924,6 +1946,7 @@ export function ThreeViewerCanvas({
       hiddenComponentIds,
       deletedComponentIds,
       renderMode,
+      surfaceOpacity,
       componentTransforms: transformRules
         .filter(
           (rule) =>
@@ -1989,11 +2012,11 @@ export function ThreeViewerCanvas({
               roughness: 0.72,
               metalness: 0.04,
               flatShading: true,
-              transparent: false,
-              opacity: 1,
+              transparent: surfaceOpacity < 1,
+              opacity: surfaceOpacity,
               side: DoubleSide,
               depthTest: true,
-              depthWrite: true,
+              depthWrite: surfaceOpacity >= 1,
             })
         const surface = new Mesh(
           clipped.surfaceGeometry,
@@ -2018,11 +2041,11 @@ export function ThreeViewerCanvas({
                 roughness: 0.78,
                 metalness: 0.02,
                 flatShading: true,
-                transparent: false,
-                opacity: 1,
+                transparent: surfaceOpacity < 1,
+                opacity: surfaceOpacity,
                 side: DoubleSide,
                 depthTest: true,
-                depthWrite: true,
+                depthWrite: surfaceOpacity >= 1,
               })
           const caps = new Mesh(
             clipped.capGeometry,
@@ -2125,7 +2148,7 @@ export function ThreeViewerCanvas({
               assignmentGeometry.surfaceGeometry,
               faceOverlayMaterial(
                 viewerMaterialStyle(assignment, fallbackColor),
-                1,
+                surfaceOpacity,
               ),
             )
             overlay.name = `roi-material-${assignment.assignmentId}`
@@ -2687,12 +2710,15 @@ export function ThreeViewerCanvas({
       node.surface.material.metalness = style.metalness
       node.surface.material.roughness = style.roughness
       const isWireframe = renderMode === 'Wireframe'
-      if (node.surface.material.transparent) {
-        node.surface.material.transparent = false
+      const isTransparentSurface = !isWireframe && surfaceOpacity < 1
+      if (
+        node.surface.material.transparent !== isTransparentSurface
+      ) {
+        node.surface.material.transparent = isTransparentSurface
         node.surface.material.needsUpdate = true
       }
-      node.surface.material.opacity = 1
-      node.surface.material.depthWrite = true
+      node.surface.material.opacity = surfaceOpacity
+      node.surface.material.depthWrite = !isTransparentSurface
       node.surface.material.polygonOffsetFactor = 0
       node.surface.material.polygonOffsetUnits =
         surfaceDepthUnits(node.depthPriority)
@@ -2965,7 +2991,7 @@ export function ThreeViewerCanvas({
           bundle.geometry,
           faceOverlayMaterial(
             viewerMaterialStyle(assignment, fallbackColor),
-            0.96,
+            Math.min(0.96, surfaceOpacity),
           ),
         )
         overlay.renderOrder = 2
@@ -3028,6 +3054,7 @@ export function ThreeViewerCanvas({
     scene,
     selectedComponentIds,
     selectedFaceIds,
+    surfaceOpacity,
     transformRules,
     onStatusMessage,
   ])

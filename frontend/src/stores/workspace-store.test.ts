@@ -4,7 +4,10 @@ import { createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
 
 import {
   createWorkspaceStore,
+  defaultRayPathDisplayFilters,
+  defaultRayTraceConfig,
   maxReflectionDepth,
+  type WorkspaceProjectState,
 } from './workspace-store'
 
 describe('workspace store', () => {
@@ -271,6 +274,72 @@ describe('workspace store', () => {
         },
       ],
       activeRayTraceJobId: null,
+    })
+  })
+
+  it('restores project state while clearing transient editor state', () => {
+    const store = createWorkspaceStore()
+    const { actions } = store.getState()
+    const cad = {
+      path: 'C:\\uploads\\tv-corner.step',
+      displayName: 'tv-corner.step',
+    }
+    const projectState: WorkspaceProjectState = {
+      hiddenComponentIds: [3],
+      excludedComponentIds: [4],
+      deletedComponentIds: [5],
+      componentNameOverrides: { 3: 'Frame Middle' },
+      materialAssignments: [],
+      transformRules: [],
+      roiScopes: [],
+      roiScopeSequence: 0,
+      emitters: [],
+      receivers: [],
+      rayTraceConfig: {
+        ...defaultRayTraceConfig,
+        ray_count: 50_000,
+        max_depth: 10,
+      },
+      rayPathDisplayFilters: {
+        ...defaultRayPathDisplayFilters,
+        direct: true,
+      },
+    }
+
+    actions.setActiveCad(cad)
+    actions.setSelectedFaceIds([10])
+    actions.setSelectedComponentIds([3])
+    actions.setRoiBoxSelectionArmed(true)
+    actions.setEmitterFaceSelectionArmed(true)
+    actions.setPlacementPreviewReceiver(
+      createDatumReceiver(
+        '__preview_receiver__',
+        [10, 20, 30],
+        [0, 0, 0],
+      ),
+    )
+    actions.setActiveRayTraceJobId('stale-job')
+    actions.restoreProjectState(projectState)
+
+    expect(store.getState()).toMatchObject({
+      activeCad: cad,
+      hiddenComponentIds: [3],
+      excludedComponentIds: [4],
+      deletedComponentIds: [5],
+      componentNameOverrides: { 3: 'Frame Middle' },
+      selectedFaceIds: [],
+      selectedComponentIds: [],
+      roiBoxSelectionArmed: false,
+      emitterFaceSelectionArmed: false,
+      placementPreviewReceiver: null,
+      activeRayTraceJobId: null,
+      rayTraceConfig: {
+        ray_count: 50_000,
+        max_depth: 10,
+      },
+      rayPathDisplayFilters: {
+        direct: true,
+      },
     })
   })
 })

@@ -71,6 +71,16 @@ describe('SimulatorShell', () => {
     renderShell()
 
     expect(screen.getByText('Empty workspace')).not.toBeNull()
+    expect(
+      (
+        screen.getByRole('button', {
+          name: 'Save BITSAM project',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true)
+    expect(
+      screen.getByRole('button', { name: 'Load BITSAM project' }),
+    ).not.toBeNull()
     expect(screen.getByText('v1.0.0 · React')).not.toBeNull()
     expect(
       screen.queryByRole('button', { name: /Step 04 Transform/ }),

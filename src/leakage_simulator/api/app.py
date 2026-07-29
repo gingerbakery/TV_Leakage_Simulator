@@ -84,6 +84,13 @@ def create_app(
             scene_started_at = time.perf_counter()
             payload = api_runtime.load_scene(cad)
             serialization_started_at = time.perf_counter()
+            print(
+                "[CAD] {:<24} {:>8}".format(
+                    "JSON serialization",
+                    "START",
+                ),
+                flush=True,
+            )
             response = JSONResponse(content=payload)
             serialization_sec = (
                 time.perf_counter() - serialization_started_at

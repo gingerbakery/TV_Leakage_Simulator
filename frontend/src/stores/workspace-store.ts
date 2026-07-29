@@ -142,6 +142,22 @@ export interface WorkspaceSnapshot {
   rayPathDisplayFilters: RayPathDisplayFilters
 }
 
+export type WorkspaceProjectState = Pick<
+  WorkspaceSnapshot,
+  | 'hiddenComponentIds'
+  | 'excludedComponentIds'
+  | 'deletedComponentIds'
+  | 'componentNameOverrides'
+  | 'materialAssignments'
+  | 'transformRules'
+  | 'roiScopes'
+  | 'roiScopeSequence'
+  | 'emitters'
+  | 'receivers'
+  | 'rayTraceConfig'
+  | 'rayPathDisplayFilters'
+>
+
 export interface WorkspaceActions {
   setActiveCad(cad: ActiveCad | null): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
@@ -185,6 +201,7 @@ export interface WorkspaceActions {
   setRayPathDisplayFilters(
     filters: Partial<RayPathDisplayFilters>,
   ): void
+  restoreProjectState(projectState: WorkspaceProjectState): void
   clearSceneState(): void
   resetWorkspace(): void
 }
@@ -338,6 +355,99 @@ function normalizeRayTraceConfig(
       0,
       Math.min(1000, Math.trunc(config.max_stored_paths || 0)),
     ),
+  }
+}
+
+function normalizeComponentNameOverrides(
+  overrides: Record<number, string>,
+): Record<number, string> {
+  return Object.fromEntries(
+    Object.entries(overrides)
+      .map(([componentId, name]) => [
+        Number(componentId),
+        name.trim(),
+      ] as const)
+      .filter(
+        ([componentId, name]) =>
+          Number.isSafeInteger(componentId) &&
+          componentId >= 0 &&
+          name.length > 0,
+      ),
+  )
+}
+
+function normalizeRoiScope(scope: RoiScope): RoiScope | null {
+  const components = scope.components
+    .map(normalizeRoiComponentClip)
+    .filter((component) => component.faceIds.length > 0)
+  if (components.length === 0) return null
+
+  return {
+    ...scope,
+    id: scope.id.trim(),
+    scopeId: scope.scopeId.trim(),
+    components,
+    clipBox: normalizeRoiClipBox(scope.clipBox),
+    point: scope.point ? normalizeVector(scope.point) : undefined,
+  }
+}
+
+function normalizeProjectState(
+  projectState: WorkspaceProjectState,
+): WorkspaceProjectState {
+  const deletedComponentIds = normalizeIds(
+    projectState.deletedComponentIds,
+  )
+  const deletedComponentSet = new Set(deletedComponentIds)
+  const roiScopes = projectState.roiScopes
+    .map(normalizeRoiScope)
+    .filter((scope): scope is RoiScope => scope !== null)
+    .map((scope) => ({
+      ...scope,
+      components: scope.components.filter(
+        (component) =>
+          !deletedComponentSet.has(component.componentId),
+      ),
+    }))
+    .filter((scope) => scope.components.length > 0)
+
+  return {
+    hiddenComponentIds: normalizeIds(
+      projectState.hiddenComponentIds,
+    ).filter((id) => !deletedComponentSet.has(id)),
+    excludedComponentIds: normalizeIds(
+      projectState.excludedComponentIds,
+    ).filter((id) => !deletedComponentSet.has(id)),
+    deletedComponentIds,
+    componentNameOverrides: normalizeComponentNameOverrides(
+      projectState.componentNameOverrides,
+    ),
+    materialAssignments: projectState.materialAssignments
+      .map(normalizeMaterialAssignment)
+      .filter(
+        (assignment) =>
+          !deletedComponentSet.has(assignment.componentId),
+      ),
+    transformRules: projectState.transformRules
+      .map(normalizeTransformRule)
+      .filter(
+        (rule) => !deletedComponentSet.has(rule.componentId),
+      ),
+    roiScopes,
+    roiScopeSequence: Math.max(
+      roiScopes.length,
+      Math.trunc(projectState.roiScopeSequence || 0),
+      0,
+    ),
+    emitters: structuredClone(projectState.emitters),
+    receivers: structuredClone(projectState.receivers),
+    rayTraceConfig: normalizeRayTraceConfig(
+      projectState.rayTraceConfig,
+    ),
+    rayPathDisplayFilters: {
+      ...defaultRayPathDisplayFilters,
+      ...projectState.rayPathDisplayFilters,
+    },
   }
 }
 
@@ -744,6 +854,20 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...filters,
           },
         }))
+      },
+      restoreProjectState: (projectState) => {
+        const normalized = normalizeProjectState(projectState)
+        set({
+          ...normalized,
+          selectedFaceIds: [],
+          selectedComponentIds: [],
+          roiBoxSelectionArmed: false,
+          emitterFaceSelectionArmed: false,
+          roiDraftLabel: '',
+          placementPreviewEmitter: null,
+          placementPreviewReceiver: null,
+          activeRayTraceJobId: null,
+        })
       },
       clearSceneState: () => {
         set(createSceneSnapshot())

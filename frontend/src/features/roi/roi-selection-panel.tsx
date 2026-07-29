@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   BoxSelect,
+  CircleHelp,
   Crosshair,
   MapPin,
   Power,
@@ -10,6 +11,12 @@ import {
 import type { ScenePayload } from '@/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { NumberInput } from '@/components/ui/number-input'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import {
   useWorkspaceStore,
@@ -33,27 +40,42 @@ function formatArea(value: number): string {
   }).format(value)
 }
 
-function parseCoordinate(
-  coordinate: Record<'x' | 'y' | 'z', string>,
-): Vector3Value | null {
-  if (Object.values(coordinate).some((value) => !value.trim())) {
-    return null
-  }
-  const point = {
-    x: Number(coordinate.x),
-    y: Number(coordinate.y),
-    z: Number(coordinate.z),
-  }
-  return Object.values(point).every(Number.isFinite) ? point : null
+function HelpTooltip({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+        >
+          <CircleHelp className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="right"
+        sideOffset={6}
+        className="max-w-72 whitespace-normal text-left leading-5"
+      >
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 export function RoiSelectionPanel({
   scene,
 }: RoiSelectionPanelProps) {
-  const [coordinate, setCoordinate] = useState({
-    x: '',
-    y: '',
-    z: '',
+  const [coordinate, setCoordinate] = useState<Vector3Value>({
+    x: 0,
+    y: 0,
+    z: 0,
   })
   const [coordinateResult, setCoordinateResult] = useState('')
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
@@ -83,8 +105,8 @@ export function RoiSelectionPanel({
       setCoordinateResult('먼저 CAD를 Import하세요.')
       return
     }
-    const point = parseCoordinate(coordinate)
-    if (!point) {
+    const point = coordinate
+    if (!Object.values(point).every(Number.isFinite)) {
       setCoordinateResult('X, Y, Z 좌표를 모두 숫자로 입력하세요.')
       return
     }
@@ -114,7 +136,7 @@ export function RoiSelectionPanel({
       ),
     })
     setCoordinateResult(`Face ${faceId}를 ROI List에 추가했습니다.`)
-    setCoordinate({ x: '', y: '', z: '' })
+    setCoordinate({ x: 0, y: 0, z: 0 })
   }
 
   return (
@@ -138,16 +160,16 @@ export function RoiSelectionPanel({
       </div>
 
       <div className="rounded-xl border border-border bg-background/35 p-3">
-        <div className="flex items-start gap-2">
-          <BoxSelect className="mt-0.5 size-4 shrink-0 text-primary" />
-          <div className="min-w-0">
-            <div className="text-xs font-semibold">박스 드래그</div>
-            <p className="mt-1 text-[0.68rem] leading-5 text-muted-foreground">
-              보이는 컴포넌트만 대상으로 현재 카메라와 가장 가까운
-              ±XY·±YZ·±ZX 정면 범위를 선택합니다. 화면 깊이 방향은
-              제한하지 않습니다.
-            </p>
-          </div>
+        <div className="flex items-center gap-2">
+          <BoxSelect className="size-4 shrink-0 text-primary" />
+          <div className="text-xs font-semibold">박스 드래그</div>
+          <HelpTooltip label="박스 드래그 도움말">
+            보이는 컴포넌트만 대상으로 현재 카메라와 가장 가까운
+            ±XY·±YZ·±ZX 정면 범위를 선택합니다. 화면 깊이 방향은
+            제한하지 않습니다. 버튼을 누른 뒤 Viewer에서 왼쪽 버튼을
+            누른 채 영역을 그리면, 완료 후 선택 전 카메라 화면으로
+            돌아갑니다.
+          </HelpTooltip>
         </div>
         <Button
           type="button"
@@ -164,13 +186,6 @@ export function RoiSelectionPanel({
             ? 'ROI 드래그 취소'
             : '+ ROI 추가 후 드래그'}
         </Button>
-        {roiBoxSelectionArmed ? (
-          <p className="mt-2 text-[0.66rem] leading-5 text-primary">
-            Viewer가 가장 가까운 ±XY·±YZ·±ZX 방향으로
-            정렬되었습니다. 왼쪽 버튼을 누른 채 영역을 그리세요.
-            완료하면 선택 전 카메라 화면으로 정확히 돌아갑니다.
-          </p>
-        ) : null}
       </div>
 
       <div className="rounded-xl border border-border bg-background/35 p-3">
@@ -185,13 +200,11 @@ export function RoiSelectionPanel({
               className="text-[0.62rem] font-medium text-muted-foreground uppercase"
             >
               {axis} (mm)
-              <input
+              <NumberInput
                 aria-label={`ROI ${axis.toUpperCase()} coordinate`}
-                inputMode="decimal"
                 value={coordinate[axis]}
                 className="mt-1 h-8 w-full rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none focus:border-primary/60"
-                onChange={(event) => {
-                  const value = event.currentTarget.value
+                onValueChange={(value) => {
                   setCoordinate((current) => ({
                     ...current,
                     [axis]: value,
@@ -223,16 +236,16 @@ export function RoiSelectionPanel({
 
       <section aria-labelledby="roi-list-title">
         <div className="flex items-center justify-between gap-2">
-          <div>
+          <div className="flex items-center gap-1">
             <div
               id="roi-list-title"
               className="text-xs font-semibold"
             >
               ROI List
             </div>
-            <p className="mt-0.5 text-[0.64rem] text-muted-foreground">
+            <HelpTooltip label="ROI List 도움말">
               활성화한 scope만 분석과 Viewer 격리 표시에 반영됩니다.
-            </p>
+            </HelpTooltip>
           </div>
           {roiScopes.length > 0 ? (
             <Button
@@ -338,6 +351,12 @@ export function RoiSelectionPanel({
           <div className="flex items-center gap-2 text-xs font-semibold">
             <Power className="size-3.5 text-primary" />
             활성 ROI
+            <HelpTooltip label="활성 ROI 도움말">
+              박스 ROI는 경계에서 triangle을 실제 절단하고 새 vertex와
+              폐곡선 section cap을 만든 뒤 ROI solid만 표시합니다.
+              좌표 선택은 단일 face 보완 경로라 절단 cap을 만들지
+              않습니다.
+            </HelpTooltip>
           </div>
           <Badge variant="outline" className="border-primary/25 text-primary">
             {summary.scopeCount} scopes
@@ -372,11 +391,6 @@ export function RoiSelectionPanel({
             {summary.bboxMax.z.toFixed(1)} mm
           </p>
         ) : null}
-        <p className="mt-2 text-[0.61rem] leading-5 text-muted-foreground">
-          박스 ROI는 경계에서 triangle을 실제 절단하고 새 vertex와
-          폐곡선 section cap을 만든 뒤 ROI solid만 표시합니다. 좌표
-          선택은 단일 face 보완 경로라 절단 cap을 만들지 않습니다.
-        </p>
       </div>
     </div>
   )

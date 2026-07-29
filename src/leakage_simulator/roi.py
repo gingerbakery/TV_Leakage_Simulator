@@ -9,6 +9,13 @@ from .importers import import_geometry
 from .types import ReceiverPatchConfig, ROIComponentClip, ROIPointSelection, ROIRegionResult, Vec3
 
 
+def _scene_stage_start(stage: str) -> None:
+    print(
+        "[CAD] {:<24} {:>8}".format(stage, "START"),
+        flush=True,
+    )
+
+
 def build_default_receivers(
     face_indices: List[int],
     name: str = "viewer_side",
@@ -28,6 +35,7 @@ def resolve_receiver_faces(
 def build_scene_payload(cad_path: Optional[str]) -> Dict:
     total_started_at = time.perf_counter()
     import_started_at = time.perf_counter()
+    _scene_stage_start("geometry import")
     import_result = import_geometry(cad_path)
     import_sec = time.perf_counter() - import_started_at
     print(
@@ -40,6 +48,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     )
     mesh = import_result.mesh
     grouping_started_at = time.perf_counter()
+    _scene_stage_start("component grouping")
     objects = build_face_groups(mesh, max_faces_per_object=None)
     grouping_sec = time.perf_counter() - grouping_started_at
     print(
@@ -51,6 +60,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         flush=True,
     )
     arrays_started_at = time.perf_counter()
+    _scene_stage_start("scene mesh arrays")
     face_to_component: Dict[int, int] = {}
     for item in objects:
         component_id = item["object_id"]
@@ -86,6 +96,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     )
 
     edges_started_at = time.perf_counter()
+    _scene_stage_start("scene feature edges")
     source_feature_edges = import_result.feature_edge_segments
     if source_feature_edges is None:
         source_feature_edges = build_feature_edge_segments(mesh)
