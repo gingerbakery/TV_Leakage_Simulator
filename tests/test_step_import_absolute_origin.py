@@ -11,6 +11,12 @@ from leakage_simulator.importers import import_geometry
 from leakage_simulator.roi import build_scene_payload
 
 SAMPLE_STEP = ROOT / "samples" / "tv_leakage_full_assembled_no_gap.stp"
+EXPECTED_COMPONENT_COLORS = {
+    "Chassis_Rear": "#07080b",
+    "LCD_Cell_3T": "#02060e",
+    "Frame_Middle_FMB": "#010101",
+    "Cover_Deco": "#000000",
+}
 
 
 def _raw_step_bbox(path: Path):
@@ -83,6 +89,30 @@ class StepImportPreservesAbsoluteOriginTests(unittest.TestCase):
             self.assertAlmostEqual(raw_value, payload_value, delta=tolerance_mm)
         for raw_value, payload_value in zip(raw_max, payload_max):
             self.assertAlmostEqual(raw_value, payload_value, delta=tolerance_mm)
+
+    def test_step_component_names_and_colors_reach_scene_payload(self) -> None:
+        result = import_geometry(str(SAMPLE_STEP))
+        imported_components = {}
+        for face_index in range(len(result.mesh.faces)):
+            metadata = result.mesh.metadata(face_index)
+            component_name = metadata.get("step_component_name")
+            if component_name:
+                imported_components[component_name] = metadata.get(
+                    "step_component_color"
+                )
+
+        self.assertEqual(imported_components, EXPECTED_COMPONENT_COLORS)
+
+        payload = build_scene_payload(str(SAMPLE_STEP))
+        payload_components = {
+            component["component_name"]: component.get("color")
+            for component in payload["components"]
+        }
+        self.assertEqual(payload_components, EXPECTED_COMPONENT_COLORS)
+        self.assertIn(
+            "ocp_product_structure",
+            payload["metadata"]["import_timings_sec"],
+        )
 
 
 if __name__ == "__main__":
