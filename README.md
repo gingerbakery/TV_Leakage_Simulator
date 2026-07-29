@@ -39,6 +39,10 @@ npm run dev
 ### 2. React production 통합 서버
 - `frontend` production build와 FastAPI를 한 포트에서 실행한다.
 
+가장 간단한 실행 방법은 프로젝트 루트의 `run_web.bat`을
+더블클릭하는 것입니다. 새 clone 환경에서는 `.venv`와 frontend package를
+최초 1회 자동으로 준비하고 `http://127.0.0.1:8788/`을 엽니다.
+
 ```powershell
 npm --prefix frontend install
 npm --prefix frontend run build

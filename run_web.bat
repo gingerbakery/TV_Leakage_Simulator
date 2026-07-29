@@ -1,51 +1,104 @@
 @echo off
-setlocal
-set "ROOT=%~dp0"
-set "PY=%ROOT%_tools\python313\python.exe"
-set "PORT=%~1"
+setlocal EnableExtensions EnableDelayedExpansion
 
-if not exist "%PY%" (
-  echo [ERR] Embedded python not found: %PY%
-  echo Use: C:\Users\Administrator\Documents\TV leakage simulator\_tools\python313\python.exe
+set "ROOT=%~dp0"
+set "PORT=%~1"
+set "PY="
+set "BASE_PY="
+set "NPM="
+
+if "%PORT%"=="" set "PORT=8788"
+cd /d "%ROOT%"
+
+if exist "%ROOT%.venv\Scripts\python.exe" (
+  set "PY=%ROOT%.venv\Scripts\python.exe"
+)
+if not defined PY if exist "%ROOT%_tools\python313\python.exe" (
+  set "PY=%ROOT%_tools\python313\python.exe"
+)
+
+if not defined PY (
+  echo [SETUP] Python virtual environment was not found.
+  echo [SETUP] Creating .venv with Python 3.13...
+
+  where.exe py.exe >nul 2>nul
+  if not errorlevel 1 (
+    py -3.13 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)" >nul 2>nul
+    if not errorlevel 1 set "BASE_PY=py -3.13"
+  )
+
+  if not defined BASE_PY (
+    where.exe python.exe >nul 2>nul
+    if not errorlevel 1 (
+      python.exe -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)" >nul 2>nul
+      if not errorlevel 1 set "BASE_PY=python.exe"
+    )
+  )
+
+  if not defined BASE_PY (
+    echo.
+    echo [ERROR] Python 3.13 was not found.
+    echo Install Python 3.13 once, then double-click run_web.bat again.
+    pause
+    exit /b 1
+  )
+
+  call !BASE_PY! -m venv "%ROOT%.venv"
+  if errorlevel 1 goto :setup_failed
+
+  set "PY=%ROOT%.venv\Scripts\python.exe"
+  "!PY!" -m pip install --upgrade pip
+  if errorlevel 1 goto :setup_failed
+  "!PY!" -m pip install -r "%ROOT%requirements-dev.txt"
+  if errorlevel 1 goto :setup_failed
+)
+
+for /f "delims=" %%I in ('where.exe npm.cmd 2^>nul') do (
+  if not defined NPM set "NPM=%%I"
+)
+if not defined NPM (
+  echo.
+  echo [ERROR] Node.js npm.cmd was not found.
+  echo Install Node.js once, then double-click run_web.bat again.
   pause
   exit /b 1
 )
 
-if not exist "%ROOT%frontend\dist\index.html" (
-  where npm >nul 2>nul
-  if errorlevel 1 (
-    echo [ERR] React production UI is missing and npm was not found.
-    echo Install Node.js, run npm install in frontend, then retry.
-    pause
-    exit /b 1
-  )
-  if not exist "%ROOT%frontend\node_modules" (
-    echo [INFO] Installing React dependencies...
-    call npm --prefix "%ROOT%frontend" install
-    if errorlevel 1 exit /b 1
-  )
-  echo [INFO] Building React production UI...
-  call npm --prefix "%ROOT%frontend" run build
-  if errorlevel 1 exit /b 1
+if not exist "%ROOT%frontend\node_modules" (
+  echo [SETUP] Installing frontend packages for the first run...
+  call "%NPM%" --prefix "%ROOT%frontend" ci --no-audit --no-fund
+  if errorlevel 1 goto :setup_failed
 )
 
-set "PATH=%ROOT%_tools\python313;%ROOT%_tools\python313\Scripts;%PATH%"
-if "%PORT%"=="" set "PORT=8788"
+echo [BUILD] Preparing the latest web UI...
+call "%NPM%" --prefix "%ROOT%frontend" run build
+if errorlevel 1 goto :setup_failed
+
 set "LEAKAGE_WEB_PORT=%PORT%"
+set "PATH=%ROOT%.venv\Scripts;%ROOT%_tools\python313;%PATH%"
 
-where.exe python
 echo.
-echo [INFO] Starting integrated React + FastAPI UI (keep this window open)
-echo [INFO] Open in browser: http://127.0.0.1:%LEAKAGE_WEB_PORT%
-echo [INFO] If port is busy, fallback port will be auto-selected by run_web.py and shown in logs.
+echo [READY] TV Leakage Simulator
+echo [READY] Browser: http://127.0.0.1:%PORT%/
+echo [READY] Keep this window open while using the simulator.
+echo.
 
-"%PY%" run_web.py
+start "" /b "%PY%" "%ROOT%scripts\open_web_when_ready.py" "http://127.0.0.1:%PORT%/"
+"%PY%" "%ROOT%run_web.py" --port "%PORT%" --strict-port
 set "EXITCODE=%ERRORLEVEL%"
-if %EXITCODE% neq 0 (
+
+if not "%EXITCODE%"=="0" (
   echo.
-  echo [ERR] Failed. Exit code: %EXITCODE%
+  echo [ERROR] Server stopped with exit code %EXITCODE%.
   pause
   exit /b %EXITCODE%
 )
 
-endlocal
+exit /b 0
+
+:setup_failed
+echo.
+echo [ERROR] Automatic setup or web build failed.
+echo Review the message above, then run run_web.bat again.
+pause
+exit /b 1
