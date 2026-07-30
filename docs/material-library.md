@@ -43,6 +43,7 @@
 - `surface_id`
 - `display_name`
 - `reflectance_scale`
+- `reflectance_override` (선택)
 - `scatter_model`
 - `specular_ratio`
 - `diffuse_ratio`
@@ -91,6 +92,17 @@ specular_ratio + diffuse_ratio = 1
 ```
 
 `absorption` 필드가 이전 데이터에 포함되어도 backend는 이를 독립 물성으로 사용하지 않고 `1 - reflectance`로 다시 계산한다.
+
+표면 코팅, 반사필름, 미러 처리처럼 표면 처리가 재료 자체의 기본 반사율보다 우선하는 경우에는 `reflectance_override`를 사용할 수 있다.
+
+```text
+if surface.reflectance_override is defined:
+    reflectance = clamp(surface.reflectance_override, 0, 1)
+else:
+    reflectance = clamp(base.reflectance_total * surface.reflectance_scale, 0, 1)
+```
+
+`reflectance_override` preset은 측정 데이터가 없는 경우 설계 비교용 reference 값으로 명확히 표시한다. 실제 소재의 절대 밝기 예측에 사용하려면 사내 측정값 또는 공급사 데이터를 기준으로 보정해야 한다.
 
 ## Scatter model
 - `none`: 반사 ray를 생성하지 않는다.

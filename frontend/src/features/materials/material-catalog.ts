@@ -18,6 +18,7 @@ export interface SurfaceProperty {
   name: string
   scatterModel: ScatterModel
   reflectanceScale: number
+  reflectanceOverride?: number
   specularRatio: number
   diffuseRatio: number
   roughness: number
@@ -129,6 +130,28 @@ export const surfaceProperties: SurfaceProperty[] = [
     scatterSigmaDeg: 14,
   },
   {
+    id: 'polished_mirror_high',
+    name: 'Polished mirror · high reflectance (R 0.85)',
+    scatterModel: 'specular',
+    reflectanceScale: 1,
+    reflectanceOverride: 0.85,
+    specularRatio: 1,
+    diffuseRatio: 0,
+    roughness: 0.03,
+    scatterSigmaDeg: 0.5,
+  },
+  {
+    id: 'enhanced_mirror_very_high',
+    name: 'Enhanced mirror · very high (R 0.95)',
+    scatterModel: 'specular',
+    reflectanceScale: 1,
+    reflectanceOverride: 0.95,
+    specularRatio: 1,
+    diffuseRatio: 0,
+    roughness: 0.01,
+    scatterSigmaDeg: 0.2,
+  },
+  {
     id: 'anodized_matte',
     name: 'Anodized matte',
     scatterModel: 'mixed',
@@ -212,6 +235,20 @@ export const opticalProfilePresets: OpticalProfilePreset[] = [
     surfaceId: 'corrosion_medium',
     bsdfAssetId: '',
   },
+  {
+    id: 'profile_polished_mirror_high',
+    name: 'Polished mirror · R 0.85 reference',
+    baseMaterialId: 'anodized_aluminum',
+    surfaceId: 'polished_mirror_high',
+    bsdfAssetId: '',
+  },
+  {
+    id: 'profile_enhanced_mirror_very_high',
+    name: 'Enhanced mirror · R 0.95 reference',
+    baseMaterialId: 'anodized_aluminum',
+    surfaceId: 'enhanced_mirror_very_high',
+    bsdfAssetId: '',
+  },
 ]
 
 export function findBaseMaterial(id: string): BaseMaterial {
@@ -231,10 +268,10 @@ export function compileOpticalProfile(
 ): CompiledOpticalProfile {
   const base = findBaseMaterial(baseMaterialId)
   const surface = findSurfaceProperty(surfaceId)
-  const reflectance = Math.min(
-    1,
-    Math.max(0, base.reflectanceTotal * surface.reflectanceScale),
-  )
+  const reflectanceSource =
+    surface.reflectanceOverride ??
+    base.reflectanceTotal * surface.reflectanceScale
+  const reflectance = Math.min(1, Math.max(0, reflectanceSource))
   const ratioTotal = surface.specularRatio + surface.diffuseRatio
   const specularRatio =
     ratioTotal > 0 ? surface.specularRatio / ratioTotal : 0

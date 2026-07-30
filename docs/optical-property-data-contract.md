@@ -31,6 +31,13 @@ CAD, Material Library, Ray Tracing 개발자가 동일한 표면 광학 정보�
 - `scatter_model = mixed`에서는 `specular_ratio` 확률로 Gaussian glossy lobe를 선택하고, `diffuse_ratio` 확률로 Lambertian lobe를 선택한다.
 - 완전 경면은 `scatter_model = specular`, 단일 glossy 분포는 `scatter_model = gaussian`을 사용한다.
 
+Material Library에서 `OpticalProfile`을 생성할 때의 반사율 우선순위:
+1. Surface property에 `reflectance_override`가 있으면 해당 절대 반사율을 사용한다.
+2. 없으면 `base.reflectance_total × surface.reflectance_scale`을 사용한다.
+3. 최종값은 항상 0~1로 clamp한다.
+
+`reflectance_override`는 미러 코팅, 고반사 필름처럼 표면 처리가 전체 반사율을 지배하는 경우에만 사용한다. 일반적인 부식, 도장, 무광/반광 처리는 기존 scale 방식을 유지한다.
+
 ### `OpticalAssignment`
 
 | 필드 | 형식 | 의미 |
