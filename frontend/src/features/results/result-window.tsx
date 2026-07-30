@@ -3,10 +3,12 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react'
 import type {
   RayTraceResult,
   ReceiverGrid,
+  ReceiverSpec,
 } from '@/api'
 import {
   Activity,
@@ -19,6 +21,19 @@ import {
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+
+import {
+  formatReceiverCoordinate,
+  initialReceiverHeatmapViewport,
+  receiverAxisTicksForRange,
+  receiverHeatmapColor,
+  receiverHeatmapDisplayValues,
+  receiverHeatmapLayout,
+  receiverHeatmapSample,
+  receiverHeatmapViewportBounds,
+  zoomReceiverHeatmapViewport,
+  type ReceiverHeatmapSample,
+} from './receiver-heatmap'
 
 type ResultTab =
   | 'summary'
@@ -44,6 +59,11 @@ interface PointerOperation {
   startX: number
   startY: number
   frame: WindowFrame
+}
+
+interface ReceiverHeatmapHover extends ReceiverHeatmapSample {
+  pointerXPercent: number
+  pointerYPercent: number
 }
 
 function numeric(value: unknown): number {
@@ -73,40 +93,324 @@ function formatMetric(value: unknown, digits = 3) {
   return number.toFixed(digits)
 }
 
-function ReceiverHeatmap({ grid }: { grid: ReceiverGrid }) {
+function ReceiverHeatmap({
+  grid,
+  receiver,
+}: {
+  grid: ReceiverGrid
+  receiver: ReceiverSpec
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [viewport, setViewport] = useState({
+    ...initialReceiverHeatmapViewport,
+  })
+  const [hover, setHover] =
+    useState<ReceiverHeatmapHover | null>(null)
+  const layout = receiverHeatmapLayout(
+    receiver.width_mm,
+    receiver.height_mm,
+  )
+  const columns = Math.max(1, grid.resolution[0])
+  const rows = Math.max(1, grid.resolution[1])
+  const maximumZoom = Math.min(
+    128,
+    Math.max(columns, rows, 1),
+  )
+  const viewportBounds = receiverHeatmapViewportBounds(viewport)
+  const xMinimumMm =
+    (viewportBounds.minX - 0.5) * layout.widthMm
+  const xMaximumMm =
+    (viewportBounds.maxX - 0.5) * layout.widthMm
+  const yMinimumMm =
+    (0.5 - viewportBounds.maxY) * layout.heightMm
+  const yMaximumMm =
+    (0.5 - viewportBounds.minY) * layout.heightMm
+  const xTicks = receiverAxisTicksForRange(
+    xMinimumMm,
+    xMaximumMm,
+  )
+  const yTicks = receiverAxisTicksForRange(
+    yMinimumMm,
+    yMaximumMm,
+  )
+
+  useEffect(() => {
+    setViewport({ ...initialReceiverHeatmapViewport })
+    setHover(null)
+  }, [grid, receiver.height_mm, receiver.width_mm])
 
   useEffect(() => {
     const canvas = canvasRef.current
     const context = canvas?.getContext('2d')
     if (!canvas || !context) return
-    const columns = Math.max(1, grid.resolution[0])
-    const rows = Math.max(1, grid.resolution[1])
     canvas.width = columns
     canvas.height = rows
-    const values = grid.flux_lumen
-      .flat()
-      .map((value) => Math.max(0, numeric(value)))
+    const values = receiverHeatmapDisplayValues(grid)
     const peak = Math.max(...values, 0)
     const image = context.createImageData(columns, rows)
     for (let index = 0; index < columns * rows; index += 1) {
       const normalized =
         peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0
       const pixel = index * 4
-      image.data[pixel] = Math.round(8 + normalized * 247)
-      image.data[pixel + 1] = Math.round(18 + normalized * 195)
-      image.data[pixel + 2] = Math.round(50 + (1 - normalized) * 180)
+      const [red, green, blue] = receiverHeatmapColor(normalized)
+      image.data[pixel] = red
+      image.data[pixel + 1] = green
+      image.data[pixel + 2] = blue
       image.data[pixel + 3] = 255
     }
     context.putImageData(image, 0, 0)
-  }, [grid])
+  }, [columns, grid, rows])
+
+  const pointerPosition = (
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const bounds = element.getBoundingClientRect()
+    if (bounds.width <= 0 || bounds.height <= 0) return null
+    return {
+      x: Math.min(
+        1,
+        Math.max(0, (clientX - bounds.left) / bounds.width),
+      ),
+      y: Math.min(
+        1,
+        Math.max(0, (clientY - bounds.top) / bounds.height),
+      ),
+    }
+  }
+
+  const updateHover = (
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+    nextViewport = viewport,
+  ) => {
+    const pointer = pointerPosition(element, clientX, clientY)
+    if (!pointer) return
+    setHover({
+      ...receiverHeatmapSample(
+        grid,
+        layout.widthMm,
+        layout.heightMm,
+        nextViewport,
+        pointer.x,
+        pointer.y,
+      ),
+      pointerXPercent: pointer.x * 100,
+      pointerYPercent: pointer.y * 100,
+    })
+  }
+
+  const handleWheel = (
+    event: ReactWheelEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault()
+    const pointer = pointerPosition(
+      event.currentTarget,
+      event.clientX,
+      event.clientY,
+    )
+    if (!pointer) return
+    const nextViewport = zoomReceiverHeatmapViewport(
+      viewport,
+      pointer.x,
+      pointer.y,
+      event.deltaY,
+      maximumZoom,
+    )
+    setViewport(nextViewport)
+    updateHover(
+      event.currentTarget,
+      event.clientX,
+      event.clientY,
+      nextViewport,
+    )
+  }
+
+  const resetViewport = () => {
+    setViewport({ ...initialReceiverHeatmapViewport })
+    setHover(null)
+  }
 
   return (
-    <canvas
-      ref={canvasRef}
-      aria-label={`${grid.receiver_id} flux heatmap`}
-      className="mt-2 h-36 w-full rounded-lg border border-border bg-[#020617] [image-rendering:pixelated]"
-    />
+    <div className="mt-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-[0.6rem] text-muted-foreground">
+        <span>Flux distribution · Receiver local plane</span>
+        <div className="flex items-center gap-2">
+          <span>
+            {formatReceiverCoordinate(layout.widthMm)} ×{' '}
+            {formatReceiverCoordinate(layout.heightMm)} mm
+          </span>
+          <span
+            data-testid={`${grid.receiver_id}-zoom`}
+            className="rounded border border-border bg-background/55 px-1.5 py-0.5 font-mono text-foreground"
+          >
+            {viewport.zoom.toFixed(2)}×
+          </span>
+          <button
+            type="button"
+            className="rounded border border-border px-1.5 py-0.5 text-foreground transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-35"
+            disabled={viewport.zoom <= 1}
+            onClick={resetViewport}
+          >
+            Reset view
+          </button>
+        </div>
+      </div>
+      <div
+        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_3.75rem] grid-rows-[auto_2.75rem]"
+        style={{
+          width: `${layout.preferredWidthPx + 60}px`,
+        }}
+      >
+        <div
+          data-testid={`${grid.receiver_id}-heatmap-frame`}
+          data-width-mm={layout.widthMm}
+          data-height-mm={layout.heightMm}
+          className="relative min-w-0 overflow-visible"
+          style={{
+            aspectRatio: `${layout.widthMm} / ${layout.heightMm}`,
+          }}
+        >
+          <div
+            data-testid={`${grid.receiver_id}-heatmap-viewport`}
+            title="Wheel to zoom at the cursor. Double-click to reset."
+            className="absolute inset-0 cursor-crosshair touch-none overflow-hidden border border-slate-300/75 bg-[#0814be]"
+            onDoubleClick={resetViewport}
+            onPointerLeave={() => setHover(null)}
+            onPointerMove={(event) =>
+              updateHover(
+                event.currentTarget,
+                event.clientX,
+                event.clientY,
+              )
+            }
+            onWheel={handleWheel}
+          >
+            <canvas
+              ref={canvasRef}
+              aria-label={`${grid.receiver_id} flux heatmap`}
+              className="absolute max-w-none select-none"
+              style={{
+                height: `${viewport.zoom * 100}%`,
+                left: `${
+                  -viewportBounds.minX * viewport.zoom * 100
+                }%`,
+                top: `${
+                  -viewportBounds.minY * viewport.zoom * 100
+                }%`,
+                width: `${viewport.zoom * 100}%`,
+              }}
+            />
+          </div>
+          {hover ? (
+            <div
+              role="tooltip"
+              data-testid={`${grid.receiver_id}-heatmap-tooltip`}
+              className="pointer-events-none absolute z-20 w-48 rounded-md border border-slate-500/70 bg-slate-950/95 p-2 text-[0.58rem] text-slate-100 shadow-xl"
+              style={{
+                left: `${hover.pointerXPercent}%`,
+                top: `${hover.pointerYPercent}%`,
+                transform: `translate(${
+                  hover.pointerXPercent > 62
+                    ? 'calc(-100% - 10px)'
+                    : '10px'
+                }, ${
+                  hover.pointerYPercent > 62
+                    ? 'calc(-100% - 10px)'
+                    : '10px'
+                })`,
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between border-b border-slate-700 pb-1 font-semibold">
+                <span>Receiver sample</span>
+                <span className="font-mono text-slate-400">
+                  C{hover.column + 1} · R{hover.displayRow + 1}
+                </span>
+              </div>
+              <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 tabular-nums">
+                <span className="text-slate-400">X</span>
+                <span className="text-right font-mono">
+                  {formatReceiverCoordinate(hover.xMm)} mm
+                </span>
+                <span className="text-slate-400">Y</span>
+                <span className="text-right font-mono">
+                  {formatReceiverCoordinate(hover.yMm)} mm
+                </span>
+                <span className="text-slate-400">
+                  Incident flux
+                </span>
+                <span className="text-right font-mono">
+                  {formatMetric(hover.fluxLumen, 6)} lm
+                </span>
+                <span className="text-slate-400">
+                  Flux density
+                </span>
+                <span className="text-right font-mono">
+                  {formatMetric(
+                    hover.fluxDensityLumenPerMm2,
+                    6,
+                  )}{' '}
+                  lm/mm²
+                </span>
+                <span className="text-slate-400">
+                  Illuminance
+                </span>
+                <span className="text-right font-mono">
+                  {formatMetric(hover.illuminanceLux)} lx
+                </span>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div
+          data-testid={`${grid.receiver_id}-y-axis`}
+          aria-label="Receiver Y axis in millimeters"
+          className="relative text-[0.58rem] tabular-nums text-muted-foreground"
+        >
+          {yTicks.map((tick) => (
+            <div
+              key={tick.value}
+              data-axis-tick={tick.value}
+              className="absolute left-0 flex -translate-y-1/2 items-center"
+              style={{
+                top: `${100 - tick.positionPercent}%`,
+              }}
+            >
+              <span className="h-px w-1.5 bg-slate-300/80" />
+              <span className="ml-1">{tick.label}</span>
+            </div>
+          ))}
+          <span className="absolute top-1/2 right-0 -translate-y-1/2 rotate-90 whitespace-nowrap text-[0.6rem] font-medium text-foreground">
+            Y (mm)
+          </span>
+        </div>
+        <div
+          data-testid={`${grid.receiver_id}-x-axis`}
+          aria-label="Receiver X axis in millimeters"
+          className="relative text-[0.58rem] tabular-nums text-muted-foreground"
+        >
+          {xTicks.map((tick) => (
+            <div
+              key={tick.value}
+              data-axis-tick={tick.value}
+              className="absolute top-0 -translate-x-1/2 text-center"
+              style={{
+                left: `${tick.positionPercent}%`,
+              }}
+            >
+              <span className="mx-auto block h-1.5 w-px bg-slate-300/80" />
+              <span className="mt-0.5 block">{tick.label}</span>
+            </div>
+          ))}
+          <span className="absolute right-0 bottom-0 left-0 text-center text-[0.6rem] font-medium text-foreground">
+            X (mm)
+          </span>
+        </div>
+        <div aria-hidden="true" />
+      </div>
+    </div>
   )
 }
 
@@ -136,8 +440,8 @@ export function RayTraceResultWindow({
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
     y: 58,
-    width: 760,
-    height: 560,
+    width: 960,
+    height: 880,
   })
 
   useEffect(() => {
@@ -485,7 +789,7 @@ export function RayTraceResultWindow({
           ) : null}
 
           {tab === 'receiver' ? (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid gap-3">
               {result.receivers.map((receiver) => {
                 const values = objectValue(
                   result.metrics,
@@ -519,7 +823,12 @@ export function RayTraceResultWindow({
                         )} lm`}
                       />
                     </div>
-                    {grid ? <ReceiverHeatmap grid={grid} /> : null}
+                    {grid ? (
+                      <ReceiverHeatmap
+                        grid={grid}
+                        receiver={receiver}
+                      />
+                    ) : null}
                   </section>
                 )
               })}
