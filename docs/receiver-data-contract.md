@@ -18,9 +18,11 @@
 
 ### Datum plane
 
-- CAD 형상과 관계없이 빈 공간에 Receiver를 배치한다.
-- 중심 X/Y/Z, Width/Height, Rx/Ry/Rz를 사용자가 직접 입력한다.
-- 휘도계 위치나 고정 관측 위치를 수치로 정의할 때 사용한다.
+- 중심 X/Y/Z, Width/Height, Rx/Ry/Rz를 사용자가 직접 입력하거나, "뷰어에서 CAD Face 선택"으로 클릭한 CAD 표면(클릭한 삼각형과 연결된 동일 평면의 coplanar patch 전체 - ROI로 잘려 보이는 경우 그 잘린 범위 안으로 제한됨)의 area-weighted 중심을 Center로, 클릭한 삼각형의 normal을 Rotation으로 그대로 가져올 수 있다. 같은 면 안 어디를 클릭해도 결과 Center는 항상 그 면의 중심으로 동일하다(클릭 지점 자체가 아니다).
+- ROI로 솔리드를 잘랐을 때 생기는 절단면(원본 CAD face가 아닌, ROI 박스 경계에서 새로 생성되는 단면)도 선택할 수 있다 - 이 경우는 원본 topology가 없어 "면 전체 중심"을 계산할 수 없으므로 클릭한 정확한 지점을 Center로, 절단면의 축정렬 normal을 Rotation으로 사용한다. 절단면에서 Offset을 줘서 위치를 잡는 워크플로우(예: 특정 단면 기준으로 얼마 떨어진 지점에 수광부 배치)를 위해 지원한다.
+- Base 중심에 `Offset (mm)`(X/Y/Z)을 더해 그 위치에서 원하는 만큼 이동시킨다.
+- Rotation(Rx/Ry/Rz)은 항상 (base 중심 + offset) 자기 자신을 기준으로 그 자리에서 회전한다 - 별도의 피벗 지정 UI는 없다(component Transform editor의 Tilt pivot과는 다르게, Receiver는 항상 제자리 회전으로 고정되어 있다).
+- 휘도계 위치나 고정 관측 위치를 수치로 정의할 때, 또는 CAD의 특정 면·모서리를 기준으로 위치를 잡고 싶을 때 사용한다.
 
 ### Reference geometry
 
@@ -68,6 +70,7 @@
   "base_normal": [0.0, 0.0, -1.0],
   "position_offset_mm": [0.0, 0.0, 5.0],
   "tilt_xyz_deg": [0.0, 3.0, 0.0],
+  "pivot": null,
   "enabled": true
 }
 ```
@@ -94,6 +97,7 @@
 - `base_center`, `base_u_axis`, `base_v_axis`, `base_normal`: Reference/Current view의 추가 변환 전 기준면이다.
 - `position_offset_mm`: 기준면 중심에 더하는 월드 X/Y/Z 이동량이며 단위는 mm이다.
 - `tilt_xyz_deg`: 기준면의 U/V축에 X→Y→Z 순서로 적용하는 월드축 회전량이며 단위는 degree이다.
+- `pivot`: Tilt 회전의 피벗 좌표(월드 X/Y/Z, mm)이다. `null`이면 (base_center + position_offset_mm) 자기 자신이 피벗이라 회전해도 중심은 이동하지 않는다. 값이 있으면 그 점을 기준으로 중심이 공전한다. Ray tracer 계산에는 사용하지 않으며(최종 `center`/`normal`/`u_axis`/`v_axis`에 이미 반영됨), UI가 편집 시 다시 불러오기 위한 필드다. Component `ComponentTransformRule.pivot`과 동일한 의미·기본값 규칙을 따른다.
 - 최종 `center`, `u_axis`, `v_axis`, `normal`에는 위 추가 변환이 이미 적용되어 있으며 ray tracer는 최종값을 사용한다.
 
 ## 좌표계와 ray hit

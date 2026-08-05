@@ -323,6 +323,13 @@ class ReceiverSpec:
     base_normal: Optional[Vec3] = None
     position_offset_mm: Vec3 = (0.0, 0.0, 0.0)
     tilt_xyz_deg: Vec3 = (0.0, 0.0, 0.0)
+    # Tilt pivot in absolute model coordinates. None = tilt rotates the
+    # receiver in place around its own (post-offset) center - matches
+    # ComponentTransformRule.pivot's same default-to-own-center semantics.
+    # Unused by the ray-trace math itself (the frontend pre-resolves
+    # center/normal/u_axis/v_axis before sending the request); kept only so
+    # a saved receiver round-trips back into the editor correctly.
+    pivot: Optional[Vec3] = None
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -388,6 +395,8 @@ class ReceiverSpec:
             self.base_normal = normalize_vec3(self.base_normal, "base_normal")
         self.position_offset_mm = vec3_from(self.position_offset_mm, "position_offset_mm")
         self.tilt_xyz_deg = vec3_from(self.tilt_xyz_deg, "tilt_xyz_deg")
+        if self.pivot is not None:
+            self.pivot = vec3_from(self.pivot, "pivot")
 
     def bin_area_mm2(self) -> float:
         column_count, row_count = self.resolution

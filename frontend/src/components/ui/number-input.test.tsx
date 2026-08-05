@@ -15,8 +15,10 @@ afterEach(cleanup)
 
 function NumberInputHarness({
   initialValue = 0,
+  decimals,
 }: {
   initialValue?: number
+  decimals?: number
 }) {
   const [value, setValue] = useState(initialValue)
   return (
@@ -24,6 +26,7 @@ function NumberInputHarness({
       <NumberInput
         aria-label="Numeric value"
         value={value}
+        decimals={decimals}
         onValueChange={setValue}
       />
       <output aria-label="Committed value">{value}</output>
@@ -80,5 +83,33 @@ describe('NumberInput', () => {
 
     expect(input.value).toBe('0')
     expect(screen.getByLabelText('Committed value').textContent).toBe('0')
+  })
+
+  it('rounds a programmatically-set value to the given decimals for display', () => {
+    render(
+      <NumberInputHarness initialValue={231.99999999998317} decimals={1} />,
+    )
+    const input = screen.getByRole('spinbutton', {
+      name: 'Numeric value',
+    }) as HTMLInputElement
+
+    expect(input.value).toBe('232.0')
+  })
+
+  it('keeps full precision while typing, then rounds on blur', () => {
+    render(<NumberInputHarness decimals={1} />)
+    const input = screen.getByRole('spinbutton', {
+      name: 'Numeric value',
+    }) as HTMLInputElement
+
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: '12.3456' } })
+    expect(input.value).toBe('12.3456')
+
+    fireEvent.blur(input)
+    expect(input.value).toBe('12.3')
+    expect(screen.getByLabelText('Committed value').textContent).toBe(
+      '12.3',
+    )
   })
 })

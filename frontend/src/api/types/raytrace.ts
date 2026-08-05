@@ -67,6 +67,9 @@ export interface ReceiverSpec {
   base_normal: Vec3 | null
   position_offset_mm: Vec3
   tilt_xyz_deg: Vec3
+  /** Tilt pivot in absolute model coordinates. Null = tilt rotates the
+   *  receiver in place around its own (post-offset) center. */
+  pivot: Vec3 | null
   enabled: boolean
 }
 
@@ -108,6 +111,8 @@ export interface TransformRule {
   enabled: boolean
   move: AxisVector
   tilt: AxisVector
+  /** Tilt pivot in absolute model coordinates. Omitted = bounding-box center. */
+  pivot?: AxisVector
 }
 
 export type TerminationMode = 'threshold' | 'russian_roulette'

@@ -174,6 +174,18 @@ def build_transformed_mesh(
         )
         for component_id, bounds in component_bounds.items()
     }
+    for component_id, rule in enabled_rules.items():
+        # A rule-specified pivot overrides the bounding-box center default -
+        # must stay in sync with the same override in the frontend viewer
+        # (three-viewer-canvas.tsx resolveTransformPivot) or the ray-traced
+        # result will diverge from what the user sees in the preview.
+        pivot_override = rule.get("pivot")
+        if pivot_override:
+            pivots[component_id] = (
+                float(pivot_override.get("x", 0.0) or 0.0),
+                float(pivot_override.get("y", 0.0) or 0.0),
+                float(pivot_override.get("z", 0.0) or 0.0),
+            )
 
     mesh = TriangleMesh()
     for face_index, face in enumerate(faces):

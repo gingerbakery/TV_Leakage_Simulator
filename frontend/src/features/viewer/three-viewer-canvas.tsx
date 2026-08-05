@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   Box3,
+  BoxGeometry,
   BufferGeometry,
   CanvasTexture,
   Color,
@@ -26,8 +27,10 @@ import {
   OrthographicCamera,
   Plane,
   PerspectiveCamera,
+  Quaternion,
   Raycaster,
   Scene,
+  SphereGeometry,
   SRGBColorSpace,
   Sprite,
   SpriteMaterial,
@@ -128,6 +131,7 @@ interface ThreeViewerCanvasProps {
   editingComponentMode?: 'material' | 'transform' | null
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
+  onCameraPresetChange?(preset: ViewerCameraPreset): void
   onComponentContextMenu?(target: ViewerComponentContextTarget): void
   onRayObjectContextMenu?(target: ViewerRayObjectContextTarget): void
   onStatusMessage(message: string): void
@@ -158,10 +162,17 @@ interface ViewerRuntime {
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
   originAxisBaseScale: number
+  pipCamera: PerspectiveCamera
+  pipDistance: number
+  pipTarget: Vector3
+  pipUserAdjusted: boolean
+  pipViewportRect: { x: number; y: number; width: number; height: number } | null
+  pivotMarkerRoot: Group
   placementRoot: Group
   rayPathRoot: Group
   raycaster: Raycaster
   renderer: WebGLRenderer
+  roiBoundsMarker: Group
   roiSelectionCameraPose: CameraPose | null
   roiSelectionPreset: RoiCameraPreset | null
   roiSelectionRoot: Group
@@ -278,25 +289,6 @@ const roiCameraPresetConfig: Record<
     plane: 'zx',
     view: 'back_neg_zx',
   },
-}
-
-function nearestRoiCameraPreset(runtime: ViewerRuntime): RoiCameraPreset {
-  const cameraDirection = runtime.camera.position
-    .clone()
-    .sub(runtime.controls.target)
-    .normalize()
-  let nearest: RoiCameraPreset = 'XY'
-  let nearestDot = -Infinity
-  for (const [preset, config] of Object.entries(
-    roiCameraPresetConfig,
-  ) as [RoiCameraPreset, (typeof roiCameraPresetConfig)[RoiCameraPreset]][]) {
-    const dot = cameraDirection.dot(config.direction)
-    if (dot > nearestDot) {
-      nearest = preset
-      nearestDot = dot
-    }
-  }
-  return nearest
 }
 
 function surfaceDepthUnits(depthPriority: number): number {
@@ -767,6 +759,61 @@ function createOrientationGizmo(depthTest = false): Group {
   return gizmo
 }
 
+// Small sphere + 3-axis crosshair marking a picked/typed tilt pivot point,
+// so the user can see exactly where it sits in the model - drawn with
+// depthTest off (always on top) since a pivot buried inside solid geometry
+// would otherwise be invisible.
+function createPivotMarker(armLength: number): Group {
+  const marker = new Group()
+  marker.name = 'pivot-marker'
+  const color = 0xf472b6
+  const sphereMaterial = new MeshBasicMaterial({
+    color,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  })
+  const sphere = new Mesh(
+    new SphereGeometry(Math.max(armLength * 0.18, 1e-3), 16, 12),
+    sphereMaterial,
+  )
+  sphere.renderOrder = 220
+  marker.add(sphere)
+
+  const lineMaterial = new LineBasicMaterial({
+    color,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.9,
+    toneMapped: false,
+  })
+  const axisDirections = [
+    new Vector3(1, 0, 0),
+    new Vector3(0, 1, 0),
+    new Vector3(0, 0, 1),
+  ]
+  for (const direction of axisDirections) {
+    const positions = new Float32Array([
+      -direction.x * armLength,
+      -direction.y * armLength,
+      -direction.z * armLength,
+      direction.x * armLength,
+      direction.y * armLength,
+      direction.z * armLength,
+    ])
+    const geometry = new BufferGeometry()
+    geometry.setAttribute(
+      'position',
+      new Float32BufferAttribute(positions, 3),
+    )
+    const line = new LineSegments(geometry, lineMaterial)
+    line.renderOrder = 220
+    marker.add(line)
+  }
+  return marker
+}
+
 function clearGroup(group: Group | undefined): void {
   if (!group) return
   for (const child of [...group.children]) {
@@ -819,28 +866,61 @@ function faceOverlayMaterial(
   })
 }
 
+// Component geometry is baked with its local origin at `center` (the
+// component's own bounding-box center), and a Group only ever rotates
+// around its own local origin. So rotating around a different pivot P
+// means solving for the position that reproduces
+// worldPos = P + move + R*(originalWorld - P) given a fixed local vertex
+// (originalWorld - center): position = P + move + R*(center - P).
+// With no override (P = center) this reduces to `center + move`, i.e.
+// unchanged from the previous center-only behavior.
+function pivotAdjustedPosition(
+  center: Vector3,
+  pivot: Vector3,
+  move: Vector3,
+  rotation: Euler,
+): Vector3 {
+  const centerOffset = new Vector3()
+    .subVectors(center, pivot)
+    .applyEuler(rotation)
+  return new Vector3().copy(pivot).add(move).add(centerOffset)
+}
+
+function resolveTransformPivot(
+  rule: ComponentTransformRule,
+  fallbackCenter: Vector3,
+): Vector3 {
+  return rule.pivot
+    ? new Vector3(rule.pivot.x, rule.pivot.y, rule.pivot.z)
+    : fallbackCenter
+}
+
 function applyComponentTransform(
   node: ComponentRenderNode,
   transformRules: ComponentTransformRule[],
 ): void {
-  node.group.position.copy(node.center)
-  node.group.rotation.set(0, 0, 0)
-
   const rule = transformRules.find(
     (candidate) =>
       candidate.enabled &&
       candidate.componentId === node.component.component_id &&
       candidate.targetType === 'component',
   )
-  if (!rule) return
+  if (!rule) {
+    node.group.position.copy(node.center)
+    node.group.rotation.set(0, 0, 0)
+    return
+  }
 
-  node.group.position.add(
-    new Vector3(rule.move.x, rule.move.y, rule.move.z),
-  )
-  node.group.rotation.set(
+  const rotation = new Euler(
     MathUtils.degToRad(rule.tilt.x),
     MathUtils.degToRad(rule.tilt.y),
     MathUtils.degToRad(rule.tilt.z),
+  )
+  const pivot = resolveTransformPivot(rule, node.center)
+  const move = new Vector3(rule.move.x, rule.move.y, rule.move.z)
+  node.group.rotation.copy(rotation)
+  node.group.position.copy(
+    pivotAdjustedPosition(node.center, pivot, move, rotation),
   )
 }
 
@@ -866,19 +946,16 @@ function createRoiPointTransform(
         MathUtils.degToRad(rule.tilt.z),
       ),
     )
+    const pivot = resolveTransformPivot(rule, node.center)
     const matrix = new Matrix4()
       .makeTranslation(
-        node.center.x + rule.move.x,
-        node.center.y + rule.move.y,
-        node.center.z + rule.move.z,
+        pivot.x + rule.move.x,
+        pivot.y + rule.move.y,
+        pivot.z + rule.move.z,
       )
       .multiply(rotation)
       .multiply(
-        new Matrix4().makeTranslation(
-          -node.center.x,
-          -node.center.y,
-          -node.center.z,
-        ),
+        new Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z),
       )
     matrices.set(rule.componentId, matrix)
   }
@@ -950,6 +1027,53 @@ function fitCamera(
   runtime.camera.updateProjectionMatrix()
   runtime.controls.target.copy(center)
   runtime.controls.update()
+}
+
+// Rotates the camera's "up" vector around the current view axis (rather
+// than orbiting around the target), i.e. rolls the horizon. Used while ROI
+// box-drag is armed, where normal orbit is locked so a plain drag always
+// draws the box - Shift/Alt+drag still needs some way to reorient.
+function rollCamera(runtime: ViewerRuntime, angleRad: number): void {
+  const viewAxis = new Vector3()
+    .subVectors(runtime.camera.position, runtime.controls.target)
+    .normalize()
+  runtime.camera.up.applyAxisAngle(viewAxis, -angleRad).normalize()
+  runtime.camera.lookAt(runtime.controls.target)
+  runtime.controls.update()
+}
+
+// Free-orbits the PIP "Full View" camera around its fixed target - the PIP
+// has no TrackballControls instance of its own (it shares the main canvas
+// with the primary camera), so drags starting inside the PIP rect are
+// routed here instead.
+function orbitPipCamera(
+  runtime: ViewerRuntime,
+  dx: number,
+  dy: number,
+): void {
+  if (!dx && !dy) return
+  const camera = runtime.pipCamera
+  const target = runtime.pipTarget
+  const offset = new Vector3().subVectors(camera.position, target)
+  const yawQuat = new Quaternion().setFromAxisAngle(
+    camera.up.clone().normalize(),
+    -dx * 0.008,
+  )
+  offset.applyQuaternion(yawQuat)
+  camera.updateMatrixWorld()
+  const rightAxis = new Vector3()
+    .setFromMatrixColumn(camera.matrixWorld, 0)
+    .normalize()
+  if (rightAxis.lengthSq() > 1e-10) {
+    const pitchQuat = new Quaternion().setFromAxisAngle(
+      rightAxis,
+      -dy * 0.008,
+    )
+    offset.applyQuaternion(pitchQuat)
+    camera.up.applyQuaternion(pitchQuat).normalize()
+  }
+  camera.position.copy(target).add(offset)
+  camera.lookAt(target)
 }
 
 function restoreRoiSelectionCameraPose(
@@ -1096,6 +1220,7 @@ export function ThreeViewerCanvas({
   editingComponentMode,
   onRoiBoxSelection,
   onCameraFrameChange,
+  onCameraPresetChange,
   onComponentContextMenu,
   onRayObjectContextMenu,
   onStatusMessage,
@@ -1104,11 +1229,15 @@ export function ThreeViewerCanvas({
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
   const emitterFaceSelectionArmedRef = useRef(false)
+  const pivotPickArmedRef = useRef(false)
+  const datumFacePickArmedRef = useRef(false)
   const selectedFaceIdsRef = useRef<number[]>([])
+  const roiFaceIdsRef = useRef<number[]>(roiFaceIds)
   const selectedComponentIdsRef = useRef<number[]>([])
   const emittersRef = useRef<EmitterSpec[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
+  const onCameraPresetChangeRef = useRef(onCameraPresetChange)
   const onComponentContextMenuRef = useRef(onComponentContextMenu)
   const onRayObjectContextMenuRef = useRef(onRayObjectContextMenu)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
@@ -1122,6 +1251,15 @@ export function ThreeViewerCanvas({
   )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
+  )
+  const pivotPickArmed = useWorkspaceStore(
+    workspaceSelectors.pivotPickArmed,
+  )
+  const datumFacePickArmed = useWorkspaceStore(
+    workspaceSelectors.datumFacePickArmed,
+  )
+  const pivotPreviewPoint = useWorkspaceStore(
+    workspaceSelectors.pivotPreviewPoint,
   )
   const hiddenComponentIds = useWorkspaceStore(
     workspaceSelectors.hiddenComponentIds,
@@ -1156,8 +1294,20 @@ export function ThreeViewerCanvas({
   }, [emitterFaceSelectionArmed])
 
   useEffect(() => {
+    pivotPickArmedRef.current = pivotPickArmed
+  }, [pivotPickArmed])
+
+  useEffect(() => {
+    datumFacePickArmedRef.current = datumFacePickArmed
+  }, [datumFacePickArmed])
+
+  useEffect(() => {
     selectedFaceIdsRef.current = selectedFaceIds
   }, [selectedFaceIds])
+
+  useEffect(() => {
+    roiFaceIdsRef.current = roiFaceIds
+  }, [roiFaceIds])
 
   useEffect(() => {
     selectedComponentIdsRef.current = selectedComponentIds
@@ -1178,6 +1328,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     onCameraFrameChangeRef.current = onCameraFrameChange
   }, [onCameraFrameChange])
+
+  useEffect(() => {
+    onCameraPresetChangeRef.current = onCameraPresetChange
+  }, [onCameraPresetChange])
 
   useEffect(() => {
     onComponentContextMenuRef.current = onComponentContextMenu
@@ -1232,11 +1386,16 @@ export function ThreeViewerCanvas({
       100000,
     )
     camera.up.set(0, 0, 1)
+    // Fixed-angle camera for the "Full View" picture-in-picture inset shown
+    // in the corner while an ROI is active - independent of the main
+    // camera so the PIP always frames the whole model, not the ROI.
+    const pipCamera = new PerspectiveCamera(45, 1, 0.01, 100000)
+    pipCamera.up.set(0, 0, 1)
     const controls = new TrackballControls(camera, canvas)
     controls.staticMoving = true
-    controls.rotateSpeed = 1.15
+    controls.rotateSpeed = 2.3
     controls.zoomSpeed = 1.2
-    controls.panSpeed = 0.6
+    controls.panSpeed = 0.2
     controls.mouseButtons = {
       LEFT: MOUSE.ROTATE,
       MIDDLE: MOUSE.DOLLY,
@@ -1254,10 +1413,18 @@ export function ThreeViewerCanvas({
     const roiSelectionRoot = new Group()
     roiSelectionRoot.name = 'roi-selection-overlay-root'
     roiSelectionRoot.visible = false
+    const roiBoundsMarker = new Group()
+    roiBoundsMarker.name = 'roi-bounds-marker-root'
+    roiBoundsMarker.visible = false
+    const pivotMarkerRoot = new Group()
+    pivotMarkerRoot.name = 'pivot-marker-root'
+    pivotMarkerRoot.visible = false
     threeScene.add(
       modelRoot,
       roiPreviewRoot,
       roiSelectionRoot,
+      roiBoundsMarker,
+      pivotMarkerRoot,
       placementRoot,
       rayPathRoot,
     )
@@ -1319,10 +1486,17 @@ export function ThreeViewerCanvas({
       modelRoot,
       nodes,
       originAxisBaseScale,
+      pipCamera,
+      pipDistance: 0,
+      pipTarget: new Vector3(),
+      pipUserAdjusted: false,
+      pipViewportRect: null,
+      pivotMarkerRoot,
       placementRoot,
       rayPathRoot,
       raycaster: new Raycaster(),
       renderer,
+      roiBoundsMarker,
       roiSelectionCameraPose: null,
       roiSelectionPreset: null,
       roiSelectionRoot,
@@ -1392,6 +1566,84 @@ export function ThreeViewerCanvas({
       renderer.setScissorTest(true)
       renderer.render(orientationScene, orientationCamera)
       renderer.setScissorTest(false)
+
+      if (runtime.roiPreviewRoot.visible) {
+        const pipWidth = Math.min(
+          220,
+          Math.floor(viewportWidth * 0.34),
+        )
+        const pipHeight = Math.min(
+          160,
+          Math.floor(viewportHeight * 0.34),
+        )
+        if (pipWidth > 24 && pipHeight > 24) {
+          const pipMargin = 14
+          const pipX = viewportWidth - pipWidth - pipMargin
+          const pipY = pipMargin
+          runtime.pipViewportRect = {
+            x: pipX,
+            y: viewportHeight - pipY - pipHeight,
+            width: pipWidth,
+            height: pipHeight,
+          }
+
+          pipCamera.aspect = pipWidth / pipHeight
+          if (!runtime.pipUserAdjusted) {
+            runtime.modelRoot.updateMatrixWorld(true)
+            const fullBounds = new Box3().setFromObject(runtime.modelRoot)
+            if (!fullBounds.isEmpty()) {
+              const center = fullBounds.getCenter(new Vector3())
+              const size = fullBounds.getSize(new Vector3())
+              const maxDimension = Math.max(size.x, size.y, size.z, 1)
+              const verticalFov = MathUtils.degToRad(pipCamera.fov)
+              const horizontalFov =
+                2 *
+                Math.atan(
+                  Math.tan(verticalFov / 2) *
+                    Math.max(pipCamera.aspect, 0.1),
+                )
+              const distance =
+                Math.max(
+                  maxDimension / (2 * Math.tan(verticalFov / 2)),
+                  maxDimension / (2 * Math.tan(horizontalFov / 2)),
+                ) * 1.35
+              runtime.pipTarget.copy(center)
+              runtime.pipDistance = distance
+              pipCamera.position
+                .copy(center)
+                .addScaledVector(
+                  new Vector3(1, -1, 0.78).normalize(),
+                  distance,
+                )
+              pipCamera.up.set(0, 0, 1)
+              pipCamera.lookAt(center)
+            }
+          }
+          pipCamera.near = Math.max(runtime.pipDistance / 1000, 0.01)
+          pipCamera.far = Math.max(runtime.pipDistance * 20, 1000)
+          pipCamera.updateProjectionMatrix()
+
+          runtime.modelRoot.visible = true
+          runtime.roiPreviewRoot.visible = false
+          runtime.roiBoundsMarker.visible = true
+
+          renderer.setScissorTest(true)
+          renderer.setScissor(pipX, pipY, pipWidth, pipHeight)
+          renderer.setViewport(pipX, pipY, pipWidth, pipHeight)
+          renderer.clear(true, true, false)
+          renderer.render(threeScene, pipCamera)
+          renderer.setScissorTest(false)
+
+          runtime.modelRoot.visible = false
+          runtime.roiPreviewRoot.visible = true
+          runtime.roiBoundsMarker.visible = false
+        } else {
+          runtime.pipViewportRect = null
+        }
+      } else {
+        runtime.pipViewportRect = null
+      }
+
       animationFrame = window.requestAnimationFrame(animate)
     }
     animationFrame = window.requestAnimationFrame(animate)
@@ -1553,9 +1805,88 @@ export function ThreeViewerCanvas({
         ) {
           continue
         }
-        return { componentId, faceId }
+        const worldNormal = hit.face
+          ? hit.face.normal
+              .clone()
+              .transformDirection(hit.object.matrixWorld)
+          : null
+        return {
+          componentId,
+          faceId,
+          isRoiCap: hit.object.name === 'roi-section-caps',
+          normal: worldNormal
+            ? ([worldNormal.x, worldNormal.y, worldNormal.z] as [
+                number,
+                number,
+                number,
+              ])
+            : null,
+          point: [hit.point.x, hit.point.y, hit.point.z] as [
+            number,
+            number,
+            number,
+          ],
+        }
       }
       return null
+    }
+
+    // NX-style pivot point snapping: within a small on-screen radius of the
+    // click, prefer an edge endpoint (corner/intersection) first, then an
+    // edge midpoint, over the exact raycast point - a rotation pivot is
+    // almost always one of those two, rarely an arbitrary point on a face.
+    const pivotSnapToleranceCss = 22
+    const resolveEdgePivotSnap = (
+      clientX: number,
+      clientY: number,
+      componentId: number,
+    ): [number, number, number] | null => {
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return null
+
+      let bestPoint: [number, number, number] | null = null
+      let bestPriority = Infinity
+      let bestPixelDistance = Infinity
+
+      const consider = (point: [number, number, number], priority: number) => {
+        const projected = new Vector3(
+          point[0],
+          point[1],
+          point[2],
+        ).project(camera)
+        if (projected.z < -1 || projected.z > 1) return
+        const screenX = rect.left + (projected.x + 1) * 0.5 * rect.width
+        const screenY = rect.top + (1 - projected.y) * 0.5 * rect.height
+        const pixelDistance = Math.hypot(
+          screenX - clientX,
+          screenY - clientY,
+        )
+        if (pixelDistance > pivotSnapToleranceCss) return
+        if (
+          priority < bestPriority ||
+          (priority === bestPriority && pixelDistance < bestPixelDistance)
+        ) {
+          bestPoint = point
+          bestPriority = priority
+          bestPixelDistance = pixelDistance
+        }
+      }
+
+      for (const segment of scene.mesh.feature_edge_segments) {
+        if (segment.component_id !== componentId) continue
+        consider(segment.start, 0)
+        consider(segment.end, 0)
+        consider(
+          [
+            (segment.start[0] + segment.end[0]) / 2,
+            (segment.start[1] + segment.end[1]) / 2,
+            (segment.start[2] + segment.end[2]) / 2,
+          ],
+          1,
+        )
+      }
+
+      return bestPoint
     }
 
     const resolveRayObjectHit = (
@@ -1593,6 +1924,18 @@ export function ThreeViewerCanvas({
     let pointerDown: { x: number; y: number } | null = null
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
+    let rollDrag: { lastX: number } | null = null
+    let pipDrag: { lastX: number; lastY: number } | null = null
+    const pointInPipViewport = (point: { x: number; y: number }) => {
+      const rect = runtime.pipViewportRect
+      if (!rect) return false
+      return (
+        point.x >= rect.x &&
+        point.x <= rect.x + rect.width &&
+        point.y >= rect.y &&
+        point.y <= rect.y + rect.height
+      )
+    }
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button === 2) {
         rightPointerDown = { x: event.clientX, y: event.clientY }
@@ -1600,7 +1943,28 @@ export function ThreeViewerCanvas({
         return
       }
       if (event.button !== 0) return
+      if (
+        runtime.roiPreviewRoot.visible &&
+        pointInPipViewport(canvasPoint(event))
+      ) {
+        event.preventDefault()
+        pointerDown = null
+        pipDrag = { lastX: event.clientX, lastY: event.clientY }
+        runtime.pipUserAdjusted = true
+        canvas.setPointerCapture(event.pointerId)
+        return
+      }
       if (roiBoxSelectionArmedRef.current) {
+        // Shift/Alt+drag stays free to roll the camera even while armed -
+        // orbit is locked so a plain drag always draws the box, but the
+        // user still needs some way to reorient without disarming.
+        if (event.shiftKey || event.altKey) {
+          event.preventDefault()
+          pointerDown = null
+          rollDrag = { lastX: event.clientX }
+          canvas.setPointerCapture(event.pointerId)
+          return
+        }
         event.preventDefault()
         pointerDown = null
         const point = canvasPoint(event)
@@ -1626,6 +1990,21 @@ export function ThreeViewerCanvas({
         ) > 5
       ) {
         rightPointerMoved = true
+      }
+      if (rollDrag) {
+        const dx = event.clientX - rollDrag.lastX
+        rollDrag.lastX = event.clientX
+        rollCamera(runtime, dx * 0.012)
+        emitCameraFrame()
+        return
+      }
+      if (pipDrag) {
+        const dx = event.clientX - pipDrag.lastX
+        const dy = event.clientY - pipDrag.lastY
+        pipDrag.lastX = event.clientX
+        pipDrag.lastY = event.clientY
+        orbitPipCamera(runtime, dx, dy)
+        return
       }
       const selection = boxDragRef.current
       if (!selection) return
@@ -1653,6 +2032,20 @@ export function ThreeViewerCanvas({
         return
       }
       if (event.button !== 0) return
+      if (rollDrag) {
+        rollDrag = null
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId)
+        }
+        return
+      }
+      if (pipDrag) {
+        pipDrag = null
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId)
+        }
+        return
+      }
       const selection = boxDragRef.current
       if (selection) {
         const point = canvasPoint(event)
@@ -1694,6 +2087,126 @@ export function ThreeViewerCanvas({
 
       const hit = resolveSurfaceHit(event.clientX, event.clientY)
       const additive = event.ctrlKey || event.metaKey || event.shiftKey
+
+      if (pivotPickArmedRef.current) {
+        if (!hit) {
+          onStatusMessage(
+            'Pivot picking · 모델 표면을 클릭해 회전 기준점을 선택하세요.',
+          )
+          return
+        }
+        const snapped = resolveEdgePivotSnap(
+          event.clientX,
+          event.clientY,
+          hit.componentId,
+        )
+        const [x, y, z] = snapped ?? hit.point
+        actions.setPivotPickPoint({ x, y, z })
+        actions.setPivotPickArmed(false)
+        onStatusMessage(
+          snapped
+            ? `Pivot picking · edge 지점에 스냅 · (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`
+            : `Pivot picking · (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}) 선택됨`,
+        )
+        return
+      }
+
+      if (datumFacePickArmedRef.current) {
+        if (!hit) {
+          onStatusMessage(
+            'Datum face picking · 기구 도면의 face를 클릭하세요.',
+          )
+          return
+        }
+        if (hit.faceId === null) {
+          if (!hit.isRoiCap || !hit.normal) {
+            onStatusMessage(
+              'Datum face picking · 선택할 수 없는 표면입니다.',
+            )
+            return
+          }
+          // ROI section caps aren't original CAD faces (no faceId to
+          // flood-fill from), but they're still a valid, well-defined flat
+          // plane - offsetting a receiver from the cut plane is a normal
+          // workflow, so use the exact click point and the cap's plane
+          // normal directly instead of rejecting the pick outright.
+          const axisIndex = [0, 1, 2].reduce((best, axis) =>
+            Math.abs(hit.normal![axis]) > Math.abs(hit.normal![best])
+              ? axis
+              : best,
+          )
+          const snappedNormal: [number, number, number] = [0, 0, 0]
+          snappedNormal[axisIndex] = hit.normal[axisIndex] >= 0 ? 1 : -1
+          actions.setDatumFacePickResult({
+            center: { x: hit.point[0], y: hit.point[1], z: hit.point[2] },
+            normal: {
+              x: snappedNormal[0],
+              y: snappedNormal[1],
+              z: snappedNormal[2],
+            },
+          })
+          actions.setDatumFacePickArmed(false)
+          onStatusMessage(
+            'Datum face picking · ROI 절단면 선택됨 (클릭 지점 기준)',
+          )
+          return
+        }
+        const datumComponent = scene.components.find(
+          (candidate) => candidate.component_id === hit.componentId,
+        )
+        const componentFaceIds =
+          datumComponent?.face_indices ?? [hit.faceId]
+        // When an ROI clip is active, a face can be cut off mid-surface -
+        // the coplanar patch must stay within the faces actually included
+        // in the ROI, not flood-fill into the original (uncut) face and
+        // center on geometry the user can't even see right now.
+        const roiFaceIdSet = runtime.roiPreviewRoot.visible
+          ? new Set(roiFaceIdsRef.current)
+          : null
+        const candidateFaceIds = roiFaceIdSet
+          ? componentFaceIds.filter((faceId) => roiFaceIdSet.has(faceId))
+          : componentFaceIds
+        const patchFaceIds = findCoplanarFacePatch(
+          scene,
+          candidateFaceIds,
+          hit.faceId,
+        )
+        let weightedX = 0
+        let weightedY = 0
+        let weightedZ = 0
+        let totalArea = 0
+        for (const patchFaceId of patchFaceIds) {
+          const centroid = scene.mesh.face_centroids[patchFaceId]
+          const area = scene.mesh.face_areas_mm2[patchFaceId] ?? 0
+          if (!centroid || area <= 0) continue
+          weightedX += centroid[0] * area
+          weightedY += centroid[1] * area
+          weightedZ += centroid[2] * area
+          totalArea += area
+        }
+        const center =
+          totalArea > 0
+            ? [
+                weightedX / totalArea,
+                weightedY / totalArea,
+                weightedZ / totalArea,
+              ]
+            : hit.point
+        const normalVector = scene.mesh.face_normals[hit.faceId]
+        actions.setDatumFacePickResult({
+          center: { x: center[0], y: center[1], z: center[2] },
+          normal: {
+            x: normalVector[0],
+            y: normalVector[1],
+            z: normalVector[2],
+          },
+        })
+        actions.setDatumFacePickArmed(false)
+        onStatusMessage(
+          `Datum face picking · surface 중심 선택됨 (${patchFaceIds.length.toLocaleString()} triangles)`,
+        )
+        return
+      }
 
       if (!hit) {
         if (!additive) {
@@ -1764,15 +2277,94 @@ export function ThreeViewerCanvas({
           : `Viewer picking · Component ${componentId} · Face ${faceId}`,
       )
     }
-    const handleDoubleClick = () => {
+    const handleDoubleClick = (event: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      const point = {
+        x: Math.min(
+          Math.max(event.clientX - rect.left, 0),
+          Math.max(rect.width, 1),
+        ),
+        y: Math.min(
+          Math.max(event.clientY - rect.top, 0),
+          Math.max(rect.height, 1),
+        ),
+      }
+      if (runtime.roiPreviewRoot.visible && pointInPipViewport(point)) {
+        runtime.pipUserAdjusted = false
+        onStatusMessage('Full View PIP · 다시 전체 맞춤')
+        return
+      }
       fitCamera(runtime, 'Fit')
       emitCameraFrame()
       onStatusMessage('Camera preset · Fit')
+    }
+    const handlePipWheel = (event: WheelEvent) => {
+      if (!runtime.roiPreviewRoot.visible) return
+      const rect = canvas.getBoundingClientRect()
+      const point = {
+        x: Math.min(
+          Math.max(event.clientX - rect.left, 0),
+          Math.max(rect.width, 1),
+        ),
+        y: Math.min(
+          Math.max(event.clientY - rect.top, 0),
+          Math.max(rect.height, 1),
+        ),
+      }
+      if (!pointInPipViewport(point)) return
+      // Registered on the capture phase so this runs before
+      // TrackballControls' own wheel listener would otherwise zoom the
+      // main camera instead.
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      const camera = runtime.pipCamera
+      const offset = new Vector3().subVectors(
+        camera.position,
+        runtime.pipTarget,
+      )
+      const zoomFactor = Math.exp(event.deltaY * 0.001)
+      const minDistance = Math.max(runtime.originAxisBaseScale * 0.1, 1e-3)
+      const maxDistance = runtime.originAxisBaseScale * 1000
+      const nextDistance = MathUtils.clamp(
+        offset.length() * zoomFactor,
+        minDistance,
+        maxDistance,
+      )
+      offset.setLength(nextDistance)
+      camera.position.copy(runtime.pipTarget).add(offset)
+      runtime.pipDistance = nextDistance
+      runtime.pipUserAdjusted = true
+    }
+    let pointerOverCanvas = false
+    const handlePointerEnter = () => {
+      pointerOverCanvas = true
+    }
+    const handlePointerLeave = () => {
+      pointerOverCanvas = false
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'f') return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (!pointerOverCanvas) return
+      const activeTag = document.activeElement?.tagName
+      if (
+        activeTag === 'INPUT' ||
+        activeTag === 'TEXTAREA' ||
+        activeTag === 'SELECT'
+      ) {
+        return
+      }
+      event.preventDefault()
+      fitCamera(runtime, 'Fit')
+      emitCameraFrame()
+      onStatusMessage('Camera preset · Fit (F)')
     }
     const handlePointerCancel = () => {
       pointerDown = null
       rightPointerDown = null
       rightPointerMoved = false
+      rollDrag = null
+      pipDrag = null
       boxDragRef.current = null
       setBoxDrag(null)
     }
@@ -1859,6 +2451,13 @@ export function ThreeViewerCanvas({
     canvas.addEventListener('pointercancel', handlePointerCancel)
     canvas.addEventListener('dblclick', handleDoubleClick)
     canvas.addEventListener('contextmenu', handleContextMenu)
+    canvas.addEventListener('pointerenter', handlePointerEnter)
+    canvas.addEventListener('pointerleave', handlePointerLeave)
+    canvas.addEventListener('wheel', handlePipWheel, {
+      capture: true,
+      passive: false,
+    })
+    window.addEventListener('keydown', handleKeyDown)
 
     return () => {
       window.cancelAnimationFrame(animationFrame)
@@ -1869,6 +2468,12 @@ export function ThreeViewerCanvas({
       canvas.removeEventListener('pointercancel', handlePointerCancel)
       canvas.removeEventListener('dblclick', handleDoubleClick)
       canvas.removeEventListener('contextmenu', handleContextMenu)
+      canvas.removeEventListener('pointerenter', handlePointerEnter)
+      canvas.removeEventListener('pointerleave', handlePointerLeave)
+      canvas.removeEventListener('wheel', handlePipWheel, {
+        capture: true,
+      })
+      window.removeEventListener('keydown', handleKeyDown)
       controls.removeEventListener('end', emitCameraFrame)
       controls.dispose()
       disposeObject(threeScene)
@@ -1883,7 +2488,24 @@ export function ThreeViewerCanvas({
     if (!runtime) return
     fitCamera(runtime, cameraPreset)
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
-  }, [cameraPreset, cameraRequestId, scene])
+    if (
+      roiBoxSelectionArmed &&
+      Object.prototype.hasOwnProperty.call(
+        roiCameraPresetConfig,
+        cameraPreset,
+      )
+    ) {
+      // The armed-selection plane (which axis the drag box is unbounded
+      // on) follows whichever ROI preset is active - switching views
+      // mid-arm must update it too, or a box drawn from the new view
+      // gets resolved against the old view's plane.
+      const preset = cameraPreset as RoiCameraPreset
+      runtime.roiSelectionPreset = preset
+      onStatusMessage(
+        `ROI 박스 선택 · ${preset} view · 왼쪽 드래그로 범위를 지정하세요.`,
+      )
+    }
+  }, [cameraPreset, cameraRequestId, onStatusMessage, roiBoxSelectionArmed, scene])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -1893,6 +2515,24 @@ export function ThreeViewerCanvas({
       runtime.originAxisBaseScale * (axisScalePercent / 50),
     )
   }, [axisScalePercent])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.pivotMarkerRoot)
+    if (!pivotPreviewPoint) {
+      runtime.pivotMarkerRoot.visible = false
+      return
+    }
+    const marker = createPivotMarker(runtime.originAxisBaseScale * 0.6)
+    marker.position.set(
+      pivotPreviewPoint.x,
+      pivotPreviewPoint.y,
+      pivotPreviewPoint.z,
+    )
+    runtime.pivotMarkerRoot.add(marker)
+    runtime.pivotMarkerRoot.visible = true
+  }, [pivotPreviewPoint])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -1909,13 +2549,24 @@ export function ThreeViewerCanvas({
           target: runtime.controls.target.clone(),
           up: runtime.camera.up.clone(),
         }
-        runtime.roiSelectionPreset = nearestRoiCameraPreset(runtime)
+        // Always start ROI box selection from the top-down plan view
+        // rather than whichever axis happens to be nearest to the current
+        // camera angle - for thin/elongated models (e.g. a flat panel),
+        // "nearest" can land on a near-degenerate edge-on view that's
+        // useless for drawing a box, and users have no way to predict it.
+        runtime.roiSelectionPreset = 'XY'
       }
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
-      const preset =
-        runtime.roiSelectionPreset ?? nearestRoiCameraPreset(runtime)
+      const preset = runtime.roiSelectionPreset ?? 'XY'
       fitCamera(runtime, preset)
+      // The auto-snap-to-nearest-axis above moves the camera directly on
+      // the runtime without going through the cameraPreset prop, so the
+      // toolbar button/pill would otherwise keep showing whatever preset
+      // was active before arming (e.g. "Iso") while the view is actually
+      // locked to a different one - report the real preset back so the UI
+      // stays in sync.
+      onCameraPresetChangeRef.current?.(preset)
       onStatusMessage(
         `ROI 박스 선택 · ${preset} view · 왼쪽 드래그로 범위를 지정하세요.`,
       )
@@ -1931,6 +2582,51 @@ export function ThreeViewerCanvas({
     )
     const showRoiPreview =
       activeBoxScopes.length > 0 && !roiBoxSelectionArmed
+    if (!showRoiPreview) {
+      // Next time an ROI preview appears, reframe the PIP fresh instead of
+      // keeping wherever the user last dragged it.
+      runtime.pipUserAdjusted = false
+    }
+    // Wireframe box(es) marking where the active ROI sits within the full
+    // model - only ever rendered in the "Full View" PIP inset, not the
+    // main ROI-isolated view.
+    clearGroup(runtime.roiBoundsMarker)
+    for (const scope of activeBoxScopes) {
+      if (scope.components.length === 0) continue
+      const min = new Vector3(Infinity, Infinity, Infinity)
+      const max = new Vector3(-Infinity, -Infinity, -Infinity)
+      for (const component of scope.components) {
+        min.x = Math.min(min.x, component.bboxMin.x)
+        min.y = Math.min(min.y, component.bboxMin.y)
+        min.z = Math.min(min.z, component.bboxMin.z)
+        max.x = Math.max(max.x, component.bboxMax.x)
+        max.y = Math.max(max.y, component.bboxMax.y)
+        max.z = Math.max(max.z, component.bboxMax.z)
+      }
+      if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) continue
+      const size = new Vector3().subVectors(max, min)
+      const center = new Vector3().addVectors(min, max).multiplyScalar(0.5)
+      const boxGeometry = new BoxGeometry(
+        Math.max(size.x, 1e-3),
+        Math.max(size.y, 1e-3),
+        Math.max(size.z, 1e-3),
+      )
+      const markerEdges = new EdgesGeometry(boxGeometry)
+      boxGeometry.dispose()
+      const marker = new LineSegments(
+        markerEdges,
+        new LineBasicMaterial({
+          color: 0xfacc15,
+          transparent: true,
+          opacity: 0.95,
+          depthTest: false,
+        }),
+      )
+      marker.position.copy(center)
+      marker.renderOrder = 200
+      runtime.roiBoundsMarker.add(marker)
+    }
+
     const roiPointTransform = createRoiPointTransform(
       runtime,
       transformRules,
@@ -3024,12 +3720,19 @@ export function ThreeViewerCanvas({
             depthWrite: false,
           }),
         )
-        overlay.position.set(rule.move.x, rule.move.y, rule.move.z)
-        overlay.rotation.set(
-          MathUtils.degToRad(rule.tilt.x),
-          MathUtils.degToRad(rule.tilt.y),
-          MathUtils.degToRad(rule.tilt.z),
-        )
+        {
+          const rotation = new Euler(
+            MathUtils.degToRad(rule.tilt.x),
+            MathUtils.degToRad(rule.tilt.y),
+            MathUtils.degToRad(rule.tilt.z),
+          )
+          const pivot = resolveTransformPivot(rule, node.center)
+          const move = new Vector3(rule.move.x, rule.move.y, rule.move.z)
+          overlay.rotation.copy(rotation)
+          overlay.position.copy(
+            pivotAdjustedPosition(node.center, pivot, move, rotation),
+          )
+        }
         overlay.renderOrder = 3
         node.transformOverlayRoot.add(overlay)
       }
@@ -3105,6 +3808,10 @@ export function ThreeViewerCanvas({
     )
   }, [onStatusMessage, rayPathDisplayFilters, rayTraceResult])
 
+  const showFullViewPip =
+    !roiBoxSelectionArmed &&
+    roiScopes.some((scope) => scope.active && scope.clipBox)
+
   return (
     <div
       className="absolute inset-0 overflow-hidden rounded-[inherit]"
@@ -3116,6 +3823,8 @@ export function ThreeViewerCanvas({
           roiBoxSelectionArmed ? 'cursor-crosshair' : ''
         } ${
           emitterFaceSelectionArmed ? 'cursor-crosshair' : ''
+        } ${pivotPickArmed ? 'cursor-crosshair' : ''} ${
+          datumFacePickArmed ? 'cursor-crosshair' : ''
         }`}
         aria-label="Interactive 3D CAD viewer"
         aria-describedby="three-viewer-controls"
@@ -3133,6 +3842,22 @@ export function ThreeViewerCanvas({
             height: Math.abs(boxDrag.currentY - boxDrag.startY),
           }}
         />
+      ) : null}
+      {showFullViewPip ? (
+        <div
+          data-testid="full-view-pip-frame"
+          className="pointer-events-none absolute z-10 overflow-hidden rounded-md border border-border/70 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+          style={{
+            right: 14,
+            bottom: 14,
+            width: 'min(220px, 34%)',
+            height: 'min(160px, 34%)',
+          }}
+        >
+          <span className="absolute top-1 left-1.5 rounded bg-background/70 px-1 py-0.5 text-[0.6rem] font-medium tracking-wide text-muted-foreground">
+            Full View
+          </span>
+        </div>
       ) : null}
       <div
         id="three-viewer-controls"

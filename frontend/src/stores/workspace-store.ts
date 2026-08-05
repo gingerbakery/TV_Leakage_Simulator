@@ -18,6 +18,14 @@ export interface Vector3Value {
   z: number
 }
 
+/** A face clicked in the viewer while "pick CAD face" is armed, for either
+ * an Emitter or a Receiver's Datum Plane mode - both just want a starting
+ * point + normal to seed their own Center/Rotation fields with. */
+export interface DatumFacePickResult {
+  center: Vector3Value
+  normal: Vector3Value
+}
+
 export type MaterialTargetType = 'part' | 'faces'
 
 export interface MaterialAssignment {
@@ -43,6 +51,9 @@ export interface ComponentTransformRule {
   faceIds: number[]
   move: Vector3Value
   tilt: Vector3Value
+  /** Tilt pivot point in absolute model coordinates. Null/undefined = the
+   *  target's own bounding-box center (previous, still-default behavior). */
+  pivot?: Vector3Value | null
   enabled: boolean
 }
 
@@ -132,6 +143,14 @@ export interface WorkspaceSnapshot {
   roiScopeSequence: number
   roiBoxSelectionArmed: boolean
   emitterFaceSelectionArmed: boolean
+  pivotPickArmed: boolean
+  pivotPickPoint: Vector3Value | null
+  /** Where the Transform editor's tilt pivot currently sits, so the
+   *  viewer can mark it while the dialog is open - cleared once the
+   *  dialog closes or leaves custom-pivot mode. */
+  pivotPreviewPoint: Vector3Value | null
+  datumFacePickArmed: boolean
+  datumFacePickResult: DatumFacePickResult | null
   roiDraftLabel: string
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
@@ -182,6 +201,11 @@ export interface WorkspaceActions {
   clearRoiScopes(): void
   setRoiBoxSelectionArmed(armed: boolean): void
   setEmitterFaceSelectionArmed(armed: boolean): void
+  setPivotPickArmed(armed: boolean): void
+  setPivotPickPoint(point: Vector3Value | null): void
+  setPivotPreviewPoint(point: Vector3Value | null): void
+  setDatumFacePickArmed(armed: boolean): void
+  setDatumFacePickResult(result: DatumFacePickResult | null): void
   setRoiDraftLabel(label: string): void
   upsertEmitter(emitter: EmitterSpec): void
   setEmitterRayCount(rayCount: number): void
@@ -258,6 +282,7 @@ function normalizeTransformRule(
     faceIds: normalizeIds(rule.faceIds),
     move: normalizeVector(rule.move),
     tilt: normalizeVector(rule.tilt),
+    pivot: rule.pivot ? normalizeVector(rule.pivot) : rule.pivot,
   }
 }
 
@@ -483,6 +508,11 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     roiScopeSequence: 0,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    pivotPickArmed: false,
+    pivotPickPoint: null,
+    pivotPreviewPoint: null,
+    datumFacePickArmed: false,
+    datumFacePickResult: null,
     roiDraftLabel: '',
     emitters: [],
     receivers: [],
@@ -732,6 +762,21 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       setEmitterFaceSelectionArmed: (emitterFaceSelectionArmed) => {
         set({ emitterFaceSelectionArmed })
       },
+      setPivotPickArmed: (pivotPickArmed) => {
+        set({ pivotPickArmed })
+      },
+      setPivotPickPoint: (pivotPickPoint) => {
+        set({ pivotPickPoint })
+      },
+      setPivotPreviewPoint: (pivotPreviewPoint) => {
+        set({ pivotPreviewPoint })
+      },
+      setDatumFacePickArmed: (datumFacePickArmed) => {
+        set({ datumFacePickArmed })
+      },
+      setDatumFacePickResult: (datumFacePickResult) => {
+        set({ datumFacePickResult })
+      },
       setRoiDraftLabel: (roiDraftLabel) => {
         set({ roiDraftLabel })
       },
@@ -863,6 +908,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           selectedComponentIds: [],
           roiBoxSelectionArmed: false,
           emitterFaceSelectionArmed: false,
+          pivotPickArmed: false,
+          pivotPickPoint: null,
+          pivotPreviewPoint: null,
+          datumFacePickArmed: false,
+          datumFacePickResult: null,
           roiDraftLabel: '',
           placementPreviewEmitter: null,
           placementPreviewReceiver: null,
@@ -907,6 +957,16 @@ export const workspaceSelectors = {
     state.roiBoxSelectionArmed,
   emitterFaceSelectionArmed: (state: WorkspaceStore) =>
     state.emitterFaceSelectionArmed ?? false,
+  pivotPickArmed: (state: WorkspaceStore) =>
+    state.pivotPickArmed ?? false,
+  pivotPickPoint: (state: WorkspaceStore) =>
+    state.pivotPickPoint ?? null,
+  pivotPreviewPoint: (state: WorkspaceStore) =>
+    state.pivotPreviewPoint ?? null,
+  datumFacePickArmed: (state: WorkspaceStore) =>
+    state.datumFacePickArmed ?? false,
+  datumFacePickResult: (state: WorkspaceStore) =>
+    state.datumFacePickResult ?? null,
   roiDraftLabel: (state: WorkspaceStore) => state.roiDraftLabel,
   emitters: (state: WorkspaceStore) => state.emitters ?? [],
   receivers: (state: WorkspaceStore) => state.receivers ?? [],

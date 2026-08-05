@@ -60,6 +60,18 @@ const cameraPresets: ViewerCameraPreset[] = [
   'ZX',
   '-ZX',
 ]
+// While ROI box-drag is armed, orbit is locked to keep drag = draw-box,
+// but switching between the axis views still needs to work (matches the
+// six RoiCameraPreset planes). Fit/Iso aren't valid ROI projection planes,
+// so they stay disabled to avoid drawing a box against an undefined axis.
+const roiArmedUsablePresets = new Set<ViewerCameraPreset>([
+  'XY',
+  '-XY',
+  'YZ',
+  '-YZ',
+  'ZX',
+  '-ZX',
+])
 const renderModes: ViewerRenderMode[] = [
   'Wireframe',
   'Surface',
@@ -333,8 +345,12 @@ export function ViewerWorkspace({
                   variant={
                     cameraPreset === preset ? 'secondary' : 'ghost'
                   }
-                  disabled={roiBoxSelectionArmed}
+                  disabled={
+                    roiBoxSelectionArmed &&
+                    !roiArmedUsablePresets.has(preset)
+                  }
                   aria-pressed={cameraPreset === preset}
+                  title={preset === 'Fit' ? 'Fit view (F)' : preset}
                   onClick={() => {
                     setCameraPreset(preset)
                     setCameraRequestId((requestId) => requestId + 1)
@@ -576,6 +592,7 @@ export function ViewerWorkspace({
                     editingComponentMode={editingComponentMode}
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
+                    onCameraPresetChange={setCameraPreset}
                     onComponentContextMenu={(target) => {
                       setRayObjectContextTarget(null)
                       setContextTarget(target)

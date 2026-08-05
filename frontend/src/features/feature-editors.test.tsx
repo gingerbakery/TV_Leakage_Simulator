@@ -482,9 +482,138 @@ describe('Step 07·08 feature editors', () => {
         targetType: 'component',
         move: { x: 2.5, y: 0, z: 0 },
         tilt: { x: 5, y: 0, z: 0 },
+        pivot: null,
       }),
     ])
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('creates a component transform rule with a custom tilt pivot', () => {
+    const component = createSceneFixture().components[0]
+    const onOpenChange = vi.fn()
+    render(
+      <TransformEditorDialog
+        open
+        onOpenChange={onOpenChange}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Custom point' }),
+    )
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Pivot x' }), {
+      target: { value: '10' },
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Pivot y' }), {
+      target: { value: '20' },
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Pivot z' }), {
+      target: { value: '0' },
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Rz' }), {
+      target: { value: '90' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Apply transform' }),
+    )
+
+    expect(workspaceStore.getState().transformRules).toEqual([
+      expect.objectContaining({
+        ruleId: 'transform-component-1',
+        componentId: 1,
+        tilt: { x: 0, y: 0, z: 90 },
+        pivot: { x: 10, y: 20, z: 0 },
+      }),
+    ])
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('adopts a viewer-picked point as the tilt pivot', () => {
+    const component = createSceneFixture().components[0]
+    render(
+      <TransformEditorDialog
+        open
+        onOpenChange={() => {}}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Custom point' }),
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: '뷰어에서 좌표 선택' }),
+    )
+    expect(workspaceStore.getState().pivotPickArmed).toBe(true)
+
+    // Simulate what ThreeViewerCanvas does on a real surface click: write
+    // the picked point to the store and disarm - the dialog has no direct
+    // reference to the viewer, so this is the only channel between them.
+    act(() => {
+      workspaceStore
+        .getState()
+        .actions.setPivotPickPoint({ x: 12, y: -4, z: 6 })
+      workspaceStore.getState().actions.setPivotPickArmed(false)
+    })
+
+    expect(
+      (screen.getByRole('spinbutton', { name: 'Pivot x' }) as HTMLInputElement)
+        .value,
+    ).toBe('12.0')
+    expect(
+      (screen.getByRole('spinbutton', { name: 'Pivot y' }) as HTMLInputElement)
+        .value,
+    ).toBe('-4.0')
+    expect(
+      (screen.getByRole('spinbutton', { name: 'Pivot z' }) as HTMLInputElement)
+        .value,
+    ).toBe('6.0')
+    // The point must be consumed exactly once, not left sitting in the
+    // store where a later-opened dialog could pick it up unexpectedly.
+    expect(workspaceStore.getState().pivotPickPoint).toBeNull()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Apply transform' }),
+    )
+    expect(workspaceStore.getState().transformRules).toEqual([
+      expect.objectContaining({
+        ruleId: 'transform-component-1',
+        pivot: { x: 12, y: -4, z: 6 },
+      }),
+    ])
+  })
+
+  it('disarms pivot picking when the dialog is closed mid-pick', () => {
+    const component = createSceneFixture().components[0]
+    const { rerender } = render(
+      <TransformEditorDialog
+        open
+        onOpenChange={() => {}}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Custom point' }),
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: '뷰어에서 좌표 선택' }),
+    )
+    expect(workspaceStore.getState().pivotPickArmed).toBe(true)
+
+    rerender(
+      <TransformEditorDialog
+        open={false}
+        onOpenChange={() => {}}
+        component={component}
+        componentName="Cover Deco"
+      />,
+    )
+
+    expect(workspaceStore.getState().pivotPickArmed).toBe(false)
   })
 
   it('creates Emitter and Current View Receiver contracts for Step 10', () => {
@@ -523,14 +652,14 @@ describe('Step 07·08 feature editors', () => {
       { target: { value: '2500' } },
     )
     fireEvent.change(
-      screen.getByRole('spinbutton', { name: 'Center X' }),
+      screen.getByRole('spinbutton', { name: 'Emitter center X' }),
       { target: { value: '12.5' } },
     )
     expect(workspaceStore.getState().placementPreviewEmitter?.center).toEqual(
       [12.5, 30, 10],
     )
     fireEvent.keyDown(
-      screen.getByRole('spinbutton', { name: 'Center X' }),
+      screen.getByRole('spinbutton', { name: 'Emitter center X' }),
       { key: 'Enter' },
     )
     expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
@@ -606,7 +735,7 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', { name: 'Emitter rays' }),
     ).toHaveProperty('value', '2500')
     expect(
-      screen.getByRole('spinbutton', { name: 'Center X' }),
+      screen.getByRole('spinbutton', { name: 'Emitter center X' }),
     ).toHaveProperty('value', '12.5')
     fireEvent.change(
       screen.getByRole('spinbutton', { name: 'Emitter rays' }),
@@ -637,12 +766,12 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', {
         name: 'Receiver center X',
       }),
-    ).toHaveProperty('value', '10')
+    ).toHaveProperty('value', '10.0')
     expect(
       screen.getByRole('spinbutton', {
         name: 'Receiver tilt Z',
       }),
-    ).toHaveProperty('value', '0')
+    ).toHaveProperty('value', '0.0')
     fireEvent.change(
       screen.getByRole('spinbutton', {
         name: 'Receiver width (mm)',

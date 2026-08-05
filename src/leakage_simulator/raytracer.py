@@ -67,6 +67,7 @@ class DirectRayTraceInput:
 @dataclass(slots=True)
 class ReceiverFrame:
     receiver: ReceiverSpec
+    normal: Vec3
     u_axis: Vec3
     v_axis: Vec3
     half_width: float
@@ -1586,11 +1587,22 @@ def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
         "columns": columns,
         "rows": rows,
     }
+    # normal_flip mirrors EmitterSpec.normal_flip's handling in
+    # _sample_*_emitter_ray - the receiving side is decided here (not on
+    # the frontend), so the flip has to be applied to the same normal the
+    # hit test actually uses, not just to whatever gets displayed in the
+    # placement preview.
+    def flipped(normal: Vec3) -> Vec3:
+        return vec_mul(normal, -1.0) if receiver.normal_flip else normal
+
     if receiver.u_axis is not None and receiver.v_axis is not None:
+        u_axis = vec_norm(receiver.u_axis)
+        v_axis = vec_norm(receiver.v_axis)
         return ReceiverFrame(
             receiver=receiver,
-            u_axis=vec_norm(receiver.u_axis),
-            v_axis=vec_norm(receiver.v_axis),
+            normal=flipped(vec_norm(receiver.normal)),
+            u_axis=u_axis,
+            v_axis=v_axis,
             **frame_fields,
         )
     normal = vec_norm(receiver.normal)
@@ -1601,6 +1613,7 @@ def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
     v_axis = vec_norm(vec_cross(normal, u_axis))
     return ReceiverFrame(
         receiver=receiver,
+        normal=flipped(normal),
         u_axis=u_axis,
         v_axis=v_axis,
         **frame_fields,
@@ -1812,7 +1825,7 @@ def _find_first_receiver_hit(
     direction_x, direction_y, direction_z = direction
     for frame in receivers:
         receiver = frame.receiver
-        normal_x, normal_y, normal_z = receiver.normal
+        normal_x, normal_y, normal_z = frame.normal
         denom = (
             direction_x * normal_x
             + direction_y * normal_y
@@ -1879,7 +1892,7 @@ def _find_first_receiver_hit(
             column=col,
             received_power_lumen=received_power,
             point=(point_x, point_y, point_z),
-            normal=receiver.normal,
+            normal=frame.normal,
             distance_mm=t,
             incoming_power_lumen=power_lumen,
             receiver_id=receiver.receiver_id,

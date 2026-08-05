@@ -62,6 +62,42 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertAlmostEqual(mesh.face_vertices(0)[0][0], 4.0)
         self.assertAlmostEqual(mesh.face_vertices(0)[0][1], 2.0)
 
+    def test_component_rotation_honors_pivot_override(self) -> None:
+        scene_mesh = {
+            "vertices": [
+                [0.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+            "faces": [[0, 1, 2]],
+            "face_component_ids": [7],
+            "face_material_ids": ["default"],
+        }
+
+        mesh = build_transformed_mesh(
+            scene_mesh,
+            [{
+                "target_type": "component",
+                "object_id": 7,
+                "enabled": True,
+                "move": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "tilt": {"x": 0.0, "y": 0.0, "z": 180.0},
+                # Pivot at the origin instead of the bbox center (2, 1, 0) -
+                # must change the result from the bbox-center-pivot test
+                # above, and stay in sync with the frontend viewer's same
+                # override (three-viewer-canvas.tsx resolveTransformPivot).
+                "pivot": {"x": 0.0, "y": 0.0, "z": 0.0},
+            }],
+        )
+
+        # Vertex (0, 0, 0) sits exactly on the pivot, so it must stay fixed.
+        self.assertAlmostEqual(mesh.face_vertices(0)[0][0], 0.0)
+        self.assertAlmostEqual(mesh.face_vertices(0)[0][1], 0.0)
+        # Vertex (4, 0, 0) rotates 180 degrees around the origin, not the
+        # bbox center - so it lands at (-4, 0, 0), not (0, 2, 0).
+        self.assertAlmostEqual(mesh.face_vertices(0)[1][0], -4.0)
+        self.assertAlmostEqual(mesh.face_vertices(0)[1][1], 0.0)
+
     def test_direct_input_requires_emitter_and_receiver(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least one emitter"):
             build_direct_trace_input(self.scene_mesh, {"emitters": [], "receivers": []})

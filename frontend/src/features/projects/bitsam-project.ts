@@ -176,6 +176,9 @@ function isTransformRule(
     isIdArray(value.faceIds) &&
     isVector3Value(value.move) &&
     isVector3Value(value.tilt) &&
+    (value.pivot === undefined ||
+      value.pivot === null ||
+      isVector3Value(value.pivot)) &&
     isBoolean(value.enabled)
   )
 }

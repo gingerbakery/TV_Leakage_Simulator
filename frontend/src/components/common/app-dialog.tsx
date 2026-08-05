@@ -88,10 +88,13 @@ export function AppDialog({
     const panelWidth =
       contentRef.current?.getBoundingClientRect().width ?? 340
     setPosition({
+      // Default to the right edge of the viewer instead of the left, so
+      // the panel doesn't immediately sit over the model - still just a
+      // starting position, dragging (below) moves it freely afterward.
       x: Math.max(
         floatingPanelGap,
         Math.min(
-          viewerBounds.left + floatingPanelGap,
+          viewerBounds.right - panelWidth - floatingPanelGap,
           window.innerWidth - panelWidth - floatingPanelGap,
         ),
       ),
