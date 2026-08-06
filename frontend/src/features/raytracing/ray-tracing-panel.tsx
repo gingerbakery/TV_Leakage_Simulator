@@ -71,6 +71,7 @@ const currentViewDefaultDistanceMm = 30
 const inputClassName =
   'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 const fieldLabelClassName = 'space-y-1 text-[0.68rem] font-medium'
+const fieldHintClassName = 'text-[0.62rem] leading-4 font-normal text-muted-foreground'
 
 function sceneCenter(scene: ScenePayload | undefined): Vec3 {
   if (!scene || scene.components.length === 0) return [0, 0, 0]
@@ -99,6 +100,7 @@ function NumberField({
   step = 'any',
   decimals,
   disabled = false,
+  description,
 }: {
   label: string
   ariaLabel?: string
@@ -109,6 +111,7 @@ function NumberField({
   step?: number | 'any'
   decimals?: number
   disabled?: boolean
+  description?: string
 }) {
   return (
     <label className={fieldLabelClassName}>
@@ -124,6 +127,9 @@ function NumberField({
         disabled={disabled}
         onValueChange={onChange}
       />
+      {description ? (
+        <p className={fieldHintClassName}>{description}</p>
+      ) : null}
     </label>
   )
 }
@@ -1322,8 +1328,8 @@ export function RayTracingPanel({
           <Activity className="size-3.5" />
           Run options
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="col-span-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+        <div className="grid grid-cols-1 gap-2.5">
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
             <NumberField
               label="Emitter rays"
               ariaLabel="Run option emitter rays"
@@ -1334,14 +1340,13 @@ export function RayTracingPanel({
               onChange={(value) =>
                 actions.setEmitterRayCount(value)
               }
+              description={
+                (hasMixedEmitterRayCounts
+                  ? 'Emitter별 Ray 수가 서로 다릅니다. 값을 변경하면 모든 Emitter에 동일하게 적용됩니다. '
+                  : 'Emitter 하나당 발사할 ray 개수 - 모든 등록 Emitter에 동일하게 적용됩니다. ') +
+                `활성 Emitter 총합 ${enabledEmitterRayCount.toLocaleString()} rays.`
+              }
             />
-            <p className="mt-1.5 text-[0.62rem] leading-4 text-muted-foreground">
-              {hasMixedEmitterRayCounts
-                ? 'Emitter별 Ray 수가 서로 다릅니다. 값을 변경하면 모든 Emitter에 동일하게 적용됩니다. '
-                : '모든 등록 Emitter에 동일하게 적용됩니다. '}
-              활성 Emitter 총합{' '}
-              {enabledEmitterRayCount.toLocaleString()} rays
-            </p>
           </div>
           <NumberField
             label={`Max reflections (0-${maxReflectionDepth})`}
@@ -1353,6 +1358,7 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_depth: Math.trunc(value) })
             }
+            description="반사를 최대 몇 번까지 추적할지 (0 = 직접광만, 반사 없음). 클수록 정확하지만 계산이 느려집니다 - quick 체크는 1, 일반 비교는 3, 밀폐된 고반사 경로는 10, 수렴성 확인 목적일 때만 20을 권장합니다."
           />
           <NumberField
             label="Random seed"
@@ -1360,6 +1366,7 @@ export function RayTracingPanel({
             step={1}
             disabled={isRunning}
             onChange={(value) => updateConfig({ seed: Math.trunc(value) })}
+            description="Monte Carlo 샘플링에 쓰는 난수 시드 - 같은 값이면 항상 동일한 ray 시퀀스로 재현 가능한 결과를 얻습니다."
           />
           <NumberField
             label="Minimum energy"
@@ -1367,6 +1374,7 @@ export function RayTracingPanel({
             min={0}
             disabled={isRunning}
             onChange={(value) => updateConfig({ min_energy: value })}
+            description="반사광 세기(lm)가 이 값 아래로 떨어지면 종료 대상이 됩니다 - 실제 종료 방식은 아래 Termination 설정을 따릅니다."
           />
           <NumberField
             label="Max stored paths"
@@ -1378,6 +1386,7 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_stored_paths: Math.trunc(value) })
             }
+            description="3D Viewer·Ray Section View에 표시할 ray path를 최대 몇 개까지 저장할지 - Receiver hits 등 통계 결과에는 영향을 주지 않습니다."
           />
           <label className={fieldLabelClassName}>
             <span>Termination</span>
@@ -1398,6 +1407,12 @@ export function RayTracingPanel({
               <option value="threshold">Energy threshold</option>
               <option value="russian_roulette">Russian roulette</option>
             </select>
+            <p className={fieldHintClassName}>
+              Energy threshold: Minimum energy 미만이면 즉시 종료합니다.
+              Russian roulette: 즉시 끊는 대신 확률적으로 생존시키고
+              생존한 ray는 에너지를 보정해, 통계적 편향 없이 계산량을
+              줄입니다.
+            </p>
           </label>
           <label className={fieldLabelClassName}>
             <span>Contribution</span>
@@ -1418,15 +1433,16 @@ export function RayTracingPanel({
               <option value="summary">Fast summary</option>
               <option value="detailed">Detailed</option>
             </select>
+            <p className={fieldHintClassName}>
+              Fast summary: 집계 통계만 빠르게 계산합니다. Detailed: face별
+              기여도까지 추적해 상세 분석이 가능하지만 더 오래 걸립니다.
+            </p>
           </label>
         </div>
-        <p className="text-[0.68rem] leading-relaxed text-muted-foreground">
-          1 for quick checks, 3 for general comparison, 10 for enclosed
-          high-reflectance paths, and 20 only for convergence checks.
-        </p>
-        <label className="flex items-center gap-2 text-xs">
+        <label className="flex items-start gap-2 text-xs">
           <input
             type="checkbox"
+            className="mt-0.5"
             checked={config.store_ray_paths}
             disabled={isRunning}
             onChange={(event) =>
@@ -1435,7 +1451,14 @@ export function RayTracingPanel({
               })
             }
           />
-          Store hit ray paths for Step 11 Viewer overlay
+          <span>
+            Store hit ray paths for Step 11 Viewer overlay
+            <span className={`block ${fieldHintClassName}`}>
+              꺼두면 위 Max stored paths 설정과 무관하게 ray path를 저장하지
+              않아 계산이 조금 더 빨라집니다 (3D Viewer·Ray Section View의
+              ray 표시는 비활성화됩니다).
+            </span>
+          </span>
         </label>
       </section>
 
