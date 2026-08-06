@@ -47,7 +47,7 @@ type ComponentDialogType = 'material' | 'transform' | 'delete'
 
 export function SimulatorShell() {
   const [activeSection, setActiveSection] =
-    useState<WorkflowSectionId>('components')
+    useState<WorkflowSectionId>('model-import')
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)

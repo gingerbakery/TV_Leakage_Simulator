@@ -16,6 +16,28 @@ export interface ViewerGeometryBundle {
   geometry: BufferGeometry
 }
 
+export const componentColorPalette = [
+  0x64748b, 0x526b7a, 0x475569, 0x5b6473, 0x45606d, 0x667085,
+]
+
+/**
+ * CAD-authored component color (e.g. NX body color, carried through STEP
+ * product structure) wins when present; otherwise cycles the fallback
+ * palette by component index. Shared between the interactive viewer and
+ * the static report renders so a component reads as the same color in
+ * both places.
+ */
+export function resolveComponentColor(
+  component: SceneComponent | undefined,
+  index: number,
+): number {
+  if (component?.color) {
+    const parsed = Number.parseInt(component.color.replace('#', ''), 16)
+    if (!Number.isNaN(parsed)) return parsed
+  }
+  return componentColorPalette[Math.max(0, index) % componentColorPalette.length]
+}
+
 function componentCenter(component: SceneComponent): Vector3 {
   return new Vector3(
     (component.bbox_min[0] + component.bbox_max[0]) / 2,

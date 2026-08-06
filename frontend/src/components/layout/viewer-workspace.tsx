@@ -657,6 +657,8 @@ export function ViewerWorkspace({
           <RayTraceResultWindow
             open={rayTraceResultOpen}
             result={rayTraceResult ?? null}
+            scene={scene}
+            roiFaceIds={activeRoiFaceIds}
             onOpenChange={(open) =>
               onRayTraceResultOpenChange?.(open)
             }

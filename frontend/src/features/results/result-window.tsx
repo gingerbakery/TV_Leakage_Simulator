@@ -9,6 +9,7 @@ import type {
   RayTraceResult,
   ReceiverGrid,
   ReceiverSpec,
+  ScenePayload,
 } from '@/api'
 import {
   Activity,
@@ -34,6 +35,7 @@ import {
   zoomReceiverHeatmapViewport,
   type ReceiverHeatmapSample,
 } from './receiver-heatmap'
+import { RaySectionImage } from './ray-section-image'
 
 type ResultTab =
   | 'summary'
@@ -44,6 +46,8 @@ type ResultTab =
 interface RayTraceResultWindowProps {
   open: boolean
   result: RayTraceResult | null
+  scene?: ScenePayload
+  roiFaceIds?: number[]
   onOpenChange(open: boolean): void
 }
 
@@ -432,6 +436,8 @@ function Stat({
 export function RayTraceResultWindow({
   open,
   result,
+  scene,
+  roiFaceIds,
   onOpenChange,
 }: RayTraceResultWindowProps) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -682,6 +688,26 @@ export function RayTraceResultWindow({
                 {' · '}BVH build{' '}
                 {formatMetric(performance.bvh_build_sec)} s
               </p>
+              {scene ? (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    Ray Section View
+                  </div>
+                  <div className="grid gap-3">
+                    {result.receivers
+                      .filter((receiver) => receiver.enabled)
+                      .map((receiver) => (
+                        <RaySectionImage
+                          key={receiver.receiver_id}
+                          scene={scene}
+                          receiver={receiver}
+                          storedPaths={result.stored_paths}
+                          roiFaceIds={roiFaceIds}
+                        />
+                      ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

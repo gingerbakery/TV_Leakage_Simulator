@@ -79,6 +79,7 @@ import {
   createFeatureEdgeGeometry,
   findCoplanarFacePatch,
   getSceneBounds,
+  resolveComponentColor,
 } from './scene-geometry'
 import {
   cameraFovForPreset,
@@ -213,31 +214,14 @@ interface FacePlacementFrame {
   width: number
 }
 
-const componentPalette = [
-  0x64748b, 0x526b7a, 0x475569, 0x5b6473, 0x45606d, 0x667085,
-]
-
-/**
- * CAD-authored component color (e.g. NX body color, carried through STEP
- * product structure) wins when present; otherwise cycles the fallback
- * palette by component index, same as before CAD colors were read.
- */
-function resolveComponentColor(
-  component: SceneComponent | undefined,
-  index: number,
-): number {
-  if (component?.color) {
-    const parsed = Number.parseInt(component.color.replace('#', ''), 16)
-    if (!Number.isNaN(parsed)) return parsed
-  }
-  return componentPalette[Math.max(0, index) % componentPalette.length]
-}
-
 const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
 const emitterOverlayColor = 0xfacc15
 const emitterDirectionColor = 0xffb000
-const receiverOverlayColor = 0xa78bfa
+// A saturated cyan reads clearly against both the neutral CAD grays and
+// the warm emitter yellow/orange palette, unlike the previous lavender
+// purple which tended to wash out against similarly light surfaces.
+const receiverOverlayColor = 0x22d3ee
 
 function cameraPresetVectors(preset: RoiCameraPreset): {
   direction: Vector3
@@ -1233,6 +1217,7 @@ export function ThreeViewerCanvas({
   const datumFacePickArmedRef = useRef(false)
   const selectedFaceIdsRef = useRef<number[]>([])
   const roiFaceIdsRef = useRef<number[]>(roiFaceIds)
+  const roiScopesRef = useRef<RoiScope[]>(roiScopes)
   const selectedComponentIdsRef = useRef<number[]>([])
   const emittersRef = useRef<EmitterSpec[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
@@ -1308,6 +1293,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     roiFaceIdsRef.current = roiFaceIds
   }, [roiFaceIds])
+
+  useEffect(() => {
+    roiScopesRef.current = roiScopes
+  }, [roiScopes])
 
   useEffect(() => {
     selectedComponentIdsRef.current = selectedComponentIds
@@ -2128,8 +2117,7 @@ export function ThreeViewerCanvas({
           // ROI section caps aren't original CAD faces (no faceId to
           // flood-fill from), but they're still a valid, well-defined flat
           // plane - offsetting a receiver from the cut plane is a normal
-          // workflow, so use the exact click point and the cap's plane
-          // normal directly instead of rejecting the pick outright.
+          // workflow, so accept the pick instead of rejecting it outright.
           const axisIndex = [0, 1, 2].reduce((best, axis) =>
             Math.abs(hit.normal![axis]) > Math.abs(hit.normal![best])
               ? axis
@@ -2137,8 +2125,58 @@ export function ThreeViewerCanvas({
           )
           const snappedNormal: [number, number, number] = [0, 0, 0]
           snappedNormal[axisIndex] = hit.normal[axisIndex] >= 0 ? 1 : -1
+          // Snap to the center of the ROI box's own rectangular face on
+          // this axis (not the raw click point) - the same way picking a
+          // real CAD face always lands on that face's center regardless of
+          // where on it you click, instead of tracking the cursor.
+          const boxAxisRanges = (
+            box: RoiClipBox,
+          ): [
+            [number, number],
+            [number, number],
+            [number, number] | undefined,
+          ] => [
+            [box.xMin, box.xMax],
+            [box.yMin, box.yMax],
+            box.zMin !== undefined && box.zMax !== undefined
+              ? [box.zMin, box.zMax]
+              : undefined,
+          ]
+          const capTolerance = 0.5
+          const matchingBox = roiScopesRef.current
+            .filter((scope) => scope.active)
+            .map((scope) => scope.clipBox)
+            .find((box): box is RoiClipBox => {
+              if (!box) return false
+              const ranges = boxAxisRanges(box)
+              const cutRange = ranges[axisIndex]
+              if (!cutRange) return false
+              const onPlane =
+                Math.abs(hit.point[axisIndex] - cutRange[0]) <=
+                  capTolerance ||
+                Math.abs(hit.point[axisIndex] - cutRange[1]) <= capTolerance
+              if (!onPlane) return false
+              return [0, 1, 2].every((axis) => {
+                if (axis === axisIndex) return true
+                const range = ranges[axis]
+                if (!range) return true
+                return (
+                  hit.point[axis] >= range[0] - capTolerance &&
+                  hit.point[axis] <= range[1] + capTolerance
+                )
+              })
+            })
+          const capCenter: [number, number, number] = [...hit.point]
+          if (matchingBox) {
+            const ranges = boxAxisRanges(matchingBox)
+            for (const axis of [0, 1, 2]) {
+              if (axis === axisIndex) continue
+              const range = ranges[axis]
+              if (range) capCenter[axis] = (range[0] + range[1]) / 2
+            }
+          }
           actions.setDatumFacePickResult({
-            center: { x: hit.point[0], y: hit.point[1], z: hit.point[2] },
+            center: { x: capCenter[0], y: capCenter[1], z: capCenter[2] },
             normal: {
               x: snappedNormal[0],
               y: snappedNormal[1],
@@ -2147,7 +2185,9 @@ export function ThreeViewerCanvas({
           })
           actions.setDatumFacePickArmed(false)
           onStatusMessage(
-            'Datum face picking · ROI 절단면 선택됨 (클릭 지점 기준)',
+            matchingBox
+              ? 'Datum face picking · ROI 절단면 선택됨 (절단면 중심 기준)'
+              : 'Datum face picking · ROI 절단면 선택됨 (클릭 지점 기준)',
           )
           return
         }
