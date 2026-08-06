@@ -37,6 +37,16 @@ import {
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
 
+// Kill switch for the Ray Section View images in the Ray summary tab.
+// This feature has a known limitation (the true filled-cap cross-section
+// doesn't reliably close on every real-world STEP mesh - see
+// docs/changes/2026-08-05_ray-section-view-report-image.md) that hasn't
+// been fully resolved yet. If it causes trouble after this merges, flip
+// this to `false` and ship that one-line change instead of reverting the
+// whole merge (which would also undo the unrelated WORKFLOW accordion,
+// Receiver color, and ROI datum-pick fixes bundled in the same commit).
+const RAY_SECTION_VIEW_ENABLED = true
+
 type ResultTab =
   | 'summary'
   | 'surface'
@@ -688,7 +698,7 @@ export function RayTraceResultWindow({
                 {' · '}BVH build{' '}
                 {formatMetric(performance.bvh_build_sec)} s
               </p>
-              {scene ? (
+              {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-muted-foreground">
                     Ray Section View
