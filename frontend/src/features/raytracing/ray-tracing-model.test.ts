@@ -4,9 +4,11 @@ import { defaultRayTraceConfig } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
+  axesFromNormal,
   buildRayTraceRequest,
   createCurrentViewReceiver,
   createDatumEmitter,
+  createDatumReceiver,
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
@@ -81,6 +83,55 @@ describe('ray tracing model', () => {
     expect(receiver.v_axis?.[0]).toBeCloseTo(1)
     expect(receiver.v_axis?.[1]).toBeCloseTo(0)
     expect(receiver.normal).toEqual([0, 0, -1])
+  })
+
+  it('offsets a datum plane receiver from its base center without a pivot', () => {
+    const receiver = createDatumReceiver(
+      'receiver_001',
+      [100, 0, 0],
+      [0, 0, 90],
+      [0, 5, 0],
+    )
+
+    expect(receiver).toMatchObject({
+      base_center: [100, 0, 0],
+      // No custom pivot - tilt reorients the plane in place, the 90deg Z
+      // rotation must not move the center away from base + offset.
+      center: [100, 5, 0],
+      position_offset_mm: [0, 5, 0],
+      tilt_xyz_deg: [0, 0, 90],
+      pivot: null,
+    })
+    // A Z-axis rotation leaves the canonical Z-facing normal unchanged;
+    // it's the in-plane u/v axes that visibly rotate.
+    expect(receiver.normal).toEqual([0, 0, 1])
+    expect(receiver.u_axis?.[0]).toBeCloseTo(0)
+    expect(receiver.u_axis?.[1]).toBeCloseTo(1)
+  })
+
+  it('revolves a datum plane receiver around a custom tilt pivot', () => {
+    const receiver = createDatumReceiver(
+      'receiver_001',
+      [100, 0, 0],
+      [0, 0, 90],
+      [0, 0, 0],
+      [0, 0, 0],
+    )
+
+    // Same 90deg Z rotation as the no-pivot case above, but pivoting
+    // around the world origin instead of the receiver's own position -
+    // (100,0,0) must swing to (0,100,0), not stay put.
+    expect(receiver.center[0]).toBeCloseTo(0)
+    expect(receiver.center[1]).toBeCloseTo(100)
+    expect(receiver.center[2]).toBeCloseTo(0)
+    expect(receiver.pivot).toEqual([0, 0, 0])
+  })
+
+  it('derives a stable in-plane basis from a picked face normal', () => {
+    const { uAxis, vAxis } = axesFromNormal([0, 0, 1])
+    expect(Math.abs(uAxis[0] * vAxis[0] + uAxis[1] * vAxis[1] + uAxis[2] * vAxis[2])).toBeCloseTo(0)
+    expect(Math.hypot(...uAxis)).toBeCloseTo(1)
+    expect(Math.hypot(...vAxis)).toBeCloseTo(1)
   })
 
   it('includes active ROI, optical assignments, transforms and exclusions', () => {

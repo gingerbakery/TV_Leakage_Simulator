@@ -13,12 +13,26 @@ type NumberInputProps = Omit<
 > & {
   value: number
   onValueChange(value: number): void
+  /** Rounds the displayed/committed value to this many decimal places
+   * (e.g. 1 for coordinate fields). Leaves full precision untouched while
+   * the user is actively typing - only applied to what's shown when the
+   * field isn't focused and to the value committed on blur/Enter/arrow. */
+  decimals?: number
 }
 
 const incompleteNumbers = new Set(['', '+', '-', '.', '+.', '-.'])
 
-function formatNumber(value: number): string {
-  return Number.isFinite(value) ? String(value) : '0'
+function roundToDecimals(value: number, decimals?: number): number {
+  if (decimals === undefined || !Number.isFinite(value)) return value
+  const factor = 10 ** decimals
+  return Math.round(value * factor) / factor
+}
+
+function formatNumber(value: number, decimals?: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return decimals === undefined
+    ? String(value)
+    : roundToDecimals(value, decimals).toFixed(decimals)
 }
 
 function parseDraft(value: string): number | null {
@@ -34,25 +48,26 @@ function NumberInput({
   min,
   max,
   step = 'any',
+  decimals,
   onBlur,
   onFocus,
   onKeyDown,
   ...props
 }: NumberInputProps) {
-  const [draft, setDraft] = useState(() => formatNumber(value))
+  const [draft, setDraft] = useState(() => formatNumber(value, decimals))
   const focusedRef = useRef(false)
 
   useEffect(() => {
     if (!focusedRef.current) {
-      setDraft(formatNumber(value))
+      setDraft(formatNumber(value, decimals))
     }
-  }, [value])
+  }, [value, decimals])
 
   const commitDraft = () => {
     const parsed = parseDraft(draft)
-    const nextValue = parsed ?? 0
+    const nextValue = roundToDecimals(parsed ?? 0, decimals)
     onValueChange(nextValue)
-    setDraft(formatNumber(nextValue))
+    setDraft(formatNumber(nextValue, decimals))
   }
 
   const handleFocus = (event: FocusEvent<HTMLInputElement>) => {
@@ -82,8 +97,9 @@ function NumberInput({
       let nextValue = parsed + increment * direction
       if (typeof min === 'number') nextValue = Math.max(min, nextValue)
       if (typeof max === 'number') nextValue = Math.min(max, nextValue)
+      nextValue = roundToDecimals(nextValue, decimals)
       onValueChange(nextValue)
-      setDraft(formatNumber(nextValue))
+      setDraft(formatNumber(nextValue, decimals))
     }
     onKeyDown?.(event)
   }

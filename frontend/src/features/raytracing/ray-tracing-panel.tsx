@@ -19,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  ScanSearch,
   Trash2,
 } from 'lucide-react'
 
@@ -37,6 +38,7 @@ import {
 } from '@/stores'
 
 import {
+  axesFromNormal,
   buildRayTraceRequest,
   createCurrentViewReceiver,
   createDatumEmitter,
@@ -69,6 +71,7 @@ const currentViewDefaultDistanceMm = 30
 const inputClassName =
   'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 const fieldLabelClassName = 'space-y-1 text-[0.68rem] font-medium'
+const fieldHintClassName = 'text-[0.62rem] leading-4 font-normal text-muted-foreground'
 
 function sceneCenter(scene: ScenePayload | undefined): Vec3 {
   if (!scene || scene.components.length === 0) return [0, 0, 0]
@@ -95,7 +98,9 @@ function NumberField({
   min,
   max,
   step = 'any',
+  decimals,
   disabled = false,
+  description,
 }: {
   label: string
   ariaLabel?: string
@@ -104,7 +109,9 @@ function NumberField({
   min?: number
   max?: number
   step?: number | 'any'
+  decimals?: number
   disabled?: boolean
+  description?: string
 }) {
   return (
     <label className={fieldLabelClassName}>
@@ -116,9 +123,13 @@ function NumberField({
         min={min}
         max={max}
         step={step}
+        decimals={decimals}
         disabled={disabled}
         onValueChange={onChange}
       />
+      {description ? (
+        <p className={fieldHintClassName}>{description}</p>
+      ) : null}
     </label>
   )
 }
@@ -126,11 +137,15 @@ function NumberField({
 function VectorFields({
   label,
   labels,
+  ariaLabels,
   value,
   onChange,
 }: {
   label: string
   labels: [string, string, string]
+  /** Accessible names, when the visible labels alone would collide with
+   * another field group in the same dialog (e.g. multiple "X" fields). */
+  ariaLabels?: [string, string, string]
   value: Vec3
   onChange(value: Vec3): void
 }) {
@@ -144,7 +159,9 @@ function VectorFields({
           <NumberField
             key={axisLabel}
             label={axisLabel}
+            ariaLabel={ariaLabels?.[axis]}
             value={value[axis]}
+            decimals={1}
             onChange={(nextValue) => {
               const next: Vec3 = [...value]
               next[axis] = Number.isFinite(nextValue) ? nextValue : 0
@@ -191,6 +208,12 @@ function EmitterDialog({
   const [sigma, setSigma] = useState(12)
   const [normalFlip, setNormalFlip] = useState(false)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const datumFacePickArmed = useWorkspaceStore(
+    workspaceSelectors.datumFacePickArmed,
+  )
+  const datumFacePickResult = useWorkspaceStore(
+    workspaceSelectors.datumFacePickResult,
+  )
 
   useEffect(() => {
     if (!open) return
@@ -216,6 +239,29 @@ function EmitterDialog({
     setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
     setNormalFlip(initialEmitter?.normal_flip ?? false)
   }, [defaultCenter, initialEmitter, open])
+
+  // Same pick-a-face-in-the-viewer channel Receiver's Datum Plane uses -
+  // reused as-is since both just want a starting center/rotation.
+  useEffect(() => {
+    if (!open || mode !== 'datum_plane' || !datumFacePickResult) return
+    const { center: pickedCenter, normal: pickedNormal } =
+      datumFacePickResult
+    const nextCenter: Vec3 = [pickedCenter.x, pickedCenter.y, pickedCenter.z]
+    const normalVector: Vec3 = [
+      pickedNormal.x,
+      pickedNormal.y,
+      pickedNormal.z,
+    ]
+    const { uAxis, vAxis } = axesFromNormal(normalVector)
+    setCenter(nextCenter)
+    setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    actions.setDatumFacePickResult(null)
+  }, [actions, mode, open, datumFacePickResult])
+
+  useEffect(() => {
+    if (open) return
+    actions.setDatumFacePickArmed(false)
+  }, [actions, open])
 
   const emitterFaceIds =
     initialEmitter?.face_indices ?? selectedFaceIds
@@ -341,32 +387,63 @@ function EmitterDialog({
           </div>
         ) : (
           <>
+            <Button
+              type="button"
+              variant={datumFacePickArmed ? 'secondary' : 'outline'}
+              aria-pressed={datumFacePickArmed}
+              className="w-full"
+              onClick={() =>
+                actions.setDatumFacePickArmed(!datumFacePickArmed)
+              }
+            >
+              <ScanSearch />
+              {datumFacePickArmed
+                ? '뷰어에서 CAD face를 클릭하세요…'
+                : '뷰어에서 CAD Face 선택'}
+            </Button>
             <VectorFields
-              label="Center (mm)"
-              labels={['Center X', 'Center Y', 'Center Z']}
+              label="Emitter Center 좌표 (mm)"
+              labels={['X', 'Y', 'Z']}
+              ariaLabels={[
+                'Emitter center X',
+                'Emitter center Y',
+                'Emitter center Z',
+              ]}
               value={center}
               onChange={setCenter}
             />
             <VectorFields
-              label="Rotation (deg)"
-              labels={['Rotation X', 'Rotation Y', 'Rotation Z']}
+              label="Emitter Rotation (deg)"
+              labels={['X', 'Y', 'Z']}
+              ariaLabels={[
+                'Emitter rotation X',
+                'Emitter rotation Y',
+                'Emitter rotation Z',
+              ]}
               value={rotation}
               onChange={setRotation}
             />
-            <div className="grid grid-cols-2 gap-2">
-              <NumberField
-                label="Emitter width (mm)"
-                value={width}
-                min={0.001}
-                onChange={setWidth}
-              />
-              <NumberField
-                label="Emitter height (mm)"
-                value={height}
-                min={0.001}
-                onChange={setHeight}
-              />
-            </div>
+            <fieldset className="space-y-1.5">
+              <legend className="text-[0.68rem] font-semibold text-muted-foreground">
+                Emitter Size (mm)
+              </legend>
+              <div className="grid grid-cols-2 gap-2">
+                <NumberField
+                  label="Width (mm)"
+                  ariaLabel="Emitter width (mm)"
+                  value={width}
+                  min={0.001}
+                  onChange={setWidth}
+                />
+                <NumberField
+                  label="Height (mm)"
+                  ariaLabel="Emitter height (mm)"
+                  value={height}
+                  min={0.001}
+                  onChange={setHeight}
+                />
+              </div>
+            </fieldset>
           </>
         )}
 
@@ -484,6 +561,12 @@ function ReceiverDialog({
   const [normalFlip, setNormalFlip] = useState(false)
   const cameraFrameRef = useRef(cameraFrame)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const datumFacePickArmed = useWorkspaceStore(
+    workspaceSelectors.datumFacePickArmed,
+  )
+  const datumFacePickResult = useWorkspaceStore(
+    workspaceSelectors.datumFacePickResult,
+  )
 
   useEffect(() => {
     cameraFrameRef.current = cameraFrame
@@ -495,7 +578,13 @@ function ReceiverDialog({
       initialReceiver?.view_distance_mm ??
       currentViewDefaultDistanceMm
     setDisplayName(initialReceiver?.display_name ?? '')
-    setCenter(initialReceiver?.center ?? defaultCenter)
+    setCenter(
+      (mode === 'datum_plane'
+        ? initialReceiver?.base_center
+        : null) ??
+        initialReceiver?.center ??
+        defaultCenter,
+    )
     setRotation(
       rotationFromPlaneAxes(
         initialReceiver?.u_axis ?? null,
@@ -547,6 +636,26 @@ function ReceiverDialog({
     open,
   ])
 
+  // A face picked in the viewer lands here as {center, normal} - reuse it
+  // as the base placement and rotation, the same way typing a face's own
+  // coordinates by hand would. Consumed once, then cleared.
+  useEffect(() => {
+    if (!open || mode !== 'datum_plane' || !datumFacePickResult) return
+    const { center: pickedCenter, normal: pickedNormal } =
+      datumFacePickResult
+    const nextCenter: Vec3 = [pickedCenter.x, pickedCenter.y, pickedCenter.z]
+    const normalVector: Vec3 = [pickedNormal.x, pickedNormal.y, pickedNormal.z]
+    const { uAxis, vAxis } = axesFromNormal(normalVector)
+    setCenter(nextCenter)
+    setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    actions.setDatumFacePickResult(null)
+  }, [actions, mode, open, datumFacePickResult])
+
+  useEffect(() => {
+    if (open) return
+    actions.setDatumFacePickArmed(false)
+  }, [actions, open])
+
   const canApply = mode === 'datum_plane' || capturedFrame !== null
   const previewReceiver = useMemo(() => {
     if (!open) return null
@@ -565,18 +674,10 @@ function ReceiverDialog({
               '__placement_preview_receiver__',
             center,
             rotation,
+            positionOffset,
           )
-    const axes = planeAxesFromRotation(rotation)
     return {
       ...receiver,
-      ...(mode === 'datum_plane'
-        ? {
-            center,
-            normal: axes.normal,
-            u_axis: axes.uAxis,
-            v_axis: axes.vAxis,
-          }
-        : {}),
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
@@ -620,20 +721,16 @@ function ReceiverDialog({
             positionOffset,
             tilt,
           )
-        : createDatumReceiver(receiverId, center, rotation)
-    const axes = planeAxesFromRotation(rotation)
+        : createDatumReceiver(
+            receiverId,
+            center,
+            rotation,
+            positionOffset,
+          )
     onApply({
       ...initialReceiver,
       ...receiver,
       display_name: displayName.trim() || receiverId,
-      ...(mode === 'datum_plane'
-        ? {
-            center,
-            normal: axes.normal,
-            u_axis: axes.uAxis,
-            v_axis: axes.vAxis,
-          }
-        : {}),
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       resolution: [
@@ -690,15 +787,50 @@ function ReceiverDialog({
         </label>
         {mode === 'datum_plane' ? (
           <>
+            <Button
+              type="button"
+              variant={datumFacePickArmed ? 'secondary' : 'outline'}
+              aria-pressed={datumFacePickArmed}
+              className="w-full"
+              onClick={() =>
+                actions.setDatumFacePickArmed(!datumFacePickArmed)
+              }
+            >
+              <ScanSearch />
+              {datumFacePickArmed
+                ? '뷰어에서 CAD face를 클릭하세요…'
+                : '뷰어에서 CAD Face 선택'}
+            </Button>
             <VectorFields
-              label="Center (mm)"
-              labels={['Receiver center X', 'Receiver center Y', 'Receiver center Z']}
+              label="Receiver Center 좌표 (mm)"
+              labels={['X', 'Y', 'Z']}
+              ariaLabels={[
+                'Receiver center X',
+                'Receiver center Y',
+                'Receiver center Z',
+              ]}
               value={center}
               onChange={setCenter}
             />
             <VectorFields
-              label="Rotation (deg)"
-              labels={['Receiver rotation X', 'Receiver rotation Y', 'Receiver rotation Z']}
+              label="Receiver Offset (mm)"
+              labels={['X', 'Y', 'Z']}
+              ariaLabels={[
+                'Receiver offset X',
+                'Receiver offset Y',
+                'Receiver offset Z',
+              ]}
+              value={positionOffset}
+              onChange={setPositionOffset}
+            />
+            <VectorFields
+              label="Receiver Rotation (deg)"
+              labels={['X', 'Y', 'Z']}
+              ariaLabels={[
+                'Receiver rotation X',
+                'Receiver rotation Y',
+                'Receiver rotation Z',
+              ]}
               value={rotation}
               onChange={setRotation}
             />
@@ -761,19 +893,28 @@ function ReceiverDialog({
             ) : null}
           </div>
         )}
-        <div className="grid grid-cols-2 gap-2">
-          <NumberField
-            label="Receiver width (mm)"
-            value={width}
-            min={0.001}
-            onChange={setWidth}
-          />
-          <NumberField
-            label="Receiver height (mm)"
-            value={height}
-            min={0.001}
-            onChange={setHeight}
-          />
+        <fieldset className="space-y-1.5">
+          <legend className="text-[0.68rem] font-semibold text-muted-foreground">
+            Receiver Size (mm)
+          </legend>
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="Width (mm)"
+              ariaLabel="Receiver width (mm)"
+              value={width}
+              min={0.001}
+              onChange={setWidth}
+            />
+            <NumberField
+              label="Height (mm)"
+              ariaLabel="Receiver height (mm)"
+              value={height}
+              min={0.001}
+              onChange={setHeight}
+            />
+          </div>
+        </fieldset>
+        <div className="grid grid-cols-3 gap-2">
           <NumberField
             label="Resolution X"
             value={resolutionX}
@@ -789,7 +930,8 @@ function ReceiverDialog({
             onChange={setResolutionY}
           />
           <NumberField
-            label="Acceptance angle (deg)"
+            label="Acceptance (deg)"
+            ariaLabel="Acceptance angle (deg)"
             value={acceptance}
             min={0.1}
             max={180}
@@ -1186,8 +1328,8 @@ export function RayTracingPanel({
           <Activity className="size-3.5" />
           Run options
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="col-span-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+        <div className="grid grid-cols-1 gap-2.5">
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
             <NumberField
               label="Emitter rays"
               ariaLabel="Run option emitter rays"
@@ -1198,14 +1340,13 @@ export function RayTracingPanel({
               onChange={(value) =>
                 actions.setEmitterRayCount(value)
               }
+              description={
+                (hasMixedEmitterRayCounts
+                  ? 'Emitter별 Ray 수가 서로 다릅니다. 값을 변경하면 모든 Emitter에 동일하게 적용됩니다. '
+                  : 'Emitter 하나당 발사할 ray 개수 - 모든 등록 Emitter에 동일하게 적용됩니다. ') +
+                `활성 Emitter 총합 ${enabledEmitterRayCount.toLocaleString()} rays.`
+              }
             />
-            <p className="mt-1.5 text-[0.62rem] leading-4 text-muted-foreground">
-              {hasMixedEmitterRayCounts
-                ? 'Emitter별 Ray 수가 서로 다릅니다. 값을 변경하면 모든 Emitter에 동일하게 적용됩니다. '
-                : '모든 등록 Emitter에 동일하게 적용됩니다. '}
-              활성 Emitter 총합{' '}
-              {enabledEmitterRayCount.toLocaleString()} rays
-            </p>
           </div>
           <NumberField
             label={`Max reflections (0-${maxReflectionDepth})`}
@@ -1217,6 +1358,7 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_depth: Math.trunc(value) })
             }
+            description="반사를 최대 몇 번까지 추적할지 (0 = 직접광만, 반사 없음). 클수록 정확하지만 계산이 느려집니다 - quick 체크는 1, 일반 비교는 3, 밀폐된 고반사 경로는 10, 수렴성 확인 목적일 때만 20을 권장합니다."
           />
           <NumberField
             label="Random seed"
@@ -1224,6 +1366,7 @@ export function RayTracingPanel({
             step={1}
             disabled={isRunning}
             onChange={(value) => updateConfig({ seed: Math.trunc(value) })}
+            description="Monte Carlo 샘플링에 쓰는 난수 시드 - 같은 값이면 항상 동일한 ray 시퀀스로 재현 가능한 결과를 얻습니다."
           />
           <NumberField
             label="Minimum energy"
@@ -1231,6 +1374,7 @@ export function RayTracingPanel({
             min={0}
             disabled={isRunning}
             onChange={(value) => updateConfig({ min_energy: value })}
+            description="반사광 세기(lm)가 이 값 아래로 떨어지면 종료 대상이 됩니다 - 실제 종료 방식은 아래 Termination 설정을 따릅니다."
           />
           <NumberField
             label="Max stored paths"
@@ -1242,6 +1386,7 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_stored_paths: Math.trunc(value) })
             }
+            description="3D Viewer·Ray Section View에 표시할 ray path를 최대 몇 개까지 저장할지 - Receiver hits 등 통계 결과에는 영향을 주지 않습니다."
           />
           <label className={fieldLabelClassName}>
             <span>Termination</span>
@@ -1262,6 +1407,12 @@ export function RayTracingPanel({
               <option value="threshold">Energy threshold</option>
               <option value="russian_roulette">Russian roulette</option>
             </select>
+            <p className={fieldHintClassName}>
+              Energy threshold: Minimum energy 미만이면 즉시 종료합니다.
+              Russian roulette: 즉시 끊는 대신 확률적으로 생존시키고
+              생존한 ray는 에너지를 보정해, 통계적 편향 없이 계산량을
+              줄입니다.
+            </p>
           </label>
           <label className={fieldLabelClassName}>
             <span>Contribution</span>
@@ -1282,15 +1433,16 @@ export function RayTracingPanel({
               <option value="summary">Fast summary</option>
               <option value="detailed">Detailed</option>
             </select>
+            <p className={fieldHintClassName}>
+              Fast summary: 집계 통계만 빠르게 계산합니다. Detailed: face별
+              기여도까지 추적해 상세 분석이 가능하지만 더 오래 걸립니다.
+            </p>
           </label>
         </div>
-        <p className="text-[0.68rem] leading-relaxed text-muted-foreground">
-          1 for quick checks, 3 for general comparison, 10 for enclosed
-          high-reflectance paths, and 20 only for convergence checks.
-        </p>
-        <label className="flex items-center gap-2 text-xs">
+        <label className="flex items-start gap-2 text-xs">
           <input
             type="checkbox"
+            className="mt-0.5"
             checked={config.store_ray_paths}
             disabled={isRunning}
             onChange={(event) =>
@@ -1299,7 +1451,14 @@ export function RayTracingPanel({
               })
             }
           />
-          Store hit ray paths for Step 11 Viewer overlay
+          <span>
+            Store hit ray paths for Step 11 Viewer overlay
+            <span className={`block ${fieldHintClassName}`}>
+              꺼두면 위 Max stored paths 설정과 무관하게 ray path를 저장하지
+              않아 계산이 조금 더 빨라집니다 (3D Viewer·Ray Section View의
+              ray 표시는 비활성화됩니다).
+            </span>
+          </span>
         </label>
       </section>
 

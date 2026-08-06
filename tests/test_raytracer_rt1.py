@@ -155,6 +155,47 @@ class RayTracerRT1Tests(unittest.TestCase):
         self.assertEqual(result.surface_hit_count, 0)
         self.assertGreater(result.metrics["front_receiver"]["peak_nit_est"], 0.0)
 
+    def test_receiver_normal_flip_reverses_which_side_receives(self) -> None:
+        # Same geometry as test_direct_receiver_hit_from_face_emitter, but
+        # with the "wrong" normal direction (0,0,1) that on its own would
+        # miss every ray - exactly test_receiver_behind_emitter_has_no_direct_hit's
+        # case. normal_flip=True must flip it back to (0,0,-1) and restore
+        # the hits, proving the flip is actually applied to the physics
+        # (not just to the placement-preview arrow the frontend draws).
+        mesh = build_emitter_plane()
+        emitter = EmitterSpec(
+            emitter_id="face_source",
+            face_indices=[0, 1],
+            direction_distribution="gaussian",
+            gaussian_sigma_deg=2.0,
+            power_lumen=1.0,
+            ray_count=300,
+            seed=7,
+        )
+        receiver = ReceiverSpec(
+            receiver_id="flipped_receiver",
+            center=(0.0, 0.0, 20.0),
+            normal=(0.0, 0.0, 1.0),
+            normal_flip=True,
+            width_mm=80.0,
+            height_mm=80.0,
+            resolution=(8, 8),
+        )
+        result = run_direct_ray_trace(
+            DirectRayTraceInput(
+                mesh=mesh,
+                emitters=[emitter],
+                receivers=[receiver],
+                optical_profiles=[OpticalProfile(profile_id="default", reflectance=0.08)],
+                config=RayTraceConfig(ray_count=300, max_depth=0, seed=11),
+            )
+        )
+
+        self.assertEqual(result.total_rays, 300)
+        self.assertGreater(result.receiver_hit_count, 250)
+        self.assertEqual(result.surface_hit_count, 0)
+        self.assertGreater(result.metrics["flipped_receiver"]["peak_nit_est"], 0.0)
+
     def test_receiver_behind_emitter_has_no_direct_hit(self) -> None:
         mesh = build_emitter_plane()
         emitter = EmitterSpec(

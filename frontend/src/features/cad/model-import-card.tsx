@@ -1,15 +1,8 @@
 import { useRef, type ChangeEvent } from 'react'
-import { FileBox, FolderOpen, LoaderCircle } from 'lucide-react'
+import { FolderOpen, LoaderCircle } from 'lucide-react'
 
 import { useUploadCadMutation } from '@/api'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -50,51 +43,40 @@ export function ModelImportCard({
   }
 
   return (
-    <Card size="sm" className="border-border/80 bg-card/75 shadow-none">
-      <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <CardDescription>Step 01</CardDescription>
-            <CardTitle>Model import</CardTitle>
-          </div>
-          <FileBox className="size-5 text-primary" aria-hidden="true" />
+    <div className="space-y-3">
+      <div className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-3">
+        <div className="truncate text-xs font-medium">
+          {activeCad?.displayName ?? 'No CAD selected'}
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-3">
-          <div className="truncate text-xs font-medium">
-            {activeCad?.displayName ?? 'No CAD selected'}
-          </div>
-          <div className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-            {sceneStatus ?? 'STEP · STP · X_T · STL · OBJ'}
-          </div>
+        <div className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
+          {sceneStatus ?? 'STEP · STP · X_T · STL · OBJ'}
         </div>
-        <input
-          ref={inputRef}
-          type="file"
-          className="sr-only"
-          aria-label="Choose CAD file"
-          accept=".step,.stp,.x_t,.x_b,.stl,.obj"
-          onChange={handleFileChange}
-        />
-        <Button
-          className="w-full"
-          disabled={uploadMutation.isPending}
-          onClick={() => inputRef.current?.click()}
-        >
-          {uploadMutation.isPending ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <FolderOpen data-icon="inline-start" />
-          )}
-          {uploadMutation.isPending ? 'Uploading CAD…' : 'Import CAD'}
-        </Button>
-        {uploadMutation.error ? (
-          <p className="text-[0.68rem] leading-4 text-destructive">
-            {uploadMutation.error.message}
-          </p>
-        ) : null}
-      </CardContent>
-    </Card>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        className="sr-only"
+        aria-label="Choose CAD file"
+        accept=".step,.stp,.x_t,.x_b,.stl,.obj"
+        onChange={handleFileChange}
+      />
+      <Button
+        className="w-full"
+        disabled={uploadMutation.isPending}
+        onClick={() => inputRef.current?.click()}
+      >
+        {uploadMutation.isPending ? (
+          <LoaderCircle className="animate-spin" />
+        ) : (
+          <FolderOpen data-icon="inline-start" />
+        )}
+        {uploadMutation.isPending ? 'Uploading CAD…' : 'Import CAD'}
+      </Button>
+      {uploadMutation.error ? (
+        <p className="text-[0.68rem] leading-4 text-destructive">
+          {uploadMutation.error.message}
+        </p>
+      ) : null}
+    </div>
   )
 }

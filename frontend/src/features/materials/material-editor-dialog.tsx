@@ -253,6 +253,31 @@ export function MaterialEditorDialog({
           ) : null}
         </section>
 
+        <label className="block space-y-1.5 text-xs font-medium">
+          <span>Saved optical profile</span>
+          <select
+            className={selectClassName}
+            value={profileId}
+            onChange={(event) => {
+              const nextProfileId = event.currentTarget.value
+              setProfileId(nextProfileId)
+              const profile = opticalProfilePresets.find(
+                (item) => item.id === nextProfileId,
+              )
+              if (!profile) return
+              setBaseMaterialId(profile.baseMaterialId)
+              setSurfaceId(profile.surfaceId)
+            }}
+          >
+            <option value="">None · use current draft</option>
+            {opticalProfilePresets.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1.5 text-xs font-medium">
             <span>Base material</span>
@@ -293,31 +318,6 @@ export function MaterialEditorDialog({
             </select>
           </label>
         </div>
-
-        <label className="block space-y-1.5 text-xs font-medium">
-          <span>Saved optical profile</span>
-          <select
-            className={selectClassName}
-            value={profileId}
-            onChange={(event) => {
-              const nextProfileId = event.currentTarget.value
-              setProfileId(nextProfileId)
-              const profile = opticalProfilePresets.find(
-                (item) => item.id === nextProfileId,
-              )
-              if (!profile) return
-              setBaseMaterialId(profile.baseMaterialId)
-              setSurfaceId(profile.surfaceId)
-            }}
-          >
-            <option value="">None · use current draft</option>
-            {opticalProfilePresets.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name}
-              </option>
-            ))}
-          </select>
-        </label>
 
         <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold">

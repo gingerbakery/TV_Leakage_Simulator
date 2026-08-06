@@ -14,6 +14,7 @@ export type {
   MaterialTargetType,
   RayPathDisplayFilter,
   RayPathDisplayFilters,
+  DatumFacePickResult,
   RoiClipBox,
   RoiComponentClip,
   RoiProjectionPlane,

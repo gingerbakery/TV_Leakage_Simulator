@@ -203,6 +203,7 @@ export function RoiSelectionPanel({
               <NumberInput
                 aria-label={`ROI ${axis.toUpperCase()} coordinate`}
                 value={coordinate[axis]}
+                decimals={1}
                 className="mt-1 h-8 w-full rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none focus:border-primary/60"
                 onValueChange={(value) => {
                   setCoordinate((current) => ({

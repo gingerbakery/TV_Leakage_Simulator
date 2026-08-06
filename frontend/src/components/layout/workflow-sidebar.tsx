@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { RayTraceJob, ScenePayload } from '@/api'
 import {
   BoxSelect,
-  ChevronRight,
+  FileBox,
   Layers3,
   Move3D,
   Palette,
@@ -27,18 +27,18 @@ import {
 import { ResultPanel } from '@/features/results'
 import { RoiSelectionPanel } from '@/features/roi'
 import { TransformRulePanel } from '@/features/transforms'
-import { Badge } from '@/components/ui/badge'
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
 export type WorkflowSectionId =
+  | 'model-import'
   | 'roi'
   | 'components'
   | 'ray-tracing'
@@ -73,6 +73,13 @@ interface WorkflowSidebarProps {
 
 const workflowSections: WorkflowSection[] = [
   {
+    id: 'model-import',
+    step: '01',
+    label: 'Model import',
+    description: 'CAD 파일을 불러와 Three.js scene을 생성합니다.',
+    icon: FileBox,
+  },
+  {
     id: 'roi',
     step: '02',
     label: 'ROI',
@@ -100,17 +107,16 @@ const workflowSections: WorkflowSection[] = [
     description: 'Ray path, Receiver와 기여도 결과를 확인합니다.',
     icon: ScanSearch,
   },
+  {
+    id: 'applied-settings',
+    label: 'Applied Settings',
+    description:
+      'Component에 적용된 Material assignment와 Transform rule을 검토하고 관리합니다.',
+    icon: Settings2,
+  },
 ]
 
-const appliedSettingsSection: WorkflowSection = {
-  id: 'applied-settings',
-  label: 'Applied Settings',
-  description:
-    'Component에 적용된 Material assignment와 Transform rule을 검토하고 관리합니다.',
-  icon: Settings2,
-}
-
-const sectionBadgeText: Record<WorkflowSectionId, string> = {
+const sectionBadgeText: Partial<Record<WorkflowSectionId, string>> = {
   roi: 'Migrated · 09',
   components: 'Migrated · 07',
   'ray-tracing': 'Migrated · 10',
@@ -135,12 +141,20 @@ export function WorkflowSidebar({
 }: WorkflowSidebarProps) {
   const [appliedSettingsTab, setAppliedSettingsTab] =
     useState<AppliedSettingsTab>('material')
-  const activeSectionInfo =
-    activeSection === 'applied-settings'
-      ? appliedSettingsSection
-      : (workflowSections.find(
-          (section) => section.id === activeSection,
-        ) ?? workflowSections[0])
+  // Which step is visually expanded - starts in sync with `activeSection`,
+  // but can be collapsed independently (e.g. the user closes it to scan the
+  // rest of the workflow) without changing what's functionally "active"
+  // elsewhere in the app. External navigation (a completed ray trace
+  // jumping to Result, editing a ray object jumping to Ray tracing) should
+  // still force it back open, so it re-syncs whenever `activeSection`
+  // changes from the outside.
+  const [expandedSection, setExpandedSection] = useState<
+    WorkflowSectionId | ''
+  >(activeSection)
+  useEffect(() => {
+    setExpandedSection(activeSection)
+  }, [activeSection])
+
   const sceneStatus = isSceneLoading
     ? 'Loading scene and component tree…'
     : sceneErrorMessage
@@ -154,12 +168,21 @@ export function WorkflowSidebar({
           }`
         : undefined
 
-  const activePanel = (() => {
-    if (activeSection === 'roi') {
+  const renderPanel = (sectionId: WorkflowSectionId) => {
+    if (sectionId === 'model-import') {
+      return (
+        <ModelImportCard
+          sceneStatus={sceneStatus}
+          onImported={() => onActiveSectionChange('roi')}
+        />
+      )
+    }
+
+    if (sectionId === 'roi') {
       return <RoiSelectionPanel scene={scene} />
     }
 
-    if (activeSection === 'components') {
+    if (sectionId === 'components') {
       return (
         <ComponentTreePanel
           scene={scene}
@@ -172,7 +195,7 @@ export function WorkflowSidebar({
       )
     }
 
-    if (activeSection === 'applied-settings') {
+    if (sectionId === 'applied-settings') {
       return (
         <div>
           <div
@@ -236,7 +259,7 @@ export function WorkflowSidebar({
       )
     }
 
-    if (activeSection === 'ray-tracing') {
+    if (sectionId === 'ray-tracing') {
       return (
         <RayTracingPanel
           scene={scene}
@@ -247,41 +270,17 @@ export function WorkflowSidebar({
       )
     }
 
-    if (activeSection === 'result') {
-      return (
-        <ResultPanel
-          job={rayTraceJob}
-          onOpenAnalysis={onOpenRayTraceResult}
-        />
-      )
+    if (sectionId === 'result') {
+      return <ResultPanel job={rayTraceJob} onOpenAnalysis={onOpenRayTraceResult} />
     }
 
-    return (
-      <>
-        <p className="text-xs leading-5 text-muted-foreground">
-          {activeSectionInfo.description}
-        </p>
-        <Badge
-          variant="outline"
-          className="mt-3 border-border bg-background/40 text-muted-foreground"
-        >
-          Planned migration
-        </Badge>
-      </>
-    )
-  })()
-
-  const migrationBadgeText = sectionBadgeText[activeSection]
+    return null
+  }
 
   return (
     <aside className="border-b border-border bg-sidebar lg:min-h-0 lg:border-r lg:border-b-0">
       <ScrollArea className="h-[38rem] lg:h-full">
         <div className="space-y-4 p-3">
-          <ModelImportCard
-            sceneStatus={sceneStatus}
-            onImported={() => onActiveSectionChange('roi')}
-          />
-
           <section aria-labelledby="workflow-navigation-title">
             <div className="mb-2 flex items-center justify-between px-1">
               <h2
@@ -292,8 +291,16 @@ export function WorkflowSidebar({
               </h2>
               <Workflow className="size-3.5 text-muted-foreground" />
             </div>
-            <nav
-              className="grid grid-cols-2 gap-1.5 lg:grid-cols-1"
+            <Accordion
+              type="single"
+              collapsible
+              value={expandedSection}
+              onValueChange={(value) => {
+                const nextValue = value as WorkflowSectionId | ''
+                setExpandedSection(nextValue)
+                if (nextValue) onActiveSectionChange(nextValue)
+              }}
+              className="rounded-lg border border-border bg-background/25 px-2.5"
               aria-label="Simulation workflow"
             >
               {workflowSections.map((section) => {
@@ -301,114 +308,55 @@ export function WorkflowSidebar({
                 const isActive = section.id === activeSection
 
                 return (
-                  <button
-                    key={section.id}
-                    type="button"
-                    aria-label={`Step ${section.step} ${section.label}`}
-                    aria-current={isActive ? 'step' : undefined}
-                    className={cn(
-                      'group flex min-h-12 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
-                      isActive
-                        ? 'border-primary/40 bg-primary/10 text-foreground'
-                        : 'border-transparent text-muted-foreground hover:border-border hover:bg-muted/35 hover:text-foreground',
-                    )}
-                    onClick={() => onActiveSectionChange(section.id)}
-                  >
-                    <span
-                      className={cn(
-                        'flex size-7 shrink-0 items-center justify-center rounded-md border',
-                        isActive
-                          ? 'border-primary/30 bg-primary/15 text-primary'
-                          : 'border-border bg-background/40',
-                      )}
+                  <AccordionItem key={section.id} value={section.id}>
+                    <AccordionTrigger
+                      aria-label={
+                        section.step
+                          ? `Step ${section.step} ${section.label}`
+                          : section.label
+                      }
+                      aria-current={isActive ? 'step' : undefined}
                     >
-                      <Icon className="size-3.5" aria-hidden="true" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[0.65rem] text-muted-foreground">
-                        Step {section.step}
+                      <span
+                        className={cn(
+                          'flex size-7 shrink-0 items-center justify-center rounded-md border',
+                          isActive
+                            ? 'border-primary/30 bg-primary/15 text-primary'
+                            : 'border-border bg-background/40',
+                        )}
+                      >
+                        <Icon className="size-3.5" aria-hidden="true" />
                       </span>
-                      <span className="block truncate text-xs font-medium">
-                        {section.label}
+                      <span className="min-w-0 flex-1">
+                        {section.step ? (
+                          <span className="block text-[0.65rem] text-muted-foreground">
+                            Step {section.step}
+                          </span>
+                        ) : null}
+                        <span className="block truncate text-xs font-medium">
+                          {section.label}
+                        </span>
                       </span>
-                    </span>
-                    <ChevronRight
-                      className={cn(
-                        'hidden size-3.5 transition-transform lg:block',
-                        isActive && 'translate-x-0.5 text-primary',
-                      )}
-                      aria-hidden="true"
-                    />
-                  </button>
+                      {sectionBadgeText[section.id] ? (
+                        <Badge
+                          variant="outline"
+                          className="mr-1 shrink-0 border-primary/25 bg-primary/8 text-[0.6rem] text-primary"
+                        >
+                          {sectionBadgeText[section.id]}
+                        </Badge>
+                      ) : null}
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <p className="mb-2 px-1 text-xs leading-5 text-muted-foreground">
+                        {section.description}
+                      </p>
+                      {renderPanel(section.id)}
+                    </AccordionContent>
+                  </AccordionItem>
                 )
               })}
-            </nav>
+            </Accordion>
           </section>
-
-          <button
-            type="button"
-            aria-label="Applied Settings"
-            aria-current={
-              activeSection === 'applied-settings' ? 'page' : undefined
-            }
-            className={cn(
-              'group flex min-h-12 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
-              activeSection === 'applied-settings'
-                ? 'border-primary/40 bg-primary/10 text-foreground'
-                : 'border-border/70 bg-background/25 text-muted-foreground hover:border-border hover:bg-muted/35 hover:text-foreground',
-            )}
-            onClick={() => onActiveSectionChange('applied-settings')}
-          >
-            <span
-              className={cn(
-                'flex size-7 shrink-0 items-center justify-center rounded-md border',
-                activeSection === 'applied-settings'
-                  ? 'border-primary/30 bg-primary/15 text-primary'
-                  : 'border-border bg-background/40',
-              )}
-            >
-              <Settings2 className="size-3.5" aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium">
-                Applied Settings
-              </span>
-              <span className="block truncate text-[0.62rem] text-muted-foreground">
-                Material assignments · Transform rules
-              </span>
-            </span>
-            <ChevronRight
-              className={cn(
-                'hidden size-3.5 transition-transform lg:block',
-                activeSection === 'applied-settings' &&
-                  'translate-x-0.5 text-primary',
-              )}
-              aria-hidden="true"
-            />
-          </button>
-
-          <Card
-            size="sm"
-            className="border-primary/20 bg-primary/5 shadow-none"
-          >
-            <CardHeader>
-              <CardDescription>
-                {activeSectionInfo.step
-                  ? `Step ${activeSectionInfo.step}`
-                  : 'Configuration review'}
-              </CardDescription>
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle>{activeSectionInfo.label}</CardTitle>
-                <Badge
-                  variant="outline"
-                  className="border-primary/25 bg-primary/8 text-primary"
-                >
-                  {migrationBadgeText}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>{activePanel}</CardContent>
-          </Card>
         </div>
       </ScrollArea>
     </aside>

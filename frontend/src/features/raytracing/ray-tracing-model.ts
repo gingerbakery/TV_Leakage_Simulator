@@ -176,12 +176,72 @@ export function createDatumEmitter(
   }
 }
 
+function vectorLength(vector: Vec3): number {
+  return Math.sqrt(
+    vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2],
+  )
+}
+
+function normalizeVector(vector: Vec3): Vec3 {
+  const length = vectorLength(vector)
+  if (length < 1e-9) return [0, 0, 1]
+  return [vector[0] / length, vector[1] / length, vector[2] / length]
+}
+
+function crossVector(a: Vec3, b: Vec3): Vec3 {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ]
+}
+
+/** Canonical (u, v) basis for a given face normal, used to turn a picked
+ * CAD face into a Rotation X/Y/Z the datum-plane editor can display and
+ * further adjust - same "pick any stable perpendicular" approach as most
+ * CAD tools use when only a normal (no in-plane reference) is available. */
+export function axesFromNormal(normal: Vec3): {
+  uAxis: Vec3
+  vAxis: Vec3
+} {
+  const n = normalizeVector(normal)
+  const reference: Vec3 = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]
+  const uAxis = normalizeVector(crossVector(reference, n))
+  const vAxis = crossVector(n, uAxis)
+  return { uAxis, vAxis }
+}
+
 export function createDatumReceiver(
   receiverId: string,
-  center: Vec3,
+  baseCenter: Vec3,
   rotationDeg: Vec3,
+  positionOffset: Vec3 = [0, 0, 0],
+  pivot: Vec3 | null = null,
 ): ReceiverSpec {
   const axes = planeAxesFromRotation(rotationDeg)
+  const centerBeforeTilt: Vec3 = [
+    baseCenter[0] + positionOffset[0],
+    baseCenter[1] + positionOffset[1],
+    baseCenter[2] + positionOffset[2],
+  ]
+  const pivotPoint = pivot ?? centerBeforeTilt
+  // The axes above already encode the full absolute orientation (rotated
+  // straight from the canonical [0,0,1]/[1,0,0]/[0,1,0] frame), so only
+  // the position needs a pivot correction: revolve the offset-from-pivot
+  // by the same rotation to find where the plane ends up. With no custom
+  // pivot (pivot === centerBeforeTilt) this delta is zero and the center
+  // is unaffected by rotationDeg, same as before this field existed.
+  const delta: Vec3 = [
+    centerBeforeTilt[0] - pivotPoint[0],
+    centerBeforeTilt[1] - pivotPoint[1],
+    centerBeforeTilt[2] - pivotPoint[2],
+  ]
+  const rotatedDelta = rotateVector(delta, rotationDeg)
+  const center: Vec3 = [
+    pivotPoint[0] + rotatedDelta[0],
+    pivotPoint[1] + rotatedDelta[1],
+    pivotPoint[2] + rotatedDelta[2],
+  ]
   return {
     receiver_id: receiverId,
     receiver_type: 'rectangle',
@@ -202,12 +262,13 @@ export function createDatumReceiver(
     reference_vertex_points: [],
     reference_edge_points: [],
     view_distance_mm: null,
-    base_center: null,
+    base_center: baseCenter,
     base_u_axis: null,
     base_v_axis: null,
     base_normal: null,
-    position_offset_mm: [0, 0, 0],
-    tilt_xyz_deg: [0, 0, 0],
+    position_offset_mm: positionOffset,
+    tilt_xyz_deg: rotationDeg,
+    pivot,
     enabled: true,
   }
 }
@@ -359,6 +420,7 @@ export function buildRayTraceRequest({
         enabled: true,
         move: rule.move,
         tilt: rule.tilt,
+        ...(rule.pivot ? { pivot: rule.pivot } : {}),
       })),
     excluded_component_ids: [
       ...new Set([...excludedComponentIds, ...deletedComponentIds]),

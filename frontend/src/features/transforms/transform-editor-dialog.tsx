@@ -5,7 +5,13 @@ import {
   type RefObject,
 } from 'react'
 import type { SceneComponent } from '@/api'
-import { Box, MousePointer2, Rotate3D, ScanSearch } from 'lucide-react'
+import {
+  Box,
+  Crosshair,
+  MousePointer2,
+  Rotate3D,
+  ScanSearch,
+} from 'lucide-react'
 
 import { AppDialog } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
@@ -47,6 +53,19 @@ function vectorMagnitude(vector: Vector3Value): number {
   return Math.sqrt(vector.x ** 2 + vector.y ** 2 + vector.z ** 2)
 }
 
+function componentBoundsCenter(
+  component: SceneComponent | null,
+): Vector3Value {
+  if (!component) return zeroVector()
+  return {
+    x: (component.bbox_min[0] + component.bbox_max[0]) / 2,
+    y: (component.bbox_min[1] + component.bbox_max[1]) / 2,
+    z: (component.bbox_min[2] + component.bbox_max[2]) / 2,
+  }
+}
+
+type PivotMode = 'center' | 'custom'
+
 export function TransformEditorDialog({
   open,
   onOpenChange,
@@ -61,6 +80,12 @@ export function TransformEditorDialog({
     workspaceSelectors.transformRules,
   )
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const pivotPickArmed = useWorkspaceStore(
+    workspaceSelectors.pivotPickArmed,
+  )
+  const pivotPickPoint = useWorkspaceStore(
+    workspaceSelectors.pivotPickPoint,
+  )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const [targetType, setTargetType] =
     useState<TransformTargetType>('component')
@@ -68,6 +93,8 @@ export function TransformEditorDialog({
     useState<TransformSelectionMethod>('click')
   const [move, setMove] = useState<Vector3Value>(zeroVector)
   const [tilt, setTilt] = useState<Vector3Value>(zeroVector)
+  const [pivotMode, setPivotMode] = useState<PivotMode>('center')
+  const [pivot, setPivot] = useState<Vector3Value>(zeroVector)
 
   const componentFaceIds = useMemo(
     () => new Set(component?.face_indices ?? []),
@@ -109,7 +136,42 @@ export function TransformEditorDialog({
     setSelectionMethod(componentRule?.selectionMethod ?? 'click')
     setMove(componentRule?.move ?? zeroVector())
     setTilt(componentRule?.tilt ?? zeroVector())
+    setPivotMode(componentRule?.pivot ? 'custom' : 'center')
+    setPivot(componentRule?.pivot ?? componentBoundsCenter(component))
   }, [component, open, transformRules])
+
+  // A pick made in the viewer while this dialog was open lands here as a
+  // point in the shared store (the viewer has no direct reference back to
+  // this dialog's local state) - consume it once, then clear it so it
+  // can't be replayed if the dialog closes and reopens later.
+  useEffect(() => {
+    if (!open || !pivotPickPoint) return
+    setPivotMode('custom')
+    setPivot(pivotPickPoint)
+    actions.setPivotPickPoint(null)
+  }, [actions, open, pivotPickPoint])
+
+  // Closing the dialog mid-pick would otherwise strand the viewer in an
+  // armed, crosshair-cursor state with nothing left to receive the result.
+  useEffect(() => {
+    if (open) return
+    actions.setPivotPickArmed(false)
+  }, [actions, open])
+
+  // Mirror the draft pivot into the viewer as a marker so the user can see
+  // where it actually sits - both right after picking and while nudging
+  // the X/Y/Z fields by hand, before Apply is ever pressed.
+  useEffect(() => {
+    actions.setPivotPreviewPoint(
+      open && pivotMode === 'custom' ? pivot : null,
+    )
+  }, [actions, open, pivotMode, pivot])
+
+  useEffect(() => {
+    return () => {
+      actions.setPivotPreviewPoint(null)
+    }
+  }, [actions])
 
   const loadTargetRule = (nextTargetType: TransformTargetType) => {
     if (!component) return
@@ -123,6 +185,8 @@ export function TransformEditorDialog({
     setSelectionMethod(nextRule?.selectionMethod ?? 'click')
     setMove(nextRule?.move ?? zeroVector())
     setTilt(nextRule?.tilt ?? zeroVector())
+    setPivotMode(nextRule?.pivot ? 'custom' : 'center')
+    setPivot(nextRule?.pivot ?? componentBoundsCenter(component))
   }
 
   const updateVector = (
@@ -155,6 +219,7 @@ export function TransformEditorDialog({
       faceIds: targetType === 'faces' ? targetFaceIds : [],
       move,
       tilt,
+      pivot: pivotMode === 'custom' ? pivot : null,
       enabled: true,
     }
     actions.upsertTransformRule(rule)
@@ -193,6 +258,8 @@ export function TransformEditorDialog({
             onClick={() => {
               setMove(zeroVector())
               setTilt(zeroVector())
+              setPivotMode('center')
+              setPivot(componentBoundsCenter(component))
             }}
           >
             Reset
@@ -298,6 +365,82 @@ export function TransformEditorDialog({
           }
         />
 
+        <fieldset className="rounded-xl border border-border bg-background/35 p-3">
+          <legend className="px-1 text-xs font-semibold">
+            Tilt pivot
+          </legend>
+          <div className="mt-1 grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={pivotMode === 'center' ? 'secondary' : 'ghost'}
+              aria-pressed={pivotMode === 'center'}
+              onClick={() => {
+                setPivotMode('center')
+                setPivot(componentBoundsCenter(component))
+              }}
+            >
+              <Box />
+              Component center
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={pivotMode === 'custom' ? 'secondary' : 'ghost'}
+              aria-pressed={pivotMode === 'custom'}
+              onClick={() => setPivotMode('custom')}
+            >
+              <Crosshair />
+              Custom point
+            </Button>
+          </div>
+          {pivotMode === 'custom' ? (
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {(['x', 'y', 'z'] as const).map((axis) => (
+                <label
+                  key={axis}
+                  className="space-y-1 text-[0.68rem] font-medium"
+                >
+                  <span className="uppercase">{axis}</span>
+                  <NumberInput
+                    aria-label={`Pivot ${axis}`}
+                    step={0.1}
+                    decimals={1}
+                    className={inputClassName}
+                    value={pivot[axis]}
+                    onValueChange={(value) =>
+                      updateVector(setPivot, pivot, axis, value)
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
+          {pivotMode === 'custom' ? (
+            <Button
+              type="button"
+              size="sm"
+              variant={pivotPickArmed ? 'secondary' : 'outline'}
+              aria-pressed={pivotPickArmed}
+              className="mt-2 w-full"
+              onClick={() =>
+                actions.setPivotPickArmed(!pivotPickArmed)
+              }
+            >
+              <MousePointer2 />
+              {pivotPickArmed
+                ? '뷰어에서 표면을 클릭하세요…'
+                : '뷰어에서 좌표 선택'}
+            </Button>
+          ) : null}
+          {pivotMode === 'center' ? (
+            <p className="mt-2 text-[0.68rem] leading-4 text-muted-foreground">
+              Tilt는 {componentName || 'component'}의 bounding box 중심을
+              기준으로 회전합니다.
+            </p>
+          ) : null}
+        </fieldset>
+
         <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold">
             <Rotate3D className="size-3.5 text-primary" />
@@ -358,6 +501,7 @@ function VectorEditor({
             </span>
             <NumberInput
               step={0.1}
+              decimals={1}
               className={inputClassName}
               value={vector[axis]}
               onValueChange={(value) => onChange(axis, value)}
