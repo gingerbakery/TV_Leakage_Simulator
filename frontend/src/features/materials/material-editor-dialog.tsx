@@ -1,14 +1,15 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useState,
   type RefObject,
 } from 'react'
 import type { SceneComponent } from '@/api'
 import {
-  MousePointerClick,
   Pencil,
   Save,
+  ScanSearch,
   Sparkles,
   Trash2,
   X,
@@ -125,10 +126,20 @@ function SurfacePropertySelect({
   category: string
   onChange(id: string): void
 }) {
+  const fieldId = useId()
   return (
-    <label className="space-y-1.5 text-xs font-medium">
-      <span>Surface property</span>
+    <div className="space-y-1.5 text-xs font-medium">
+      <div className="flex items-center gap-1.5">
+        <label htmlFor={fieldId}>Surface property</label>
+        <HelpTooltip label="Surface property 도움말">
+          표면 마감(광택도)입니다. Base material의 반사율을 얼마나 정반사
+          방향으로 집중시킬지(Gloss) vs 사방으로 흩뿌릴지(Matte)를
+          결정합니다. 선택한 Base material의 category(Metal/Resin/Tape/Foam)에
+          맞는 항목만 표시됩니다.
+        </HelpTooltip>
+      </div>
       <select
+        id={fieldId}
         className={selectClassName}
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}
@@ -139,14 +150,13 @@ function SurfacePropertySelect({
           </option>
         ))}
       </select>
-    </label>
+    </div>
   )
 }
 
 interface FaceEditorState {
   /** null while composing a brand-new face group that hasn't been applied yet. */
   assignmentId: string | null
-  faceIds: number[]
   surfaceId: string
 }
 
@@ -157,6 +167,9 @@ export function MaterialEditorDialog({
   componentName,
   returnFocusRef,
 }: MaterialEditorDialogProps) {
+  const profileFieldId = useId()
+  const baseMaterialFieldId = useId()
+  const surfacePropertyFieldId = useId()
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -293,57 +306,69 @@ export function MaterialEditorDialog({
     setPartDraft({ ...partDraft, profileId: '' })
   }
 
-  const startDesignate = () => {
+  // Starts composing a brand-new face group: opens the editor panel right
+  // away (rather than after a separate "선택 완료" step) so the same
+  // "뷰어에서 CAD Face 선택" toggle inside it can be pressed again at any
+  // time to keep adding/removing faces - including after Apply-ing once,
+  // by re-opening via the Edit icon (see startEditFaceAssignment below).
+  const openNewFaceGroup = () => {
     if (!component) return
-    setFaceEditor(null)
     actions.setSelectedComponentIds([component.component_id])
     actions.setSelectedFaceIds([])
     actions.setMaterialFacePickArmed(true)
+    setFaceEditor({ assignmentId: null, surfaceId: partDraft.surfaceId })
   }
 
-  const cancelDesignate = () => {
+  // While the editor is open (new or existing group), the same button just
+  // pauses/resumes picking - it never discards the editor itself.
+  const toggleFacePick = () => {
+    if (!faceEditor) {
+      openNewFaceGroup()
+      return
+    }
+    actions.setMaterialFacePickArmed(!materialFacePickArmed)
+  }
+
+  const closeFaceEditor = () => {
     actions.setMaterialFacePickArmed(false)
     actions.setSelectedFaceIds([])
-  }
-
-  const finishDesignate = () => {
-    if (!component || targetFaceIds.length === 0) return
-    actions.setMaterialFacePickArmed(false)
-    const existingId = buildAssignmentId(
-      component.component_id,
-      'faces',
-      targetFaceIds,
-    )
-    const existing = assignments.find(
-      (assignment) => assignment.assignmentId === existingId,
-    )
-    setFaceEditor({
-      assignmentId: existing?.assignmentId ?? null,
-      faceIds: targetFaceIds,
-      surfaceId: existing?.surfaceId ?? partDraft.surfaceId,
-    })
+    setFaceEditor(null)
   }
 
   const startEditFaceAssignment = (assignment: MaterialAssignment) => {
-    actions.setMaterialFacePickArmed(false)
+    if (!component) return
+    // Arm picking immediately, same as openNewFaceGroup - otherwise a click
+    // in the viewer right after pressing Edit falls through to the default
+    // (non-armed) handler, which *replaces* the selection with a single
+    // raw triangle instead of adding a coplanar patch to the existing
+    // group. The toggle button still lets the user pause picking.
+    actions.setMaterialFacePickArmed(true)
+    actions.setSelectedComponentIds([component.component_id])
+    actions.setSelectedFaceIds(assignment.faceIds)
     setFaceEditor({
       assignmentId: assignment.assignmentId,
-      faceIds: assignment.faceIds,
       surfaceId: assignment.surfaceId,
     })
   }
 
   const handleApplyFaceEditor = () => {
-    if (!component || !faceEditor || faceEditor.faceIds.length === 0) return
+    if (!component || !faceEditor || targetFaceIds.length === 0) return
+    const nextId = buildAssignmentId(
+      component.component_id,
+      'faces',
+      targetFaceIds,
+    )
+    // The assignment id embeds its face list, so a face set change means a
+    // new id - drop the old one first or it would linger as a stale
+    // duplicate alongside the updated group.
+    if (faceEditor.assignmentId && faceEditor.assignmentId !== nextId) {
+      actions.removeMaterialAssignment(faceEditor.assignmentId)
+    }
     const assignment: MaterialAssignment = {
-      assignmentId: buildAssignmentId(
-        component.component_id,
-        'faces',
-        faceEditor.faceIds,
-      ),
+      assignmentId: nextId,
       componentId: component.component_id,
       targetType: 'faces',
-      faceIds: faceEditor.faceIds,
+      faceIds: targetFaceIds,
       // Base material always follows the part - only the surface finish can
       // differ per face group.
       baseMaterialId: partDraft.baseMaterialId,
@@ -353,13 +378,12 @@ export function MaterialEditorDialog({
       enabled: true,
     }
     actions.upsertMaterialAssignment(assignment)
-    setFaceEditor(null)
-    actions.setSelectedFaceIds([])
+    closeFaceEditor()
   }
 
   const handleRemoveFaceAssignment = (assignmentId: string) => {
     actions.removeMaterialAssignment(assignmentId)
-    if (faceEditor?.assignmentId === assignmentId) setFaceEditor(null)
+    if (faceEditor?.assignmentId === assignmentId) closeFaceEditor()
   }
 
   return (
@@ -368,7 +392,7 @@ export function MaterialEditorDialog({
       onOpenChange={onOpenChange}
       floating
       title="Material assignment"
-      description={
+      help={
         component
           ? `${componentName}의 Base material · Surface property를 지정하고, 필요하면 특정 Face만 다른 Surface property로 바꿉니다.`
           : 'Material 대상을 선택하세요.'
@@ -397,23 +421,27 @@ export function MaterialEditorDialog({
           </div>
         </section>
 
-        {/* 1 & 2: Base material and its default Surface property - one
-            always-applicable pair for the whole part. */}
-        <section className="space-y-3">
-          <div className="flex items-center gap-1.5">
-            <div className="text-xs font-semibold">Part material</div>
-            <HelpTooltip label="Part material 도움말">
-              부품 전체에 적용되는 기본 재질입니다. Base material(소재)과
-              Surface property(광택·거칠기)를 조합해 반사율과 산란 특성을
-              계산합니다. 아래 Face 지정 Surface property가 없는 모든 면에
-              이 값이 적용됩니다.
-            </HelpTooltip>
-          </div>
+        {/* Base material and its default Surface property - one
+            always-applicable pair for the whole part, no section title
+            (the fields below are self-explanatory once the Target card
+            above establishes what's being edited). Same card treatment
+            (border/background/padding) as Target and the section below, so
+            the dialog reads as one consistent stack of cards. */}
+        <section className="rounded-xl border border-border bg-background/45 p-3 space-y-3">
           <div className="space-y-1.5">
-            <label className="block space-y-1.5 text-xs font-medium">
-              <span>Saved optical profile</span>
+            <div className="space-y-1.5 text-xs font-medium">
+              <div className="flex items-center gap-1.5">
+                <label htmlFor={profileFieldId}>Saved optical profile</label>
+                <HelpTooltip label="Saved optical profile 도움말">
+                  Base material + Surface property 조합을 이름 붙여
+                  저장해두고 나중에 다시 고를 수 있습니다. 아래 저장 아이콘
+                  (💾)으로 현재 조합을 새 프로필로 저장하고, 내가 만든
+                  프로필을 선택 중일 때만 삭제 아이콘이 나타납니다.
+                </HelpTooltip>
+              </div>
               <div className="flex gap-1.5">
                 <select
+                  id={profileFieldId}
                   className={selectClassName}
                   value={partDraft.profileId}
                   onChange={(event) => {
@@ -433,13 +461,11 @@ export function MaterialEditorDialog({
                   }}
                 >
                   <option value="">None · use current draft</option>
-                  <optgroup label="Built-in">
-                    {opticalProfilePresets.map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {profile.name}
-                      </option>
-                    ))}
-                  </optgroup>
+                  {opticalProfilePresets.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name}
+                    </option>
+                  ))}
                   {customOpticalProfiles.length > 0 ? (
                     <optgroup label="My profiles">
                       {customOpticalProfiles.map((profile) => (
@@ -474,7 +500,7 @@ export function MaterialEditorDialog({
                   </Button>
                 ) : null}
               </div>
-            </label>
+            </div>
 
             {isNamingProfile ? (
               <div className="flex items-center gap-1.5">
@@ -519,9 +545,18 @@ export function MaterialEditorDialog({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1.5 text-xs font-medium">
-              <span>Base material</span>
+            <div className="space-y-1.5 text-xs font-medium">
+              <div className="flex items-center gap-1.5">
+                <label htmlFor={baseMaterialFieldId}>Base material</label>
+                <HelpTooltip label="Base material 도움말">
+                  부품의 소재입니다. Metal(Aluminum/SECC 계열)과
+                  Resin(PC/ABS/HIPS × Black/Gray/White)으로 나뉘고, 소재별
+                  기본 반사율을 결정합니다. 고른 소재의 category에 따라
+                  아래 Surface property 선택지가 달라집니다.
+                </HelpTooltip>
+              </div>
               <select
+                id={baseMaterialFieldId}
                 className={selectClassName}
                 value={partDraft.baseMaterialId}
                 onChange={(event) => {
@@ -539,10 +574,21 @@ export function MaterialEditorDialog({
                   </option>
                 ))}
               </select>
-            </label>
-            <label className="space-y-1.5 text-xs font-medium">
-              <span>Surface property</span>
+            </div>
+            <div className="space-y-1.5 text-xs font-medium">
+              <div className="flex items-center gap-1.5">
+                <label htmlFor={surfacePropertyFieldId}>
+                  Surface property
+                </label>
+                <HelpTooltip label="Surface property 도움말">
+                  표면 마감(광택도)입니다. Base material의 반사율을 얼마나
+                  정반사 방향으로 집중시킬지(Gloss) vs 사방으로
+                  흩뿌릴지(Matte)를 결정합니다. Metal은 Low gloss/Normal/
+                  Gloss, Resin은 Matte/Normal/High-gloss 3단계입니다.
+                </HelpTooltip>
+              </div>
               <select
+                id={surfacePropertyFieldId}
                 className={selectClassName}
                 value={partDraft.surfaceId}
                 onChange={(event) =>
@@ -561,7 +607,7 @@ export function MaterialEditorDialog({
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
           </div>
 
           <CompiledPreview
@@ -590,13 +636,12 @@ export function MaterialEditorDialog({
         <section className="rounded-xl border border-border bg-background/45 p-3 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
-              <div className="text-xs font-semibold">
-                Face 지정 Surface property
-              </div>
-              <HelpTooltip label="Face 지정 Surface property 도움말">
+              <div className="text-xs font-semibold">Add surface property</div>
+              <HelpTooltip label="Add surface property 도움말">
                 기본값은 위 부품 Surface property를 따라갑니다. 특정 Face만
-                다른 마감으로 바꾸고 싶을 때만 지정하세요. Base material은
-                항상 부품과 동일합니다.
+                다른 마감으로 바꾸고 싶을 때만 추가하세요. Base material은
+                항상 부품과 동일합니다. 이미 만든 항목도 연필 아이콘으로
+                다시 열어 면을 추가·제거할 수 있습니다.
               </HelpTooltip>
             </div>
             <Badge variant="outline">{faceAssignments.length}</Badge>
@@ -604,7 +649,7 @@ export function MaterialEditorDialog({
 
           {faceAssignments.length > 0 ? (
             <div className="space-y-1.5">
-              {faceAssignments.map((assignment) => {
+              {faceAssignments.map((assignment, index) => {
                 const surface = findSurfaceProperty(assignment.surfaceId)
                 const isEditing =
                   faceEditor?.assignmentId === assignment.assignmentId
@@ -626,7 +671,7 @@ export function MaterialEditorDialog({
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        aria-label={`Edit face surface property for ${assignment.faceIds.length} faces`}
+                        aria-label={`Edit face group ${index + 1} surface property`}
                         onClick={() => startEditFaceAssignment(assignment)}
                       >
                         <Pencil />
@@ -634,7 +679,7 @@ export function MaterialEditorDialog({
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        aria-label={`Remove face surface property for ${assignment.faceIds.length} faces`}
+                        aria-label={`Remove face group ${index + 1} surface property`}
                         onClick={() =>
                           handleRemoveFaceAssignment(assignment.assignmentId)
                         }
@@ -648,56 +693,33 @@ export function MaterialEditorDialog({
             </div>
           ) : null}
 
-          {materialFacePickArmed ? (
-            <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2.5">
-              <span className="text-[0.68rem] leading-4 text-muted-foreground">
-                Viewer에서 면을 클릭해 선택하세요 (다시 클릭하면 해제)
-                {targetFaceIds.length > 0 ? (
-                  <span className="ml-1 font-semibold text-foreground">
-                    · 선택됨
-                  </span>
-                ) : null}
-              </span>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <Button variant="ghost" size="sm" onClick={cancelDesignate}>
-                  취소
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={targetFaceIds.length === 0}
-                  onClick={finishDesignate}
-                >
-                  선택 완료
-                </Button>
-              </div>
-            </div>
-          ) : !faceEditor ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!component}
-              onClick={startDesignate}
-            >
-              <MousePointerClick />
-              지정
-            </Button>
-          ) : null}
-
           {faceEditor ? (
             <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs font-semibold">
-                  Face 지정 Surface property 편집
+                  {faceEditor.assignmentId
+                    ? 'Surface property 편집'
+                    : '새 Surface property'}
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setFaceEditor(null)}
-                >
+                <Button variant="ghost" size="sm" onClick={closeFaceEditor}>
                   취소
                 </Button>
               </div>
+              {/* Same constant-label toggle button as the other pickers -
+                  staying inside the editor (rather than disappearing once a
+                  group exists) is what lets faces be added to or removed
+                  from an already-applied group, not just a brand-new one. */}
+              <Button
+                type="button"
+                variant={materialFacePickArmed ? 'secondary' : 'outline'}
+                aria-pressed={materialFacePickArmed}
+                className="w-full"
+                onClick={toggleFacePick}
+              >
+                <ScanSearch />
+                뷰어에서 CAD Face 선택
+                {targetFaceIds.length > 0 ? ' · 선택됨' : ''}
+              </Button>
               <SurfacePropertySelect
                 value={faceEditor.surfaceId}
                 category={findBaseMaterial(partDraft.baseMaterialId).category}
@@ -723,12 +745,28 @@ export function MaterialEditorDialog({
                     Remove
                   </Button>
                 ) : null}
-                <Button size="sm" onClick={handleApplyFaceEditor}>
+                <Button
+                  size="sm"
+                  disabled={targetFaceIds.length === 0}
+                  onClick={handleApplyFaceEditor}
+                >
                   Apply
                 </Button>
               </div>
             </div>
-          ) : null}
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={!component}
+              onClick={openNewFaceGroup}
+            >
+              <ScanSearch />
+              뷰어에서 CAD Face 선택
+            </Button>
+          )}
         </section>
       </div>
     </AppDialog>

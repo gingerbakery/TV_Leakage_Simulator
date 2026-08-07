@@ -5,13 +5,7 @@ import {
   type RefObject,
 } from 'react'
 import type { SceneComponent } from '@/api'
-import {
-  Box,
-  Crosshair,
-  MousePointer2,
-  Rotate3D,
-  ScanSearch,
-} from 'lucide-react'
+import { Box, Crosshair, MousePointer2, Rotate3D } from 'lucide-react'
 
 import { AppDialog, HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
@@ -21,8 +15,6 @@ import {
   useWorkspaceStore,
   workspaceSelectors,
   type ComponentTransformRule,
-  type TransformSelectionMethod,
-  type TransformTargetType,
   type Vector3Value,
 } from '@/stores'
 
@@ -40,13 +32,8 @@ const zeroVector = (): Vector3Value => ({ x: 0, y: 0, z: 0 })
 const inputClassName =
   'h-9 w-full rounded-lg border border-input bg-background px-2.5 font-mono text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 
-function buildRuleId(
-  componentId: number,
-  targetType: TransformTargetType,
-  faceIds: number[],
-): string {
-  if (targetType === 'component') return `transform-component-${componentId}`
-  return `transform-faces-${componentId}-${faceIds.join('-')}`
+function buildRuleId(componentId: number): string {
+  return `transform-component-${componentId}`
 }
 
 function vectorMagnitude(vector: Vector3Value): number {
@@ -73,9 +60,6 @@ export function TransformEditorDialog({
   componentName,
   returnFocusRef,
 }: TransformEditorDialogProps) {
-  const selectedFaceIds = useWorkspaceStore(
-    workspaceSelectors.selectedFaceIds,
-  )
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
   )
@@ -87,23 +71,11 @@ export function TransformEditorDialog({
     workspaceSelectors.pivotPickPoint,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
-  const [targetType, setTargetType] =
-    useState<TransformTargetType>('component')
-  const [selectionMethod, setSelectionMethod] =
-    useState<TransformSelectionMethod>('click')
   const [move, setMove] = useState<Vector3Value>(zeroVector)
   const [tilt, setTilt] = useState<Vector3Value>(zeroVector)
   const [pivotMode, setPivotMode] = useState<PivotMode>('center')
   const [pivot, setPivot] = useState<Vector3Value>(zeroVector)
 
-  const componentFaceIds = useMemo(
-    () => new Set(component?.face_indices ?? []),
-    [component],
-  )
-  const targetFaceIds = useMemo(
-    () => selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId)),
-    [componentFaceIds, selectedFaceIds],
-  )
   const hasActiveRoiScope = useMemo(() => {
     if (!component) return false
     return roiScopes.some(
@@ -114,21 +86,20 @@ export function TransformEditorDialog({
         ),
     )
   }, [component, roiScopes])
-  const ruleId = component
-    ? buildRuleId(component.component_id, targetType, targetFaceIds)
-    : ''
+  const ruleId = component ? buildRuleId(component.component_id) : ''
   const currentRule =
     transformRules.find((rule) => rule.ruleId === ruleId) ?? null
 
   useEffect(() => {
     if (!open || !component) return
+    // A legacy Local-faces rule (from a project saved before that feature
+    // was removed) can share this component but never this ruleId - only
+    // the component-level rule feeds this dialog now.
     const componentRule = transformRules.find(
       (rule) =>
         rule.componentId === component.component_id &&
         rule.targetType === 'component',
     )
-    setTargetType('component')
-    setSelectionMethod(componentRule?.selectionMethod ?? 'click')
     setMove(componentRule?.move ?? zeroVector())
     setTilt(componentRule?.tilt ?? zeroVector())
     setPivotMode(componentRule?.pivot ? 'custom' : 'center')
@@ -168,22 +139,6 @@ export function TransformEditorDialog({
     }
   }, [actions])
 
-  const loadTargetRule = (nextTargetType: TransformTargetType) => {
-    if (!component) return
-    const nextId = buildRuleId(
-      component.component_id,
-      nextTargetType,
-      targetFaceIds,
-    )
-    const nextRule = transformRules.find((rule) => rule.ruleId === nextId)
-    setTargetType(nextTargetType)
-    setSelectionMethod(nextRule?.selectionMethod ?? 'click')
-    setMove(nextRule?.move ?? zeroVector())
-    setTilt(nextRule?.tilt ?? zeroVector())
-    setPivotMode(nextRule?.pivot ? 'custom' : 'center')
-    setPivot(nextRule?.pivot ?? componentBoundsCenter(component))
-  }
-
   const updateVector = (
     setter: (value: Vector3Value) => void,
     vector: Vector3Value,
@@ -196,22 +151,16 @@ export function TransformEditorDialog({
     })
   }
 
-  const canApply =
-    component !== null &&
-    (targetType === 'component' || targetFaceIds.length > 0)
+  const canApply = component !== null
 
   const handleApply = () => {
     if (!component || !canApply) return
     const rule: ComponentTransformRule = {
-      ruleId: buildRuleId(
-        component.component_id,
-        targetType,
-        targetFaceIds,
-      ),
+      ruleId: buildRuleId(component.component_id),
       componentId: component.component_id,
-      targetType,
-      selectionMethod,
-      faceIds: targetType === 'faces' ? targetFaceIds : [],
+      targetType: 'component',
+      selectionMethod: 'click',
+      faceIds: [],
       move,
       tilt,
       pivot: pivotMode === 'custom' ? pivot : null,
@@ -227,7 +176,7 @@ export function TransformEditorDialog({
       onOpenChange={onOpenChange}
       floating
       title="Transform editor"
-      description={
+      help={
         component
           ? `${componentName}의 move·tilt rule을 편집합니다.`
           : 'Transform 대상을 선택하세요.'
@@ -275,10 +224,7 @@ export function TransformEditorDialog({
               <div className="flex items-center gap-1.5 text-[0.65rem] tracking-wide text-muted-foreground uppercase">
                 Target
                 <HelpTooltip label="Target 도움말">
-                  Component move는 부품 전체를 이동·회전합니다. Local faces는
-                  Viewer에서 선택한(또는 Box 선택한) 특정 face만 별도로
-                  이동·회전하며, 부품의 나머지 부분에는 영향을 주지
-                  않습니다.
+                  선택한 부품 전체를 이동·회전합니다.
                 </HelpTooltip>
               </div>
               <div className="mt-1 text-sm font-semibold">
@@ -287,66 +233,12 @@ export function TransformEditorDialog({
             </div>
             {hasActiveRoiScope ? <Badge variant="outline">ROI</Badge> : null}
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button
-              type="button"
-              variant={targetType === 'component' ? 'secondary' : 'outline'}
-              aria-pressed={targetType === 'component'}
-              onClick={() => loadTargetRule('component')}
-            >
-              <Box />
-              Component move
-            </Button>
-            <Button
-              type="button"
-              variant={targetType === 'faces' ? 'secondary' : 'outline'}
-              aria-pressed={targetType === 'faces'}
-              onClick={() => loadTargetRule('faces')}
-            >
-              <ScanSearch />
-              Local faces
-            </Button>
-          </div>
-          {targetType === 'faces' ? (
-            <>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={
-                    selectionMethod === 'click' ? 'secondary' : 'ghost'
-                  }
-                  aria-pressed={selectionMethod === 'click'}
-                  onClick={() => setSelectionMethod('click')}
-                >
-                  <MousePointer2 />
-                  Click selection
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={
-                    selectionMethod === 'box' ? 'secondary' : 'ghost'
-                  }
-                  aria-pressed={selectionMethod === 'box'}
-                  onClick={() => setSelectionMethod('box')}
-                >
-                  Box selection
-                </Button>
-              </div>
-              {targetFaceIds.length === 0 ? (
-                <p className="mt-2 text-[0.68rem] leading-4 text-warning">
-                  Local face move는 Viewer에서 face를 선택한 뒤 적용할 수
-                  있습니다.
-                </p>
-              ) : null}
-            </>
-          ) : null}
         </section>
 
         <VectorEditor
           title="Move"
           unit="mm"
+          help="선택한 부품을 X/Y/Z 방향으로 평행이동합니다. Tilt보다 먼저 적용되는 것으로 간주해 계산합니다."
           vector={move}
           onChange={(axis, value) =>
             updateVector(setMove, move, axis, value)
@@ -355,6 +247,7 @@ export function TransformEditorDialog({
         <VectorEditor
           title="Tilt"
           unit="deg"
+          help="선택한 부품을 X/Y/Z축 기준으로 회전합니다. 회전 기준점은 아래 Tilt pivot에서 정합니다."
           vector={tilt}
           onChange={(axis, value) =>
             updateVector(setTilt, tilt, axis, value)
@@ -442,8 +335,7 @@ export function TransformEditorDialog({
             <Rotate3D className="size-3.5 text-primary" />
             Transform preview
             <HelpTooltip label="Transform preview 도움말">
-              적용한 component move·tilt와 local face overlay는 Three.js
-              Viewer에 즉시 반영됩니다.
+              적용한 move·tilt는 Three.js Viewer에 즉시 반영됩니다.
             </HelpTooltip>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
@@ -473,6 +365,7 @@ export function TransformEditorDialog({
 interface VectorEditorProps {
   title: string
   unit: string
+  help: string
   vector: Vector3Value
   onChange(axis: Axis, value: number): void
 }
@@ -480,13 +373,15 @@ interface VectorEditorProps {
 function VectorEditor({
   title,
   unit,
+  help,
   vector,
   onChange,
 }: VectorEditorProps) {
   return (
     <fieldset className="rounded-xl border border-border bg-background/35 p-3">
-      <legend className="px-1 text-xs font-semibold">
+      <legend className="flex items-center gap-1.5 px-1 text-xs font-semibold">
         {title} · {unit}
+        <HelpTooltip label={`${title} 도움말`}>{help}</HelpTooltip>
       </legend>
       <div className="mt-1 grid grid-cols-3 gap-2">
         {(['x', 'y', 'z'] as const).map((axis) => (

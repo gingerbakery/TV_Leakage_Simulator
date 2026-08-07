@@ -183,6 +183,35 @@ export const baseMaterials: BaseMaterial[] = [
     reflectanceTotal: 0.03,
     defaultSurfaceId: 'foam_low_reflect',
   },
+  // Optical - backlight-cavity elements that sit behind/above the LCD
+  // panel. Both are reflectance-only *approximations*: this simulator has
+  // no transmission/refraction model, so only the fraction of light that
+  // bounces back into the cavity is represented here, not what passes
+  // through. Reflectance values are industry-typical placeholders (no
+  // measured spec sheet backing them yet) - refine per part once real data
+  // is available.
+  {
+    id: 'lcd_open_cell_rear',
+    name: 'LCD Open Cell · Rear surface',
+    category: 'Optical',
+    // Rear-facing side of an LCD Open Cell (bottom polarizer/glass stack)
+    // as seen from inside the backlight cavity. A reflective-polarizer
+    // film (e.g. DBEF) reflects most of one polarization and passes most
+    // of the other, so the effective unpolarized reflectance back into the
+    // cavity lands roughly mid-range rather than near either extreme.
+    reflectanceTotal: 0.45,
+    defaultSurfaceId: 'optical_film_mixed',
+  },
+  {
+    id: 'optical_diffuser_plate',
+    name: 'Optical diffuser plate (PMMA)',
+    category: 'Optical',
+    // Diffuser plates are built for high transmittance/haze; only the
+    // minority backscattered portion (not the light that passes through)
+    // is represented here.
+    reflectanceTotal: 0.4,
+    defaultSurfaceId: 'optical_diffuser_scatter',
+  },
 ]
 
 // Metal finish tiers (`metal_*`) are keyed to typical 60° Gloss Unit (GU)
@@ -310,6 +339,28 @@ export const surfaceProperties: SurfaceProperty[] = [
     scatterSigmaDeg: 45,
     compatibleCategories: ['Foam'],
   },
+  {
+    id: 'optical_film_mixed',
+    name: 'Normal',
+    scatterModel: 'mixed',
+    reflectanceScale: 1,
+    specularRatio: 0.35,
+    diffuseRatio: 0.65,
+    roughness: 0.5,
+    scatterSigmaDeg: 16,
+    compatibleCategories: ['Optical'],
+  },
+  {
+    id: 'optical_diffuser_scatter',
+    name: 'Diffuse',
+    scatterModel: 'lambertian',
+    reflectanceScale: 1,
+    specularRatio: 0,
+    diffuseRatio: 1,
+    roughness: 0.8,
+    scatterSigmaDeg: 28,
+    compatibleCategories: ['Optical'],
+  },
 ]
 
 export function surfacePropertiesForCategory(
@@ -322,24 +373,31 @@ export function surfacePropertiesForCategory(
 
 export const opticalProfilePresets: OpticalProfilePreset[] = [
   {
-    id: 'profile_tv_black_default',
-    name: 'TV black default',
+    id: 'profile_pc_black_general_injection',
+    name: 'PC Black · General injection',
     baseMaterialId: 'pc_black',
-    surfaceId: 'matte_black_resin',
+    surfaceId: 'semi_gloss_black_resin',
     bsdfAssetId: '',
   },
   {
-    id: 'profile_black_chassis_default',
-    name: 'Black chassis default',
-    baseMaterialId: 'powder_coated_secc_black',
-    surfaceId: 'metal_low_gloss',
+    id: 'profile_secc_bare_metal',
+    name: 'SECC · Bare metal',
+    baseMaterialId: 'secc_bare',
+    surfaceId: 'metal_satin',
     bsdfAssetId: '',
   },
   {
-    id: 'profile_polished_mirror_high',
-    name: 'Polished mirror',
-    baseMaterialId: 'anodized_aluminum_silver',
-    surfaceId: 'polished_mirror_high',
+    id: 'profile_lcd_open_cell_rear',
+    name: 'LCD Open Cell',
+    baseMaterialId: 'lcd_open_cell_rear',
+    surfaceId: 'optical_film_mixed',
+    bsdfAssetId: '',
+  },
+  {
+    id: 'profile_optical_diffuser_plate',
+    name: 'Optical diffuser plate',
+    baseMaterialId: 'optical_diffuser_plate',
+    surfaceId: 'optical_diffuser_scatter',
     bsdfAssetId: '',
   },
 ]

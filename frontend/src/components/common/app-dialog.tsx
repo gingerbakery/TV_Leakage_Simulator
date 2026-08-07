@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { GripVertical } from 'lucide-react'
 
+import { HelpTooltip } from '@/components/common/help-tooltip'
 import {
   Dialog,
   DialogContent,
@@ -26,7 +27,16 @@ export interface AppDialogProps {
   open: boolean
   onOpenChange(open: boolean): void
   title: string
+  /** Visible description text under the title - use for short, essential
+   * context (e.g. a confirmation prompt) that the user must read right
+   * away. For longer guide/explainer text, prefer `help` instead, which
+   * stays hidden behind a "?" icon next to the title. */
   description?: ReactNode
+  /** Guide text shown via a "?" HelpTooltip next to the title, instead of
+   * as an always-visible paragraph. Still wired to the dialog's
+   * aria-describedby (screen-reader only) so it isn't lost for
+   * non-pointer users. */
+  help?: string
   children?: ReactNode
   footer?: ReactNode
   size?: AppDialogSize
@@ -52,6 +62,7 @@ export function AppDialog({
   onOpenChange,
   title,
   description,
+  help,
   children,
   footer,
   size = 'md',
@@ -190,6 +201,15 @@ export function AppDialog({
             ? (event) => event.preventDefault()
             : undefined
         }
+        onOpenAutoFocus={(event) => {
+          // Radix's default is "first focusable descendant", which in these
+          // dialogs is often a HelpTooltip's "?" button - focusing it pops
+          // its tooltip open the instant the dialog appears. Focus the
+          // panel itself instead, same as closing already returns focus to
+          // returnFocusRef rather than wherever focus happened to land.
+          event.preventDefault()
+          contentRef.current?.focus()
+        }}
         onCloseAutoFocus={(event) => {
           if (!returnFocusRef?.current) return
           event.preventDefault()
@@ -228,9 +248,14 @@ export function AppDialog({
               />
             ) : null}
             <DialogTitle>{title}</DialogTitle>
+            {help ? (
+              <HelpTooltip label={`${title} 도움말`}>{help}</HelpTooltip>
+            ) : null}
           </div>
           {description ? (
             <DialogDescription>{description}</DialogDescription>
+          ) : help ? (
+            <DialogDescription className="sr-only">{help}</DialogDescription>
           ) : null}
         </DialogHeader>
         {children}

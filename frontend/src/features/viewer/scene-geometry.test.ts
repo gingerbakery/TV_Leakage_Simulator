@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ScenePayload } from '@/api'
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
@@ -81,5 +82,77 @@ describe('Three.js scene geometry', () => {
         2,
       ),
     ).toEqual([2])
+  })
+
+  it('bridges CAD faces tessellated independently (duplicate seam vertices, not shared indices)', () => {
+    // Two coplanar 10x10 squares sitting side by side in the XY plane, each
+    // triangulated on its own - exactly what a STEP tessellator produces
+    // when two adjacent B-rep faces are meshed independently: the shared
+    // seam is geometrically coincident but uses two *different* vertex
+    // indices per side, never a shared one.
+    const scene: ScenePayload = {
+      ...createSceneFixture(),
+      mesh: {
+        vertices: [
+          [0, 0, 0], // 0
+          [10, 0, 0], // 1 - left square's right-bottom corner
+          [10, 10, 0], // 2 - left square's right-top corner
+          [0, 10, 0], // 3
+          [10, 0, 0], // 4 - right square's left-bottom corner (duplicate of 1)
+          [10, 10, 0], // 5 - right square's left-top corner (duplicate of 2)
+          [20, 0, 0], // 6
+          [20, 10, 0], // 7
+        ],
+        faces: [
+          [0, 1, 2],
+          [0, 2, 3],
+          [4, 6, 7],
+          [4, 7, 5],
+        ],
+        face_ids: [0, 1, 2, 3],
+        face_component_ids: [1, 1, 1, 1],
+        face_material_ids: ['', '', '', ''],
+        face_normals: [
+          [0, 0, 1],
+          [0, 0, 1],
+          [0, 0, 1],
+          [0, 0, 1],
+        ],
+        face_centroids: [
+          [6.667, 3.333, 0],
+          [3.333, 6.667, 0],
+          [16.667, 3.333, 0],
+          [13.333, 6.667, 0],
+        ],
+        face_areas_mm2: [50, 50, 50, 50],
+        feature_edge_segments: [],
+      },
+      components: [
+        {
+          object_id: 1,
+          component_id: 1,
+          object_name: 'Panel',
+          component_name: 'Panel',
+          face_indices: [0, 1, 2, 3],
+          face_count: 4,
+          area_mm2: 200,
+          bbox_min: [0, 0, 0],
+          bbox_max: [20, 10, 0],
+          is_truncated: false,
+          color: null,
+        },
+      ],
+      metadata: {
+        ...createSceneFixture().metadata,
+        face_count: 4,
+        vertex_count: 8,
+        component_count: 1,
+      },
+    }
+    scene.objects = scene.components
+
+    expect(
+      findCoplanarFacePatch(scene, scene.components[0].face_indices, 0),
+    ).toEqual([0, 1, 2, 3])
   })
 })

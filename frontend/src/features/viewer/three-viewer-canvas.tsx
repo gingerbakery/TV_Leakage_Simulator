@@ -308,6 +308,9 @@ const materialColors: Record<string, number> = {
   // Tape / Foam
   black_tape_general: 0x111827,
   foam_absorber_general: 0x17202b,
+  // Optical
+  lcd_open_cell_rear: 0x39424f,
+  optical_diffuser_plate: 0xd9dee3,
 }
 
 function disposeMaterial(material: Material | Material[]): void {
@@ -2294,6 +2297,11 @@ export function ThreeViewerCanvas({
           )
           return
         }
+        // Same coplanar-patch, toggle-add/remove behavior as the Material
+        // editor's Face 지정 picker and Transform's Local faces picker - a
+        // click grabs/releases the whole CAD surface as drawn, regardless
+        // of modifier keys, so all four "면 지정" pickers in the app behave
+        // identically.
         const component = scene.components.find(
           (candidate) => candidate.component_id === componentId,
         )
@@ -2302,30 +2310,18 @@ export function ThreeViewerCanvas({
           component?.face_indices ?? [faceId],
           faceId,
         )
-        if (additive) {
-          const nextFaceIds = new Set(selectedFaceIdsRef.current)
-          const removePatch = patchFaceIds.every((id) =>
-            nextFaceIds.has(id),
-          )
-          for (const id of patchFaceIds) {
-            if (removePatch) nextFaceIds.delete(id)
-            else nextFaceIds.add(id)
-          }
-          actions.setSelectedFaceIds(nextFaceIds)
-          if (!removePatch) {
-            actions.setSelectedComponentIds([
-              ...new Set([
-                ...selectedComponentIdsRef.current,
-                componentId,
-              ]),
-            ])
-          }
-        } else {
-          actions.setSelectedComponentIds([componentId])
-          actions.setSelectedFaceIds(patchFaceIds)
+        const nextFaceIds = new Set(selectedFaceIdsRef.current)
+        const removePatch = patchFaceIds.every((id) => nextFaceIds.has(id))
+        for (const id of patchFaceIds) {
+          if (removePatch) nextFaceIds.delete(id)
+          else nextFaceIds.add(id)
         }
+        actions.setSelectedFaceIds(nextFaceIds)
+        actions.setSelectedComponentIds([
+          ...new Set([...selectedComponentIdsRef.current, componentId]),
+        ])
         onStatusMessage(
-          `Emitter surface picking · Component ${componentId} · surface 선택됨`,
+          `Emitter surface picking · Component ${componentId} · surface ${removePatch ? '해제' : '추가'}`,
         )
         return
       }
@@ -3996,7 +3992,7 @@ export function ThreeViewerCanvas({
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
           : emitterFaceSelectionArmed
-            ? 'Emitter surface mode · Click a CAD surface · Shift multi-select'
+            ? 'Emitter surface mode · Click a CAD surface to add/remove'
           : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select'}
       </div>
       {rendererError ? (

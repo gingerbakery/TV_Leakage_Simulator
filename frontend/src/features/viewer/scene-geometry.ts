@@ -153,9 +153,38 @@ export function findCoplanarFacePatch(
 
   const componentFaces = new Set(componentFaceIds)
   if (!componentFaces.has(seedFaceId)) return [seedFaceId]
+
+  const component = scene.components.find((candidate) =>
+    candidate.face_indices.includes(seedFaceId),
+  )
+  const componentDiagonal = component
+    ? new Vector3(...component.bbox_max)
+        .sub(new Vector3(...component.bbox_min))
+        .length()
+    : 1
+  const planeTolerance = Math.max(componentDiagonal * 1e-5, 1e-4)
+  // CAD-to-mesh tessellation commonly triangulates each original B-rep face
+  // independently, with its own vertex buffer segment - two triangles from
+  // *different* B-rep faces that visually touch along one CAD-drawn surface
+  // will usually NOT share a vertex index even though their edges sit at
+  // the exact same 3D position. Keying adjacency off quantized vertex
+  // *position* (instead of vertex index) bridges those seams, so a click
+  // still grows to the whole surface as drawn rather than stopping at the
+  // first internal tessellation/B-rep-face boundary.
+  const positionTolerance = planeTolerance
+  const positionKey = (vertexId: number): string => {
+    const vertex = scene.mesh.vertices[vertexId]
+    if (!vertex) return `v${vertexId}`
+    return `${Math.round(vertex[0] / positionTolerance)}:${Math.round(
+      vertex[1] / positionTolerance,
+    )}:${Math.round(vertex[2] / positionTolerance)}`
+  }
   const edgeFaces = new Map<string, number[]>()
-  const edgeKey = (first: number, second: number) =>
-    first < second ? `${first}:${second}` : `${second}:${first}`
+  const edgeKey = (firstVertexId: number, secondVertexId: number) => {
+    const first = positionKey(firstVertexId)
+    const second = positionKey(secondVertexId)
+    return first < second ? `${first}|${second}` : `${second}|${first}`
+  }
 
   for (const faceId of componentFaces) {
     const face = scene.mesh.faces[faceId]
@@ -171,15 +200,6 @@ export function findCoplanarFacePatch(
   const seedNormal = new Vector3(...seedNormalValues).normalize()
   const seedCentroid = new Vector3(...seedCentroidValues)
   const normalDotTolerance = Math.cos(Math.PI / 360)
-  const component = scene.components.find((candidate) =>
-    candidate.face_indices.includes(seedFaceId),
-  )
-  const componentDiagonal = component
-    ? new Vector3(...component.bbox_max)
-        .sub(new Vector3(...component.bbox_min))
-        .length()
-    : 1
-  const planeTolerance = Math.max(componentDiagonal * 1e-5, 1e-4)
   const selected = new Set<number>([seedFaceId])
   const queue = [seedFaceId]
 

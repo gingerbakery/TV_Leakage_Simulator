@@ -108,12 +108,18 @@ export function RoiSelectionPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <label
-          htmlFor="roi-scope-label"
-          className="text-[0.68rem] font-medium text-muted-foreground"
-        >
-          ROI 이름
-        </label>
+        <div className="flex items-center gap-1.5">
+          <label
+            htmlFor="roi-scope-label"
+            className="text-[0.68rem] font-medium text-muted-foreground"
+          >
+            ROI 이름
+          </label>
+          <HelpTooltip label="ROI 이름 도움말">
+            이 ROI에 부여할 이름입니다. 비워두면 자동으로 번호가
+            매겨집니다.
+          </HelpTooltip>
+        </div>
         <input
           id="roi-scope-label"
           value={roiDraftLabel}
@@ -158,6 +164,10 @@ export function RoiSelectionPanel({
         <div className="flex items-center gap-2">
           <MapPin className="size-4 text-primary" />
           <div className="text-xs font-semibold">좌표로 Face 찾기</div>
+          <HelpTooltip label="좌표로 Face 찾기 도움말">
+            입력한 X/Y/Z 좌표에서 가장 가까운, 현재 보이는 컴포넌트의
+            face를 찾아 ROI로 추가합니다.
+          </HelpTooltip>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-1.5">
           {(['x', 'y', 'z'] as const).map((axis) => (

@@ -137,12 +137,14 @@ function NumberField({
 
 function VectorFields({
   label,
+  help,
   labels,
   ariaLabels,
   value,
   onChange,
 }: {
   label: string
+  help?: string
   labels: [string, string, string]
   /** Accessible names, when the visible labels alone would collide with
    * another field group in the same dialog (e.g. multiple "X" fields). */
@@ -152,8 +154,11 @@ function VectorFields({
 }) {
   return (
     <fieldset className="space-y-1.5">
-      <legend className="text-[0.68rem] font-semibold text-muted-foreground">
+      <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
         {label}
+        {help ? (
+          <HelpTooltip label={`${label} 도움말`}>{help}</HelpTooltip>
+        ) : null}
       </legend>
       <div className="grid grid-cols-3 gap-2">
         {labels.map((axisLabel, axis) => (
@@ -214,6 +219,9 @@ function EmitterDialog({
   )
   const datumFacePickResult = useWorkspaceStore(
     workspaceSelectors.datumFacePickResult,
+  )
+  const emitterFaceSelectionArmed = useWorkspaceStore(
+    workspaceSelectors.emitterFaceSelectionArmed,
   )
 
   useEffect(() => {
@@ -355,7 +363,7 @@ function EmitterDialog({
             ? 'CAD surface emitter'
             : 'Datum plane emitter'
       }
-      description={
+      help={
         mode === 'face'
           ? '현재 Viewer에서 선택한 triangle face를 실제 발광면으로 등록합니다.'
           : 'CAD가 없는 공간에 좌표와 회전으로 가상 사각 발광면을 배치합니다.'
@@ -380,11 +388,34 @@ function EmitterDialog({
               {initialEmitter ? 'Emitter faces' : 'Selected faces'}
               {emitterFaceIds.length > 0 ? ' · 선택됨' : ''}
             </div>
-            <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-              {initialEmitter
-                ? '기존 CAD 발광면은 유지됩니다. 발광면을 교체하려면 새 CAD surface Emitter를 생성하세요.'
-                : '이 패널을 열어 둔 채 Viewer 면을 클릭하세요. Shift를 누르면 여러 면을 추가 선택할 수 있습니다.'}
-            </p>
+            {initialEmitter ? (
+              <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
+                기존 CAD 발광면은 유지됩니다. 발광면을 교체하려면 새 CAD
+                surface Emitter를 생성하세요.
+              </p>
+            ) : (
+              // Same "뷰어에서 CAD Face 선택" toggle button, constant label,
+              // and click-toggles-a-CAD-surface mechanics as Material's Face
+              // 지정 / Transform's Local faces pickers - starts armed
+              // automatically (there's no other way to build a CAD surface
+              // emitter), but stays a real button so it can be
+              // paused/resumed by pressing it again.
+              <Button
+                type="button"
+                variant={emitterFaceSelectionArmed ? 'secondary' : 'outline'}
+                aria-pressed={emitterFaceSelectionArmed}
+                className="mt-2 w-full"
+                onClick={() =>
+                  actions.setEmitterFaceSelectionArmed(
+                    !emitterFaceSelectionArmed,
+                  )
+                }
+              >
+                <ScanSearch />
+                뷰어에서 CAD Face 선택
+                {emitterFaceIds.length > 0 ? ' · 선택됨' : ''}
+              </Button>
+            )}
           </div>
         ) : (
           <>
@@ -398,12 +429,11 @@ function EmitterDialog({
               }
             >
               <ScanSearch />
-              {datumFacePickArmed
-                ? '뷰어에서 CAD face를 클릭하세요…'
-                : '뷰어에서 CAD Face 선택'}
+              뷰어에서 CAD Face 선택
             </Button>
             <VectorFields
               label="Emitter Center 좌표 (mm)"
+              help="발광면의 중심 좌표입니다 (mm, CAD/Datum 원점 기준)."
               labels={['X', 'Y', 'Z']}
               ariaLabels={[
                 'Emitter center X',
@@ -415,6 +445,7 @@ function EmitterDialog({
             />
             <VectorFields
               label="Emitter Rotation (deg)"
+              help="발광면의 X/Y/Z축 기준 회전(도)입니다. 회전 후의 로컬 Z축이 발광 방향(normal)이 됩니다."
               labels={['X', 'Y', 'Z']}
               ariaLabels={[
                 'Emitter rotation X',
@@ -425,8 +456,11 @@ function EmitterDialog({
               onChange={setRotation}
             />
             <fieldset className="space-y-1.5">
-              <legend className="text-[0.68rem] font-semibold text-muted-foreground">
+              <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
                 Emitter Size (mm)
+                <HelpTooltip label="Emitter Size 도움말">
+                  발광면의 가로(Width)·세로(Height) 크기입니다 (mm).
+                </HelpTooltip>
               </legend>
               <div className="grid grid-cols-2 gap-2">
                 <NumberField
@@ -450,7 +484,14 @@ function EmitterDialog({
 
         <div className="grid gap-2 sm:grid-cols-2">
           <label className={fieldLabelClassName}>
-            <span>Power mode</span>
+            <span className="flex items-center gap-1.5">
+              Power mode
+              <HelpTooltip label="Power mode 도움말">
+                Total power: 발광면 전체의 총 광속(lm)을 지정합니다. Power
+                per area: 단위 면적당 광속(lm/m²)을 지정해, 발광면 크기에
+                따라 총 광량이 자동으로 계산됩니다.
+              </HelpTooltip>
+            </span>
             <select
               className={inputClassName}
               aria-label="Emitter power mode"
@@ -469,6 +510,7 @@ function EmitterDialog({
               value={power}
               min={0}
               onChange={setPower}
+              description="발광면 전체에서 방출하는 총 광속입니다."
             />
           ) : (
             <NumberField
@@ -476,6 +518,7 @@ function EmitterDialog({
               value={powerDensity}
               min={0}
               onChange={setPowerDensity}
+              description="단위 면적당 방출 광속입니다. 발광면 크기(Width×Height)를 곱한 값이 총 광속이 됩니다."
             />
           )}
           <NumberField
@@ -484,9 +527,17 @@ function EmitterDialog({
             min={1}
             step={1000}
             onChange={setRayCount}
+            description="시뮬레이션에 사용할 ray 샘플 개수입니다. 많을수록 결과가 정밀해지지만 계산 시간이 늘어납니다."
           />
           <label className={fieldLabelClassName}>
-            <span>Direction distribution</span>
+            <span className="flex items-center gap-1.5">
+              Direction distribution
+              <HelpTooltip label="Direction distribution 도움말">
+                발광 방향의 각도 분포입니다. Lambertian: cosine 가중 확산광
+                (일반 표면 발광). Isotropic: 반구 전체에 균일 분포.
+                Gaussian: normal 방향을 중심으로 좁게 퍼지는 지향성 광원.
+              </HelpTooltip>
+            </span>
             <select
               className={inputClassName}
               aria-label="Emitter direction distribution"
@@ -508,6 +559,7 @@ function EmitterDialog({
               value={sigma}
               min={0.1}
               onChange={setSigma}
+              description="Gaussian 분포의 표준편차(도)입니다. 작을수록 normal 방향으로 좁게 집중됩니다."
             />
           ) : null}
         </div>
@@ -517,7 +569,12 @@ function EmitterDialog({
             checked={normalFlip}
             onChange={(event) => setNormalFlip(event.currentTarget.checked)}
           />
-          Flip normal direction
+          <span className="flex items-center gap-1.5">
+            Flip normal direction
+            <HelpTooltip label="Flip normal direction 도움말">
+              발광면의 발광 방향(normal)을 반대로 뒤집습니다.
+            </HelpTooltip>
+          </span>
         </label>
       </div>
     </AppDialog>
@@ -757,7 +814,7 @@ function ReceiverDialog({
             ? 'Current view receiver'
             : 'Datum plane receiver'
       }
-      description={
+      help={
         mode === 'current_view'
           ? '현재 메인 Viewer의 카메라 방향과 화면 수평축을 수광면 좌표계로 저장합니다.'
           : '중심 좌표와 회전으로 가상 사각 수광면을 배치합니다.'
@@ -777,7 +834,12 @@ function ReceiverDialog({
     >
       <div className="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
         <label className={fieldLabelClassName}>
-          <span>Receiver name</span>
+          <span className="flex items-center gap-1.5">
+            Receiver name
+            <HelpTooltip label="Receiver name 도움말">
+              결과·리스트에 표시할 이 Receiver의 이름입니다.
+            </HelpTooltip>
+          </span>
           <input
             className={inputClassName}
             aria-label="Receiver name"
@@ -798,12 +860,11 @@ function ReceiverDialog({
               }
             >
               <ScanSearch />
-              {datumFacePickArmed
-                ? '뷰어에서 CAD face를 클릭하세요…'
-                : '뷰어에서 CAD Face 선택'}
+              뷰어에서 CAD Face 선택
             </Button>
             <VectorFields
               label="Receiver Center 좌표 (mm)"
+              help="수광면의 중심 좌표입니다 (mm)."
               labels={['X', 'Y', 'Z']}
               ariaLabels={[
                 'Receiver center X',
@@ -815,6 +876,7 @@ function ReceiverDialog({
             />
             <VectorFields
               label="Receiver Offset (mm)"
+              help="Center 좌표에 추가로 더해지는 이동값입니다 (mm). Datum plane 기준에서 살짝 옮기고 싶을 때 사용합니다."
               labels={['X', 'Y', 'Z']}
               ariaLabels={[
                 'Receiver offset X',
@@ -826,6 +888,7 @@ function ReceiverDialog({
             />
             <VectorFields
               label="Receiver Rotation (deg)"
+              help="수광면의 X/Y/Z축 기준 회전(도)입니다."
               labels={['X', 'Y', 'Z']}
               ariaLabels={[
                 'Receiver rotation X',
@@ -849,6 +912,7 @@ function ReceiverDialog({
                   value={viewDistance}
                   min={0.001}
                   onChange={setViewDistance}
+                  description="현재 카메라 시점(view) 중심에서 카메라 방향으로 얼마나 떨어진 위치에 수광면을 배치할지 지정합니다."
                 />
               </div>
               <Button
@@ -866,6 +930,7 @@ function ReceiverDialog({
               <div className="mt-4 space-y-3 border-t border-primary/15 pt-3">
                 <VectorFields
                   label="Center (mm)"
+                  help="캡처된 카메라 시점 기준 수광면의 실제 중심 좌표입니다. 값을 바꾸면 Receiver Offset이 자동으로 계산됩니다."
                   labels={[
                     'Receiver center X',
                     'Receiver center Y',
@@ -882,6 +947,7 @@ function ReceiverDialog({
                 />
                 <VectorFields
                   label="Tilt (deg)"
+                  help="캡처된 카메라 시점을 기준으로 수광면을 추가로 회전시킵니다."
                   labels={[
                     'Receiver tilt X',
                     'Receiver tilt Y',
@@ -895,8 +961,11 @@ function ReceiverDialog({
           </div>
         )}
         <fieldset className="space-y-1.5">
-          <legend className="text-[0.68rem] font-semibold text-muted-foreground">
+          <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
             Receiver Size (mm)
+            <HelpTooltip label="Receiver Size 도움말">
+              수광면의 가로(Width)·세로(Height) 크기입니다 (mm).
+            </HelpTooltip>
           </legend>
           <div className="grid grid-cols-2 gap-2">
             <NumberField
@@ -922,6 +991,7 @@ function ReceiverDialog({
             min={1}
             step={1}
             onChange={setResolutionX}
+            description="수광면을 가로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
           />
           <NumberField
             label="Resolution Y"
@@ -929,6 +999,7 @@ function ReceiverDialog({
             min={1}
             step={1}
             onChange={setResolutionY}
+            description="수광면을 세로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
           />
           <NumberField
             label="Acceptance (deg)"
@@ -937,6 +1008,7 @@ function ReceiverDialog({
             min={0.1}
             max={180}
             onChange={setAcceptance}
+            description="이 각도보다 큰 입사각으로 도달한 ray는 수광 대상에서 제외합니다 (0=정면만, 180=모든 각도)."
           />
         </div>
         {mode === 'current_view' ? (
@@ -952,7 +1024,12 @@ function ReceiverDialog({
             checked={normalFlip}
             onChange={(event) => setNormalFlip(event.currentTarget.checked)}
           />
-          Flip receiving normal
+          <span className="flex items-center gap-1.5">
+            Flip receiving normal
+            <HelpTooltip label="Flip receiving normal 도움말">
+              수광면이 향하는 방향(normal)을 반대로 뒤집습니다.
+            </HelpTooltip>
+          </span>
         </label>
       </div>
     </AppDialog>
