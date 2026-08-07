@@ -14,3 +14,5 @@ export type {
 } from './component-context-menu'
 export { ConfirmationDialog } from './confirmation-dialog'
 export type { ConfirmationDialogProps } from './confirmation-dialog'
+export { HelpTooltip } from './help-tooltip'
+export type { HelpTooltipProps } from './help-tooltip'

@@ -23,6 +23,11 @@ export interface SurfaceProperty {
   diffuseRatio: number
   roughness: number
   scatterSigmaDeg: number
+  /** Base-material categories this finish is physically plausible for
+   *  (e.g. a mirror polish only makes sense on Metal) - drives which
+   *  Surface property options the editor offers once a Base material is
+   *  picked. */
+  compatibleCategories: string[]
 }
 
 export interface OpticalProfilePreset {
@@ -43,35 +48,127 @@ export interface CompiledOpticalProfile {
   scatterSigmaDeg: number
 }
 
+// Reflectance values below are industry-typical placeholders (no measured
+// spec sheet backing them yet) - refine per part once real data is
+// available. Color (Black/Gray/White) is the dominant driver of a resin's
+// reflectance, so it is modeled as its own base-material axis; the resin
+// family (PC/ABS/HIPS) mainly affects mechanical properties and is kept
+// distinct here for BOM traceability even though their default optical
+// finish is currently shared (`semi_gloss_black_resin`, see below - an
+// as-molded part with no special mold treatment defaults to SPI B-2,
+// a semi-gloss finish, not matte; matte requires an intentionally
+// textured/EDM'd mold).
 export const baseMaterials: BaseMaterial[] = [
+  // Metal
   {
-    id: 'black_powder_coated_aluminum',
-    name: 'Black powder coated aluminum',
+    id: 'aluminum_bare',
+    name: 'Aluminum (bare)',
+    category: 'Metal',
+    reflectanceTotal: 0.55,
+    defaultSurfaceId: 'metal_satin',
+  },
+  {
+    id: 'secc_bare',
+    name: 'SECC (bare)',
+    category: 'Metal',
+    reflectanceTotal: 0.45,
+    defaultSurfaceId: 'metal_satin',
+  },
+  {
+    id: 'anodized_aluminum_black',
+    name: 'Anodized aluminum · Black',
+    category: 'Metal',
+    reflectanceTotal: 0.1,
+    defaultSurfaceId: 'metal_satin',
+  },
+  {
+    id: 'anodized_aluminum_silver',
+    name: 'Anodized aluminum · Silver',
+    category: 'Metal',
+    reflectanceTotal: 0.3,
+    defaultSurfaceId: 'metal_satin',
+  },
+  {
+    id: 'powder_coated_secc_black',
+    name: 'Powder coated SECC · Black',
     category: 'Metal',
     reflectanceTotal: 0.12,
-    defaultSurfaceId: 'black_powder_coat_fine',
+    defaultSurfaceId: 'metal_low_gloss',
   },
   {
-    id: 'black_pc_resin',
-    name: 'Black PC resin',
-    category: 'Resin',
-    reflectanceTotal: 0.08,
-    defaultSurfaceId: 'matte_black_resin',
-  },
-  {
-    id: 'anodized_aluminum',
-    name: 'Anodized aluminum',
+    id: 'powder_coated_secc_silver',
+    name: 'Powder coated SECC · Silver',
     category: 'Metal',
-    reflectanceTotal: 0.18,
-    defaultSurfaceId: 'anodized_matte',
+    reflectanceTotal: 0.35,
+    defaultSurfaceId: 'metal_low_gloss',
   },
+  // Resin - PC
   {
-    id: 'matte_black_abs',
-    name: 'Matte black ABS',
+    id: 'pc_black',
+    name: 'PC · Black',
     category: 'Resin',
     reflectanceTotal: 0.08,
-    defaultSurfaceId: 'matte_black_resin',
+    defaultSurfaceId: 'semi_gloss_black_resin',
   },
+  {
+    id: 'pc_gray',
+    name: 'PC · Gray',
+    category: 'Resin',
+    reflectanceTotal: 0.3,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  {
+    id: 'pc_white',
+    name: 'PC · White',
+    category: 'Resin',
+    reflectanceTotal: 0.85,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  // Resin - ABS
+  {
+    id: 'abs_black',
+    name: 'ABS · Black',
+    category: 'Resin',
+    reflectanceTotal: 0.08,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  {
+    id: 'abs_gray',
+    name: 'ABS · Gray',
+    category: 'Resin',
+    reflectanceTotal: 0.3,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  {
+    id: 'abs_white',
+    name: 'ABS · White',
+    category: 'Resin',
+    reflectanceTotal: 0.85,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  // Resin - HIPS
+  {
+    id: 'hips_black',
+    name: 'HIPS · Black',
+    category: 'Resin',
+    reflectanceTotal: 0.08,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  {
+    id: 'hips_gray',
+    name: 'HIPS · Gray',
+    category: 'Resin',
+    reflectanceTotal: 0.3,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  {
+    id: 'hips_white',
+    name: 'HIPS · White',
+    category: 'Resin',
+    reflectanceTotal: 0.85,
+    defaultSurfaceId: 'semi_gloss_black_resin',
+  },
+  // Tape / Foam
   {
     id: 'black_tape_general',
     name: 'Black tape',
@@ -88,50 +185,88 @@ export const baseMaterials: BaseMaterial[] = [
   },
 ]
 
+// Metal finish tiers (`metal_*`) are keyed to typical 60° Gloss Unit (GU)
+// bands rather than the process that produced them - anodizing, powder
+// coating, and bare/brushed metal are usually spec'd by gloss level in
+// practice, so one shared GU scale covers all of them (per-substrate look
+// still comes from the Base material's own reflectance). Bands follow the
+// common gloss-meter convention: low gloss <10GU, semi-gloss 10-70GU,
+// high gloss >70GU (60°) - see Konica Minolta / Qualitest gloss references.
 export const surfaceProperties: SurfaceProperty[] = [
   {
-    id: 'black_powder_coat_fine',
-    name: 'Black powder coat · fine',
+    id: 'metal_low_gloss',
+    name: 'Low gloss',
     scatterModel: 'gaussian',
     reflectanceScale: 1,
-    specularRatio: 0.15,
-    diffuseRatio: 0.85,
-    roughness: 0.7,
-    scatterSigmaDeg: 18,
+    specularRatio: 0.1,
+    diffuseRatio: 0.9,
+    roughness: 0.85,
+    scatterSigmaDeg: 30,
+    compatibleCategories: ['Metal'],
   },
   {
-    id: 'black_powder_coat_coarse',
-    name: 'Black powder coat · coarse',
-    scatterModel: 'gaussian',
-    reflectanceScale: 1.33,
-    specularRatio: 0.05,
-    diffuseRatio: 0.95,
-    roughness: 0.82,
-    scatterSigmaDeg: 28,
+    id: 'metal_satin',
+    name: 'Normal',
+    scatterModel: 'mixed',
+    reflectanceScale: 1,
+    specularRatio: 0.35,
+    diffuseRatio: 0.65,
+    roughness: 0.5,
+    scatterSigmaDeg: 15,
+    compatibleCategories: ['Metal'],
   },
+  {
+    id: 'metal_gloss',
+    name: 'Gloss',
+    scatterModel: 'mixed',
+    reflectanceScale: 1,
+    specularRatio: 0.65,
+    diffuseRatio: 0.35,
+    roughness: 0.25,
+    scatterSigmaDeg: 6,
+    compatibleCategories: ['Metal'],
+  },
+  // Resin finish tiers mirror the Metal GU bands, anchored to SPI mold
+  // finish grades: SPI B-2 (sandpaper-polished) is the *default* mold
+  // finish used when nothing special is called out, and lands mid
+  // semi-gloss (~50GU) - matte (SPI C/D, textured/EDM mold) and high-gloss
+  // (SPI A, diamond-buffed mold) are both deliberate, non-default choices.
   {
     id: 'matte_black_resin',
-    name: 'Matte black resin',
+    name: 'Matte',
     scatterModel: 'lambertian',
     reflectanceScale: 1,
     specularRatio: 0,
     diffuseRatio: 1,
     roughness: 0.88,
     scatterSigmaDeg: 32,
+    compatibleCategories: ['Resin'],
   },
   {
     id: 'semi_gloss_black_resin',
-    name: 'Semi-gloss black resin',
+    name: 'Normal',
     scatterModel: 'mixed',
-    reflectanceScale: 1.25,
+    reflectanceScale: 1,
     specularRatio: 0.4,
     diffuseRatio: 0.6,
     roughness: 0.45,
     scatterSigmaDeg: 14,
+    compatibleCategories: ['Resin'],
+  },
+  {
+    id: 'high_gloss_resin',
+    name: 'High-gloss',
+    scatterModel: 'mixed',
+    reflectanceScale: 1,
+    specularRatio: 0.75,
+    diffuseRatio: 0.25,
+    roughness: 0.15,
+    scatterSigmaDeg: 5,
+    compatibleCategories: ['Resin'],
   },
   {
     id: 'polished_mirror_high',
-    name: 'Polished mirror · high reflectance (R 0.85)',
+    name: 'Polished mirror',
     scatterModel: 'specular',
     reflectanceScale: 1,
     reflectanceOverride: 0.85,
@@ -139,37 +274,30 @@ export const surfaceProperties: SurfaceProperty[] = [
     diffuseRatio: 0,
     roughness: 0.03,
     scatterSigmaDeg: 0.5,
-  },
-  {
-    id: 'enhanced_mirror_very_high',
-    name: 'Enhanced mirror · very high (R 0.95)',
-    scatterModel: 'specular',
-    reflectanceScale: 1,
-    reflectanceOverride: 0.95,
-    specularRatio: 1,
-    diffuseRatio: 0,
-    roughness: 0.01,
-    scatterSigmaDeg: 0.2,
-  },
-  {
-    id: 'anodized_matte',
-    name: 'Anodized matte',
-    scatterModel: 'mixed',
-    reflectanceScale: 1,
-    specularRatio: 0.45,
-    diffuseRatio: 0.55,
-    roughness: 0.5,
-    scatterSigmaDeg: 12,
+    compatibleCategories: ['Metal'],
   },
   {
     id: 'tape_black_matte',
-    name: 'Black tape matte',
+    name: 'Black tape · matte',
     scatterModel: 'lambertian',
     reflectanceScale: 1,
     specularRatio: 0,
     diffuseRatio: 1,
     roughness: 0.92,
     scatterSigmaDeg: 38,
+    compatibleCategories: ['Tape'],
+  },
+  {
+    id: 'tape_black_glossy',
+    name: 'Black tape · glossy',
+    scatterModel: 'mixed',
+    reflectanceScale: 1,
+    reflectanceOverride: 0.12,
+    specularRatio: 0.5,
+    diffuseRatio: 0.5,
+    roughness: 0.25,
+    scatterSigmaDeg: 8,
+    compatibleCategories: ['Tape'],
   },
   {
     id: 'foam_low_reflect',
@@ -180,73 +308,38 @@ export const surfaceProperties: SurfaceProperty[] = [
     diffuseRatio: 1,
     roughness: 0.98,
     scatterSigmaDeg: 45,
-  },
-  {
-    id: 'corrosion_light',
-    name: 'Corrosion · light',
-    scatterModel: 'gaussian',
-    reflectanceScale: 1.17,
-    specularRatio: 0.1,
-    diffuseRatio: 0.9,
-    roughness: 0.76,
-    scatterSigmaDeg: 24,
-  },
-  {
-    id: 'corrosion_medium',
-    name: 'Corrosion · medium',
-    scatterModel: 'gaussian',
-    reflectanceScale: 1.5,
-    specularRatio: 0.05,
-    diffuseRatio: 0.95,
-    roughness: 0.84,
-    scatterSigmaDeg: 34,
-  },
-  {
-    id: 'corrosion_heavy',
-    name: 'Corrosion · heavy',
-    scatterModel: 'gaussian',
-    reflectanceScale: 1.83,
-    specularRatio: 0.02,
-    diffuseRatio: 0.98,
-    roughness: 0.94,
-    scatterSigmaDeg: 46,
+    compatibleCategories: ['Foam'],
   },
 ]
+
+export function surfacePropertiesForCategory(
+  category: string,
+): SurfaceProperty[] {
+  return surfaceProperties.filter((surface) =>
+    surface.compatibleCategories.includes(category),
+  )
+}
 
 export const opticalProfilePresets: OpticalProfilePreset[] = [
   {
     id: 'profile_tv_black_default',
     name: 'TV black default',
-    baseMaterialId: 'black_pc_resin',
+    baseMaterialId: 'pc_black',
     surfaceId: 'matte_black_resin',
     bsdfAssetId: '',
   },
   {
     id: 'profile_black_chassis_default',
     name: 'Black chassis default',
-    baseMaterialId: 'black_powder_coated_aluminum',
-    surfaceId: 'black_powder_coat_fine',
-    bsdfAssetId: '',
-  },
-  {
-    id: 'profile_corrosion_medium',
-    name: 'Corrosion medium edge',
-    baseMaterialId: 'black_powder_coated_aluminum',
-    surfaceId: 'corrosion_medium',
+    baseMaterialId: 'powder_coated_secc_black',
+    surfaceId: 'metal_low_gloss',
     bsdfAssetId: '',
   },
   {
     id: 'profile_polished_mirror_high',
-    name: 'Polished mirror · R 0.85 reference',
-    baseMaterialId: 'anodized_aluminum',
+    name: 'Polished mirror',
+    baseMaterialId: 'anodized_aluminum_silver',
     surfaceId: 'polished_mirror_high',
-    bsdfAssetId: '',
-  },
-  {
-    id: 'profile_enhanced_mirror_very_high',
-    name: 'Enhanced mirror · R 0.95 reference',
-    baseMaterialId: 'anodized_aluminum',
-    surfaceId: 'enhanced_mirror_very_high',
     bsdfAssetId: '',
   },
 ]

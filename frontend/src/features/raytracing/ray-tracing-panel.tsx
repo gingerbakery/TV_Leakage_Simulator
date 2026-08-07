@@ -27,7 +27,7 @@ import {
   useRayTraceJobQuery,
   useStartRayTraceMutation,
 } from '@/api'
-import { AppDialog } from '@/components/common'
+import { AppDialog, HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
@@ -71,7 +71,6 @@ const currentViewDefaultDistanceMm = 30
 const inputClassName =
   'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 const fieldLabelClassName = 'space-y-1 text-[0.68rem] font-medium'
-const fieldHintClassName = 'text-[0.62rem] leading-4 font-normal text-muted-foreground'
 
 function sceneCenter(scene: ScenePayload | undefined): Vec3 {
   if (!scene || scene.components.length === 0) return [0, 0, 0]
@@ -115,7 +114,12 @@ function NumberField({
 }) {
   return (
     <label className={fieldLabelClassName}>
-      <span>{label}</span>
+      <span className="flex items-center gap-1.5">
+        {label}
+        {description ? (
+          <HelpTooltip label={`${label} 도움말`}>{description}</HelpTooltip>
+        ) : null}
+      </span>
       <NumberInput
         className={inputClassName}
         aria-label={ariaLabel ?? label}
@@ -127,9 +131,6 @@ function NumberField({
         disabled={disabled}
         onValueChange={onChange}
       />
-      {description ? (
-        <p className={fieldHintClassName}>{description}</p>
-      ) : null}
     </label>
   )
 }
@@ -376,8 +377,8 @@ function EmitterDialog({
         {mode === 'face' ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="text-xs font-semibold">
-              {initialEmitter ? 'Emitter faces' : 'Selected faces'} ·{' '}
-              {emitterFaceIds.length.toLocaleString()}
+              {initialEmitter ? 'Emitter faces' : 'Selected faces'}
+              {emitterFaceIds.length > 0 ? ' · 선택됨' : ''}
             </div>
             <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
               {initialEmitter
@@ -1123,6 +1124,12 @@ export function RayTracingPanel({
           <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
             <Lightbulb className="size-3.5 text-warning" />
             Emitter
+            <HelpTooltip label="Emitter 도움말">
+              빛이 나오는 발광면입니다. CAD surface는 기존 모델의 face를
+              그대로 발광면으로 쓰고, Datum plane은 좌표를 직접 입력해
+              CAD와 무관한 평면을 새로 배치합니다. 여러 개를 등록하고
+              체크박스로 개별적으로 켜고 끌 수 있습니다.
+            </HelpTooltip>
           </div>
           <Badge variant="outline">{emitters.length}</Badge>
         </div>
@@ -1187,7 +1194,7 @@ export function RayTracingPanel({
                   </div>
                   <div className="text-[0.62rem] text-muted-foreground">
                     {emitter.emitter_type === 'face'
-                      ? `${emitter.face_indices.length} faces`
+                      ? 'CAD surface'
                       : `${emitter.width_mm} × ${emitter.height_mm} mm`}
                     {' · '}
                     {emitter.ray_count.toLocaleString()} rays
@@ -1230,6 +1237,12 @@ export function RayTracingPanel({
           <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
             <Aperture className="size-3.5 text-primary" />
             Receiver
+            <HelpTooltip label="Receiver 도움말">
+              빛을 받아 hit을 집계하는 수광면입니다. Datum plane은 좌표를
+              직접 입력해 배치하고, Current view는 지금 3D Viewer 카메라가
+              보고 있는 화면을 그대로 Receiver로 등록합니다. Acceptance
+              각도 안으로 들어오는 ray만 hit으로 집계됩니다.
+            </HelpTooltip>
           </div>
           <Badge variant="outline">{receivers.length}</Badge>
         </div>
@@ -1327,6 +1340,10 @@ export function RayTracingPanel({
         <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
           <Activity className="size-3.5" />
           Run options
+          <HelpTooltip label="Run options 도움말">
+            반사 횟수, 종료 조건, 저장할 ray path 수 등 시뮬레이션 계산
+            방식을 설정합니다. 각 항목 아래 설명을 참고하세요.
+          </HelpTooltip>
         </div>
         <div className="grid grid-cols-1 gap-2.5">
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
@@ -1389,7 +1406,15 @@ export function RayTracingPanel({
             description="3D Viewer·Ray Section View에 표시할 ray path를 최대 몇 개까지 저장할지 - Receiver hits 등 통계 결과에는 영향을 주지 않습니다."
           />
           <label className={fieldLabelClassName}>
-            <span>Termination</span>
+            <span className="flex items-center gap-1.5">
+              Termination
+              <HelpTooltip label="Termination 도움말">
+                Energy threshold: Minimum energy 미만이면 즉시 종료합니다.
+                Russian roulette: 즉시 끊는 대신 확률적으로 생존시키고
+                생존한 ray는 에너지를 보정해, 통계적 편향 없이 계산량을
+                줄입니다.
+              </HelpTooltip>
+            </span>
             <select
               className={inputClassName}
               aria-label="Ray termination mode"
@@ -1407,15 +1432,15 @@ export function RayTracingPanel({
               <option value="threshold">Energy threshold</option>
               <option value="russian_roulette">Russian roulette</option>
             </select>
-            <p className={fieldHintClassName}>
-              Energy threshold: Minimum energy 미만이면 즉시 종료합니다.
-              Russian roulette: 즉시 끊는 대신 확률적으로 생존시키고
-              생존한 ray는 에너지를 보정해, 통계적 편향 없이 계산량을
-              줄입니다.
-            </p>
           </label>
           <label className={fieldLabelClassName}>
-            <span>Contribution</span>
+            <span className="flex items-center gap-1.5">
+              Contribution
+              <HelpTooltip label="Contribution 도움말">
+                Fast summary: 집계 통계만 빠르게 계산합니다. Detailed: face별
+                기여도까지 추적해 상세 분석이 가능하지만 더 오래 걸립니다.
+              </HelpTooltip>
+            </span>
             <select
               className={inputClassName}
               aria-label="Contribution mode"
@@ -1433,16 +1458,11 @@ export function RayTracingPanel({
               <option value="summary">Fast summary</option>
               <option value="detailed">Detailed</option>
             </select>
-            <p className={fieldHintClassName}>
-              Fast summary: 집계 통계만 빠르게 계산합니다. Detailed: face별
-              기여도까지 추적해 상세 분석이 가능하지만 더 오래 걸립니다.
-            </p>
           </label>
         </div>
-        <label className="flex items-start gap-2 text-xs">
+        <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
-            className="mt-0.5"
             checked={config.store_ray_paths}
             disabled={isRunning}
             onChange={(event) =>
@@ -1451,13 +1471,13 @@ export function RayTracingPanel({
               })
             }
           />
-          <span>
+          <span className="flex items-center gap-1.5">
             Store hit ray paths for Step 11 Viewer overlay
-            <span className={`block ${fieldHintClassName}`}>
+            <HelpTooltip label="Store hit ray paths 도움말">
               꺼두면 위 Max stored paths 설정과 무관하게 ray path를 저장하지
               않아 계산이 조금 더 빨라집니다 (3D Viewer·Ray Section View의
               ray 표시는 비활성화됩니다).
-            </span>
+            </HelpTooltip>
           </span>
         </label>
       </section>

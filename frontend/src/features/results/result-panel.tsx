@@ -6,6 +6,7 @@ import {
   Route,
 } from 'lucide-react'
 
+import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -61,6 +62,11 @@ export function ResultPanel({
           <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
             <Activity className="size-3.5" />
             Result status
+            <HelpTooltip label="Result status 도움말">
+              Ray tracing job의 진행 상태입니다. 완료되면 총 ray 수,
+              Receiver hit 수·비율, 실행 시간을 보여주고 "분석 결과
+              보기"로 상세 리포트(Result window)를 엽니다.
+            </HelpTooltip>
           </div>
           <Badge
             variant="outline"
@@ -134,6 +140,11 @@ export function ResultPanel({
           <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
             <Route className="size-3.5" />
             3D Ray path 표시
+            <HelpTooltip label="3D Ray path 표시 도움말">
+              3D Viewer에 표시할 ray 종류를 선택합니다. 저장된 ray 중
+              Max stored paths 설정 내에서 실제 저장된 것만 대상이며,
+              통계(Total rays·Receiver hits)에는 영향을 주지 않습니다.
+            </HelpTooltip>
           </div>
           <Badge variant="outline">
             {visiblePathCount}/{paths.length}

@@ -13,7 +13,7 @@ import {
   ScanSearch,
 } from 'lucide-react'
 
-import { AppDialog } from '@/components/common'
+import { AppDialog, HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
@@ -104,20 +104,15 @@ export function TransformEditorDialog({
     () => selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId)),
     [componentFaceIds, selectedFaceIds],
   )
-  const activeRoiFaceCount = useMemo(() => {
-    if (!component) return null
-    const activeScopes = roiScopes.filter((scope) => scope.active)
-    if (activeScopes.length === 0) return null
-    return new Set(
-      activeScopes.flatMap((scope) =>
-        scope.components
-          .filter(
-            (entry) =>
-              entry.componentId === component.component_id,
-          )
-          .flatMap((entry) => entry.faceIds),
-      ),
-    ).size
+  const hasActiveRoiScope = useMemo(() => {
+    if (!component) return false
+    return roiScopes.some(
+      (scope) =>
+        scope.active &&
+        scope.components.some(
+          (entry) => entry.componentId === component.component_id,
+        ),
+    )
   }, [component, roiScopes])
   const ruleId = component
     ? buildRuleId(component.component_id, targetType, targetFaceIds)
@@ -277,19 +272,20 @@ export function TransformEditorDialog({
         <section className="rounded-xl border border-border bg-background/45 p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-[0.65rem] tracking-wide text-muted-foreground uppercase">
+              <div className="flex items-center gap-1.5 text-[0.65rem] tracking-wide text-muted-foreground uppercase">
                 Target
+                <HelpTooltip label="Target 도움말">
+                  Component move는 부품 전체를 이동·회전합니다. Local faces는
+                  Viewer에서 선택한(또는 Box 선택한) 특정 face만 별도로
+                  이동·회전하며, 부품의 나머지 부분에는 영향을 주지
+                  않습니다.
+                </HelpTooltip>
               </div>
               <div className="mt-1 text-sm font-semibold">
                 {componentName || 'No component'}
               </div>
             </div>
-            <Badge variant="outline">
-              {activeRoiFaceCount === null
-                ? component?.face_count.toLocaleString() ?? 0
-                : activeRoiFaceCount.toLocaleString()}{' '}
-              {activeRoiFaceCount === null ? 'faces' : 'ROI faces'}
-            </Badge>
+            {hasActiveRoiScope ? <Badge variant="outline">ROI</Badge> : null}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button
@@ -308,7 +304,7 @@ export function TransformEditorDialog({
               onClick={() => loadTargetRule('faces')}
             >
               <ScanSearch />
-              Local faces · {targetFaceIds.length}
+              Local faces
             </Button>
           </div>
           {targetType === 'faces' ? (
@@ -366,8 +362,14 @@ export function TransformEditorDialog({
         />
 
         <fieldset className="rounded-xl border border-border bg-background/35 p-3">
-          <legend className="px-1 text-xs font-semibold">
+          <legend className="flex items-center gap-1.5 px-1 text-xs font-semibold">
             Tilt pivot
+            <HelpTooltip label="Tilt pivot 도움말">
+              Tilt 회전의 기준점입니다. Component center는 대상의 bounding
+              box 중심을 기준으로 회전하고, Custom point는 직접 좌표를
+              입력하거나 Viewer에서 표면을 클릭해 임의의 지점을 기준점으로
+              지정합니다.
+            </HelpTooltip>
           </legend>
           <div className="mt-1 grid grid-cols-2 gap-2">
             <Button
@@ -433,18 +435,16 @@ export function TransformEditorDialog({
                 : '뷰어에서 좌표 선택'}
             </Button>
           ) : null}
-          {pivotMode === 'center' ? (
-            <p className="mt-2 text-[0.68rem] leading-4 text-muted-foreground">
-              Tilt는 {componentName || 'component'}의 bounding box 중심을
-              기준으로 회전합니다.
-            </p>
-          ) : null}
         </fieldset>
 
         <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold">
             <Rotate3D className="size-3.5 text-primary" />
             Transform preview
+            <HelpTooltip label="Transform preview 도움말">
+              적용한 component move·tilt와 local face overlay는 Three.js
+              Viewer에 즉시 반영됩니다.
+            </HelpTooltip>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-border bg-background/45 p-2">
@@ -464,10 +464,6 @@ export function TransformEditorDialog({
               </div>
             </div>
           </div>
-          <p className="mt-3 text-[0.68rem] leading-4 text-muted-foreground">
-            적용한 component move·tilt와 local face overlay는 Three.js
-            Viewer에 즉시 반영됩니다.
-          </p>
         </section>
       </div>
     </AppDialog>

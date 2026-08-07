@@ -218,6 +218,15 @@ const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
 const emitterOverlayColor = 0xfacc15
 const emitterDirectionColor = 0xffb000
+// The "this part is selected / being edited" tint is amber/gold
+// (0xfacc15 and friends, see `highlightColor` below) - a face selected
+// *within* that part needs to read as a clearly separate highlight instead
+// of blending into the part's own glow, so these use the complementary
+// blue side of the wheel instead. Three shades mirror the original amber
+// trio's relative saturation/darkness (armed pick > editing > plain select).
+const selectedFaceHighlightColorArmed = 0x2563eb
+const selectedFaceHighlightColorEditing = 0x3b82f6
+const selectedFaceHighlightColorDefault = 0x60a5fa
 // A saturated cyan reads clearly against both the neutral CAD grays and
 // the warm emitter yellow/orange palette, unlike the previous lavender
 // purple which tended to wash out against similarly light surfaces.
@@ -280,10 +289,23 @@ function surfaceDepthUnits(depthPriority: number): number {
 }
 
 const materialColors: Record<string, number> = {
-  black_powder_coated_aluminum: 0x394552,
-  black_pc_resin: 0x202a35,
-  anodized_aluminum: 0x8a99a8,
-  matte_black_abs: 0x2c3744,
+  // Metal
+  aluminum_bare: 0xa8adb3,
+  secc_bare: 0x7b828c,
+  anodized_aluminum_black: 0x2a2e33,
+  anodized_aluminum_silver: 0x8a99a8,
+  powder_coated_secc_black: 0x394552,
+  // Resin
+  pc_black: 0x202a35,
+  pc_gray: 0x6b7280,
+  pc_white: 0xe5e7eb,
+  abs_black: 0x2c3744,
+  abs_gray: 0x71767f,
+  abs_white: 0xe8e9ec,
+  hips_black: 0x262b30,
+  hips_gray: 0x6e7480,
+  hips_white: 0xe3e5e8,
+  // Tape / Foam
   black_tape_general: 0x111827,
   foam_absorber_general: 0x17202b,
 }
@@ -1213,6 +1235,7 @@ export function ThreeViewerCanvas({
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
   const emitterFaceSelectionArmedRef = useRef(false)
+  const materialFacePickArmedRef = useRef(false)
   const pivotPickArmedRef = useRef(false)
   const datumFacePickArmedRef = useRef(false)
   const selectedFaceIdsRef = useRef<number[]>([])
@@ -1236,6 +1259,9 @@ export function ThreeViewerCanvas({
   )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
+  )
+  const materialFacePickArmed = useWorkspaceStore(
+    workspaceSelectors.materialFacePickArmed,
   )
   const pivotPickArmed = useWorkspaceStore(
     workspaceSelectors.pivotPickArmed,
@@ -1277,6 +1303,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     emitterFaceSelectionArmedRef.current = emitterFaceSelectionArmed
   }, [emitterFaceSelectionArmed])
+
+  useEffect(() => {
+    materialFacePickArmedRef.current = materialFacePickArmed
+  }, [materialFacePickArmed])
 
   useEffect(() => {
     pivotPickArmedRef.current = pivotPickArmed
@@ -2242,9 +2272,7 @@ export function ThreeViewerCanvas({
           },
         })
         actions.setDatumFacePickArmed(false)
-        onStatusMessage(
-          `Datum face picking · surface 중심 선택됨 (${patchFaceIds.length.toLocaleString()} triangles)`,
-        )
+        onStatusMessage('Datum face picking · surface 중심 선택됨')
         return
       }
 
@@ -2297,7 +2325,43 @@ export function ThreeViewerCanvas({
           actions.setSelectedFaceIds(patchFaceIds)
         }
         onStatusMessage(
-          `Emitter surface picking · Component ${componentId} · ${patchFaceIds.length.toLocaleString()} triangles`,
+          `Emitter surface picking · Component ${componentId} · surface 선택됨`,
+        )
+        return
+      }
+
+      if (materialFacePickArmedRef.current) {
+        if (faceId === null) {
+          onStatusMessage(
+            `Material face picking · Component ${componentId}의 ROI 절단면은 원본 CAD face가 아니므로 선택할 수 없습니다.`,
+          )
+          return
+        }
+        // A click should select the whole flat/curved CAD surface the user
+        // sees, not the single underlying mesh triangle - expand to the
+        // coplanar patch (same helper the Emitter surface picker uses), and
+        // toggle add/remove regardless of modifier keys so several surfaces
+        // can be gathered without holding Ctrl/Shift for each one.
+        const component = scene.components.find(
+          (candidate) => candidate.component_id === componentId,
+        )
+        const patchFaceIds = findCoplanarFacePatch(
+          scene,
+          component?.face_indices ?? [faceId],
+          faceId,
+        )
+        const nextFaceIds = new Set(selectedFaceIdsRef.current)
+        const removePatch = patchFaceIds.every((id) => nextFaceIds.has(id))
+        for (const id of patchFaceIds) {
+          if (removePatch) nextFaceIds.delete(id)
+          else nextFaceIds.add(id)
+        }
+        actions.setSelectedFaceIds(nextFaceIds)
+        actions.setSelectedComponentIds([
+          ...new Set([...selectedComponentIdsRef.current, componentId]),
+        ])
+        onStatusMessage(
+          `Material face picking · Component ${componentId} · surface ${removePatch ? '해제' : '추가'}`,
         )
         return
       }
@@ -2314,7 +2378,7 @@ export function ThreeViewerCanvas({
       onStatusMessage(
         faceId === null
           ? `Viewer picking · Component ${componentId} · ROI section cap`
-          : `Viewer picking · Component ${componentId} · Face ${faceId}`,
+          : `Viewer picking · Component ${componentId} · face selected`,
       )
     }
     const handleDoubleClick = (event: MouseEvent) => {
@@ -2412,7 +2476,8 @@ export function ThreeViewerCanvas({
       const suppressMenu =
         rightPointerMoved ||
         roiBoxSelectionArmedRef.current ||
-        emitterFaceSelectionArmedRef.current
+        emitterFaceSelectionArmedRef.current ||
+        materialFacePickArmedRef.current
       rightPointerDown = null
       rightPointerMoved = false
       if (suppressMenu) {
@@ -2912,9 +2977,7 @@ export function ThreeViewerCanvas({
         ) {
           fitCamera(runtime, 'Fit')
         }
-        onStatusMessage(
-          `ROI isolated solid · ${clipped.clippedTriangleCount.toLocaleString()} triangles · ${clipped.capLoopCount} section caps`,
-        )
+        onStatusMessage('ROI isolated solid 생성됨')
       } else {
         clipped?.surfaceGeometry.dispose()
         clipped?.capGeometry?.dispose()
@@ -3021,11 +3084,11 @@ export function ThreeViewerCanvas({
       )
       if (selectedClipped) {
         const selectionColor = emitterFaceSelectionArmed
-          ? 0xf59e0b
+          ? selectedFaceHighlightColorArmed
           : editingComponentId !== null &&
               editingComponentId !== undefined
-            ? 0xfbbf24
-            : 0xf6c453
+            ? selectedFaceHighlightColorEditing
+            : selectedFaceHighlightColorDefault
         const selectionOpacity = emitterFaceSelectionArmed
           ? 0.52
           : editingComponentId !== null &&
@@ -3611,7 +3674,9 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshBasicMaterial({
-              color: isEmitterSurfaceDraft ? 0xf59e0b : 0xfbbf24,
+              color: isEmitterSurfaceDraft
+                ? selectedFaceHighlightColorArmed
+                : selectedFaceHighlightColorEditing,
               side: DoubleSide,
               transparent: true,
               opacity: isEmitterSurfaceDraft ? 0.94 : 0.86,
@@ -3624,14 +3689,39 @@ export function ThreeViewerCanvas({
             }),
           )
           overlay.name = `selected-face-highlight-${componentId}`
-          overlay.renderOrder = isEmitterSurfaceDraft ? 94 : 12
+          // Must draw after (render-order-wise) the whole-part "editing"
+          // tint (targetSurface, order 88) - otherwise that amber overlay
+          // paints over this face highlight and the blue never shows.
+          overlay.renderOrder = isEmitterSurfaceDraft ? 94 : 92
           node.selectionOverlayRoot.add(overlay)
 
-          if (isEmitterSurfaceDraft) {
-            const frame = resolveFacePlacementFrame(
+          const frame = resolveFacePlacementFrame(
+            scene,
+            componentSelectedFaceIds,
+          )
+
+          if (!isEmitterSurfaceDraft && frame) {
+            // A crisp outline around exactly the selected patch - without
+            // this, a selection that happens to cover an entire visible
+            // surface reads as a flat color change with no distinguishable
+            // boundary, easy to mistake for "the whole part changed" rather
+            // than "this specific face is selected".
+            const outlineBoundary = createFacePatchBoundary(
               scene,
               componentSelectedFaceIds,
+              node.center,
+              new Vector3(...frame.normal),
             )
+            if (outlineBoundary) {
+              outlineBoundary.name = `selected-face-outline-${componentId}`
+              outlineBoundary.material.color.set(0xffffff)
+              outlineBoundary.material.depthTest = false
+              outlineBoundary.renderOrder = 93
+              node.selectionOverlayRoot.add(outlineBoundary)
+            }
+          }
+
+          if (isEmitterSurfaceDraft) {
             if (frame) {
               const normal = new Vector3(...frame.normal)
               const boundary = createFacePatchBoundary(
@@ -3863,9 +3953,9 @@ export function ThreeViewerCanvas({
           roiBoxSelectionArmed ? 'cursor-crosshair' : ''
         } ${
           emitterFaceSelectionArmed ? 'cursor-crosshair' : ''
-        } ${pivotPickArmed ? 'cursor-crosshair' : ''} ${
-          datumFacePickArmed ? 'cursor-crosshair' : ''
-        }`}
+        } ${materialFacePickArmed ? 'cursor-crosshair' : ''} ${
+          pivotPickArmed ? 'cursor-crosshair' : ''
+        } ${datumFacePickArmed ? 'cursor-crosshair' : ''}`}
         aria-label="Interactive 3D CAD viewer"
         aria-describedby="three-viewer-controls"
         data-scene-token={scene.metadata.scene_token}

@@ -113,9 +113,7 @@ export function TransformRulePanel({
               </Button>
             </div>
             <Badge variant="outline" className="mt-2">
-              {rule.targetType === 'faces'
-                ? `Local faces · ${rule.faceIds.length}`
-                : 'Component move'}
+              {rule.targetType === 'faces' ? 'Local faces' : 'Component move'}
             </Badge>
           </div>
         )

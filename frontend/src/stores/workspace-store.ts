@@ -40,6 +40,18 @@ export interface MaterialAssignment {
   enabled: boolean
 }
 
+/** A user-named Base material + Surface property combo, saved from the
+ *  Material editor's current draft so it can be reapplied later via the
+ *  "Saved optical profile" picker - alongside the built-in catalog presets.
+ *  Session-only for now (not part of `WorkspaceProjectState`/.bitsam). */
+export interface SavedOpticalProfile {
+  id: string
+  name: string
+  baseMaterialId: string
+  surfaceId: string
+  bsdfAssetId: string
+}
+
 export type TransformTargetType = 'component' | 'faces'
 export type TransformSelectionMethod = 'click' | 'box'
 
@@ -138,11 +150,17 @@ export interface WorkspaceSnapshot {
   deletedComponentIds: number[]
   componentNameOverrides: Record<number, string>
   materialAssignments: MaterialAssignment[]
+  customOpticalProfiles: SavedOpticalProfile[]
   transformRules: ComponentTransformRule[]
   roiScopes: RoiScope[]
   roiScopeSequence: number
   roiBoxSelectionArmed: boolean
   emitterFaceSelectionArmed: boolean
+  /** True while the Material editor's "Face 지정" picker is armed - every
+   *  viewer click toggles that face into/out of `selectedFaceIds` instead of
+   *  replacing the selection, so several faces can be gathered before the
+   *  user confirms with "선택 완료". */
+  materialFacePickArmed: boolean
   pivotPickArmed: boolean
   pivotPickPoint: Vector3Value | null
   /** Where the Transform editor's tilt pivot currently sits, so the
@@ -192,6 +210,8 @@ export interface WorkspaceActions {
   deleteComponent(componentId: number, faceIds?: Iterable<number>): void
   upsertMaterialAssignment(assignment: MaterialAssignment): void
   removeMaterialAssignment(assignmentId: string): void
+  addCustomOpticalProfile(profile: SavedOpticalProfile): void
+  removeCustomOpticalProfile(profileId: string): void
   upsertTransformRule(rule: ComponentTransformRule): void
   setTransformRuleEnabled(ruleId: string, enabled: boolean): void
   removeTransformRule(ruleId: string): void
@@ -201,6 +221,7 @@ export interface WorkspaceActions {
   clearRoiScopes(): void
   setRoiBoxSelectionArmed(armed: boolean): void
   setEmitterFaceSelectionArmed(armed: boolean): void
+  setMaterialFacePickArmed(armed: boolean): void
   setPivotPickArmed(armed: boolean): void
   setPivotPickPoint(point: Vector3Value | null): void
   setPivotPreviewPoint(point: Vector3Value | null): void
@@ -503,11 +524,13 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     deletedComponentIds: [],
     componentNameOverrides: {},
     materialAssignments: [],
+    customOpticalProfiles: [],
     transformRules: [],
     roiScopes: [],
     roiScopeSequence: 0,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    materialFacePickArmed: false,
     pivotPickArmed: false,
     pivotPickPoint: null,
     pivotPreviewPoint: null,
@@ -672,6 +695,23 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...invalidateRayTraceState(),
         }))
       },
+      addCustomOpticalProfile: (profile) => {
+        set((state) => ({
+          customOpticalProfiles: [
+            ...state.customOpticalProfiles.filter(
+              (item) => item.id !== profile.id,
+            ),
+            profile,
+          ],
+        }))
+      },
+      removeCustomOpticalProfile: (profileId) => {
+        set((state) => ({
+          customOpticalProfiles: state.customOpticalProfiles.filter(
+            (item) => item.id !== profileId,
+          ),
+        }))
+      },
       upsertTransformRule: (rule) => {
         const normalized = normalizeTransformRule(rule)
         set((state) => ({
@@ -761,6 +801,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       setEmitterFaceSelectionArmed: (emitterFaceSelectionArmed) => {
         set({ emitterFaceSelectionArmed })
+      },
+      setMaterialFacePickArmed: (materialFacePickArmed) => {
+        set({ materialFacePickArmed })
       },
       setPivotPickArmed: (pivotPickArmed) => {
         set({ pivotPickArmed })
@@ -908,6 +951,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           selectedComponentIds: [],
           roiBoxSelectionArmed: false,
           emitterFaceSelectionArmed: false,
+          materialFacePickArmed: false,
           pivotPickArmed: false,
           pivotPickPoint: null,
           pivotPreviewPoint: null,
@@ -920,7 +964,13 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         })
       },
       clearSceneState: () => {
-        set(createSceneSnapshot())
+        // Saved optical profiles aren't tied to any specific CAD's
+        // geometry/components (unlike materialAssignments) - keep them
+        // across a fresh import instead of wiping them with everything else.
+        set((state) => ({
+          ...createSceneSnapshot(),
+          customOpticalProfiles: state.customOpticalProfiles,
+        }))
       },
       resetWorkspace: () => {
         set(createWorkspaceSnapshot())
@@ -951,12 +1001,16 @@ export const workspaceSelectors = {
     state.componentNameOverrides,
   materialAssignments: (state: WorkspaceStore) =>
     state.materialAssignments,
+  customOpticalProfiles: (state: WorkspaceStore) =>
+    state.customOpticalProfiles ?? [],
   transformRules: (state: WorkspaceStore) => state.transformRules,
   roiScopes: (state: WorkspaceStore) => state.roiScopes,
   roiBoxSelectionArmed: (state: WorkspaceStore) =>
     state.roiBoxSelectionArmed,
   emitterFaceSelectionArmed: (state: WorkspaceStore) =>
     state.emitterFaceSelectionArmed ?? false,
+  materialFacePickArmed: (state: WorkspaceStore) =>
+    state.materialFacePickArmed ?? false,
   pivotPickArmed: (state: WorkspaceStore) =>
     state.pivotPickArmed ?? false,
   pivotPickPoint: (state: WorkspaceStore) =>

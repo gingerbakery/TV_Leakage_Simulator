@@ -26,10 +26,17 @@ function AccordionItem({
 function AccordionTrigger({
   className,
   children,
+  endAdornment,
   ...props
-}: React.ComponentProps<typeof AccordionPrimitive.Trigger>) {
+}: React.ComponentProps<typeof AccordionPrimitive.Trigger> & {
+  /** Rendered as a sibling *outside* the trigger button (e.g. a HelpTooltip
+   *  "?" icon) - the trigger button can't contain another interactive
+   *  element, since a <button> inside a <button> is invalid HTML and would
+   *  fight the accordion's own click-to-toggle behavior. */
+  endAdornment?: React.ReactNode
+}) {
   return (
-    <AccordionPrimitive.Header className="flex">
+    <AccordionPrimitive.Header className="flex items-center">
       <AccordionPrimitive.Trigger
         data-slot="accordion-trigger"
         className={cn(
@@ -44,6 +51,7 @@ function AccordionTrigger({
           aria-hidden="true"
         />
       </AccordionPrimitive.Trigger>
+      {endAdornment}
     </AccordionPrimitive.Header>
   )
 }

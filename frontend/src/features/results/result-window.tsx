@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react'
 
+import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
@@ -700,8 +701,14 @@ export function RayTraceResultWindow({
               </p>
               {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                     Ray Section View
+                    <HelpTooltip label="Ray Section View 도움말">
+                      각 Receiver의 법선과 수직 방향을 지나는 단면으로 CAD를
+                      잘라, 그 Receiver에 도달한 ray(직접·반사)를 함께
+                      보여주는 정적 이미지입니다. 일부 형상에서는 단면이
+                      완전히 닫히지 않을 수 있어 참고용으로 사용하세요.
+                    </HelpTooltip>
                   </div>
                   <div className="grid gap-3">
                     {result.receivers

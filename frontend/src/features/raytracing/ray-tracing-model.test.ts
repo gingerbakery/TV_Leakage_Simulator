@@ -160,7 +160,7 @@ describe('ray tracing model', () => {
           componentId: 1,
           targetType: 'part',
           faceIds: [],
-          baseMaterialId: 'black_pc_resin',
+          baseMaterialId: 'pc_black',
           surfaceId: 'matte_black_resin',
           profileId: '',
           bsdfAssetId: '',

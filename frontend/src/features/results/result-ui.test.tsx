@@ -8,6 +8,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
 import {
   createCompletedRayTraceJobFixture,
@@ -60,10 +61,12 @@ describe('Step 11 result UI', () => {
   it('shows result KPIs and applies ray path presets', () => {
     const onOpenAnalysis = vi.fn()
     render(
-      <ResultPanel
-        job={createCompletedRayTraceJobFixture()}
-        onOpenAnalysis={onOpenAnalysis}
-      />,
+      <AppProviders>
+        <ResultPanel
+          job={createCompletedRayTraceJobFixture()}
+          onOpenAnalysis={onOpenAnalysis}
+        />
+      </AppProviders>,
     )
 
     expect(screen.getByText('12.000%')).not.toBeNull()

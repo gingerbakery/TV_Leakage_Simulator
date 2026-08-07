@@ -213,9 +213,7 @@ export function ViewerWorkspace({
         components,
         clipBox,
       })
-      setStatusMessage(
-        `ROI 추가 · ${components.length} components · ${faceIds.length.toLocaleString()} faces`,
-      )
+      setStatusMessage(`ROI 추가 · ${components.length} components`)
     },
     [
       actions,
@@ -481,17 +479,14 @@ export function ViewerWorkspace({
               </Badge>
             ) : null}
             {emitterFaceSelectionArmed ? (
-              <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
+              <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
                 {selectedFaceIds.length > 0
-                  ? `Emitter surface · ${selectedFaceIds.length.toLocaleString()} triangles`
+                  ? 'Emitter surface · selected'
                   : 'Emitter surface · click a face'}
               </Badge>
             ) : selectedFaceIds.length > 0 ? (
-              <Badge className="border border-amber-400/50 bg-amber-400/20 text-amber-300">
-                Face {selectedFaceIds[0]}
-                {selectedFaceIds.length > 1
-                  ? ` +${selectedFaceIds.length - 1}`
-                  : ''}
+              <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
+                Face selected
               </Badge>
             ) : editingComponent && editingComponentMode ? (
               <Badge className="border border-amber-400/60 bg-amber-400/20 text-amber-200">
@@ -502,9 +497,7 @@ export function ViewerWorkspace({
               </Badge>
             ) : null}
             {activeRoiFaceIds.length > 0 ? (
-              <Badge className="bg-warning/15 text-warning">
-                ROI {activeRoiFaceIds.length.toLocaleString()} faces
-              </Badge>
+              <Badge className="bg-warning/15 text-warning">ROI</Badge>
             ) : null}
           </div>
 
@@ -671,7 +664,7 @@ export function ViewerWorkspace({
         <span className="hidden shrink-0 items-center gap-1 sm:flex">
           <CircleDot className="size-3 text-primary" />
           {scene
-            ? `${visibleComponentCount} visible · ${selectedComponentIds.length} component · ${selectedFaceIds.length} face · ${activeRoiFaceIds.length} ROI`
+            ? `${visibleComponentCount} visible · ${selectedComponentIds.length} component`
             : 'Three.js Viewer · Step 11'}
         </span>
       </footer>

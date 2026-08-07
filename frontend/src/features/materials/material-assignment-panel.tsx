@@ -107,7 +107,9 @@ export function MaterialAssignmentPanel({
                       {componentName}
                     </span>
                     <span className="mt-1 block text-[0.65rem] leading-4 text-muted-foreground">
-                      {base.name} · {surface.name}
+                      {assignment.targetType === 'faces'
+                        ? surface.name
+                        : `${base.name} · ${surface.name}`}
                     </span>
                   </button>
                   <Button
@@ -126,8 +128,8 @@ export function MaterialAssignmentPanel({
                 <div className="mt-2 flex items-center gap-1.5">
                   <Badge variant="outline">
                     {assignment.targetType === 'faces'
-                      ? `Face override · ${assignment.faceIds.length}`
-                      : 'Part assignment'}
+                      ? 'Face 지정'
+                      : 'Part material'}
                   </Badge>
                   <Layers3 className="size-3 text-muted-foreground" />
                 </div>

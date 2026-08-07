@@ -13,6 +13,7 @@ import {
   Workflow,
 } from 'lucide-react'
 
+import { HelpTooltip } from '@/components/common'
 import { ModelImportCard } from '@/features/cad'
 import {
   ComponentTreePanel,
@@ -33,7 +34,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
@@ -51,7 +51,7 @@ interface WorkflowSection {
   id: WorkflowSectionId
   step?: string
   label: string
-  description: string
+  guide: string
   icon: typeof Target
 }
 
@@ -76,53 +76,50 @@ const workflowSections: WorkflowSection[] = [
     id: 'model-import',
     step: '01',
     label: 'Model import',
-    description: 'CAD 파일을 불러와 Three.js scene을 생성합니다.',
+    guide:
+      'STEP/STP, X_T/X_B, STL, OBJ 등 CAD 파일을 face 단위 mesh로 변환합니다. 가져온 뒤에는 원본 CAD 파일 없이도 현재 작업 상태를 .bitsam 프로젝트 파일로 저장해 나중에 다시 불러올 수 있습니다 (단, 같은 CAD를 다시 Import해야 기하가 맞물려 복원됩니다).',
     icon: FileBox,
   },
   {
     id: 'roi',
     step: '02',
     label: 'ROI',
-    description: '분석할 face 영역과 scope를 설정합니다.',
+    guide:
+      '박스 드래그 또는 좌표 선택으로 분석 대상 face 범위(ROI)를 지정합니다. 체크박스로 활성화한 scope만 이후 Ray tracing·결과 집계와 Viewer 격리 표시에 반영되고, 비활성 scope는 목록에 남아있어도 계산에서 제외됩니다.',
     icon: BoxSelect,
   },
   {
     id: 'components',
     step: '03',
     label: 'Components',
-    description: '부품 표시, 해석 포함 여부와 선택을 관리합니다.',
+    guide:
+      'CAD의 부품(component) 목록입니다. 표시/숨김, 해석 제외 여부를 토글하고, 각 행의 아이콘으로 부품 단위 Material(재질)과 Transform(이동·회전)을 지정할 수 있습니다. Face를 직접 선택하면 부품 전체가 아닌 특정 면 단위로도 지정할 수 있습니다.',
     icon: Layers3,
   },
   {
     id: 'ray-tracing',
     step: '04',
     label: 'Ray tracing',
-    description: 'Emitter·Receiver와 계산 옵션을 구성합니다.',
+    guide:
+      'Emitter(발광면)와 Receiver(수광면)를 CAD surface 또는 Datum plane으로 배치하고, Run options(반사 횟수, 종료 조건, 저장할 ray path 수 등)를 설정한 뒤 시뮬레이션을 실행합니다.',
     icon: Play,
   },
   {
     id: 'result',
     step: '05',
     label: 'Result',
-    description: 'Ray path, Receiver와 기여도 결과를 확인합니다.',
+    guide:
+      '완료된 Ray trace 결과를 확인합니다. Receiver별 hit 통계, Viewer에 표시되는 3D ray path, 그리고 Receiver를 지나는 단면으로 잘라 CAD와 ray를 함께 보여주는 Ray Section View 이미지를 제공합니다.',
     icon: ScanSearch,
   },
   {
     id: 'applied-settings',
     label: 'Applied Settings',
-    description:
-      'Component에 적용된 Material assignment와 Transform rule을 검토하고 관리합니다.',
+    guide:
+      '지금까지 지정한 모든 Material assignment(부품/Face별 재질)와 Transform rule(이동·회전)을 한 곳에서 검토하고 개별적으로 삭제할 수 있는 목록입니다. Step 03 Components에서 지정한 내용이 여기 반영됩니다.',
     icon: Settings2,
   },
 ]
-
-const sectionBadgeText: Partial<Record<WorkflowSectionId, string>> = {
-  roi: 'Migrated · 09',
-  components: 'Migrated · 07',
-  'ray-tracing': 'Migrated · 10',
-  result: 'Migrated · 11',
-  'applied-settings': 'Applied',
-}
 
 export function WorkflowSidebar({
   activeSection,
@@ -160,7 +157,7 @@ export function WorkflowSidebar({
     : sceneErrorMessage
       ? 'Scene load failed'
       : scene
-        ? `${scene.metadata.face_count.toLocaleString()} faces · ${scene.metadata.component_count} components${
+        ? `${scene.metadata.component_count} components${
             scene.metadata.import_timings_sec?.scene_payload_total !==
             undefined
               ? ` · ${scene.metadata.import_timings_sec.scene_payload_total.toFixed(1)}s`
@@ -316,6 +313,11 @@ export function WorkflowSidebar({
                           : section.label
                       }
                       aria-current={isActive ? 'step' : undefined}
+                      endAdornment={
+                        <HelpTooltip label={`${section.label} 도움말`}>
+                          {section.guide}
+                        </HelpTooltip>
+                      }
                     >
                       <span
                         className={cn(
@@ -337,19 +339,8 @@ export function WorkflowSidebar({
                           {section.label}
                         </span>
                       </span>
-                      {sectionBadgeText[section.id] ? (
-                        <Badge
-                          variant="outline"
-                          className="mr-1 shrink-0 border-primary/25 bg-primary/8 text-[0.6rem] text-primary"
-                        >
-                          {sectionBadgeText[section.id]}
-                        </Badge>
-                      ) : null}
                     </AccordionTrigger>
                     <AccordionContent>
-                      <p className="mb-2 px-1 text-xs leading-5 text-muted-foreground">
-                        {section.description}
-                      </p>
                       {renderPanel(section.id)}
                     </AccordionContent>
                   </AccordionItem>

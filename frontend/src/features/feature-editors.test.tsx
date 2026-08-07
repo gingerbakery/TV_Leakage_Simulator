@@ -112,12 +112,12 @@ describe('Step 07·08 feature editors', () => {
       workspaceStore.getState().actions.setSelectedFaceIds([0])
     })
 
-    expect(screen.getByText('Face 0')).not.toBeNull()
+    expect(screen.getByText('Face selected')).not.toBeNull()
     expect(
       screen.getByText('Component · STEP Solid 1'),
     ).not.toBeNull()
     expect(
-      screen.getByText('2 visible · 1 component · 1 face · 0 ROI'),
+      screen.getByText('2 visible · 1 component'),
     ).not.toBeNull()
   })
 
@@ -353,7 +353,7 @@ describe('Step 07·08 feature editors', () => {
     )
 
     expect(screen.getByText('1 components')).not.toBeNull()
-    expect(screen.getByText('1 ROI faces · 1,800 mm²')).not.toBeNull()
+    expect(screen.getByText('1,800 mm²')).not.toBeNull()
     expect(
       screen.queryByRole('button', { name: 'Select STEP Solid 2' }),
     ).toBeNull()
@@ -381,43 +381,49 @@ describe('Step 07·08 feature editors', () => {
     })
 
     const transformView = render(
-      <TransformEditorDialog
-        open
-        onOpenChange={vi.fn()}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open
+          onOpenChange={vi.fn()}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
     expect(
       screen.getByRole('dialog', { name: 'Transform editor' })
         .textContent,
-    ).toContain('1 ROI faces')
+    ).toContain('ROI')
     transformView.unmount()
 
     render(
-      <MaterialEditorDialog
-        open
-        onOpenChange={vi.fn()}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <MaterialEditorDialog
+          open
+          onOpenChange={vi.fn()}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
     expect(
       screen.getByRole('dialog', { name: 'Material assignment' })
         .textContent,
-    ).toContain('1 ROI faces')
+    ).toContain('ROI')
   })
 
   it('creates a compiled part material assignment', () => {
     const component = createSceneFixture().components[0]
     const onOpenChange = vi.fn()
     render(
-      <MaterialEditorDialog
-        open
-        onOpenChange={onOpenChange}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <MaterialEditorDialog
+          open
+          onOpenChange={onOpenChange}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
     expect(
       screen
@@ -426,37 +432,40 @@ describe('Step 07·08 feature editors', () => {
     ).toBe(true)
 
     fireEvent.change(screen.getByLabelText('Base material'), {
-      target: { value: 'black_powder_coated_aluminum' },
+      target: { value: 'powder_coated_secc_black' },
     })
-    fireEvent.change(screen.getByLabelText('Surface property'), {
-      target: { value: 'corrosion_medium' },
+    const surfacePropertyField = screen.getByLabelText('Surface property')
+    fireEvent.change(surfacePropertyField, {
+      target: { value: 'metal_gloss' },
     })
-    fireEvent.keyDown(screen.getByLabelText('Surface property'), {
-      key: 'Enter',
-    })
+    fireEvent.keyDown(surfacePropertyField, { key: 'Enter' })
 
     expect(workspaceStore.getState().materialAssignments).toEqual([
       expect.objectContaining({
         assignmentId: 'material-part-1',
         componentId: 1,
         targetType: 'part',
-        baseMaterialId: 'black_powder_coated_aluminum',
-        surfaceId: 'corrosion_medium',
+        baseMaterialId: 'powder_coated_secc_black',
+        surfaceId: 'metal_gloss',
       }),
     ])
-    expect(onOpenChange).toHaveBeenCalledWith(false)
+    // Applying the part material keeps the dialog open, since the user may
+    // still want to assign face-specific materials in the same session.
+    expect(onOpenChange).not.toHaveBeenCalled()
   })
 
   it('creates a component transform rule with move and tilt vectors', () => {
     const component = createSceneFixture().components[0]
     const onOpenChange = vi.fn()
     render(
-      <TransformEditorDialog
-        open
-        onOpenChange={onOpenChange}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open
+          onOpenChange={onOpenChange}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
     expect(
       screen
@@ -492,12 +501,14 @@ describe('Step 07·08 feature editors', () => {
     const component = createSceneFixture().components[0]
     const onOpenChange = vi.fn()
     render(
-      <TransformEditorDialog
-        open
-        onOpenChange={onOpenChange}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open
+          onOpenChange={onOpenChange}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
 
     fireEvent.click(
@@ -533,12 +544,14 @@ describe('Step 07·08 feature editors', () => {
   it('adopts a viewer-picked point as the tilt pivot', () => {
     const component = createSceneFixture().components[0]
     render(
-      <TransformEditorDialog
-        open
-        onOpenChange={() => {}}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open
+          onOpenChange={() => {}}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
 
     fireEvent.click(
@@ -589,12 +602,14 @@ describe('Step 07·08 feature editors', () => {
   it('disarms pivot picking when the dialog is closed mid-pick', () => {
     const component = createSceneFixture().components[0]
     const { rerender } = render(
-      <TransformEditorDialog
-        open
-        onOpenChange={() => {}}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open
+          onOpenChange={() => {}}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
     fireEvent.click(
       screen.getByRole('button', { name: 'Custom point' }),
@@ -605,12 +620,14 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().pivotPickArmed).toBe(true)
 
     rerender(
-      <TransformEditorDialog
-        open={false}
-        onOpenChange={() => {}}
-        component={component}
-        componentName="Cover Deco"
-      />,
+      <AppProviders>
+        <TransformEditorDialog
+          open={false}
+          onOpenChange={() => {}}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
     )
 
     expect(workspaceStore.getState().pivotPickArmed).toBe(false)
@@ -850,7 +867,7 @@ describe('Step 07·08 feature editors', () => {
     act(() => {
       workspaceStore.getState().actions.setSelectedFaceIds([0, 1])
     })
-    expect(screen.getByText('Selected faces · 2')).not.toBeNull()
+    expect(screen.getByText('Selected faces · 선택됨')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
     expect(workspaceStore.getState().emitters).toEqual([
@@ -891,9 +908,6 @@ describe('Step 07·08 feature editors', () => {
       name: 'Run option emitter rays',
     })
     expect(runOptionRayCount).toHaveProperty('value', '2500')
-    expect(
-      screen.getByText(/Emitter별 Ray 수가 서로 다릅니다/),
-    ).not.toBeNull()
 
     fireEvent.change(runOptionRayCount, {
       target: { value: '6000' },
@@ -904,6 +918,5 @@ describe('Step 07·08 feature editors', () => {
         .getState()
         .emitters.map((emitter) => emitter.ray_count),
     ).toEqual([6000, 6000])
-    expect(screen.getByText(/활성 Emitter 총합 12,000 rays/)).not.toBeNull()
   })
 })

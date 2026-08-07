@@ -1,7 +1,6 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import {
   BoxSelect,
-  CircleHelp,
   Crosshair,
   MapPin,
   Power,
@@ -9,14 +8,10 @@ import {
 } from 'lucide-react'
 
 import type { ScenePayload } from '@/api'
+import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import {
   useWorkspaceStore,
@@ -38,35 +33,6 @@ function formatArea(value: number): string {
   return new Intl.NumberFormat('ko-KR', {
     maximumFractionDigits: 2,
   }).format(value)
-}
-
-function HelpTooltip({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-        >
-          <CircleHelp className="size-3.5" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="right"
-        sideOffset={6}
-        className="max-w-72 whitespace-normal text-left leading-5"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  )
 }
 
 export function RoiSelectionPanel({
@@ -135,7 +101,7 @@ export function RoiSelectionPanel({
         componentNameOverrides,
       ),
     })
-    setCoordinateResult(`Face ${faceId}를 ROI List에 추가했습니다.`)
+    setCoordinateResult('선택한 face를 ROI List에 추가했습니다.')
     setCoordinate({ x: 0, y: 0, z: 0 })
   }
 
@@ -268,10 +234,6 @@ export function RoiSelectionPanel({
             </div>
           ) : (
             roiScopes.map((scope) => {
-              const faceCount = scope.components.reduce(
-                (sum, component) => sum + component.faceIds.length,
-                0,
-              )
               const areaMm2 = scope.components.reduce(
                 (sum, component) => sum + component.areaMm2,
                 0,
@@ -308,8 +270,6 @@ export function RoiSelectionPanel({
                         <span className="mt-0.5 block text-[0.62rem] text-muted-foreground">
                           {scope.source === 'box' ? scope.view : 'coordinate'}
                           {' · '}
-                          {faceCount.toLocaleString()} faces
-                          {' · '}
                           {formatArea(areaMm2)} mm²
                         </span>
                       </span>
@@ -334,7 +294,6 @@ export function RoiSelectionPanel({
                           {component.componentName}
                         </span>
                         <span className="shrink-0">
-                          {component.faceIds.length} ·{' '}
                           {formatArea(component.areaMm2)} mm²
                         </span>
                       </div>
@@ -363,9 +322,8 @@ export function RoiSelectionPanel({
             {summary.scopeCount} scopes
           </Badge>
         </div>
-        <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+        <div className="mt-2 grid grid-cols-2 gap-2 text-center">
           {[
-            ['Face', summary.faceCount.toLocaleString()],
             ['Component', summary.componentCount.toLocaleString()],
             ['Area', `${formatArea(summary.areaMm2)} mm²`],
           ].map(([label, value]) => (

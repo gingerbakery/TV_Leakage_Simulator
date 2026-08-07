@@ -22,6 +22,7 @@ export type {
   RoiScopeInput,
   RoiSelectionSource,
   RoiView,
+  SavedOpticalProfile,
   TransformSelectionMethod,
   TransformTargetType,
   Vector3Value,

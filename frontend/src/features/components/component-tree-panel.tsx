@@ -214,8 +214,6 @@ function ComponentTreeRow({
                   ) : null}
                 </span>
                 <span className="mt-1 block text-[0.65rem] leading-4 text-muted-foreground">
-                  {(roiFaceCount ?? component.face_count).toLocaleString()}{' '}
-                  {roiFaceCount !== undefined ? 'ROI ' : ''}faces ·{' '}
                   {formatArea(roiAreaMm2 ?? component.area_mm2)} mm²
                 </span>
               </button>
