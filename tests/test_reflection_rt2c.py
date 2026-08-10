@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from leakage_simulator.geometry import TriangleMesh, vec_dot
 from leakage_simulator.raytracer import DirectRayTraceInput, run_direct_ray_trace
 from leakage_simulator.reflection import (
+    effective_surface_reflectance,
     ideal_specular_direction,
     sample_cosine_weighted_hemisphere,
     sample_reflection_direction,
@@ -161,6 +162,27 @@ def angled_reflector_input(with_blocker: bool) -> DirectRayTraceInput:
 
 
 class ReflectionRT2CTests(unittest.TestCase):
+    def test_grazing_incidence_increases_effective_reflectance(self) -> None:
+        profile = OpticalProfile(
+            "gloss_black",
+            0.08,
+            scatter_model="mixed",
+            roughness=0.15,
+        )
+        normal_value = effective_surface_reflectance(
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, 1.0),
+            profile,
+        )
+        grazing_value = effective_surface_reflectance(
+            (0.995, 0.0, -0.1),
+            (0.0, 0.0, 1.0),
+            profile,
+        )
+
+        self.assertAlmostEqual(normal_value, 0.08)
+        self.assertGreater(grazing_value, 0.4)
+
     def test_specular_direction_matches_reflection_law(self) -> None:
         inverse_root_two = 1.0 / math.sqrt(2.0)
         incoming = (inverse_root_two, 0.0, -inverse_root_two)

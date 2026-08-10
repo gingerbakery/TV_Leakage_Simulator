@@ -198,7 +198,7 @@ class TriangleMesh:
         self._ensure_prepared_triangles()
         if selected_backend == "brute_force":
             return self._intersect_face_indices(
-                range(len(self.faces)),
+                self._traceable_face_indices(),
                 origin,
                 direction,
                 ignore_face,
@@ -229,7 +229,9 @@ class TriangleMesh:
             self._bvh_nodes = []
             self._bvh_face_indices = []
             self._bvh_leaf_count = 0
-            self._build_flat_bvh(list(range(len(self.faces))))
+            traceable_faces = self._traceable_face_indices()
+            if traceable_faces:
+                self._build_flat_bvh(traceable_faces)
             self._bvh_build_sec = time.perf_counter() - started
         return self.acceleration_info()
 
@@ -409,6 +411,18 @@ class TriangleMesh:
             origin,
             direction,
         )
+
+    def _traceable_face_indices(self) -> List[int]:
+        """Faces eligible for ray collision.
+
+        Emitter-only CAD faces remain in the mesh for origin/normal sampling,
+        but TRACE OFF components must be transparent to every traced ray.
+        """
+        return [
+            index
+            for index in range(len(self.faces))
+            if not bool(self.metadata(index).get("trace_excluded", False))
+        ]
 
     def _intersect_prepared_range(
         self,

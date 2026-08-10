@@ -2823,7 +2823,10 @@ export function ThreeViewerCanvas({
               color: 0x8fb3c7,
               roughness: 0.72,
               metalness: 0.04,
-              flatShading: true,
+              // The ROI surface is still the original CAD skin. Smooth its
+              // tessellation normals; only the newly generated section caps
+              // below should remain flat shaded.
+              flatShading: false,
               transparent: surfaceOpacity < 1,
               opacity: surfaceOpacity,
               side: DoubleSide,

@@ -7,8 +7,6 @@ import {
   Move3D,
   Palette,
   Pencil,
-  ScanLine,
-  ScanSearch,
   Search,
   Trash2,
 } from 'lucide-react'
@@ -348,13 +346,19 @@ function ComponentTreeRow({
           <Button
             type="button"
             variant="ghost"
-            size="icon-xs"
+            size="xs"
             aria-pressed={traceable}
-            aria-label={`Traceability ${traceable ? 'off' : 'on'} for ${displayName}`}
-            title={traceable ? 'Traceability off' : 'Traceability on'}
+            aria-label={`Traceability ${traceable ? 'ON' : 'OFF'} for ${displayName}`}
+            title={`현재 상태: Traceability ${traceable ? 'ON' : 'OFF'} · 클릭하여 ${traceable ? 'OFF' : 'ON'}`}
+            className={cn(
+              'h-7 min-w-0 px-1 text-[0.58rem] font-bold tracking-tight',
+              traceable
+                ? 'bg-emerald-100/80 text-emerald-800 hover:bg-emerald-200/80 dark:bg-emerald-950/55 dark:text-emerald-300 dark:hover:bg-emerald-900/65'
+                : 'bg-slate-200/90 text-slate-600 hover:bg-slate-300/90 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700',
+            )}
             onClick={() => actions.toggleComponentTraceability(componentId)}
           >
-            {traceable ? <ScanLine /> : <ScanSearch />}
+            TRACE {traceable ? 'ON' : 'OFF'}
           </Button>
           <Button
             type="button"

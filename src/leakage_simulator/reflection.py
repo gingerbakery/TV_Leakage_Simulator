@@ -24,6 +24,44 @@ def ideal_specular_direction(incoming: Vec3, normal: Vec3) -> Vec3:
     return _ideal_specular_from_unit(incoming_direction, surface_normal)
 
 
+def effective_surface_reflectance(
+    incoming: Vec3,
+    normal: Vec3,
+    profile: OpticalProfile,
+) -> float:
+    """Angle-aware reflectance used for ray energy conservation.
+
+    The catalog value is the near-normal/base reflectance. A Schlick-style
+    grazing term accounts for the strong rise in reflection at shallow
+    incidence that a constant coefficient misses. Rough finishes retain a
+    smaller sheen term; glossy finishes retain nearly the full Fresnel rise.
+    """
+    incoming_direction = _normalize(incoming)
+    surface_normal = _oriented_surface_normal(incoming_direction, normal)
+    cos_incidence = max(
+        0.0,
+        min(
+            1.0,
+            -(
+                incoming_direction[0] * surface_normal[0]
+                + incoming_direction[1] * surface_normal[1]
+                + incoming_direction[2] * surface_normal[2]
+            ),
+        ),
+    )
+    # Preserve the catalog's measured/base coefficient through ordinary
+    # incidence (0-45 degrees). Apply the grazing boost only beyond that
+    # range, where cavity and narrow-gap leakage is most often missed.
+    grazing_coordinate = max(0.0, (0.7 - cos_incidence) / 0.7)
+    grazing_term = grazing_coordinate**5
+    gloss_response = 0.25 + 0.75 * (1.0 - profile.roughness)
+    base = profile.reflectance
+    return max(
+        0.0,
+        min(1.0, base + (1.0 - base) * grazing_term * gloss_response),
+    )
+
+
 def sample_reflection_direction(
     rng: random.Random,
     incoming: Vec3,

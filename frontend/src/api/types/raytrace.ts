@@ -226,21 +226,23 @@ interface RayTraceJobProgress {
   estimated_remaining_sec: number | null
   rays_per_sec: number
   created_at: number
+  stop_requested?: boolean
+  stopped_early?: boolean
 }
 
 export interface QueuedRayTraceJob extends RayTraceJobProgress {
   status: 'queued'
-  phase: 'queued'
+  phase: 'queued' | 'stopping'
 }
 
 export interface RunningRayTraceJob extends RayTraceJobProgress {
   status: 'running'
-  phase: 'preparing' | 'tracing'
+  phase: 'preparing' | 'tracing' | 'stopping'
 }
 
 export interface CompletedRayTraceJob extends RayTraceJobProgress {
   status: 'completed'
-  phase: 'completed'
+  phase: 'completed' | 'stopped'
   result: RayTraceResult
   completed_at: number
 }

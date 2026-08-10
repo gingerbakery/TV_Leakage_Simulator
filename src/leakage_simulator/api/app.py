@@ -172,6 +172,16 @@ def create_app(
         return job
 
     @application.post(
+        "/api/raytrace/stop",
+        response_class=JSONResponse,
+    )
+    def stop_raytrace(job_id: str = "") -> Any:
+        job = api_runtime.stop_raytrace_job(job_id)
+        if job is None:
+            return _error(404, "Ray tracing job was not found")
+        return job
+
+    @application.post(
         "/api/raytrace/direct",
         response_class=JSONResponse,
     )

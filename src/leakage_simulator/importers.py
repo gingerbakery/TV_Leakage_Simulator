@@ -669,7 +669,9 @@ def _import_step(path: Path) -> ImportResult:
     cadquery_import_started_at = time.perf_counter()
     workplane = cq.importers.importStep(str(path))
     shape = workplane.val()
-    vertices, triangles = shape.tessellate(0.5, 0.5)
+    # Keep the CadQuery fallback visually consistent with the primary OCP
+    # path: fine linear deflection and roughly ten-degree angular tolerance.
+    vertices, triangles = shape.tessellate(0.15, 0.18)
     cadquery_import_sec = _cad_stage(
         "CadQuery STEP+tessellate",
         cadquery_import_started_at,
@@ -769,7 +771,12 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
         for solid, _name, _color in named_colored_solids:
             try:
-                BRepMesh_IncrementalMesh(solid, 0.5, False, 0.5, True).Perform()
+                # Viewer-quality tessellation: keep curved STEP surfaces
+                # within 0.15 mm and about 10 degrees. Ray tracing still
+                # consumes triangles internally, but the interactive CAD
+                # presentation no longer inherits the old coarse 0.5 mm /
+                # 0.5 rad approximation that made round parts look faceted.
+                BRepMesh_IncrementalMesh(solid, 0.15, False, 0.18, True).Perform()
             except Exception:
                 pass
         timings["ocp_tessellation"] = _cad_stage(
@@ -798,7 +805,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
 
         tessellation_started_at = time.perf_counter()
         _cad_stage_start("OCP tessellation")
-        mesh_builder = BRepMesh_IncrementalMesh(shape, 0.5, False, 0.5, True)
+        mesh_builder = BRepMesh_IncrementalMesh(shape, 0.15, False, 0.18, True)
         try:
             mesh_builder.Perform()
         except Exception:

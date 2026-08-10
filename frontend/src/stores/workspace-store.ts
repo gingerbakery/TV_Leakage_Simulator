@@ -28,6 +28,13 @@ export interface DatumFacePickResult {
 
 export type MaterialTargetType = 'part' | 'faces'
 
+export interface OpticalValueOverride {
+  reflectance: number
+  loss: number
+  specularRatio: number
+  diffuseRatio: number
+}
+
 export interface MaterialAssignment {
   assignmentId: string
   componentId: number
@@ -37,6 +44,7 @@ export interface MaterialAssignment {
   surfaceId: string
   profileId: string
   bsdfAssetId: string
+  opticalOverride?: OpticalValueOverride
   enabled: boolean
 }
 
@@ -50,6 +58,7 @@ export interface SavedOpticalProfile {
   baseMaterialId: string
   surfaceId: string
   bsdfAssetId: string
+  opticalOverride?: OpticalValueOverride
 }
 
 export type TransformTargetType = 'component' | 'faces'

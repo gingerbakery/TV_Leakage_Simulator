@@ -12,10 +12,29 @@ def build_direct_trace_input(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
 ) -> DirectRayTraceInput:
+    emitter_source_faces = {
+        int(face_index)
+        for item in request_payload.get("emitters", [])
+        if str(item.get("emitter_type") or "face") == "face"
+        for face_index in item.get("face_indices", [])
+    }
+    excluded_components = {
+        int(component_id)
+        for component_id in request_payload.get("excluded_component_ids", [])
+    }
+    source_component_ids = scene_mesh.get("face_component_ids") or []
+    emitter_only_source_faces = {
+        face_index
+        for face_index in emitter_source_faces
+        if 0 <= face_index < len(source_component_ids)
+        and source_component_ids[face_index] is not None
+        and int(source_component_ids[face_index]) in excluded_components
+    }
     mesh = build_transformed_mesh(
         scene_mesh,
         request_payload.get("transform_rules", []),
         request_payload.get("excluded_component_ids", []),
+        emitter_source_face_indices=emitter_source_faces,
     )
     roi_faces = request_payload.get("roi_faces")
     roi_is_active = bool(roi_faces)
@@ -23,6 +42,7 @@ def build_direct_trace_input(
         mesh, source_to_trace_face = filter_mesh_to_roi(
             mesh,
             [int(value) for value in roi_faces],
+            preserved_source_face_indices=emitter_only_source_faces,
         )
     else:
         source_to_trace_face = {
@@ -73,6 +93,7 @@ def build_direct_trace_input(
 def filter_mesh_to_roi(
     mesh: TriangleMesh,
     roi_face_indices: List[int],
+    preserved_source_face_indices: Optional[Set[int]] = None,
 ) -> Tuple[TriangleMesh, Dict[int, int]]:
     """Trims an already-transformed direct-trace mesh down to just the ROI
     faces, agreed with the ray-trace owner as "ROI를 선택하면 그 영역만 분석한다"
@@ -87,6 +108,7 @@ def filter_mesh_to_roi(
     trimmed mesh.
     """
     roi_set = set(roi_face_indices)
+    preserved_set = preserved_source_face_indices or set()
     trimmed = TriangleMesh()
     remap: Dict[int, int] = {}
     for face_index in range(len(mesh.faces)):
@@ -94,7 +116,9 @@ def filter_mesh_to_roi(
         source_face_index = (
             int(raw_source_face_index) if raw_source_face_index is not None else None
         )
-        if source_face_index is None or source_face_index not in roi_set:
+        if source_face_index is None or (
+            source_face_index not in roi_set and source_face_index not in preserved_set
+        ):
             continue
         v0, v1, v2 = mesh.face_vertices(face_index)
         new_v0 = trimmed.add_vertex(v0)
@@ -129,6 +153,7 @@ def build_transformed_mesh(
     scene_mesh: Dict[str, Any],
     transform_rules: List[Dict[str, Any]],
     excluded_component_ids: Optional[List[int]] = None,
+    emitter_source_face_indices: Optional[Set[int]] = None,
 ) -> TriangleMesh:
     vertices = scene_mesh.get("vertices") or []
     faces = scene_mesh.get("faces") or []
@@ -139,6 +164,7 @@ def build_transformed_mesh(
     excluded_components: Set[int] = {
         int(component_id) for component_id in (excluded_component_ids or [])
     }
+    emitter_source_faces = emitter_source_face_indices or set()
 
     enabled_rules = {
         int(rule["object_id"]): rule
@@ -152,8 +178,6 @@ def build_transformed_mesh(
         if component_id is None:
             continue
         normalized_component_id = int(component_id)
-        if normalized_component_id in excluded_components:
-            continue
         bounds = component_bounds.setdefault(
             normalized_component_id,
             [
@@ -192,7 +216,10 @@ def build_transformed_mesh(
         if len(face) != 3:
             raise ValueError("Direct ray tracing requires triangle faces")
         component_id = component_ids[face_index]
-        if component_id is not None and int(component_id) in excluded_components:
+        component_is_excluded = (
+            component_id is not None and int(component_id) in excluded_components
+        )
+        if component_is_excluded and face_index not in emitter_source_faces:
             continue
         rule = enabled_rules.get(int(component_id)) if component_id is not None else None
         pivot = pivots.get(int(component_id), (0.0, 0.0, 0.0)) if component_id is not None else (0.0, 0.0, 0.0)
@@ -207,7 +234,11 @@ def build_transformed_mesh(
             transformed_indices[1],
             transformed_indices[2],
             material_id,
-            {"source_face_index": face_index, "component_id": component_id},
+            {
+                "source_face_index": face_index,
+                "component_id": component_id,
+                "trace_excluded": component_is_excluded,
+            },
         )
     return mesh
 

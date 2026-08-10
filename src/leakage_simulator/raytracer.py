@@ -23,7 +23,11 @@ from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayHit, RayTr
 from .types import SimulationOutput, RunResultSummary, random_unit_vector
 from .gap import GapSample, sample_gap_profiles
 from .optics import OpticalPropertyResolver, UNASSIGNED_PROFILE_ID
-from .reflection import ReflectionSample, sample_reflection_direction
+from .reflection import (
+    ReflectionSample,
+    effective_surface_reflectance,
+    sample_reflection_direction,
+)
 from .fast_sampling import (
     iter_virtual_plane_ray_batches,
     supports_fast_virtual_plane_sampling,
@@ -204,6 +208,7 @@ def run_simulation(engine_input: EngineInput) -> SimulationOutput:
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> RayTraceResult:
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
@@ -255,6 +260,7 @@ def run_direct_ray_trace(
     )
     progress_interval = max(1, expected_ray_count // 400)
     last_progress_count = -1
+    stopped_early = False
     if progress_callback is not None:
         progress_callback(0, expected_ray_count)
 
@@ -289,6 +295,9 @@ def run_direct_ray_trace(
             emitter_seed,
             trace_input.config.epsilon_mm,
         ):
+            if should_stop is not None and should_stop():
+                stopped_early = True
+                break
             total_rays += 1
             if progress_callback is not None:
                 processed_ray_count = max(0, total_rays - 1)
@@ -433,7 +442,11 @@ def run_direct_ray_trace(
 
                 surface_hit_count += 1
                 resolved_optical = resolved_optical_by_face[surface_hit.face_index]
-                reflected_power = current_power * resolved_optical.profile.reflectance
+                reflected_power = current_power * effective_surface_reflectance(
+                    current_direction,
+                    surface_hit.normal,
+                    resolved_optical.profile,
+                )
                 surface_contribution = (
                     _surface_contribution_for_face(
                         contribution_summary,
@@ -580,6 +593,9 @@ def run_direct_ray_trace(
                 current_depth = next_depth
                 current_ray_kind = reflection_sample.lobe
 
+        if stopped_early:
+            break
+
     if progress_callback is not None:
         progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
@@ -603,6 +619,8 @@ def run_direct_ray_trace(
         "scalar_primary_ray_count": scalar_primary_ray_count,
         "resolved_optical_face_cache_count": len(resolved_optical_by_face),
         "stored_path_count": len(stored_paths),
+        "stopped_early": stopped_early,
+        "requested_ray_count": expected_ray_count,
         "rays_per_sec": total_rays / runtime_sec if runtime_sec > 0.0 else 0.0,
     }
     return RayTraceResult(
@@ -687,7 +705,11 @@ def _trace_single_bounce_fast(
     reflection_summary["surface_hit_count"] += 1
     reflection_summary["primary_surface_hit_count"] += 1
     resolved_optical = resolved_optical_by_face[surface_hit.face_index]
-    reflected_power = ray_power * resolved_optical.profile.reflectance
+    reflected_power = ray_power * effective_surface_reflectance(
+        direction,
+        surface_hit.normal,
+        resolved_optical.profile,
+    )
     surface_contribution = (
         _surface_contribution_for_face(
             contribution_summary,
@@ -805,7 +827,11 @@ def _trace_single_bounce_fast(
     if secondary_surface_hit is not None:
         reflection_summary["surface_hit_count"] += 1
         secondary_optical = resolved_optical_by_face[secondary_surface_hit.face_index]
-        secondary_reflected_power = emitted_power * secondary_optical.profile.reflectance
+        secondary_reflected_power = emitted_power * effective_surface_reflectance(
+            reflection_sample.direction,
+            secondary_surface_hit.normal,
+            secondary_optical.profile,
+        )
         secondary_contribution = (
             _surface_contribution_for_face(
                 contribution_summary,

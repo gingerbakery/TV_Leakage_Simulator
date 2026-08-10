@@ -15,6 +15,7 @@ import type { RayTraceRequest } from './types'
 
 type UploadApi = Pick<LeakageApiClient, 'uploadCad'>
 type StartRayTraceApi = Pick<LeakageApiClient, 'startRayTrace'>
+type StopRayTraceApi = Pick<LeakageApiClient, 'stopRayTrace'>
 type DirectRayTraceApi = Pick<LeakageApiClient, 'runRayTraceDirect'>
 
 export interface UploadCadVariables {
@@ -59,6 +60,21 @@ export function useStartRayTraceMutation(
     mutationKey: [...apiQueryKeys.rayTrace(), 'start'],
     mutationFn: ({ request, signal }: RayTraceMutationVariables) =>
       client.startRayTrace(request, { signal }),
+    onSuccess: (job) => {
+      queryClient.setQueryData(apiQueryKeys.rayTraceJob(job.job_id), job)
+    },
+  })
+}
+
+export function useStopRayTraceMutation(
+  client: StopRayTraceApi = apiClient,
+) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: [...apiQueryKeys.rayTrace(), 'stop'],
+    mutationFn: ({ jobId }: { jobId: string }) =>
+      client.stopRayTrace(jobId),
     onSuccess: (job) => {
       queryClient.setQueryData(apiQueryKeys.rayTraceJob(job.job_id), job)
     },

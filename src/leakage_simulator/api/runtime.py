@@ -175,6 +175,8 @@ class ApiRuntime:
             "elapsed_sec": 0.0,
             "estimated_remaining_sec": None,
             "rays_per_sec": 0.0,
+            "stop_requested": False,
+            "stopped_early": False,
             "created_at": time.time(),
         }
         with self._state_lock:
@@ -198,6 +200,16 @@ class ApiRuntime:
         with self._state_lock:
             job = self._raytrace_jobs.get(job_id)
             return dict(job) if job is not None else None
+
+    def stop_raytrace_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        with self._state_lock:
+            job = self._raytrace_jobs.get(job_id)
+            if job is None:
+                return None
+            if job.get("status") in {"queued", "running"}:
+                job["stop_requested"] = True
+                job["phase"] = "stopping"
+            return dict(job)
 
     def run_raytrace_direct(
         self,
@@ -334,23 +346,40 @@ class ApiRuntime:
                     rays_per_sec=ray_rate,
                 )
 
+            def should_stop() -> bool:
+                with self._state_lock:
+                    job = self._raytrace_jobs.get(job_id)
+                    return bool(job and job.get("stop_requested"))
+
             result = self._trace_runner(
                 trace_input,
                 progress_callback=report_progress,
+                should_stop=should_stop,
             )
+            result_payload = result.to_dict()
+            processed_ray_count = max(
+                0,
+                min(int(result_payload.get("total_rays", 0)), total_ray_count),
+            )
+            stopped_early = should_stop() and processed_ray_count < total_ray_count
             self._update_raytrace_job(
                 job_id,
                 status="completed",
-                phase="completed",
-                processed_rays=total_ray_count,
+                phase="stopped" if stopped_early else "completed",
+                processed_rays=processed_ray_count,
                 total_rays=total_ray_count,
-                progress=1.0,
+                progress=(
+                    processed_ray_count / total_ray_count
+                    if total_ray_count > 0
+                    else 0.0
+                ),
                 elapsed_sec=max(
                     0.0,
                     time.time() - trace_started_at,
                 ),
                 estimated_remaining_sec=0.0,
-                result=result.to_dict(),
+                result=result_payload,
+                stopped_early=stopped_early,
                 completed_at=time.time(),
             )
         except Exception as exc:

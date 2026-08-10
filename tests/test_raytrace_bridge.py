@@ -191,6 +191,42 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(trace_input.emitters[0].face_indices, [0])
         self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 1)
 
+    def test_trace_off_component_can_supply_emitter_face_without_ray_collision(self) -> None:
+        scene_mesh = {
+            "vertices": [
+                [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                [0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0],
+            ],
+            "faces": [[0, 1, 2], [3, 4, 5]],
+            "face_component_ids": [7, 8],
+            "face_material_ids": ["emitter_fixture", "trace_target"],
+        }
+        trace_input = build_direct_trace_input(
+            scene_mesh,
+            {
+                "excluded_component_ids": [7],
+                "emitters": [{
+                    "emitter_id": "source",
+                    "emitter_type": "face",
+                    "face_indices": [0],
+                }],
+                "receivers": [{
+                    "receiver_id": "receiver",
+                    "center": [0, 0, 10],
+                    "normal": [0, 0, -1],
+                    "width_mm": 10,
+                    "height_mm": 10,
+                }],
+            },
+        )
+
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+        self.assertTrue(trace_input.mesh.metadata(0)["trace_excluded"])
+        hit = trace_input.mesh.intersect_ray((0.2, 0.2, -1.0), (0.0, 0.0, 1.0))
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(trace_input.mesh.metadata(hit.face_index)["component_id"], 8)
+
 
 class RoiFilteringTests(unittest.TestCase):
     """ROI 담당자와 협의된 컨셉: ROI를 지정하면 그 영역만 분석한다 (raytrace_bridge.py

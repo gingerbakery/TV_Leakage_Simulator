@@ -326,12 +326,13 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
       assignment.baseMaterialId,
       assignment.surfaceId,
     )
+    const custom = assignment.opticalOverride
     profiles.set(profileId, {
       profile_id: profileId,
-      reflectance: compiled.reflectance,
-      absorption: compiled.loss,
-      specular_ratio: compiled.specularRatio,
-      diffuse_ratio: compiled.diffuseRatio,
+      reflectance: custom?.reflectance ?? compiled.reflectance,
+      absorption: custom?.loss ?? compiled.loss,
+      specular_ratio: custom?.specularRatio ?? compiled.specularRatio,
+      diffuse_ratio: custom?.diffuseRatio ?? compiled.diffuseRatio,
       scatter_model: compiled.scatterModel,
       roughness: compiled.roughness,
       gaussian_sigma_deg: compiled.scatterSigmaDeg,
@@ -423,7 +424,10 @@ export function buildRayTraceRequest({
         ...(rule.pivot ? { pivot: rule.pivot } : {}),
       })),
     excluded_component_ids: [
-      ...new Set([...excludedComponentIds, ...deletedComponentIds]),
+      ...new Set([
+        ...excludedComponentIds,
+        ...deletedComponentIds,
+      ]),
     ].sort((left, right) => left - right),
     ...(roiFaces.length > 0 ? { roi_faces: roiFaces } : {}),
     config: {

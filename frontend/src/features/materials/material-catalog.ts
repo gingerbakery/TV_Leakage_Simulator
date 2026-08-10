@@ -36,6 +36,12 @@ export interface OpticalProfilePreset {
   baseMaterialId: string
   surfaceId: string
   bsdfAssetId: string
+  opticalOverride?: {
+    reflectance: number
+    loss: number
+    specularRatio: number
+    diffuseRatio: number
+  }
 }
 
 export interface CompiledOpticalProfile {
@@ -121,7 +127,9 @@ export const baseMaterials: BaseMaterial[] = [
     id: 'pc_white',
     name: 'PC · White',
     category: 'Resin',
-    reflectanceTotal: 0.85,
+    // User-provided measured value at 640 nm. The current tracer is
+    // wavelength-independent, so this is used as the scalar/base value.
+    reflectanceTotal: 0.92,
     defaultSurfaceId: 'semi_gloss_black_resin',
   },
   // Resin - ABS
@@ -226,7 +234,7 @@ export const surfaceProperties: SurfaceProperty[] = [
     id: 'metal_low_gloss',
     name: 'Low gloss',
     scatterModel: 'gaussian',
-    reflectanceScale: 1,
+    reflectanceScale: 0.8,
     specularRatio: 0.1,
     diffuseRatio: 0.9,
     roughness: 0.85,
@@ -248,7 +256,7 @@ export const surfaceProperties: SurfaceProperty[] = [
     id: 'metal_gloss',
     name: 'Gloss',
     scatterModel: 'mixed',
-    reflectanceScale: 1,
+    reflectanceScale: 1.2,
     specularRatio: 0.65,
     diffuseRatio: 0.35,
     roughness: 0.25,
@@ -264,7 +272,7 @@ export const surfaceProperties: SurfaceProperty[] = [
     id: 'matte_black_resin',
     name: 'Matte',
     scatterModel: 'lambertian',
-    reflectanceScale: 1,
+    reflectanceScale: 0.72,
     specularRatio: 0,
     diffuseRatio: 1,
     roughness: 0.88,
@@ -286,7 +294,7 @@ export const surfaceProperties: SurfaceProperty[] = [
     id: 'high_gloss_resin',
     name: 'High-gloss',
     scatterModel: 'mixed',
-    reflectanceScale: 1,
+    reflectanceScale: 1.35,
     specularRatio: 0.75,
     diffuseRatio: 0.25,
     roughness: 0.15,

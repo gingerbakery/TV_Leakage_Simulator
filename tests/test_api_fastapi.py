@@ -51,7 +51,7 @@ def _trace_input_builder(scene_mesh, request_payload):
     )
 
 
-def _trace_runner(trace_input, progress_callback=None):
+def _trace_runner(trace_input, progress_callback=None, should_stop=None):
     if progress_callback is not None:
         progress_callback(1, 2)
         progress_callback(2, 2)
@@ -282,6 +282,74 @@ class FastApiLayerTests(unittest.TestCase):
             status_response.json()["error"],
             "Ray tracing job was not found",
         )
+
+    def test_stop_finishes_job_with_partial_result(self):
+        class PartialResult:
+            def __init__(self, total_rays):
+                self.total_rays = total_rays
+
+            def to_dict(self):
+                return {"run_id": "run_partial", "total_rays": self.total_rays}
+
+        def input_builder(scene_mesh, request_payload):
+            return SimpleNamespace(
+                emitters=[SimpleNamespace(ray_count=200, enabled=True)],
+            )
+
+        def slow_runner(trace_input, progress_callback=None, should_stop=None):
+            processed = 0
+            for processed in range(1, 201):
+                if should_stop is not None and should_stop():
+                    processed -= 1
+                    break
+                if progress_callback is not None:
+                    progress_callback(processed, 200)
+                time.sleep(0.002)
+            return PartialResult(processed)
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name) / "partial",
+            scene_loader=_scene_loader,
+            trace_input_builder=input_builder,
+            trace_runner=slow_runner,
+        )
+        client = TestClient(create_app(runtime))
+        try:
+            scene = runtime.load_scene("partial.step")
+            job = client.post(
+                "/api/raytrace/start",
+                json={
+                    "scene_token": scene["metadata"]["scene_token"],
+                    "emitters": [{"enabled": True, "ray_count": 200}],
+                },
+            ).json()
+            time.sleep(0.02)
+            stop_response = client.post(
+                "/api/raytrace/stop",
+                params={"job_id": job["job_id"]},
+            )
+            self.assertEqual(stop_response.status_code, 200)
+
+            snapshot = None
+            for _ in range(100):
+                snapshot = client.get(
+                    "/api/raytrace/status",
+                    params={"job_id": job["job_id"]},
+                ).json()
+                if snapshot["status"] == "completed":
+                    break
+                time.sleep(0.005)
+
+            self.assertEqual(snapshot["phase"], "stopped")
+            self.assertTrue(snapshot["stopped_early"])
+            self.assertGreater(snapshot["processed_rays"], 0)
+            self.assertLess(snapshot["processed_rays"], 200)
+            self.assertEqual(
+                snapshot["result"]["total_rays"],
+                snapshot["processed_rays"],
+            )
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

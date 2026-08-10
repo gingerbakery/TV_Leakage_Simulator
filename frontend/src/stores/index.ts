@@ -12,6 +12,7 @@ export type {
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,
+  OpticalValueOverride,
   RayPathDisplayFilter,
   RayPathDisplayFilters,
   DatumFacePickResult,

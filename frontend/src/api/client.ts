@@ -27,6 +27,7 @@ export interface LeakageApiClient {
     jobId: string,
     options?: ApiRequestOptions,
   ): Promise<RayTraceJob>
+  stopRayTrace(jobId: string, options?: ApiRequestOptions): Promise<RayTraceJob>
   runRayTraceDirect(
     request: RayTraceRequest,
     options?: ApiRequestOptions,
@@ -72,6 +73,14 @@ export function createApiClient(
     getRayTraceJob(jobId, requestOptions) {
       const query = new URLSearchParams({ job_id: jobId })
       return http.requestJson<RayTraceJob>(`/api/raytrace/status?${query}`, {
+        signal: requestOptions?.signal,
+      })
+    },
+
+    stopRayTrace(jobId, requestOptions) {
+      const query = new URLSearchParams({ job_id: jobId })
+      return http.requestJson<RayTraceJob>(`/api/raytrace/stop?${query}`, {
+        method: 'POST',
         signal: requestOptions?.signal,
       })
     },

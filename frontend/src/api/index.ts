@@ -17,6 +17,7 @@ export {
   useRayTraceJobQuery,
   useSceneQuery,
   useStartRayTraceMutation,
+  useStopRayTraceMutation,
   useUploadCadMutation,
 } from './hooks'
 export type {

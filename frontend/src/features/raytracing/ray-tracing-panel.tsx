@@ -19,12 +19,14 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Square,
   Trash2,
 } from 'lucide-react'
 
 import {
   useRayTraceJobQuery,
   useStartRayTraceMutation,
+  useStopRayTraceMutation,
 } from '@/api'
 import {
   AppDialog,
@@ -263,7 +265,10 @@ function EmitterDialog({
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialEmitter),
     )
-  }, [defaultCenter, initialEmitter, open])
+    if (mode === 'face' && initialEmitter) {
+      actions.setSelectedFaceIds(initialEmitter.face_indices)
+    }
+  }, [actions, defaultCenter, initialEmitter, mode, open])
 
   // Same pick-a-face-in-the-viewer channel Receiver's Datum Plane uses -
   // reused as-is since both just want a starting center/rotation.
@@ -289,8 +294,7 @@ function EmitterDialog({
     actions.setDatumFacePickArmed(false)
   }, [actions, open])
 
-  const emitterFaceIds =
-    initialEmitter?.face_indices ?? selectedFaceIds
+  const emitterFaceIds = selectedFaceIds
   const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
   const canApply =
     mode === 'datum_plane' || emitterFaceIds.length > 0
@@ -408,32 +412,22 @@ function EmitterDialog({
                 ? ` · CAD 면 ${emitterCadFaceCount}개`
                 : ''}
             </div>
-            {initialEmitter ? (
-              <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-                기존 CAD 발광면은 유지됩니다. 발광면을 교체하려면 새 CAD
-                surface Emitter를 생성하세요.
-              </p>
-            ) : (
-              // Same "뷰어에서 CAD Face 선택" toggle button, constant label,
-              // and click-toggles-a-CAD-surface mechanics as Material's Face
-              // 지정 / Transform's Local faces pickers - starts armed
-              // automatically (there's no other way to build a CAD surface
-              // emitter), but stays a real button so it can be
-              // paused/resumed by pressing it again.
-              <div className="mt-2">
-                <ViewerFacePickControl
-                  armed={emitterFaceSelectionArmed}
-                  assigned={emitterCadFaceCount > 0}
-                  kind="surface"
-                  cadFaceCount={emitterCadFaceCount}
-                  onToggle={() =>
-                  actions.setEmitterFaceSelectionArmed(
-                    !emitterFaceSelectionArmed,
-                  )
+            <div className="mt-2">
+              <ViewerFacePickControl
+                armed={emitterFaceSelectionArmed}
+                assigned={emitterCadFaceCount > 0}
+                kind="surface"
+                cadFaceCount={emitterCadFaceCount}
+                onToggle={() => {
+                  if (emitterFaceSelectionArmed) {
+                    actions.setEmitterFaceSelectionArmed(false)
+                    return
                   }
-                />
-              </div>
-            )}
+                  if (initialEmitter) actions.setSelectedFaceIds([])
+                  actions.setEmitterFaceSelectionArmed(true)
+                }}
+              />
+            </div>
           </div>
         ) : (
           <>
@@ -1106,6 +1100,7 @@ export function RayTracingPanel({
       (receiver) => receiver.receiver_id === editingReceiverId,
     ) ?? null
   const startMutation = useStartRayTraceMutation()
+  const stopMutation = useStopRayTraceMutation()
   const jobQuery = useRayTraceJobQuery(activeJobId)
   const job = jobQuery.data
   const latestResult = job?.status === 'completed' ? job.result : null
@@ -1575,18 +1570,32 @@ export function RayTracingPanel({
       </section>
 
       <section className="space-y-2 border-t border-border pt-3">
-        <Button
-          className="w-full"
-          disabled={!canRun}
-          onClick={() => void handleRun()}
-        >
-          {isRunning ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
+        {isRunning && activeJobId ? (
+          <Button
+            className="w-full"
+            variant="destructive"
+            disabled={stopMutation.isPending || job?.phase === 'stopping'}
+            onClick={() => stopMutation.mutate({ jobId: activeJobId })}
+          >
+            {stopMutation.isPending || job?.phase === 'stopping' ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <Square />
+            )}
+            {job?.phase === 'stopping'
+              ? 'Stopping · 부분 결과 정리 중'
+              : 'Stop and analyze partial result'}
+          </Button>
+        ) : (
+          <Button
+            className="w-full"
+            disabled={!canRun}
+            onClick={() => void handleRun()}
+          >
             <Play />
-          )}
-          {isRunning ? 'Tracing rays…' : 'Run ray tracing'}
-        </Button>
+            Run ray tracing
+          </Button>
+        )}
         <p className="text-[0.65rem] leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·
           Rays {enabledEmitterRayCount.toLocaleString()} · ROI{' '}
@@ -1615,7 +1624,7 @@ export function RayTracingPanel({
               </span>
               <span>
                 {job.status === 'completed'
-                  ? `complete · ${formatDuration(job.elapsed_sec)}`
+                  ? `${job.phase === 'stopped' ? 'stopped · partial result' : 'complete'} · ${formatDuration(job.elapsed_sec)}`
                   : `${formatDuration(job.estimated_remaining_sec)} left`}
               </span>
             </div>

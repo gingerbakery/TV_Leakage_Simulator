@@ -292,7 +292,7 @@ describe('Step 07·08 feature editors', () => {
     )
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Traceability off for STEP Solid 1',
+        name: 'Traceability ON for STEP Solid 1',
       }),
     )
     fireEvent.click(
@@ -881,6 +881,96 @@ describe('Step 07·08 feature editors', () => {
       workspaceStore.getState().emitterFaceSelectionArmed,
     ).toBe(false)
     expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Edit emitter_001' }),
+    )
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
+    expect(
+      screen.getByRole('button', {
+        name: '뷰어에서 CAD Face 다시 선택',
+      }),
+    ).not.toBeNull()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '뷰어에서 CAD Face 다시 선택',
+      }),
+    )
+    expect(workspaceStore.getState().emitterFaceSelectionArmed).toBe(true)
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+    expect(
+      screen.getByRole('button', { name: 'Save emitter' }),
+    ).toHaveProperty('disabled', true)
+
+    act(() => {
+      workspaceStore.getState().actions.setSelectedFaceIds([2])
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save emitter' }))
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_id: 'emitter_001',
+        emitter_type: 'face',
+        face_indices: [2],
+      }),
+    ])
+  })
+
+  it('applies and saves user-entered optical values', () => {
+    const component = createSceneFixture().components[0]
+    render(
+      <AppProviders>
+        <MaterialEditorDialog
+          open
+          onOpenChange={vi.fn()}
+          component={component}
+          componentName="Cover Deco"
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(screen.getByLabelText('Use custom optical values'))
+    fireEvent.change(screen.getByLabelText('Custom Reflectance'), {
+      target: { value: '0.2' },
+    })
+    fireEvent.change(screen.getByLabelText('Custom Loss'), {
+      target: { value: '0.8' },
+    })
+    fireEvent.change(screen.getByLabelText('Custom Specular'), {
+      target: { value: '0.35' },
+    })
+    fireEvent.change(screen.getByLabelText('Custom Diffuse'), {
+      target: { value: '0.65' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to part' }))
+
+    expect(workspaceStore.getState().materialAssignments[0]).toMatchObject({
+      opticalOverride: {
+        reflectance: 0.2,
+        loss: 0.8,
+        specularRatio: 0.35,
+        diffuseRatio: 0.65,
+      },
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Save current draft as a new profile',
+      }),
+    )
+    fireEvent.change(screen.getByPlaceholderText('새 프로필 이름'), {
+      target: { value: 'PC Black measured' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm save' }))
+    expect(workspaceStore.getState().customOpticalProfiles[0]).toMatchObject({
+      name: 'PC Black measured',
+      opticalOverride: {
+        reflectance: 0.2,
+        loss: 0.8,
+        specularRatio: 0.35,
+        diffuseRatio: 0.65,
+      },
+    })
   })
 
   it('updates every emitter ray count from Run options', () => {

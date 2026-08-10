@@ -164,6 +164,12 @@ describe('ray tracing model', () => {
           surfaceId: 'matte_black_resin',
           profileId: '',
           bsdfAssetId: '',
+          opticalOverride: {
+            reflectance: 0.2,
+            loss: 0.8,
+            specularRatio: 0.35,
+            diffuseRatio: 0.65,
+          },
           enabled: true,
         },
       ],
@@ -179,7 +185,7 @@ describe('ray tracing model', () => {
           enabled: true,
         },
       ],
-      excludedComponentIds: [8],
+      excludedComponentIds: [1, 8],
       deletedComponentIds: [9],
       roiScopes: [
         {
@@ -204,9 +210,15 @@ describe('ray tracing model', () => {
     })
 
     expect(request.roi_faces).toEqual([0, 1])
-    expect(request.excluded_component_ids).toEqual([8, 9])
+    expect(request.excluded_component_ids).toEqual([1, 8, 9])
     expect(request.config.ray_count).toBe(12_000)
     expect(request.optical_profiles).toHaveLength(1)
+    expect(request.optical_profiles[0]).toMatchObject({
+      reflectance: 0.2,
+      absorption: 0.8,
+      specular_ratio: 0.35,
+      diffuse_ratio: 0.65,
+    })
     expect(request.optical_assignments[0]).toMatchObject({
       component_id: 1,
       target_type: 'part',

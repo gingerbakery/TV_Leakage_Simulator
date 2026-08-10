@@ -49,12 +49,35 @@ export function createFaceGeometry(
   faceIds: Iterable<number>,
   center = new Vector3(),
 ): ViewerGeometryBundle {
+  const requestedFaceIds = [...faceIds]
   const positions: number[] = []
   const normals: number[] = []
   const includedFaceIds: number[] = []
-  let hasCompleteNormals = true
+  const smoothNormals = new Map<string, Vector3>()
+  const normalKeysByFace = new Map<number, string[]>()
 
-  for (const faceId of faceIds) {
+  // Smooth only inside each original CAD/B-rep face. Triangles belonging
+  // to the same curved surface share averaged vertex normals, while a real
+  // CAD edge (different source face id) remains sharp like NX shaded mode.
+  for (const faceId of requestedFaceIds) {
+    const face = scene.mesh.faces[faceId]
+    const faceNormal = scene.mesh.face_normals[faceId]
+    if (!face || !faceNormal) continue
+    const sourceFaceId = scene.mesh.face_source_ids?.[faceId] ?? faceId
+    const keys: string[] = []
+    for (const vertexId of face) {
+      const vertex = scene.mesh.vertices[vertexId]
+      if (!vertex) continue
+      const key = `${sourceFaceId}:${vertex[0].toFixed(6)},${vertex[1].toFixed(6)},${vertex[2].toFixed(6)}`
+      keys.push(key)
+      const sum = smoothNormals.get(key) ?? new Vector3()
+      sum.add(new Vector3(...faceNormal))
+      smoothNormals.set(key, sum)
+    }
+    normalKeysByFace.set(faceId, keys)
+  }
+
+  for (const faceId of requestedFaceIds) {
     const face = scene.mesh.faces[faceId]
     if (!face) continue
 
@@ -62,7 +85,7 @@ export function createFaceGeometry(
     if (vertices.some((vertex) => vertex === undefined)) continue
 
     const normal = scene.mesh.face_normals[faceId]
-    if (!normal) hasCompleteNormals = false
+    const normalKeys = normalKeysByFace.get(faceId)
 
     for (const vertex of vertices) {
       if (!vertex) continue
@@ -71,7 +94,14 @@ export function createFaceGeometry(
         vertex[1] - center.y,
         vertex[2] - center.z,
       )
-      if (normal) normals.push(normal[0], normal[1], normal[2])
+      const key = normalKeys?.shift()
+      const smoothNormal = key ? smoothNormals.get(key) : undefined
+      if (smoothNormal && smoothNormal.lengthSq() > 1e-12) {
+        smoothNormal.normalize()
+        normals.push(smoothNormal.x, smoothNormal.y, smoothNormal.z)
+      } else if (normal) {
+        normals.push(normal[0], normal[1], normal[2])
+      }
     }
     includedFaceIds.push(faceId)
   }
@@ -82,7 +112,7 @@ export function createFaceGeometry(
     new Float32BufferAttribute(positions, 3),
   )
 
-  if (hasCompleteNormals && normals.length === positions.length) {
+  if (normals.length === positions.length) {
     geometry.setAttribute(
       'normal',
       new Float32BufferAttribute(normals, 3),
