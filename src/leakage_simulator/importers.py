@@ -230,8 +230,14 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
             return text if text else None
         return None
 
-    def get_color(shape) -> Optional[str]:
-        if shape is None or shape.IsNull():
+    def get_color(item) -> Optional[str]:
+        """Read XCAF colors from labels, shapes, or assembly instances.
+
+        STEP exporters do not all attach presentation data at the same level:
+        some use the product label, some the component instance, and others
+        only the represented shape.  Query every XCAF overload defensively.
+        """
+        if item is None:
             return None
         color = Quantity_Color()
         for color_type in (
@@ -239,9 +245,38 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
             XCAFDoc_ColorType.XCAFDoc_ColorGen,
             XCAFDoc_ColorType.XCAFDoc_ColorCurv,
         ):
-            if color_tool.GetColor(shape, color_type, color):
-                return _quantity_color_to_hex(color)
+            try:
+                if color_tool.GetColor(item, color_type, color):
+                    return _quantity_color_to_hex(color)
+            except (AttributeError, TypeError):
+                pass
+            try:
+                if color_tool.GetInstanceColor(item, color_type, color):
+                    return _quantity_color_to_hex(color)
+            except (AttributeError, TypeError):
+                pass
         return None
+
+    def get_shape_or_face_color(shape) -> Optional[str]:
+        if shape is None or shape.IsNull():
+            return None
+        direct_color = get_color(shape)
+        if direct_color:
+            return direct_color
+
+        # Several AP214 writers store a body's display color on its faces
+        # instead of the product/solid. Use the most frequent face color so a
+        # uniformly colored component retains its authored appearance.
+        face_colors: Dict[str, int] = {}
+        explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while explorer.More():
+            face_color = get_color(TopoDS.Face_s(explorer.Current()))
+            if face_color:
+                face_colors[face_color] = face_colors.get(face_color, 0) + 1
+            explorer.Next()
+        if not face_colors:
+            return None
+        return max(face_colors, key=face_colors.get)
 
     results: List[Tuple[object, str, Optional[str]]] = []
     part_counter = 0
@@ -263,8 +298,10 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
                 walk(
                     target_label,
                     combined_location,
-                    get_name(component_label),
-                    get_color(component_shape),
+                    get_name(component_label) or get_name(target_label),
+                    get_color(component_label)
+                    or get_color(target_label)
+                    or get_shape_or_face_color(component_shape),
                 )
             return
 
@@ -275,7 +312,11 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
 
         part_counter += 1
         name = inherited_name or get_name(label) or "STEP Part {}".format(part_counter)
-        color = inherited_color or get_color(prototype_shape)
+        color = (
+            inherited_color
+            or get_color(label)
+            or get_shape_or_face_color(prototype_shape)
+        )
 
         solid_explorer = TopExp_Explorer(located_shape, TopAbs_SOLID)
         found_solid = False
@@ -329,6 +370,72 @@ def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
     )
 
 
+def _extract_brep_edge_segments(
+    shape,
+    component_index: int,
+    deflection_mm: float = 0.25,
+) -> List[Dict]:
+    """Discretize true STEP B-rep topology edges for Viewer display.
+
+    The render mesh is deliberately not consulted here: triangle boundaries
+    on round faces are tessellation artifacts, not authored CAD edges.
+    Periodic-surface seams and degenerated edges are omitted.
+    """
+    from OCP.BRep import BRep_Tool as ocp_brep_tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    from OCP.TopAbs import TopAbs_EDGE as ocp_edge_type, TopAbs_FACE as ocp_face_type
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from OCP.TopoDS import TopoDS as ocp_topods
+
+    edge_faces = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(
+        shape,
+        ocp_edge_type,
+        ocp_face_type,
+        edge_faces,
+    )
+    segments: List[Dict] = []
+    for edge_index in range(1, edge_faces.Extent() + 1):
+        edge = ocp_topods.Edge_s(edge_faces.FindKey(edge_index))
+        if ocp_brep_tool.Degenerated_s(edge):
+            continue
+        ancestor_faces = edge_faces.FindFromIndex(edge_index)
+        is_seam = any(
+            ocp_brep_tool.IsClosed_s(edge, ocp_topods.Face_s(face))
+            for face in ancestor_faces
+        )
+        if is_seam:
+            continue
+
+        try:
+            curve = BRepAdaptor_Curve(edge)
+            sampler = GCPnts_QuasiUniformDeflection()
+            sampler.Initialize(curve, max(1e-4, float(deflection_mm)))
+            if not sampler.IsDone() or sampler.NbPoints() < 2:
+                continue
+            points = [sampler.Value(i) for i in range(1, sampler.NbPoints() + 1)]
+        except Exception:
+            continue
+
+        for start, end in zip(points, points[1:]):
+            start_xyz = (start.X(), start.Y(), start.Z())
+            end_xyz = (end.X(), end.Y(), end.Z())
+            if sum((a - b) ** 2 for a, b in zip(start_xyz, end_xyz)) <= 1e-18:
+                continue
+            segments.append(
+                {
+                    "start": start_xyz,
+                    "end": end_xyz,
+                    "adjacent_face_indices": [],
+                    "step_component_id": component_index,
+                    "source": "step_brep_edge",
+                }
+            )
+    return segments
+
+
 def _step_import_note(
     engine: str,
     target_area: float,
@@ -377,6 +484,12 @@ def import_geometry(file_path: Optional[str]) -> ImportResult:
     suffix = path.suffix.lower()
     lower_name = path.name.lower()
     is_xt = lower_name.endswith(".x_t")
+    if is_xt:
+        raise ValueError(
+            "Parasolid X_T import is not supported by the current CAD "
+            "runtime. Export the model as STEP AP214 (recommended for "
+            "component names/colors) or AP242 and import that file."
+        )
     if suffix in {".stl", ".obj", ".step", ".stp"} or is_xt:
         try:
             if suffix == ".obj":
@@ -385,18 +498,6 @@ def import_geometry(file_path: Optional[str]) -> ImportResult:
                 return _import_stl_ascii(path)
             if suffix in {".step", ".stp"}:
                 return _import_step(path)
-            if is_xt:
-                mesh, emitters, receiver = generate_synthetic_leakage_scene()
-                return ImportResult(
-                    mesh=mesh,
-                    emitters=emitters,
-                    receiver_face_indices=receiver,
-                    synthetic=True,
-                    note=(
-                        "X_T importer is not implemented yet in V1."
-                        " Synthetic geometry generated for immediate execution."
-                    ),
-                )
         except Exception as exc:
             mesh, emitters, receiver = generate_synthetic_leakage_scene()
             return ImportResult(
@@ -813,12 +914,39 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
 
     feature_started_at = time.perf_counter()
-    _cad_stage_start("feature edges")
-    feature_edge_segments = build_feature_edge_segments(mesh)
+    _cad_stage_start("B-rep feature edges")
+    feature_edge_segments: List[Dict] = []
+    if named_colored_solids:
+        for component_index, (solid, _name, _color) in enumerate(
+            named_colored_solids
+        ):
+            feature_edge_segments.extend(
+                _extract_brep_edge_segments(solid, component_index)
+            )
+    elif shape is not None:
+        edge_solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+        edge_component_index = 0
+        while edge_solid_explorer.More():
+            feature_edge_segments.extend(
+                _extract_brep_edge_segments(
+                    edge_solid_explorer.Current(),
+                    edge_component_index,
+                )
+            )
+            edge_component_index += 1
+            edge_solid_explorer.Next()
+        if edge_component_index == 0:
+            feature_edge_segments = _extract_brep_edge_segments(shape, 0)
+
+    edge_source = "STEP B-rep topology"
+    if not feature_edge_segments:
+        # Defensive fallback for malformed/non-B-rep STEP representations.
+        feature_edge_segments = build_feature_edge_segments(mesh)
+        edge_source = "mesh-angle fallback"
     timings["feature_edges"] = _cad_stage(
-        "feature edges",
+        "B-rep feature edges",
         feature_started_at,
-        "{} segments".format(len(feature_edge_segments)),
+        "{} segments | {}".format(len(feature_edge_segments), edge_source),
     )
     subdivision_started_at = time.perf_counter()
     _cad_stage_start("ROI mesh subdivision")
@@ -842,6 +970,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         if named_colored_solids
         else "no STEP product structure found; generic solid names used"
     )
+    naming_note = "{}, edges from {}".format(naming_note, edge_source)
     return ImportResult(
         mesh=mesh,
         emitters=emitters,

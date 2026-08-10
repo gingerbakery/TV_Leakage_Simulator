@@ -371,6 +371,20 @@ function isComponentNameOverrides(
   )
 }
 
+function isComponentColorOverrides(
+  value: unknown,
+): value is Record<number, string> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(
+      ([componentId, color]) =>
+        isSafeId(Number(componentId)) &&
+        isString(color) &&
+        /^#[0-9a-fA-F]{6}$/.test(color),
+    )
+  )
+}
+
 function isWorkspaceProjectState(
   value: unknown,
 ): value is WorkspaceProjectState {
@@ -380,6 +394,8 @@ function isWorkspaceProjectState(
     isIdArray(value.excludedComponentIds) &&
     isIdArray(value.deletedComponentIds) &&
     isComponentNameOverrides(value.componentNameOverrides) &&
+    (value.componentColorOverrides === undefined ||
+      isComponentColorOverrides(value.componentColorOverrides)) &&
     isArrayOf(value.materialAssignments, isMaterialAssignment) &&
     isArrayOf(value.transformRules, isTransformRule) &&
     isArrayOf(value.roiScopes, isRoiScope) &&
@@ -477,6 +493,7 @@ function createWorkspaceProjectState(
     excludedComponentIds: workspace.excludedComponentIds,
     deletedComponentIds: workspace.deletedComponentIds,
     componentNameOverrides: workspace.componentNameOverrides,
+    componentColorOverrides: workspace.componentColorOverrides,
     materialAssignments: workspace.materialAssignments,
     transformRules: workspace.transformRules,
     roiScopes: workspace.roiScopes,

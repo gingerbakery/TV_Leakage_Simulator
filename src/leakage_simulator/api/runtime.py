@@ -409,10 +409,11 @@ class ApiRuntime:
             ".stl",
             ".stp",
             ".step",
-            ".x_t",
         )
         if not normalized.lower().endswith(allowed_suffixes):
             raise ValueError(
-                "Supported CAD formats: .obj, .stl, .stp, .step, .x_t"
+                "Supported CAD formats: .obj, .stl, .stp, .step. "
+                "For component names/colors, export STEP AP214 or AP242. "
+                "Parasolid .x_t is not supported by the current runtime."
             )
         return normalized

@@ -5,17 +5,20 @@ import {
   useState,
   type RefObject,
 } from 'react'
-import type { SceneComponent } from '@/api'
+import type { SceneComponent, ScenePayload } from '@/api'
 import {
   Pencil,
   Save,
-  ScanSearch,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
 
-import { AppDialog, HelpTooltip } from '@/components/common'
+import {
+  AppDialog,
+  HelpTooltip,
+  ViewerFacePickControl,
+} from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -39,6 +42,7 @@ interface MaterialEditorDialogProps {
   open: boolean
   onOpenChange(open: boolean): void
   component: SceneComponent | null
+  scene?: ScenePayload
   componentName: string
   returnFocusRef?: RefObject<HTMLElement | null>
 }
@@ -164,6 +168,7 @@ export function MaterialEditorDialog({
   open,
   onOpenChange,
   component,
+  scene,
   componentName,
   returnFocusRef,
 }: MaterialEditorDialogProps) {
@@ -208,6 +213,14 @@ export function MaterialEditorDialog({
     () => selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId)),
     [componentFaceIds, selectedFaceIds],
   )
+  const cadFaceCount = (faceIds: number[]) => {
+    const sourceIds = scene?.mesh.face_source_ids
+    if (!sourceIds) return faceIds.length
+    return new Set(
+      faceIds.map((faceId) => sourceIds[faceId] ?? faceId),
+    ).size
+  }
+  const selectedCadFaceCount = cadFaceCount(targetFaceIds)
   const hasActiveRoiScope = useMemo(() => {
     if (!component) return false
     return roiScopes.some(
@@ -666,6 +679,9 @@ export function MaterialEditorDialog({
                       <div className="truncate text-xs font-semibold">
                         {surface.name}
                       </div>
+                      <div className="mt-0.5 text-[0.62rem] text-muted-foreground">
+                        CAD 면 {cadFaceCount(assignment.faceIds)}개
+                      </div>
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
@@ -709,17 +725,13 @@ export function MaterialEditorDialog({
                   staying inside the editor (rather than disappearing once a
                   group exists) is what lets faces be added to or removed
                   from an already-applied group, not just a brand-new one. */}
-              <Button
-                type="button"
-                variant={materialFacePickArmed ? 'secondary' : 'outline'}
-                aria-pressed={materialFacePickArmed}
-                className="w-full"
-                onClick={toggleFacePick}
-              >
-                <ScanSearch />
-                뷰어에서 CAD Face 선택
-                {targetFaceIds.length > 0 ? ' · 선택됨' : ''}
-              </Button>
+              <ViewerFacePickControl
+                armed={materialFacePickArmed}
+                assigned={selectedCadFaceCount > 0}
+                kind="surface"
+                cadFaceCount={selectedCadFaceCount}
+                onToggle={toggleFacePick}
+              />
               <SurfacePropertySelect
                 value={faceEditor.surfaceId}
                 category={findBaseMaterial(partDraft.baseMaterialId).category}
@@ -755,17 +767,12 @@ export function MaterialEditorDialog({
               </div>
             </div>
           ) : (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="w-full"
-              disabled={!component}
-              onClick={openNewFaceGroup}
-            >
-              <ScanSearch />
-              뷰어에서 CAD Face 선택
-            </Button>
+            <ViewerFacePickControl
+              armed={false}
+              assigned={false}
+              kind="surface"
+              onToggle={openNewFaceGroup}
+            />
           )}
         </section>
       </div>

@@ -149,6 +149,7 @@ export interface WorkspaceSnapshot {
   excludedComponentIds: number[]
   deletedComponentIds: number[]
   componentNameOverrides: Record<number, string>
+  componentColorOverrides: Record<number, string>
   materialAssignments: MaterialAssignment[]
   customOpticalProfiles: SavedOpticalProfile[]
   transformRules: ComponentTransformRule[]
@@ -185,6 +186,7 @@ export type WorkspaceProjectState = Pick<
   | 'excludedComponentIds'
   | 'deletedComponentIds'
   | 'componentNameOverrides'
+  | 'componentColorOverrides'
   | 'materialAssignments'
   | 'transformRules'
   | 'roiScopes'
@@ -207,6 +209,7 @@ export interface WorkspaceActions {
   toggleComponentVisibility(componentId: number): void
   toggleComponentTraceability(componentId: number): void
   renameComponent(componentId: number, name: string): void
+  setComponentColor(componentId: number, color: string | null): void
   deleteComponent(componentId: number, faceIds?: Iterable<number>): void
   upsertMaterialAssignment(assignment: MaterialAssignment): void
   removeMaterialAssignment(assignmentId: string): void
@@ -422,6 +425,24 @@ function normalizeComponentNameOverrides(
   )
 }
 
+function normalizeComponentColorOverrides(
+  overrides: Record<number, string> | undefined,
+): Record<number, string> {
+  return Object.fromEntries(
+    Object.entries(overrides ?? {})
+      .map(([componentId, color]) => [
+        Number(componentId),
+        color.trim().toLowerCase(),
+      ] as const)
+      .filter(
+        ([componentId, color]) =>
+          Number.isSafeInteger(componentId) &&
+          componentId >= 0 &&
+          /^#[0-9a-f]{6}$/.test(color),
+      ),
+  )
+}
+
 function normalizeRoiScope(scope: RoiScope): RoiScope | null {
   const components = scope.components
     .map(normalizeRoiComponentClip)
@@ -467,6 +488,9 @@ function normalizeProjectState(
     deletedComponentIds,
     componentNameOverrides: normalizeComponentNameOverrides(
       projectState.componentNameOverrides,
+    ),
+    componentColorOverrides: normalizeComponentColorOverrides(
+      projectState.componentColorOverrides,
     ),
     materialAssignments: projectState.materialAssignments
       .map(normalizeMaterialAssignment)
@@ -523,6 +547,7 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
     excludedComponentIds: [],
     deletedComponentIds: [],
     componentNameOverrides: {},
+    componentColorOverrides: {},
     materialAssignments: [],
     customOpticalProfiles: [],
     transformRules: [],
@@ -633,6 +658,21 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           return { componentNameOverrides }
         })
       },
+      setComponentColor: (componentId, color) => {
+        if (!Number.isSafeInteger(componentId) || componentId < 0) return
+        set((state) => {
+          const componentColorOverrides = {
+            ...state.componentColorOverrides,
+          }
+          const normalizedColor = color?.trim().toLowerCase() ?? ''
+          if (/^#[0-9a-f]{6}$/.test(normalizedColor)) {
+            componentColorOverrides[componentId] = normalizedColor
+          } else {
+            delete componentColorOverrides[componentId]
+          }
+          return { componentColorOverrides }
+        })
+      },
       deleteComponent: (componentId, faceIds = []) => {
         if (!Number.isSafeInteger(componentId) || componentId < 0) return
         const deletedFaceIds = new Set(normalizeIds(faceIds))
@@ -664,6 +704,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ...state.deletedComponentIds,
               componentId,
             ]),
+            componentColorOverrides: Object.fromEntries(
+              Object.entries(state.componentColorOverrides).filter(
+                ([id]) => Number(id) !== componentId,
+              ),
+            ),
             materialAssignments: state.materialAssignments.filter(
               (assignment) => assignment.componentId !== componentId,
             ),
@@ -999,6 +1044,8 @@ export const workspaceSelectors = {
     state.deletedComponentIds,
   componentNameOverrides: (state: WorkspaceStore) =>
     state.componentNameOverrides,
+  componentColorOverrides: (state: WorkspaceStore) =>
+    state.componentColorOverrides,
   materialAssignments: (state: WorkspaceStore) =>
     state.materialAssignments,
   customOpticalProfiles: (state: WorkspaceStore) =>

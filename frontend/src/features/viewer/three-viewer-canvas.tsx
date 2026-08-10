@@ -77,7 +77,7 @@ import {
   createComponentGeometry,
   createFaceGeometry,
   createFeatureEdgeGeometry,
-  findCoplanarFacePatch,
+  findCadSurfaceFaceIds,
   getSceneBounds,
   resolveComponentColor,
 } from './scene-geometry'
@@ -227,6 +227,7 @@ const emitterDirectionColor = 0xffb000
 const selectedFaceHighlightColorArmed = 0x2563eb
 const selectedFaceHighlightColorEditing = 0x3b82f6
 const selectedFaceHighlightColorDefault = 0x60a5fa
+const selectedMaterialFaceHighlightColor = 0xff8a00
 // A saturated cyan reads clearly against both the neutral CAD grays and
 // the warm emitter yellow/orange palette, unlike the previous lavender
 // purple which tended to wash out against similarly light surfaces.
@@ -286,31 +287,6 @@ const roiCameraPresetConfig: Record<
 
 function surfaceDepthUnits(depthPriority: number): number {
   return 4 + depthPriority * 4
-}
-
-const materialColors: Record<string, number> = {
-  // Metal
-  aluminum_bare: 0xa8adb3,
-  secc_bare: 0x7b828c,
-  anodized_aluminum_black: 0x2a2e33,
-  anodized_aluminum_silver: 0x8a99a8,
-  powder_coated_secc_black: 0x394552,
-  // Resin
-  pc_black: 0x202a35,
-  pc_gray: 0x6b7280,
-  pc_white: 0xe5e7eb,
-  abs_black: 0x2c3744,
-  abs_gray: 0x71767f,
-  abs_white: 0xe8e9ec,
-  hips_black: 0x262b30,
-  hips_gray: 0x6e7480,
-  hips_white: 0xe3e5e8,
-  // Tape / Foam
-  black_tape_general: 0x111827,
-  foam_absorber_general: 0x17202b,
-  // Optical
-  lcd_open_cell_rear: 0x39424f,
-  optical_diffuser_plate: 0xd9dee3,
 }
 
 function disposeMaterial(material: Material | Material[]): void {
@@ -846,9 +822,8 @@ function viewerMaterialStyle(
   const base = findBaseMaterial(assignment.baseMaterialId)
   const surface = findSurfaceProperty(assignment.surfaceId)
   return {
-    color: new Color(
-      materialColors[assignment.baseMaterialId] ?? fallbackColor,
-    ),
+    // Display color is independent from the optical material catalog.
+    color: new Color(fallbackColor),
     metalness: base.category === 'Metal' ? 0.58 : 0.04,
     roughness: surface.roughness,
   }
@@ -1252,8 +1227,12 @@ export function ThreeViewerCanvas({
   const onComponentContextMenuRef = useRef(onComponentContextMenu)
   const onRayObjectContextMenuRef = useRef(onRayObjectContextMenu)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
+  const fullViewCameraSyncRef = useRef(false)
+  const fullViewSyncBaseMainDistanceRef = useRef<number | null>(null)
+  const fullViewSyncBasePipDistanceRef = useRef<number | null>(null)
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
+  const [fullViewCameraSync, setFullViewCameraSync] = useState(false)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
   )
@@ -1286,6 +1265,9 @@ export function ThreeViewerCanvas({
   )
   const materialAssignments = useWorkspaceStore(
     workspaceSelectors.materialAssignments,
+  )
+  const componentColorOverrides = useWorkspaceStore(
+    workspaceSelectors.componentColorOverrides,
   )
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
@@ -1640,6 +1622,38 @@ export function ThreeViewerCanvas({
               pipCamera.up.set(0, 0, 1)
               pipCamera.lookAt(center)
             }
+          }
+          if (fullViewCameraSyncRef.current) {
+            const mainOffset = new Vector3().subVectors(
+              camera.position,
+              controls.target,
+            )
+            const mainDistance = Math.max(mainOffset.length(), 1e-6)
+            if (fullViewSyncBaseMainDistanceRef.current === null) {
+              fullViewSyncBaseMainDistanceRef.current = mainDistance
+              fullViewSyncBasePipDistanceRef.current = runtime.pipDistance
+            }
+            const baseMainDistance = Math.max(
+              fullViewSyncBaseMainDistanceRef.current,
+              1e-6,
+            )
+            const basePipDistance = Math.max(
+              fullViewSyncBasePipDistanceRef.current ?? runtime.pipDistance,
+              1e-6,
+            )
+            runtime.pipDistance = MathUtils.clamp(
+              basePipDistance * (mainDistance / baseMainDistance),
+              Math.max(runtime.originAxisBaseScale * 0.1, 1e-3),
+              runtime.originAxisBaseScale * 1000,
+            )
+            pipCamera.position
+              .copy(runtime.pipTarget)
+              .addScaledVector(
+                mainOffset.normalize(),
+                runtime.pipDistance,
+              )
+            pipCamera.up.copy(camera.up).normalize()
+            pipCamera.lookAt(runtime.pipTarget)
           }
           pipCamera.near = Math.max(runtime.pipDistance / 1000, 0.01)
           pipCamera.far = Math.max(runtime.pipDistance * 20, 1000)
@@ -2239,7 +2253,7 @@ export function ThreeViewerCanvas({
         const candidateFaceIds = roiFaceIdSet
           ? componentFaceIds.filter((faceId) => roiFaceIdSet.has(faceId))
           : componentFaceIds
-        const patchFaceIds = findCoplanarFacePatch(
+        const patchFaceIds = findCadSurfaceFaceIds(
           scene,
           candidateFaceIds,
           hit.faceId,
@@ -2305,7 +2319,7 @@ export function ThreeViewerCanvas({
         const component = scene.components.find(
           (candidate) => candidate.component_id === componentId,
         )
-        const patchFaceIds = findCoplanarFacePatch(
+        const patchFaceIds = findCadSurfaceFaceIds(
           scene,
           component?.face_indices ?? [faceId],
           faceId,
@@ -2341,7 +2355,7 @@ export function ThreeViewerCanvas({
         const component = scene.components.find(
           (candidate) => candidate.component_id === componentId,
         )
-        const patchFaceIds = findCoplanarFacePatch(
+        const patchFaceIds = findCadSurfaceFaceIds(
           scene,
           component?.face_indices ?? [faceId],
           faceId,
@@ -2744,6 +2758,7 @@ export function ThreeViewerCanvas({
       deletedComponentIds,
       renderMode,
       surfaceOpacity,
+      componentColorOverrides,
       componentTransforms: transformRules
         .filter(
           (rule) =>
@@ -2821,6 +2836,44 @@ export function ThreeViewerCanvas({
         )
         surface.name = 'roi-clipped-surface'
         runtime.roiPreviewRoot.add(surface)
+
+        // ROI geometry is rebuilt as a clipped solid, so it cannot reuse the
+        // Full View component meshes. Reapply each component's authored/user
+        // display color as clipped overlays to keep both views consistent.
+        if (!isWireframe) {
+          const boxFaceIdSet = new Set(boxFaceIds)
+          for (const [componentIndex, component] of scene.components.entries()) {
+            const componentFaceIds = component.face_indices.filter((faceId) =>
+              boxFaceIdSet.has(faceId),
+            )
+            if (componentFaceIds.length === 0) continue
+            const componentGeometry = buildRoiClippedGeometries(
+              scene,
+              componentFaceIds,
+              clipBoxes,
+              [...hiddenComponentIds, ...deletedComponentIds],
+              roiPointTransform,
+            )
+            if (!componentGeometry) continue
+            const customColor = componentColorOverrides[component.component_id]
+            const componentColor = customColor
+              ? Number.parseInt(customColor.slice(1), 16)
+              : resolveComponentColor(component, componentIndex)
+            const componentOverlay = new Mesh(
+              componentGeometry.surfaceGeometry,
+              faceOverlayMaterial(
+                viewerMaterialStyle(undefined, componentColor),
+                surfaceOpacity,
+              ),
+            )
+            componentOverlay.name = `roi-component-color-${component.component_id}`
+            componentOverlay.renderOrder = 5 + componentIndex
+            runtime.roiPreviewRoot.add(componentOverlay)
+            componentGeometry.capGeometry?.dispose()
+            componentGeometry.capEdgeGeometry?.dispose()
+            componentGeometry.featureEdgeGeometry?.dispose()
+          }
+        }
 
         if (clipped.capGeometry) {
           const capMaterial = isWireframe
@@ -2941,10 +2994,15 @@ export function ThreeViewerCanvas({
               componentIndex >= 0 ? scene.components[componentIndex] : undefined,
               componentIndex,
             )
+            const customColor =
+              componentColorOverrides[assignment.componentId]
+            const assignmentDisplayColor = customColor
+              ? Number.parseInt(customColor.slice(1), 16)
+              : fallbackColor
             const overlay = new Mesh(
               assignmentGeometry.surfaceGeometry,
               faceOverlayMaterial(
-                viewerMaterialStyle(assignment, fallbackColor),
+                viewerMaterialStyle(assignment, assignmentDisplayColor),
                 surfaceOpacity,
               ),
             )
@@ -3028,7 +3086,8 @@ export function ThreeViewerCanvas({
       ),
     ]
     const activeRoiFaceSet = new Set(activeRoiFaceIds)
-    const selectionFaceIds = emitterFaceSelectionArmed
+    const selectionFaceIds =
+      emitterFaceSelectionArmed || materialFacePickArmed
       ? selectedFaceIds.filter((faceId) =>
           activeRoiFaceSet.has(faceId),
         )
@@ -3079,14 +3138,18 @@ export function ThreeViewerCanvas({
         roiPointTransform,
       )
       if (selectedClipped) {
-        const selectionColor = emitterFaceSelectionArmed
-          ? selectedFaceHighlightColorArmed
+        const selectionColor = materialFacePickArmed
+          ? selectedMaterialFaceHighlightColor
+          : emitterFaceSelectionArmed
+            ? selectedFaceHighlightColorArmed
           : editingComponentId !== null &&
               editingComponentId !== undefined
             ? selectedFaceHighlightColorEditing
             : selectedFaceHighlightColorDefault
-        const selectionOpacity = emitterFaceSelectionArmed
-          ? 0.52
+        const selectionOpacity = materialFacePickArmed
+          ? 0.62
+          : emitterFaceSelectionArmed
+            ? 0.52
           : editingComponentId !== null &&
               editingComponentId !== undefined
             ? 0.28
@@ -3132,6 +3195,7 @@ export function ThreeViewerCanvas({
         }
         const suppressMaterialTargetEdges =
           editingComponentMode === 'material' &&
+          !materialFacePickArmed &&
           !emitterFaceSelectionArmed
         const selectionEdgeGeometries = suppressMaterialTargetEdges
           ? []
@@ -3158,7 +3222,10 @@ export function ThreeViewerCanvas({
             new LineBasicMaterial({
               color: selectionColor,
               transparent: true,
-              opacity: emitterFaceSelectionArmed ? 1 : 0.88,
+              opacity:
+                emitterFaceSelectionArmed || materialFacePickArmed
+                  ? 1
+                  : 0.88,
               depthTest: true,
               depthWrite: false,
               toneMapped: false,
@@ -3479,29 +3546,26 @@ export function ThreeViewerCanvas({
           assignment.componentId === componentId &&
           assignment.targetType === 'part',
       )
-      const fallbackColor = resolveComponentColor(
+      const authoredColor = resolveComponentColor(
         node.component,
         scene.components.indexOf(node.component),
       )
-      const style = viewerMaterialStyle(partAssignment, fallbackColor)
+      const customColor = componentColorOverrides[componentId]
+      const displayBaseColor = customColor
+        ? Number.parseInt(customColor.slice(1), 16)
+        : authoredColor
+      const style = viewerMaterialStyle(partAssignment, displayBaseColor)
       const displayColor = style.color.clone()
       const highlightColor = isEditing ? 0xfacc15 : 0x38bdf8
       const showHighlightedEdges =
         isSelected &&
         !(isEditing && editingComponentMode === 'material')
-      if (isSelected) {
-        displayColor.lerp(new Color(highlightColor), isEditing ? 0.7 : 0.58)
-      }
-
       node.surface.material.color.copy(displayColor)
-      node.surface.material.emissive.set(
-        isEditing ? 0x713f12 : isSelected ? 0x082f49 : 0x000000,
-      )
-      node.surface.material.emissiveIntensity = isSelected
-        ? isEditing
-          ? 0.9
-          : 0.72
-        : 0
+      // Selection is communicated by edges/overlays only. Keeping the
+      // surface untouched makes CAD and user-assigned display colors remain
+      // immediately visible while the component is selected or edited.
+      node.surface.material.emissive.set(0x000000)
+      node.surface.material.emissiveIntensity = 0
       node.surface.material.metalness = style.metalness
       node.surface.material.roughness = style.roughness
       const isWireframe = renderMode === 'Wireframe'
@@ -3661,6 +3725,7 @@ export function ThreeViewerCanvas({
       )
       if (componentSelectedFaceIds.length > 0) {
         const isEmitterSurfaceDraft = emitterFaceSelectionArmed
+        const isMaterialSurfaceDraft = materialFacePickArmed
         const bundle = createFaceGeometry(
           scene,
           componentSelectedFaceIds,
@@ -3670,12 +3735,18 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshBasicMaterial({
-              color: isEmitterSurfaceDraft
-                ? selectedFaceHighlightColorArmed
-                : selectedFaceHighlightColorEditing,
+              color: isMaterialSurfaceDraft
+                ? selectedMaterialFaceHighlightColor
+                : isEmitterSurfaceDraft
+                  ? selectedFaceHighlightColorArmed
+                  : selectedFaceHighlightColorEditing,
               side: DoubleSide,
               transparent: true,
-              opacity: isEmitterSurfaceDraft ? 0.94 : 0.86,
+              opacity: isMaterialSurfaceDraft
+                ? 0.72
+                : isEmitterSurfaceDraft
+                  ? 0.94
+                  : 0.86,
               depthTest: !isEmitterSurfaceDraft,
               depthWrite: false,
               polygonOffset: true,
@@ -3710,7 +3781,9 @@ export function ThreeViewerCanvas({
             )
             if (outlineBoundary) {
               outlineBoundary.name = `selected-face-outline-${componentId}`
-              outlineBoundary.material.color.set(0xffffff)
+              outlineBoundary.material.color.set(
+                isMaterialSurfaceDraft ? 0xffb347 : 0xffffff,
+              )
               outlineBoundary.material.depthTest = false
               outlineBoundary.renderOrder = 93
               node.selectionOverlayRoot.add(outlineBoundary)
@@ -3812,7 +3885,7 @@ export function ThreeViewerCanvas({
         const overlay = new Mesh(
           bundle.geometry,
           faceOverlayMaterial(
-            viewerMaterialStyle(assignment, fallbackColor),
+            viewerMaterialStyle(assignment, displayBaseColor),
             Math.min(0.96, surfaceOpacity),
           ),
         )
@@ -3873,6 +3946,7 @@ export function ThreeViewerCanvas({
     editingComponentMode,
     hiddenComponentIds,
     materialAssignments,
+    componentColorOverrides,
     placementPreviewEmitter,
     placementPreviewReceiver,
     renderMode,
@@ -3983,6 +4057,34 @@ export function ThreeViewerCanvas({
           <span className="absolute top-1 left-1.5 rounded bg-background/70 px-1 py-0.5 text-[0.6rem] font-medium tracking-wide text-muted-foreground">
             Full View
           </span>
+          <button
+            type="button"
+            className={`pointer-events-auto absolute top-1 right-1 rounded border px-1.5 py-0.5 text-[0.58rem] font-semibold backdrop-blur transition-colors ${
+              fullViewCameraSync
+                ? 'border-sky-400/70 bg-sky-500/85 text-white'
+                : 'border-border/80 bg-background/80 text-muted-foreground hover:bg-background'
+            }`}
+            aria-label="Sync Full View camera"
+            aria-pressed={fullViewCameraSync}
+            title="ROI View 회전·줌을 Full View와 동기화"
+            onClick={(event) => {
+              event.stopPropagation()
+              const next = !fullViewCameraSyncRef.current
+              fullViewCameraSyncRef.current = next
+              fullViewSyncBaseMainDistanceRef.current = null
+              fullViewSyncBasePipDistanceRef.current = null
+              if (next) {
+                const runtime = runtimeRef.current
+                if (runtime) runtime.pipUserAdjusted = true
+              }
+              setFullViewCameraSync(next)
+              onStatusMessage(
+                `Full View camera sync · ${next ? 'ON' : 'OFF'}`,
+              )
+            }}
+          >
+            {fullViewCameraSync ? 'ON' : 'OFF'}
+          </button>
         </div>
       ) : null}
       <div

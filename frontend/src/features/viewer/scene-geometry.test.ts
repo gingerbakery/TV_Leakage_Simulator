@@ -6,11 +6,35 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import {
   createComponentGeometry,
   createFeatureEdgeGeometry,
+  findCadSurfaceFaceIds,
   findCoplanarFacePatch,
   getSceneBounds,
+  resolveComponentColor,
 } from './scene-geometry'
 
 describe('Three.js scene geometry', () => {
+  it('preserves the CAD-authored component display color', () => {
+    const component = {
+      ...createSceneFixture().components[0],
+      color: '#ff0000',
+    }
+
+    expect(resolveComponentColor(component, 0)).toBe(0xff0000)
+    expect(resolveComponentColor({ ...component, color: null }, 0)).toBe(0x64748b)
+  })
+
+  it('groups tessellation triangles by original CAD face id', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+
+    expect(
+      findCadSurfaceFaceIds(scene, scene.components[0].face_indices, 0),
+    ).toEqual([0, 1])
+    expect(
+      findCadSurfaceFaceIds(scene, scene.components[0].face_indices, 2),
+    ).toEqual([2])
+  })
+
   it('builds component-local triangles with stable source face ids', () => {
     const scene = createSceneFixture()
     const bundle = createComponentGeometry(scene, scene.components[0])

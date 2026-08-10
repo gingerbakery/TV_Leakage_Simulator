@@ -463,16 +463,15 @@ export function RayTraceResultWindow({
 
   useEffect(() => {
     if (!open) return
-    const parent = rootRef.current?.parentElement
-    if (!parent) return
-    const bounds = parent.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
     setFrame((current) => ({
-      x: Math.max(12, Math.min(current.x, bounds.width - 340)),
-      y: Math.max(48, Math.min(current.y, bounds.height - 260)),
-      width: Math.min(current.width, Math.max(320, bounds.width - 24)),
+      x: Math.max(12, Math.min(current.x, viewportWidth - 340)),
+      y: Math.max(12, Math.min(current.y, viewportHeight - 260)),
+      width: Math.min(current.width, Math.max(320, viewportWidth - 24)),
       height: Math.min(
         current.height,
-        Math.max(260, bounds.height - 64),
+        Math.max(260, viewportHeight - 24),
       ),
     }))
   }, [open])
@@ -481,9 +480,9 @@ export function RayTraceResultWindow({
     if (!open) return
     const move = (event: PointerEvent) => {
       const operation = operationRef.current
-      const parent = rootRef.current?.parentElement
-      if (!operation || !parent) return
-      const bounds = parent.getBoundingClientRect()
+      if (!operation) return
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
       const deltaX = event.clientX - operation.startX
       const deltaY = event.clientY - operation.startY
       if (operation.kind === 'drag') {
@@ -493,14 +492,14 @@ export function RayTraceResultWindow({
             8,
             Math.min(
               operation.frame.x + deltaX,
-              bounds.width - operation.frame.width - 8,
+              viewportWidth - operation.frame.width - 8,
             ),
           ),
           y: Math.max(
-            48,
+            8,
             Math.min(
               operation.frame.y + deltaY,
-              bounds.height - operation.frame.height - 8,
+              viewportHeight - operation.frame.height - 8,
             ),
           ),
         })
@@ -511,14 +510,14 @@ export function RayTraceResultWindow({
             320,
             Math.min(
               operation.frame.width + deltaX,
-              bounds.width - operation.frame.x - 8,
+              viewportWidth - operation.frame.x - 8,
             ),
           ),
           height: Math.max(
             260,
             Math.min(
               operation.frame.height + deltaY,
-              bounds.height - operation.frame.y - 8,
+              viewportHeight - operation.frame.y - 8,
             ),
           ),
         })
@@ -585,7 +584,7 @@ export function RayTraceResultWindow({
       ref={rootRef}
       role="dialog"
       aria-label="Ray Tracing Analysis Result"
-      className="absolute z-30 flex overflow-hidden rounded-xl border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl"
+      className="fixed z-50 flex overflow-hidden rounded-xl border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl"
       style={{
         left: frame.x,
         top: frame.y,

@@ -21,11 +21,9 @@ export const componentColorPalette = [
 ]
 
 /**
- * CAD-authored component color (e.g. NX body color, carried through STEP
- * product structure) wins when present; otherwise cycles the fallback
- * palette by component index. Shared between the interactive viewer and
- * the static report renders so a component reads as the same color in
- * both places.
+ * CAD-authored component color wins when present; otherwise cycles a neutral
+ * fallback palette. A separate user display-color override is applied by the
+ * viewer and is intentionally independent from optical Material Assignment.
  */
 export function resolveComponentColor(
   component: SceneComponent | undefined,
@@ -231,6 +229,21 @@ export function findCoplanarFacePatch(
   }
 
   return [...selected].sort((first, second) => first - second)
+}
+
+/** Returns every render triangle belonging to the same authored CAD face.
+ * Older/non-B-rep payloads fall back to the geometric coplanar patch. */
+export function findCadSurfaceFaceIds(
+  scene: ScenePayload,
+  componentFaces: number[],
+  seedFaceId: number,
+): number[] {
+  const sourceIds = scene.mesh.face_source_ids
+  const sourceId = sourceIds?.[seedFaceId]
+  if (sourceIds && sourceId !== undefined) {
+    return componentFaces.filter((faceId) => sourceIds[faceId] === sourceId)
+  }
+  return findCoplanarFacePatch(scene, componentFaces, seedFaceId)
 }
 
 export function getSceneBounds(scene: ScenePayload): {

@@ -49,7 +49,7 @@ export function ModelImportCard({
           {activeCad?.displayName ?? 'No CAD selected'}
         </div>
         <div className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
-          {sceneStatus ?? 'STEP · STP · X_T · STL · OBJ'}
+          {sceneStatus ?? 'STEP (AP214/AP242) · STP · STL · OBJ'}
         </div>
       </div>
       <input
@@ -57,7 +57,7 @@ export function ModelImportCard({
         type="file"
         className="sr-only"
         aria-label="Choose CAD file"
-        accept=".step,.stp,.x_t,.x_b,.stl,.obj"
+        accept=".step,.stp,.stl,.obj"
         onChange={handleFileChange}
       />
       <Button

@@ -131,7 +131,7 @@ export function RoiSelectionPanel({
         />
       </div>
 
-      <div className="rounded-xl border border-border bg-background/35 p-3">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/65 p-3 dark:border-blue-800/65 dark:bg-blue-950/28">
         <div className="flex items-center gap-2">
           <BoxSelect className="size-4 shrink-0 text-primary" />
           <div className="text-xs font-semibold">박스 드래그</div>
@@ -148,7 +148,7 @@ export function RoiSelectionPanel({
           size="sm"
           variant={roiBoxSelectionArmed ? 'default' : 'outline'}
           disabled={!scene}
-          className="mt-3 w-full"
+          className="mt-3 w-full border-blue-200 bg-blue-100/70 text-blue-900 hover:bg-blue-200/70 dark:border-blue-700/70 dark:bg-blue-900/35 dark:text-sky-200 dark:hover:bg-blue-800/50"
           onClick={() =>
             actions.setRoiBoxSelectionArmed(!roiBoxSelectionArmed)
           }
@@ -160,7 +160,7 @@ export function RoiSelectionPanel({
         </Button>
       </div>
 
-      <div className="rounded-xl border border-border bg-background/35 p-3">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/65 p-3 dark:border-blue-800/65 dark:bg-blue-950/28">
         <div className="flex items-center gap-2">
           <MapPin className="size-4 text-primary" />
           <div className="text-xs font-semibold">좌표로 Face 찾기</div>
@@ -196,7 +196,7 @@ export function RoiSelectionPanel({
           size="sm"
           variant="outline"
           disabled={!scene}
-          className="mt-2.5 w-full"
+          className="mt-2.5 w-full border-blue-200 bg-blue-100/70 text-blue-900 hover:bg-blue-200/70 dark:border-blue-700/70 dark:bg-blue-900/35 dark:text-sky-200 dark:hover:bg-blue-800/50"
           onClick={resolveCoordinate}
         >
           좌표로 ROI 추가

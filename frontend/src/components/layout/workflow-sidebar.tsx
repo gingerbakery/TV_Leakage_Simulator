@@ -307,6 +307,12 @@ export function WorkflowSidebar({
                 return (
                   <AccordionItem key={section.id} value={section.id}>
                     <AccordionTrigger
+                      className={cn(
+                        '-mx-1.5 my-1 rounded-lg border px-2.5 py-2.5 shadow-sm',
+                        isActive
+                          ? 'border-blue-300 bg-gradient-to-r from-blue-100 to-sky-50 text-blue-950 shadow-blue-200/40 hover:from-blue-100 hover:to-sky-100 dark:border-blue-500/55 dark:from-blue-950/75 dark:to-sky-900/35 dark:text-blue-50 dark:shadow-blue-950/30 dark:hover:from-blue-900/75 dark:hover:to-sky-900/45'
+                          : 'border-slate-200 bg-gradient-to-r from-slate-50 to-white text-slate-700 hover:border-blue-200 hover:from-blue-50 hover:to-white dark:border-slate-700 dark:from-slate-900/80 dark:to-slate-800/55 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:from-blue-950/45 dark:hover:to-slate-800/65',
+                      )}
                       aria-label={
                         section.step
                           ? `Step ${section.step} ${section.label}`
@@ -323,24 +329,31 @@ export function WorkflowSidebar({
                         className={cn(
                           'flex size-7 shrink-0 items-center justify-center rounded-md border',
                           isActive
-                            ? 'border-primary/30 bg-primary/15 text-primary'
-                            : 'border-border bg-background/40',
+                            ? 'border-blue-300 bg-blue-500/10 text-blue-700 dark:border-blue-500/55 dark:bg-blue-400/15 dark:text-sky-300'
+                            : 'border-slate-200 bg-white text-slate-500 dark:border-slate-600 dark:bg-slate-800/85 dark:text-slate-400',
                         )}
                       >
                         <Icon className="size-3.5" aria-hidden="true" />
                       </span>
                       <span className="min-w-0 flex-1">
                         {section.step ? (
-                          <span className="block text-[0.65rem] text-muted-foreground">
+                          <span
+                            className={cn(
+                              'block text-[0.68rem] font-medium tracking-wide',
+                              isActive
+                                ? 'text-blue-700/75 dark:text-sky-300/85'
+                                : 'text-slate-500 dark:text-slate-400',
+                            )}
+                          >
                             Step {section.step}
                           </span>
                         ) : null}
-                        <span className="block truncate text-xs font-medium">
+                        <span className="block truncate text-sm font-semibold leading-5">
                           {section.label}
                         </span>
                       </span>
                     </AccordionTrigger>
-                    <AccordionContent>
+                    <AccordionContent className="mt-1.5 rounded-lg border-l-2 border-blue-300 bg-gradient-to-b from-blue-50/55 to-background px-2.5 pt-2.5 dark:border-blue-700/70 dark:from-blue-950/22 dark:to-background">
                       {renderPanel(section.id)}
                     </AccordionContent>
                   </AccordionItem>

@@ -251,14 +251,6 @@ export function renderRaySectionImage({
     }
     const cameraSide = positiveExtent >= negativeExtent ? -1 : 1
 
-    // If the section plane runs roughly parallel to the model's broad face
-    // (viewNormal close to the model's own thin/depth axis), neither side
-    // has meaningful depth to reveal - clipping would show at best a razor
-    // -thin sliver. Skip clipping entirely in that case so the model is at
-    // least visible, even if it isn't a "true" cutaway.
-    const totalExtent = positiveExtent + negativeExtent
-    const clippingIsUseful = totalExtent > diagonal * 0.02
-
     const clipPlane = new Plane().setFromNormalAndCoplanarPoint(
       basis.viewNormal.clone().multiplyScalar(-cameraSide),
       basis.origin,
@@ -297,7 +289,11 @@ export function renderRaySectionImage({
         side: DoubleSide,
         metalness: 0.1,
         roughness: 0.75,
-        clippingPlanes: clippingIsUseful ? [clipPlane] : [],
+        // Ray Summary must remain a real cutaway even for thin products.
+        // The old depth heuristic disabled clipping on thin TV assemblies,
+        // making the report look like an ordinary aligned CAD projection
+        // and hiding the internal ray route behind the front surfaces.
+        clippingPlanes: [clipPlane],
       })
       const mesh = new Mesh(bundle.geometry, material)
       threeScene.add(mesh)

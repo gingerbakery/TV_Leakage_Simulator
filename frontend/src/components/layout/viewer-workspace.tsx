@@ -333,7 +333,7 @@ export function ViewerWorkspace({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div
-              className="flex items-center gap-1 rounded-lg border border-border bg-background/60 p-1"
+              className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 dark:border-blue-900/70 dark:bg-blue-950/30"
               aria-label="Camera presets"
             >
               {cameraPresets.map((preset) => (
@@ -363,7 +363,7 @@ export function ViewerWorkspace({
               ))}
             </div>
             <div
-              className="flex items-center gap-1 rounded-lg border border-border bg-background/60 p-1"
+              className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 dark:border-blue-900/70 dark:bg-blue-950/30"
               aria-label="Render modes"
             >
               {renderModes.map((mode) => (
@@ -381,7 +381,7 @@ export function ViewerWorkspace({
                 </Button>
               ))}
             </div>
-            <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/60 px-2 text-[0.65rem] text-muted-foreground">
+            <label className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-[0.65rem] text-muted-foreground dark:border-blue-900/70 dark:bg-blue-950/30">
               <span className="font-medium whitespace-nowrap">
                 Axis size
               </span>
@@ -404,7 +404,7 @@ export function ViewerWorkspace({
               </span>
             </label>
             <label
-              className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/60 px-2 text-[0.65rem] text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45"
+              className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-[0.65rem] text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45 dark:border-blue-900/70 dark:bg-blue-950/30"
               title={
                 renderMode === 'Wireframe'
                   ? 'Surface 또는 Surface + Edge 모드에서 사용할 수 있습니다.'

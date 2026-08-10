@@ -113,6 +113,11 @@ class StepImportPreservesAbsoluteOriginTests(unittest.TestCase):
             "ocp_product_structure",
             payload["metadata"]["import_timings_sec"],
         )
+        self.assertTrue(payload["mesh"]["feature_edge_segments"])
+        self.assertIn(
+            "edges from STEP B-rep topology",
+            payload["metadata"]["import_note"],
+        )
 
 
 if __name__ == "__main__":

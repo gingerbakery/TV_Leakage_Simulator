@@ -867,7 +867,7 @@ describe('Step 07·08 feature editors', () => {
     act(() => {
       workspaceStore.getState().actions.setSelectedFaceIds([0, 1])
     })
-    expect(screen.getByText('Selected faces · 선택됨')).not.toBeNull()
+    expect(screen.getByText('Selected faces · CAD 면 2개')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
     expect(workspaceStore.getState().emitters).toEqual([

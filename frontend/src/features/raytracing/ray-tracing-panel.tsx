@@ -19,7 +19,6 @@ import {
   Play,
   Plus,
   RefreshCw,
-  ScanSearch,
   Trash2,
 } from 'lucide-react'
 
@@ -27,7 +26,11 @@ import {
   useRayTraceJobQuery,
   useStartRayTraceMutation,
 } from '@/api'
-import { AppDialog, HelpTooltip } from '@/components/common'
+import {
+  AppDialog,
+  HelpTooltip,
+  ViewerFacePickControl,
+} from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
@@ -87,6 +90,15 @@ function sceneCenter(scene: ScenePayload | undefined): Vec3 {
     (minimum[1] + maximum[1]) / 2,
     (minimum[2] + maximum[2]) / 2,
   ]
+}
+
+function countCadFaces(
+  scene: ScenePayload | undefined,
+  faceIds: number[],
+): number {
+  const sourceIds = scene?.mesh.face_source_ids
+  if (!sourceIds) return faceIds.length
+  return new Set(faceIds.map((faceId) => sourceIds[faceId] ?? faceId)).size
 }
 
 function NumberField({
@@ -213,6 +225,7 @@ function EmitterDialog({
     useState<EmitterDistribution>('lambertian')
   const [sigma, setSigma] = useState(12)
   const [normalFlip, setNormalFlip] = useState(false)
+  const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const datumFacePickArmed = useWorkspaceStore(
     workspaceSelectors.datumFacePickArmed,
@@ -247,6 +260,9 @@ function EmitterDialog({
     )
     setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
     setNormalFlip(initialEmitter?.normal_flip ?? false)
+    setDatumFaceAssigned(
+      mode === 'datum_plane' && Boolean(initialEmitter),
+    )
   }, [defaultCenter, initialEmitter, open])
 
   // Same pick-a-face-in-the-viewer channel Receiver's Datum Plane uses -
@@ -264,6 +280,7 @@ function EmitterDialog({
     const { uAxis, vAxis } = axesFromNormal(normalVector)
     setCenter(nextCenter)
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    setDatumFaceAssigned(true)
     actions.setDatumFacePickResult(null)
   }, [actions, mode, open, datumFacePickResult])
 
@@ -274,6 +291,7 @@ function EmitterDialog({
 
   const emitterFaceIds =
     initialEmitter?.face_indices ?? selectedFaceIds
+  const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
   const canApply =
     mode === 'datum_plane' || emitterFaceIds.length > 0
   const previewEmitter = useMemo(() => {
@@ -386,7 +404,9 @@ function EmitterDialog({
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="text-xs font-semibold">
               {initialEmitter ? 'Emitter faces' : 'Selected faces'}
-              {emitterFaceIds.length > 0 ? ' · 선택됨' : ''}
+              {emitterCadFaceCount > 0
+                ? ` · CAD 면 ${emitterCadFaceCount}개`
+                : ''}
             </div>
             {initialEmitter ? (
               <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
@@ -400,37 +420,31 @@ function EmitterDialog({
               // automatically (there's no other way to build a CAD surface
               // emitter), but stays a real button so it can be
               // paused/resumed by pressing it again.
-              <Button
-                type="button"
-                variant={emitterFaceSelectionArmed ? 'secondary' : 'outline'}
-                aria-pressed={emitterFaceSelectionArmed}
-                className="mt-2 w-full"
-                onClick={() =>
+              <div className="mt-2">
+                <ViewerFacePickControl
+                  armed={emitterFaceSelectionArmed}
+                  assigned={emitterCadFaceCount > 0}
+                  kind="surface"
+                  cadFaceCount={emitterCadFaceCount}
+                  onToggle={() =>
                   actions.setEmitterFaceSelectionArmed(
                     !emitterFaceSelectionArmed,
                   )
-                }
-              >
-                <ScanSearch />
-                뷰어에서 CAD Face 선택
-                {emitterFaceIds.length > 0 ? ' · 선택됨' : ''}
-              </Button>
+                  }
+                />
+              </div>
             )}
           </div>
         ) : (
           <>
-            <Button
-              type="button"
-              variant={datumFacePickArmed ? 'secondary' : 'outline'}
-              aria-pressed={datumFacePickArmed}
-              className="w-full"
-              onClick={() =>
+            <ViewerFacePickControl
+              armed={datumFacePickArmed}
+              assigned={datumFaceAssigned}
+              kind="datum"
+              onToggle={() =>
                 actions.setDatumFacePickArmed(!datumFacePickArmed)
               }
-            >
-              <ScanSearch />
-              뷰어에서 CAD Face 선택
-            </Button>
+            />
             <VectorFields
               label="Emitter Center 좌표 (mm)"
               help="발광면의 중심 좌표입니다 (mm, CAD/Datum 원점 기준)."
@@ -617,6 +631,7 @@ function ReceiverDialog({
   const [capturedFrame, setCapturedFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [normalFlip, setNormalFlip] = useState(false)
+  const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
   const cameraFrameRef = useRef(cameraFrame)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const datumFacePickArmed = useWorkspaceStore(
@@ -659,6 +674,9 @@ function ReceiverDialog({
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
     setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
     setNormalFlip(initialReceiver?.normal_flip ?? false)
+    setDatumFaceAssigned(
+      mode === 'datum_plane' && Boolean(initialReceiver),
+    )
     if (mode === 'current_view' && initialReceiver) {
       const normal =
         initialReceiver.base_normal ?? initialReceiver.normal
@@ -706,6 +724,7 @@ function ReceiverDialog({
     const { uAxis, vAxis } = axesFromNormal(normalVector)
     setCenter(nextCenter)
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    setDatumFaceAssigned(true)
     actions.setDatumFacePickResult(null)
   }, [actions, mode, open, datumFacePickResult])
 
@@ -850,18 +869,14 @@ function ReceiverDialog({
         </label>
         {mode === 'datum_plane' ? (
           <>
-            <Button
-              type="button"
-              variant={datumFacePickArmed ? 'secondary' : 'outline'}
-              aria-pressed={datumFacePickArmed}
-              className="w-full"
-              onClick={() =>
+            <ViewerFacePickControl
+              armed={datumFacePickArmed}
+              assigned={datumFaceAssigned}
+              kind="datum"
+              onToggle={() =>
                 actions.setDatumFacePickArmed(!datumFacePickArmed)
               }
-            >
-              <ScanSearch />
-              뷰어에서 CAD Face 선택
-            </Button>
+            />
             <VectorFields
               label="Receiver Center 좌표 (mm)"
               help="수광면의 중심 좌표입니다 (mm)."

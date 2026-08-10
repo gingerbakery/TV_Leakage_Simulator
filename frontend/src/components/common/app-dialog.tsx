@@ -235,15 +235,16 @@ export function AppDialog({
       >
         <DialogHeader
           className={cn(
+            '-mx-6 -mt-6 mb-4 rounded-t-lg border-b border-blue-300 bg-gradient-to-r from-blue-100 to-sky-50 px-6 py-4 pr-12 text-blue-950',
             floating &&
-              '-mx-1 -mt-1 cursor-move touch-none select-none rounded-lg px-1 py-1 pr-8',
+              '-mx-6 -mt-6 cursor-move touch-none select-none rounded-t-lg px-5 py-4 pr-10',
           )}
           onPointerDown={beginDrag}
         >
           <div className="flex items-center gap-1.5">
             {floating ? (
               <GripVertical
-                className="size-4 shrink-0 text-muted-foreground"
+                className="size-4 shrink-0 text-blue-600/70"
                 aria-hidden="true"
               />
             ) : null}

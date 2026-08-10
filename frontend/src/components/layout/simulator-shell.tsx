@@ -10,7 +10,9 @@ import {
   CircleDot,
   FolderOpen,
   Info,
+  Moon,
   Save,
+  Sun,
 } from 'lucide-react'
 
 import { AppDialog, ConfirmationDialog } from '@/components/common'
@@ -46,6 +48,11 @@ import {
 type ComponentDialogType = 'material' | 'transform' | 'delete'
 
 export function SimulatorShell() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    window.localStorage.getItem('tv-leakage-theme') === 'dark'
+      ? 'dark'
+      : 'light',
+  )
   const [activeSection, setActiveSection] =
     useState<WorkflowSectionId>('model-import')
   const [viewerCameraFrame, setViewerCameraFrame] =
@@ -67,6 +74,12 @@ export function SimulatorShell() {
   const componentReturnFocusRef = useRef<HTMLElement>(null)
   const projectFileInputRef = useRef<HTMLInputElement>(null)
   const projectLoadAttemptRef = useRef('')
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    document.documentElement.style.colorScheme = theme
+    window.localStorage.setItem('tv-leakage-theme', theme)
+  }, [theme])
   const lastOpenedResultRunIdRef = useRef('')
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const nameOverrides = useWorkspaceStore(
@@ -269,6 +282,34 @@ export function SimulatorShell() {
             <FolderOpen data-icon="inline-start" />
             <span className="hidden sm:inline">Load</span>
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label={
+              theme === 'light'
+                ? 'Switch to dark mode'
+                : 'Switch to light mode'
+            }
+            title={
+              theme === 'light'
+                ? 'Dark mode로 변경'
+                : 'Light mode로 변경'
+            }
+            onClick={() =>
+              setTheme((current) =>
+                current === 'light' ? 'dark' : 'light',
+              )
+            }
+          >
+            {theme === 'light' ? (
+              <Moon data-icon="inline-start" />
+            ) : (
+              <Sun data-icon="inline-start" />
+            )}
+            <span className="hidden xl:inline">
+              {theme === 'light' ? 'Dark' : 'Light'}
+            </span>
+          </Button>
           <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
             <CircleDot className="size-3 text-primary" aria-hidden="true" />
             API layer ready
@@ -378,6 +419,7 @@ export function SimulatorShell() {
           if (!open) setComponentDialog(null)
         }}
         component={activeComponent}
+        scene={scene}
         componentName={activeComponentName}
         returnFocusRef={componentReturnFocusRef}
       />

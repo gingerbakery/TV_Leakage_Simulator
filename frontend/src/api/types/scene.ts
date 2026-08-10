@@ -12,6 +12,8 @@ export interface SceneMesh {
   face_ids: number[]
   face_component_ids: (number | null)[]
   face_material_ids: string[]
+  /** Original CAD/B-rep face id. Many tessellation triangles can share it. */
+  face_source_ids?: number[]
   face_normals: Vec3[]
   face_centroids: Vec3[]
   face_areas_mm2: number[]

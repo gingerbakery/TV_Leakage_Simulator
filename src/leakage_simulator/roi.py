@@ -72,6 +72,13 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     face_ids = list(range(len(mesh.faces)))
     face_component_ids = [face_to_component.get(face_index) for face_index in face_ids]
     face_material_ids = [mesh.material_id(face_index) for face_index in face_ids]
+    # One CAD/B-rep face may be tessellated (and later ROI-subdivided) into
+    # many triangles. Preserve its authored face identity for UI selection
+    # counts and whole-surface picking.
+    face_source_ids = [
+        int(mesh.metadata(face_index).get("face_index", face_index))
+        for face_index in face_ids
+    ]
     face_normals = [
         [round(value, 6) for value in mesh.normal(face_index)]
         for face_index in face_ids
@@ -158,6 +165,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
             "face_ids": face_ids,
             "face_component_ids": face_component_ids,
             "face_material_ids": face_material_ids,
+            "face_source_ids": face_source_ids,
             "face_normals": face_normals,
             "face_centroids": face_centroids,
             "face_areas_mm2": face_areas,

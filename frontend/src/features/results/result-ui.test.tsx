@@ -20,24 +20,14 @@ import { RayTraceResultWindow } from './result-window'
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   workspaceStore.getState().actions.resetWorkspace()
 })
 
 describe('Step 11 result UI', () => {
   it('opens the analysis window at the expanded default size', () => {
-    const boundsSpy = vi
-      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-      .mockReturnValue({
-        bottom: 1000,
-        height: 1000,
-        left: 0,
-        right: 1200,
-        top: 0,
-        width: 1200,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      })
+    vi.stubGlobal('innerWidth', 1200)
+    vi.stubGlobal('innerHeight', 1000)
 
     render(
       <div className="relative h-[1000px] w-[1200px]">
@@ -54,8 +44,6 @@ describe('Step 11 result UI', () => {
     })
     expect(dialog.style.width).toBe('960px')
     expect(dialog.style.height).toBe('880px')
-
-    boundsSpy.mockRestore()
   })
 
   it('shows result KPIs and applies ray path presets', () => {

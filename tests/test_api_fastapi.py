@@ -201,6 +201,18 @@ class FastApiLayerTests(unittest.TestCase):
             invalid_response.text,
         )
 
+    def test_xt_upload_is_rejected_instead_of_showing_synthetic_body(self):
+        response = self.client.post(
+            "/api/upload",
+            params={"filename": "assembly.x_t"},
+            content=b"PARASOLID-DATA",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(".x_t is not supported", response.text)
+        self.assertIn("STEP AP214 or AP242", response.text)
+
     def test_direct_and_async_raytrace_share_scene_cache(self):
         scene_response = self.client.get(
             "/api/scene",
