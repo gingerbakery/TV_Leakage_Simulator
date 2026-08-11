@@ -30,7 +30,7 @@ import {
   BitsamProjectError,
   compareBitsamProjectScene,
   createBitsamProject,
-  downloadBitsamProject,
+  saveBitsamProject,
   readBitsamProjectFile,
   type BitsamProject,
 } from '@/features/projects'
@@ -158,7 +158,7 @@ export function SimulatorShell() {
     )
   }, [actions, activeCad, pendingProject, scene])
 
-  const handleSaveProject = () => {
+  const handleSaveProject = async () => {
     if (!activeCad || !scene) {
       openFeatureNotice(
         '저장할 CAD가 없습니다',
@@ -172,10 +172,13 @@ export function SimulatorShell() {
         scene,
         workspaceStore.getState(),
       )
-      downloadBitsamProject(project)
+      const saveResult = await saveBitsamProject(project)
+      if (saveResult === 'cancelled') return
       openFeatureNotice(
         'BITSAM 프로젝트 저장 완료',
-        `${project.project_name}.bitsam 파일을 다운로드했습니다. 원본 CAD 파일은 포함되지 않으므로 함께 보관해 주세요.`,
+        saveResult === 'picked'
+          ? `${project.project_name}.bitsam 파일을 선택한 위치에 저장했습니다. 원본 CAD 파일은 포함되지 않으므로 함께 보관해 주세요.`
+          : `${project.project_name}.bitsam 파일을 다운로드 폴더에 저장했습니다. 이 브라우저에서는 저장 위치 선택을 지원하지 않습니다.`,
       )
     } catch (error) {
       openFeatureNotice(

@@ -3,14 +3,15 @@ from __future__ import annotations
 import sys
 import unittest
 import random
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from leakage_simulator.geometry import TriangleMesh
-from leakage_simulator.raytracer import DirectRayTraceInput, _sample_polygon_point, run_direct_ray_trace
-from leakage_simulator.types import EmitterSpec, OpticalProfile, RayTraceConfig, ReceiverSpec
+from leakage_simulator.raytracer import DirectRayTraceInput, _sample_polygon_point, _store_completed_path, run_direct_ray_trace
+from leakage_simulator.types import EmitterSpec, OpticalProfile, RayHit, RayTraceConfig, ReceiverSpec
 
 
 def build_emitter_plane() -> TriangleMesh:
@@ -25,6 +26,30 @@ def build_emitter_plane() -> TriangleMesh:
 
 
 class RayTracerRT1Tests(unittest.TestCase):
+    def test_stored_path_quota_prioritizes_receiver_paths(self) -> None:
+        def event(event_type: str) -> RayHit:
+            return RayHit(
+                face_index=-1,
+                component_id=None,
+                material_id=None,
+                point=(0.0, 0.0, 0.0),
+                normal=(0.0, 0.0, 1.0),
+                distance_mm=0.0,
+                incoming_energy_lumen=1.0,
+                outgoing_energy_lumen=1.0,
+                depth=0,
+                event_type=event_type,
+            )
+
+        stored = [[event("emitter")], [event("surface")]]
+        receiver_path = [event("emitter"), event("receiver")]
+
+        _store_completed_path(stored, receiver_path, 2)
+
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(stored[0][-1].event_type, "receiver")
+        self.assertEqual(stored[1][-1].event_type, "surface")
+
     def test_receiver_preserves_explicit_plane_axes(self) -> None:
         receiver = ReceiverSpec(
             receiver_id="rotated_receiver",
@@ -339,6 +364,24 @@ class RayTracerRT1Tests(unittest.TestCase):
         self.assertAlmostEqual(emitter.effective_power_lumen(200.0), 0.1)
         self.assertEqual(emitter.reference_vertex_indices, [0, 1, 2, 3, 4, 5])
         self.assertEqual(emitter.reference_vertex_points[1], (20.0, 0.0, 0.0))
+
+    def test_set_luminance_converts_nit_and_selected_area_to_flux(self) -> None:
+        emitter = EmitterSpec(
+            emitter_id="set_luminance_source",
+            emitter_type="datum_plane",
+            center=(0.0, 0.0, 0.0),
+            u_axis=(1.0, 0.0, 0.0),
+            v_axis=(0.0, 1.0, 0.0),
+            width_mm=100.0,
+            height_mm=100.0,
+            power_mode="set_luminance",
+            luminance_nit=500.0,
+        )
+
+        self.assertAlmostEqual(
+            emitter.effective_power_lumen(10_000.0),
+            math.pi * 500.0 * 0.01,
+        )
 
     def test_polygon_reference_emitter_uses_polygon_area(self) -> None:
         emitter = EmitterSpec(

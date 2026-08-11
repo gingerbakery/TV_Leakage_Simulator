@@ -82,7 +82,7 @@ def require_positive_int(value: int, field_name: str) -> int:
 EMITTER_TYPES = ("face", "datum_plane", "reference_plane")
 EMITTER_NORMAL_MODES = ("face_normal", "custom")
 EMITTER_DISTRIBUTIONS = ("lambertian", "isotropic", "gaussian")
-EMITTER_POWER_MODES = ("total", "power_per_area")
+EMITTER_POWER_MODES = ("set_luminance", "total", "power_per_area")
 EMITTER_SURFACE_CONSTRUCTIONS = ("rectangular_fit", "polygon_auto")
 REFERENCE_PLANARITY_TOLERANCE_MM = 0.05
 RECEIVER_TYPES = ("rectangle",)
@@ -167,6 +167,7 @@ class EmitterSpec:
     power_mode: str = "total"
     power_lumen: float = 1.0
     power_density_lm_per_m2: float = 100.0
+    luminance_nit: float = 500.0
     center: Optional[Vec3] = None
     u_axis: Optional[Vec3] = None
     v_axis: Optional[Vec3] = None
@@ -251,6 +252,10 @@ class EmitterSpec:
             self.power_density_lm_per_m2,
             "power_density_lm_per_m2",
         )
+        self.luminance_nit = require_non_negative(
+            self.luminance_nit,
+            "luminance_nit",
+        )
         self.reference_vertex_indices = [int(index) for index in self.reference_vertex_indices]
         self.reference_edge_vertex_indices = [
             (int(edge[0]), int(edge[1])) for edge in self.reference_edge_vertex_indices
@@ -268,6 +273,10 @@ class EmitterSpec:
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
 
     def effective_power_lumen(self, area_mm2: float) -> float:
+        if self.power_mode == "set_luminance":
+            # Lambertian-equivalent conversion: luminous exitance M = pi L,
+            # then total flux Phi = M * emitting area.
+            return math.pi * self.luminance_nit * max(0.0, float(area_mm2)) * 1e-6
         if self.power_mode == "power_per_area":
             return self.power_density_lm_per_m2 * max(0.0, float(area_mm2)) * 1e-6
         return self.power_lumen

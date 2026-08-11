@@ -226,8 +226,12 @@ const emitterDirectionColor = 0xffb000
 // trio's relative saturation/darkness (armed pick > editing > plain select).
 const selectedFaceHighlightColorArmed = 0x2563eb
 const selectedFaceHighlightColorEditing = 0x3b82f6
-const selectedFaceHighlightColorDefault = 0x60a5fa
 const selectedMaterialFaceHighlightColor = 0xff8a00
+// NX-style whole-component selection: a bright orange surface wash plus a
+// crisp orange CAD-edge outline stays visible regardless of the part's own
+// authored/imported display color.
+const selectedComponentSurfaceColor = 0xff8a00
+const selectedComponentEdgeColor = 0xffb000
 // A saturated cyan reads clearly against both the neutral CAD grays and
 // the warm emitter yellow/orange palette, unlike the previous lavender
 // purple which tended to wash out against similarly light surfaces.
@@ -3145,18 +3149,12 @@ export function ThreeViewerCanvas({
           ? selectedMaterialFaceHighlightColor
           : emitterFaceSelectionArmed
             ? selectedFaceHighlightColorArmed
-          : editingComponentId !== null &&
-              editingComponentId !== undefined
-            ? selectedFaceHighlightColorEditing
-            : selectedFaceHighlightColorDefault
+            : selectedComponentSurfaceColor
         const selectionOpacity = materialFacePickArmed
           ? 0.62
           : emitterFaceSelectionArmed
             ? 0.52
-          : editingComponentId !== null &&
-              editingComponentId !== undefined
-            ? 0.28
-            : 0.22
+            : 0.36
         const createSelectionMaterial = () =>
           new MeshBasicMaterial({
             color: selectionColor,
@@ -3229,7 +3227,8 @@ export function ThreeViewerCanvas({
                 emitterFaceSelectionArmed || materialFacePickArmed
                   ? 1
                   : 0.88,
-              depthTest: true,
+              depthTest:
+                emitterFaceSelectionArmed || materialFacePickArmed,
               depthWrite: false,
               toneMapped: false,
             }),
@@ -3559,7 +3558,7 @@ export function ThreeViewerCanvas({
         : authoredColor
       const style = viewerMaterialStyle(partAssignment, displayBaseColor)
       const displayColor = style.color.clone()
-      const highlightColor = isEditing ? 0xfacc15 : 0x38bdf8
+      const highlightColor = selectedComponentEdgeColor
       const showHighlightedEdges =
         isSelected &&
         !(isEditing && editingComponentMode === 'material')
@@ -3587,7 +3586,7 @@ export function ThreeViewerCanvas({
       node.surface.visible = !isWireframe
       node.wireframeFill.visible = isWireframe
       node.wireframeFill.material.color.set(
-        isSelected ? 0x36556a : 0x263b4d,
+        isSelected ? selectedComponentSurfaceColor : 0x263b4d,
       )
       node.wireframeFill.material.opacity = isSelected
         ? selectedWireframeSurfaceOpacity
@@ -3611,14 +3610,14 @@ export function ThreeViewerCanvas({
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
-      if (isEditing && !emitterFaceSelectionArmed) {
+      if (isSelected && !emitterFaceSelectionArmed) {
         const targetSurface = new Mesh(
           node.surface.geometry.clone(),
           new MeshBasicMaterial({
-            color: 0xf59e0b,
+            color: selectedComponentSurfaceColor,
             side: DoubleSide,
             transparent: true,
-            opacity: 0.18,
+            opacity: 0.36,
             depthTest: true,
             depthWrite: false,
             polygonOffset: true,
@@ -3631,22 +3630,22 @@ export function ThreeViewerCanvas({
         targetSurface.renderOrder = 88
 
         node.selectionOverlayRoot.add(targetSurface)
-        if (editingComponentMode !== 'material') {
-          const targetEdges = new LineSegments(
-            node.edges.geometry.clone(),
-            new LineBasicMaterial({
-              color: 0xfbbf24,
-              transparent: true,
-              opacity: 0.9,
-              depthTest: true,
-              depthWrite: false,
-              toneMapped: false,
-            }),
-          )
-          targetEdges.name = `editor-target-edges-${componentId}`
-          targetEdges.renderOrder = 89
-          node.selectionOverlayRoot.add(targetEdges)
-        }
+        const targetEdges = new LineSegments(
+          node.edges.geometry.clone(),
+          new LineBasicMaterial({
+            color: selectedComponentEdgeColor,
+            transparent: true,
+            opacity: 1,
+            // Keep the selection silhouette readable even on dark parts or
+            // where a neighboring component partially covers the edge.
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        targetEdges.name = `component-selection-edges-${componentId}`
+        targetEdges.renderOrder = 89
+        node.selectionOverlayRoot.add(targetEdges)
       }
 
       const componentEmitterFaceIds = node.component.face_indices.filter(

@@ -3,7 +3,10 @@ import type { AxisVector, IndexPair, Vec3 } from './common'
 export type EmitterType = 'face' | 'datum_plane' | 'reference_plane'
 export type EmitterNormalMode = 'face_normal' | 'custom'
 export type EmitterDistribution = 'lambertian' | 'isotropic' | 'gaussian'
-export type EmitterPowerMode = 'total' | 'power_per_area'
+export type EmitterPowerMode =
+  | 'set_luminance'
+  | 'total'
+  | 'power_per_area'
 export type EmitterSurfaceConstruction = 'rectangular_fit' | 'polygon_auto'
 
 export interface EmitterSpec {
@@ -18,6 +21,8 @@ export interface EmitterSpec {
   power_mode: EmitterPowerMode
   power_lumen: number
   power_density_lm_per_m2: number
+  /** SET/screen luminance input. Optional for older saved projects. */
+  luminance_nit?: number
   center: Vec3 | null
   u_axis: Vec3 | null
   v_axis: Vec3 | null

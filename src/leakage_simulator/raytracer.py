@@ -205,6 +205,36 @@ def run_simulation(engine_input: EngineInput) -> SimulationOutput:
     )
 
 
+def _path_reaches_receiver(path: List[RayHit]) -> bool:
+    return bool(path) and path[-1].event_type == "receiver"
+
+
+def _store_completed_path(
+    stored_paths: List[List[RayHit]],
+    path: List[RayHit],
+    max_stored_paths: int,
+) -> None:
+    """Keep Receiver-reaching paths ahead of diagnostic dead-end paths.
+
+    Paths are still bounded by ``max_stored_paths``. Once full, a newly
+    completed Receiver path replaces the oldest stored path that ended as
+    blocked/escaped/terminated. Quantitative metrics never depend on this
+    visualization-only collection.
+    """
+    if max_stored_paths <= 0 or not path:
+        return
+    completed_path = list(path)
+    if len(stored_paths) < max_stored_paths:
+        stored_paths.append(completed_path)
+        return
+    if not _path_reaches_receiver(completed_path):
+        return
+    for index, stored_path in enumerate(stored_paths):
+        if not _path_reaches_receiver(stored_path):
+            stored_paths[index] = completed_path
+            return
+
+
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -308,9 +338,13 @@ def run_direct_ray_trace(
                 terminated_ray_count += 1
                 continue
             origin, direction, source_face = ray
+            # Capture each candidate path while path storage is enabled. If
+            # the quota is already full, a later Receiver-reaching path may
+            # still replace an earlier blocked/escaped path so the report is
+            # useful for structural leakage-path diagnosis.
             store_path = (
                 trace_input.config.store_ray_paths
-                and len(stored_paths) < trace_input.config.max_stored_paths
+                and trace_input.config.max_stored_paths > 0
             )
             emitter_event = (
                 _emitter_ray_hit(source_face, origin, direction, ray_power)
@@ -418,7 +452,11 @@ def run_direct_ray_trace(
                             )
                         if store_path:
                             path_events.append(receiver_candidate.to_ray_hit())
-                            stored_paths.append(path_events)
+                            _store_completed_path(
+                                stored_paths,
+                                path_events,
+                                trace_input.config.max_stored_paths,
+                            )
                     else:
                         terminated_ray_count += 1
                         if current_depth > 0:
@@ -437,7 +475,11 @@ def run_direct_ray_trace(
                                 current_depth,
                             )
                         if store_path:
-                            stored_paths.append(path_events)
+                            _store_completed_path(
+                                stored_paths,
+                                path_events,
+                                trace_input.config.max_stored_paths,
+                            )
                     break
 
                 surface_hit_count += 1
@@ -531,7 +573,11 @@ def run_direct_ray_trace(
                                 ray_kind=current_ray_kind if current_depth > 0 else None,
                             )
                         )
-                        stored_paths.append(path_events)
+                        _store_completed_path(
+                            stored_paths,
+                            path_events,
+                            trace_input.config.max_stored_paths,
+                        )
                     break
 
                 reflection_sample, emitted_power = reflection_emission
@@ -688,7 +734,9 @@ def _trace_single_bounce_fast(
     if surface_hit is None:
         if receiver_candidate is None:
             if store_path:
-                stored_paths.append(path_events)
+                _store_completed_path(
+                    stored_paths, path_events, config.max_stored_paths
+                )
             return 0, 0, 1
         _record_receiver_hit(receiver_candidate)
         reflection_summary["direct_receiver_hit_count"] += 1
@@ -699,7 +747,9 @@ def _trace_single_bounce_fast(
         )
         if store_path:
             path_events.append(receiver_candidate.to_ray_hit())
-            stored_paths.append(path_events)
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
         return 1, 0, 0
 
     reflection_summary["surface_hit_count"] += 1
@@ -761,7 +811,9 @@ def _trace_single_bounce_fast(
                     optical_source=resolved_optical.source,
                 )
             )
-            stored_paths.append(path_events)
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
         return 0, 1, 1
 
     reflection_sample, emitted_power = reflection_emission
@@ -905,7 +957,9 @@ def _trace_single_bounce_fast(
                     ray_kind=reflection_sample.lobe,
                 )
             )
-            stored_paths.append(path_events)
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
         return 0, 2, 1
 
     if reflected_receiver is not None:
@@ -934,7 +988,9 @@ def _trace_single_bounce_fast(
         )
         if store_path:
             path_events.append(reflected_receiver.to_ray_hit())
-            stored_paths.append(path_events)
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
         return 1, 1, 0
 
     _record_reflection_outcome(
@@ -952,7 +1008,9 @@ def _trace_single_bounce_fast(
         1,
     )
     if store_path:
-        stored_paths.append(path_events)
+        _store_completed_path(
+            stored_paths, path_events, config.max_stored_paths
+        )
     return 0, 1, 1
 
 

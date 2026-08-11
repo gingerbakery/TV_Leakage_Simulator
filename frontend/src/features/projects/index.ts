@@ -6,6 +6,7 @@ export {
   compareBitsamProjectScene,
   createBitsamProject,
   downloadBitsamProject,
+  saveBitsamProject,
   parseBitsamProject,
   readBitsamProjectFile,
   serializeBitsamProject,
@@ -14,4 +15,5 @@ export type {
   BitsamCadReference,
   BitsamCompatibility,
   BitsamProject,
+  BitsamSaveResult,
 } from './bitsam-project'

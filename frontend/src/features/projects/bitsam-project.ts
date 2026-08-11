@@ -257,9 +257,11 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       'gaussian',
     ]) &&
     isFiniteNumber(value.gaussian_sigma_deg) &&
-    isOneOf(value.power_mode, ['total', 'power_per_area']) &&
+    isOneOf(value.power_mode, ['set_luminance', 'total', 'power_per_area']) &&
     isFiniteNumber(value.power_lumen) &&
     isFiniteNumber(value.power_density_lm_per_m2) &&
+    (value.luminance_nit === undefined ||
+      isFiniteNumber(value.luminance_nit)) &&
     (value.center === null || isVec3(value.center)) &&
     (value.u_axis === null || isVec3(value.u_axis)) &&
     (value.v_axis === null || isVec3(value.v_axis)) &&
@@ -661,4 +663,62 @@ export function downloadBitsamProject(project: BitsamProject): void {
   anchor.click()
   anchor.remove()
   URL.revokeObjectURL(objectUrl)
+}
+
+export type BitsamSaveResult = 'picked' | 'downloaded' | 'cancelled'
+
+interface BitsamSaveFileHandle {
+  createWritable(): Promise<{
+    write(data: Blob): Promise<void>
+    close(): Promise<void>
+  }>
+}
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string
+    types: Array<{
+      description: string
+      accept: Record<string, string[]>
+    }>
+  }) => Promise<BitsamSaveFileHandle>
+}
+
+/** Opens the native save-location picker when the browser supports it.
+ * Older browsers retain the previous Downloads-folder fallback. */
+export async function saveBitsamProject(
+  project: BitsamProject,
+): Promise<BitsamSaveResult> {
+  const picker = (window as SaveFilePickerWindow).showSaveFilePicker
+  if (!picker) {
+    downloadBitsamProject(project)
+    return 'downloaded'
+  }
+
+  try {
+    const handle = await picker({
+      suggestedName: bitsamDownloadFileName(project),
+      types: [
+        {
+          description: 'BITSAM simulation project',
+          accept: {
+            'application/vnd.bitsam+json': [bitsamFileExtension],
+          },
+        },
+      ],
+    })
+    const writable = await handle.createWritable()
+    await writable.write(
+      new Blob([serializeBitsamProject(project)], {
+        type: 'application/vnd.bitsam+json',
+      }),
+    )
+    await writable.close()
+    return 'picked'
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return 'cancelled'
+    }
+    throw error
+  }
 }

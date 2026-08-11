@@ -63,6 +63,12 @@ CAD_FAST_IMPORT_ENV = "LEAKAGE_CAD_FAST_IMPORT"
 CAD_FORCE_ROI_SUBDIVISION_ENV = "LEAKAGE_CAD_FORCE_ROI_SUBDIVISION"
 CAD_SKIP_PRODUCT_METADATA_ENV = "LEAKAGE_CAD_SKIP_PRODUCT_METADATA"
 
+# Interactive CAD display tessellation. The tighter angular tolerance is
+# especially important for small fillets and compound R-surfaces: linear
+# deflection alone can still leave visibly faceted curvature.
+VIEWER_LINEAR_DEFLECTION_MM = 0.08
+VIEWER_ANGULAR_DEFLECTION_RAD = 0.10
+
 
 def _cad_stage(
     stage: str,
@@ -373,7 +379,7 @@ def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
 def _extract_brep_edge_segments(
     shape,
     component_index: int,
-    deflection_mm: float = 0.25,
+    deflection_mm: float = VIEWER_LINEAR_DEFLECTION_MM,
 ) -> List[Dict]:
     """Discretize true STEP B-rep topology edges for Viewer display.
 
@@ -670,8 +676,11 @@ def _import_step(path: Path) -> ImportResult:
     workplane = cq.importers.importStep(str(path))
     shape = workplane.val()
     # Keep the CadQuery fallback visually consistent with the primary OCP
-    # path: fine linear deflection and roughly ten-degree angular tolerance.
-    vertices, triangles = shape.tessellate(0.15, 0.18)
+    # path, including small fillets and compound R-surfaces.
+    vertices, triangles = shape.tessellate(
+        VIEWER_LINEAR_DEFLECTION_MM,
+        VIEWER_ANGULAR_DEFLECTION_RAD,
+    )
     cadquery_import_sec = _cad_stage(
         "CadQuery STEP+tessellate",
         cadquery_import_started_at,
@@ -772,11 +781,17 @@ def _import_step_ocp(path: Path) -> ImportResult:
         for solid, _name, _color in named_colored_solids:
             try:
                 # Viewer-quality tessellation: keep curved STEP surfaces
-                # within 0.15 mm and about 10 degrees. Ray tracing still
+                # within 0.08 mm and about 5.7 degrees. Ray tracing still
                 # consumes triangles internally, but the interactive CAD
                 # presentation no longer inherits the old coarse 0.5 mm /
                 # 0.5 rad approximation that made round parts look faceted.
-                BRepMesh_IncrementalMesh(solid, 0.15, False, 0.18, True).Perform()
+                BRepMesh_IncrementalMesh(
+                    solid,
+                    VIEWER_LINEAR_DEFLECTION_MM,
+                    False,
+                    VIEWER_ANGULAR_DEFLECTION_RAD,
+                    True,
+                ).Perform()
             except Exception:
                 pass
         timings["ocp_tessellation"] = _cad_stage(
@@ -805,7 +820,13 @@ def _import_step_ocp(path: Path) -> ImportResult:
 
         tessellation_started_at = time.perf_counter()
         _cad_stage_start("OCP tessellation")
-        mesh_builder = BRepMesh_IncrementalMesh(shape, 0.15, False, 0.18, True)
+        mesh_builder = BRepMesh_IncrementalMesh(
+            shape,
+            VIEWER_LINEAR_DEFLECTION_MM,
+            False,
+            VIEWER_ANGULAR_DEFLECTION_RAD,
+            True,
+        )
         try:
             mesh_builder.Perform()
         except Exception:

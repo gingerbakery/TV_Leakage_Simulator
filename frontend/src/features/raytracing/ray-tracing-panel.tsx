@@ -219,9 +219,10 @@ function EmitterDialog({
   const [width, setWidth] = useState(20)
   const [height, setHeight] = useState(20)
   const [powerMode, setPowerMode] =
-    useState<EmitterPowerMode>('total')
+    useState<EmitterPowerMode>('set_luminance')
   const [power, setPower] = useState(1)
   const [powerDensity, setPowerDensity] = useState(100)
+  const [luminanceNit, setLuminanceNit] = useState(500)
   const [rayCount, setRayCount] = useState(10_000)
   const [distribution, setDistribution] =
     useState<EmitterDistribution>('lambertian')
@@ -251,11 +252,12 @@ function EmitterDialog({
     )
     setWidth(initialEmitter?.width_mm ?? 20)
     setHeight(initialEmitter?.height_mm ?? 20)
-    setPowerMode(initialEmitter?.power_mode ?? 'total')
+    setPowerMode(initialEmitter?.power_mode ?? 'set_luminance')
     setPower(initialEmitter?.power_lumen ?? 1)
     setPowerDensity(
       initialEmitter?.power_density_lm_per_m2 ?? 100,
     )
+    setLuminanceNit(initialEmitter?.luminance_nit ?? 500)
     setRayCount(initialEmitter?.ray_count ?? 10_000)
     setDistribution(
       initialEmitter?.direction_distribution ?? 'lambertian',
@@ -296,6 +298,17 @@ function EmitterDialog({
 
   const emitterFaceIds = selectedFaceIds
   const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
+  const emitterAreaMm2 =
+    mode === 'datum_plane'
+      ? Math.max(0, width) * Math.max(0, height)
+      : emitterFaceIds.reduce(
+          (sum, faceId) =>
+            sum + (scene?.mesh.face_areas_mm2[faceId] ?? 0),
+          0,
+        )
+  const luminancePowerDensity = Math.PI * Math.max(0, luminanceNit)
+  const luminanceTotalFlux =
+    luminancePowerDensity * emitterAreaMm2 * 1e-6
   const canApply =
     mode === 'datum_plane' || emitterFaceIds.length > 0
   const previewEmitter = useMemo(() => {
@@ -364,6 +377,7 @@ function EmitterDialog({
       power_mode: powerMode,
       power_lumen: Math.max(0, power),
       power_density_lm_per_m2: Math.max(0, powerDensity),
+      luminance_nit: Math.max(0, luminanceNit),
       ray_count: Math.max(1, Math.trunc(rayCount)),
       direction_distribution: distribution,
       gaussian_sigma_deg: Math.max(0.1, sigma),
@@ -495,6 +509,8 @@ function EmitterDialog({
             <span className="flex items-center gap-1.5">
               Power mode
               <HelpTooltip label="Power mode 도움말">
+                SET luminance: 완제품 화면 휘도(nit)를 입력하면 선택한 발광면
+                면적으로 Lambertian 등가 총광속을 자동 계산합니다.{' '}
                 Total power: 발광면 전체의 총 광속(lm)을 지정합니다. Power
                 per area: 단위 면적당 광속(lm/m²)을 지정해, 발광면 크기에
                 따라 총 광량이 자동으로 계산됩니다.
@@ -508,11 +524,21 @@ function EmitterDialog({
                 setPowerMode(event.currentTarget.value as EmitterPowerMode)
               }
             >
+              <option value="set_luminance">SET luminance (nit)</option>
               <option value="total">Total power</option>
               <option value="power_per_area">Power per area</option>
             </select>
           </label>
-          {powerMode === 'total' ? (
+          {powerMode === 'set_luminance' ? (
+            <NumberField
+              label="SET luminance (nit)"
+              ariaLabel="SET luminance (nit)"
+              value={luminanceNit}
+              min={0}
+              onChange={setLuminanceNit}
+              description="완제품 화면 기준 휘도입니다. 선택한 Emitter 면적에 비례해 총광속을 자동 환산합니다."
+            />
+          ) : powerMode === 'total' ? (
             <NumberField
               label="Total power (lm)"
               value={power}
@@ -529,6 +555,19 @@ function EmitterDialog({
               description="단위 면적당 방출 광속입니다. 발광면 크기(Width×Height)를 곱한 값이 총 광속이 됩니다."
             />
           )}
+          {powerMode === 'set_luminance' ? (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/65 p-2.5 text-[0.68rem] leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100 sm:col-span-2">
+              <div className="font-semibold">SET luminance conversion</div>
+              <div>
+                Emitter area {emitterAreaMm2.toLocaleString(undefined, { maximumFractionDigits: 2 })} mm²
+                {' · '}πL {luminancePowerDensity.toLocaleString(undefined, { maximumFractionDigits: 3 })} lm/m²
+                {' · '}Total flux {luminanceTotalFlux.toLocaleString(undefined, { maximumFractionDigits: 6 })} lm
+              </div>
+              <div className="text-blue-800/80 dark:text-blue-200/75">
+                Lambertian 등가 환산값이며, 선택 영역이 작아지면 총광속도 면적에 비례해 감소합니다.
+              </div>
+            </div>
+          ) : null}
           <NumberField
             label="Emitter rays"
             value={rayCount}
@@ -1490,7 +1529,7 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_stored_paths: Math.trunc(value) })
             }
-            description="3D Viewer·Ray Section View에 표시할 ray path를 최대 몇 개까지 저장할지 - Receiver hits 등 통계 결과에는 영향을 주지 않습니다."
+            description="3D Viewer·Ray Section View에 표시할 최대 경로 수입니다. Receiver 도달 경로가 우선 저장되며 통계 결과에는 영향을 주지 않습니다."
           />
           <label className={fieldLabelClassName}>
             <span className="flex items-center gap-1.5">
@@ -1559,11 +1598,11 @@ export function RayTracingPanel({
             }
           />
           <span className="flex items-center gap-1.5">
-            Store hit ray paths for Step 11 Viewer overlay
-            <HelpTooltip label="Store hit ray paths 도움말">
-              꺼두면 위 Max stored paths 설정과 무관하게 ray path를 저장하지
-              않아 계산이 조금 더 빨라집니다 (3D Viewer·Ray Section View의
-              ray 표시는 비활성화됩니다).
+            Store ray paths · Receiver priority
+            <HelpTooltip label="Store ray paths 도움말">
+              Receiver 도달 경로를 최우선으로 저장합니다. 저장 한도가 차면
+              이후 발견된 Receiver 경로가 Blocked/Escaped 경로를 대체합니다.
+              끄면 3D Viewer·Ray Section View의 ray 표시가 비활성화됩니다.
             </HelpTooltip>
           </span>
         </label>

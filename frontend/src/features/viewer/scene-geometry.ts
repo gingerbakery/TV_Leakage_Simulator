@@ -63,6 +63,24 @@ export function createFaceGeometry(
     const face = scene.mesh.faces[faceId]
     const faceNormal = scene.mesh.face_normals[faceId]
     if (!face || !faceNormal) continue
+    const triangleVertices = face.map(
+      (vertexId) => scene.mesh.vertices[vertexId],
+    )
+    const areaWeightedNormal =
+      triangleVertices.length === 3 &&
+      triangleVertices.every((vertex) => vertex !== undefined)
+        ? new Vector3()
+            .subVectors(
+              new Vector3(...triangleVertices[1]),
+              new Vector3(...triangleVertices[0]),
+            )
+            .cross(
+              new Vector3().subVectors(
+                new Vector3(...triangleVertices[2]),
+                new Vector3(...triangleVertices[0]),
+              ),
+            )
+        : new Vector3(...faceNormal)
     const sourceFaceId = scene.mesh.face_source_ids?.[faceId] ?? faceId
     const keys: string[] = []
     for (const vertexId of face) {
@@ -71,7 +89,9 @@ export function createFaceGeometry(
       const key = `${sourceFaceId}:${vertex[0].toFixed(6)},${vertex[1].toFixed(6)},${vertex[2].toFixed(6)}`
       keys.push(key)
       const sum = smoothNormals.get(key) ?? new Vector3()
-      sum.add(new Vector3(...faceNormal))
+      // Area weighting prevents a cluster of tiny tessellation triangles
+      // from skewing the visual normal on compound R-surfaces.
+      sum.add(areaWeightedNormal)
       smoothNormals.set(key, sum)
     }
     normalKeysByFace.set(faceId, keys)
