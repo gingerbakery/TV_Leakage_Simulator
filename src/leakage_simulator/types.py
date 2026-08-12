@@ -159,6 +159,8 @@ class EmitterSpec:
     emitter_id: str
     emitter_type: str = "face"
     face_indices: List[int] = field(default_factory=list)
+    # CAD placement reference for viewer/edit highlighting only.
+    source_face_indices: List[int] = field(default_factory=list)
     normal_mode: str = "face_normal"
     normal_flip: bool = False
     custom_normal: Optional[Vec3] = None
@@ -199,6 +201,7 @@ class EmitterSpec:
             EMITTER_SURFACE_CONSTRUCTIONS,
         )
         self.face_indices = [int(face_index) for face_index in self.face_indices]
+        self.source_face_indices = [int(face_index) for face_index in self.source_face_indices]
         if self.emitter_type == "face" and not self.face_indices:
             raise ValueError("face emitter requires at least one face index")
         if self.emitter_type in ("datum_plane", "reference_plane"):
@@ -311,6 +314,8 @@ class ReceiverSpec:
     receiver_type: str = "rectangle"
     display_name: str = "Receiver"
     placement_mode: str = "datum_plane"
+    # CAD placement reference for viewer/edit highlighting only.
+    source_face_indices: List[int] = field(default_factory=list)
     center: Vec3 = (0.0, 0.0, 0.0)
     normal: Vec3 = (0.0, 0.0, 1.0)
     u_axis: Optional[Vec3] = None
@@ -348,6 +353,7 @@ class ReceiverSpec:
             "placement_mode",
             RECEIVER_PLACEMENT_MODES,
         )
+        self.source_face_indices = [int(face_index) for face_index in self.source_face_indices]
         self.display_name = str(self.display_name or self.receiver_id)
         self.center = vec3_from(self.center, "center")
         self.normal = normalize_vec3(self.normal, "normal")

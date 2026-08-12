@@ -36,6 +36,22 @@ import {
 } from '@/components/ui/accordion'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
+import { useWorkspaceStore, workspaceSelectors } from '@/stores'
+
+function ActiveCadCaseLabel() {
+  const cases = useWorkspaceStore(workspaceSelectors.cadCases)
+  const activeId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const active = cases.find((item) => item.caseId === activeId)
+  if (!active) return null
+  return (
+    <div className="rounded-lg border border-primary/25 bg-primary/7 px-3 py-2">
+      <div className="text-[0.62rem] font-semibold tracking-wide text-primary uppercase">
+        Active · CASE {String(active.order).padStart(2, '0')}
+      </div>
+      <div className="mt-0.5 truncate text-xs font-medium">{active.cad.displayName}</div>
+    </div>
+  )
+}
 
 export type WorkflowSectionId =
   | 'model-import'
@@ -181,14 +197,17 @@ export function WorkflowSidebar({
 
     if (sectionId === 'components') {
       return (
-        <ComponentTreePanel
-          scene={scene}
-          isLoading={isSceneLoading}
-          errorMessage={sceneErrorMessage}
-          onEditMaterial={onEditMaterial}
-          onEditTransform={onEditTransform}
-          onDelete={onDeleteComponent}
-        />
+        <div className="space-y-2">
+          <ActiveCadCaseLabel />
+          <ComponentTreePanel
+            scene={scene}
+            isLoading={isSceneLoading}
+            errorMessage={sceneErrorMessage}
+            onEditMaterial={onEditMaterial}
+            onEditTransform={onEditTransform}
+            onDelete={onDeleteComponent}
+          />
+        </div>
       )
     }
 

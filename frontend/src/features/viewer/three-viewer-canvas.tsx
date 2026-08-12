@@ -13,7 +13,6 @@ import {
   EdgesGeometry,
   Euler,
   Float32BufferAttribute,
-  GridHelper,
   Group,
   HemisphereLight,
   LineBasicMaterial,
@@ -159,7 +158,6 @@ interface ViewerRuntime {
   camera: PerspectiveCamera
   controls: TrackballControls
   globalOriginAxes: Group
-  grid: GridHelper
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
   originAxisBaseScale: number
@@ -180,7 +178,6 @@ interface ViewerRuntime {
   roiPreviewKey: string
   roiPreviewRoot: Group
   scene: Scene
-  showGrid: boolean
 }
 
 interface CameraPose {
@@ -1457,27 +1454,6 @@ export function ThreeViewerCanvas({
     globalOriginAxes.position.set(0, 0, 0)
     globalOriginAxes.scale.setScalar(originAxisBaseScale)
     threeScene.add(globalOriginAxes)
-    const grid = new GridHelper(
-      maxDimension * 1.8,
-      18,
-      0x334155,
-      0x1e293b,
-    )
-    grid.rotation.x = Math.PI / 2
-    grid.position.set(
-      bounds.center.x,
-      bounds.center.y,
-      bounds.center.z -
-        bounds.size.z / 2 -
-        maxDimension * 0.0125,
-    )
-    const gridMaterial = grid.material as LineBasicMaterial
-    gridMaterial.transparent = true
-    gridMaterial.opacity = 0.28
-    gridMaterial.depthWrite = false
-    grid.renderOrder = -100
-    threeScene.add(grid)
-
     const nodes = new Map<number, ComponentRenderNode>()
     scene.components.forEach((component, index) => {
       const node = createComponentNode(scene, component, index)
@@ -1490,7 +1466,6 @@ export function ThreeViewerCanvas({
       camera,
       controls,
       globalOriginAxes,
-      grid,
       modelRoot,
       nodes,
       originAxisBaseScale,
@@ -1511,7 +1486,6 @@ export function ThreeViewerCanvas({
       roiPreviewKey: '',
       roiPreviewRoot,
       scene: threeScene,
-      showGrid: false,
     }
     runtimeRef.current = runtime
 
@@ -1542,8 +1516,6 @@ export function ThreeViewerCanvas({
     let animationFrame = 0
     const animate = () => {
       controls.update()
-      runtime.grid.visible =
-        runtime.showGrid && camera.position.z > grid.position.z
       renderer.setScissorTest(false)
       renderer.setViewport(0, 0, viewportWidth, viewportHeight)
       renderer.clear()
@@ -2233,7 +2205,9 @@ export function ThreeViewerCanvas({
               y: snappedNormal[1],
               z: snappedNormal[2],
             },
+            faceIds: [],
           })
+          actions.setSelectedFaceIds([])
           actions.setDatumFacePickArmed(false)
           onStatusMessage(
             matchingBox
@@ -2291,7 +2265,10 @@ export function ThreeViewerCanvas({
             y: normalVector[1],
             z: normalVector[2],
           },
+          faceIds: patchFaceIds,
         })
+        actions.setSelectedFaceIds(patchFaceIds)
+        actions.setSelectedComponentIds([hit.componentId])
         actions.setDatumFacePickArmed(false)
         onStatusMessage('Datum face picking · surface 중심 선택됨')
         return
@@ -3636,9 +3613,11 @@ export function ThreeViewerCanvas({
             color: selectedComponentEdgeColor,
             transparent: true,
             opacity: 1,
-            // Keep the selection silhouette readable even on dark parts or
-            // where a neighboring component partially covers the edge.
-            depthTest: false,
+            // NX-style selection must highlight only edges that are visible
+            // from the current camera. Disabling the depth test made every
+            // rear/internal B-rep edge bleed through the solid surface as an
+            // irregular line overlay after selecting a component.
+            depthTest: true,
             depthWrite: false,
             toneMapped: false,
           }),
@@ -3780,13 +3759,14 @@ export function ThreeViewerCanvas({
               componentSelectedFaceIds,
               node.center,
               new Vector3(...frame.normal),
+              false,
             )
             if (outlineBoundary) {
               outlineBoundary.name = `selected-face-outline-${componentId}`
               outlineBoundary.material.color.set(
                 isMaterialSurfaceDraft ? 0xffb347 : 0xffffff,
               )
-              outlineBoundary.material.depthTest = false
+              outlineBoundary.material.depthTest = true
               outlineBoundary.renderOrder = 93
               node.selectionOverlayRoot.add(outlineBoundary)
             }
@@ -3938,7 +3918,6 @@ export function ThreeViewerCanvas({
         node.transformOverlayRoot.add(overlay)
       }
     }
-    runtime.showGrid = renderMode !== 'Wireframe'
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
@@ -3947,6 +3926,7 @@ export function ThreeViewerCanvas({
     editingComponentId,
     editingComponentMode,
     hiddenComponentIds,
+    materialFacePickArmed,
     materialAssignments,
     componentColorOverrides,
     placementPreviewEmitter,

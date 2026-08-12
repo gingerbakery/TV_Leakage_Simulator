@@ -229,6 +229,7 @@ function EmitterDialog({
   const [sigma, setSigma] = useState(12)
   const [normalFlip, setNormalFlip] = useState(false)
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
+  const [sourceFaceIds, setSourceFaceIds] = useState<number[]>([])
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const datumFacePickArmed = useWorkspaceStore(
     workspaceSelectors.datumFacePickArmed,
@@ -267,8 +268,15 @@ function EmitterDialog({
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialEmitter),
     )
+    const initialSourceFaceIds =
+      mode === 'face'
+        ? (initialEmitter?.face_indices ?? [])
+        : (initialEmitter?.source_face_indices ?? [])
+    setSourceFaceIds(initialSourceFaceIds)
     if (mode === 'face' && initialEmitter) {
       actions.setSelectedFaceIds(initialEmitter.face_indices)
+    } else if (mode === 'datum_plane') {
+      actions.setSelectedFaceIds(initialSourceFaceIds)
     }
   }, [actions, defaultCenter, initialEmitter, mode, open])
 
@@ -288,6 +296,7 @@ function EmitterDialog({
     setCenter(nextCenter)
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
     setDatumFaceAssigned(true)
+    setSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
   }, [actions, mode, open, datumFacePickResult])
 
@@ -366,6 +375,7 @@ function EmitterDialog({
       ...emitter,
       ...(mode === 'datum_plane'
         ? {
+            source_face_indices: sourceFaceIds,
             center,
             u_axis: axes.uAxis,
             v_axis: axes.vAxis,
@@ -437,7 +447,6 @@ function EmitterDialog({
                     actions.setEmitterFaceSelectionArmed(false)
                     return
                   }
-                  if (initialEmitter) actions.setSelectedFaceIds([])
                   actions.setEmitterFaceSelectionArmed(true)
                 }}
               />
@@ -665,6 +674,8 @@ function ReceiverDialog({
     useState<ViewerCameraFrame | null>(null)
   const [normalFlip, setNormalFlip] = useState(false)
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
+  const [receiverSourceFaceIds, setReceiverSourceFaceIds] =
+    useState<number[]>([])
   const cameraFrameRef = useRef(cameraFrame)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const datumFacePickArmed = useWorkspaceStore(
@@ -710,6 +721,11 @@ function ReceiverDialog({
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialReceiver),
     )
+    const initialSourceFaceIds = initialReceiver?.source_face_indices ?? []
+    setReceiverSourceFaceIds(initialSourceFaceIds)
+    if (mode === 'datum_plane') {
+      actions.setSelectedFaceIds(initialSourceFaceIds)
+    }
     if (mode === 'current_view' && initialReceiver) {
       const normal =
         initialReceiver.base_normal ?? initialReceiver.normal
@@ -739,6 +755,7 @@ function ReceiverDialog({
       setCapturedFrame(cameraFrameRef.current)
     }
   }, [
+    actions,
     defaultCenter,
     initialReceiver,
     mode,
@@ -758,6 +775,7 @@ function ReceiverDialog({
     setCenter(nextCenter)
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
     setDatumFaceAssigned(true)
+    setReceiverSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
   }, [actions, mode, open, datumFacePickResult])
 
@@ -840,6 +858,8 @@ function ReceiverDialog({
     onApply({
       ...initialReceiver,
       ...receiver,
+      source_face_indices:
+        mode === 'datum_plane' ? receiverSourceFaceIds : [],
       display_name: displayName.trim() || receiverId,
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
@@ -1742,11 +1762,18 @@ export function RayTracingPanel({
         initialReceiver={editingReceiver}
         onOpenChange={(open) => {
           if (!open) {
+            actions.setDatumFacePickArmed(false)
+            actions.setSelectedFaceIds([])
+            actions.setSelectedComponentIds([])
             setReceiverMode(null)
             setEditingReceiverId(null)
           }
         }}
-        onApply={actions.upsertReceiver}
+        onApply={(receiver) => {
+          actions.upsertReceiver(receiver)
+          actions.setSelectedFaceIds([])
+          actions.setSelectedComponentIds([])
+        }}
       />
     </div>
   )

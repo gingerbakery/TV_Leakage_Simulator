@@ -4,6 +4,7 @@ export {
   bitsamFileExtension,
   bitsamSchemaVersion,
   compareBitsamProjectScene,
+  createBitsamSettingsOnlyState,
   createBitsamProject,
   downloadBitsamProject,
   saveBitsamProject,
@@ -14,6 +15,7 @@ export {
 export type {
   BitsamCadReference,
   BitsamCompatibility,
+  BitsamSettingsOnlyRestore,
   BitsamProject,
   BitsamSaveResult,
 } from './bitsam-project'

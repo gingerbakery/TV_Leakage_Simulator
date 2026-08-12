@@ -8,6 +8,7 @@ import {
   bitsamDownloadFileName,
   bitsamFileExtension,
   compareBitsamProjectScene,
+  createBitsamSettingsOnlyState,
   createBitsamProject,
   parseBitsamProject,
   serializeBitsamProject,
@@ -104,6 +105,45 @@ describe('BITSAM project format', () => {
     expect(compatibility.reasons).toContain(
       '부품 ID 또는 형상 경계 정보가 다릅니다.',
     )
+  })
+
+  it('restores geometry-independent settings for a different CAD', () => {
+    const { project } = createProjectFixture()
+    project.workspace.emitters = [
+      {
+        emitter_id: 'face-emitter',
+        emitter_type: 'face',
+      } as (typeof project.workspace.emitters)[number],
+      {
+        emitter_id: 'datum-emitter',
+        emitter_type: 'datum_plane',
+      } as (typeof project.workspace.emitters)[number],
+    ]
+    project.workspace.receivers = [
+      {
+        receiver_id: 'datum-receiver',
+        placement_mode: 'datum_plane',
+      } as (typeof project.workspace.receivers)[number],
+      {
+        receiver_id: 'view-receiver',
+        placement_mode: 'current_view',
+      } as (typeof project.workspace.receivers)[number],
+    ]
+
+    const restored = createBitsamSettingsOnlyState(project)
+
+    expect(restored.workspace.rayTraceConfig.ray_count).toBe(25_000)
+    expect(restored.workspace.emitters.map((item) => item.emitter_id)).toEqual([
+      'datum-emitter',
+    ])
+    expect(restored.workspace.receivers.map((item) => item.receiver_id)).toEqual([
+      'datum-receiver',
+    ])
+    expect(restored.workspace.hiddenComponentIds).toEqual([])
+    expect(restored.workspace.componentNameOverrides).toEqual({})
+    expect(restored.restoredDatumEmitters).toBe(1)
+    expect(restored.restoredDatumReceivers).toBe(1)
+    expect(restored.skippedGeometryItems).toBeGreaterThan(0)
   })
 
   it('reports malformed and unsupported project files', () => {

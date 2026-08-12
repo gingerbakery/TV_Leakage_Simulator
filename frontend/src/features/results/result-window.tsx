@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
@@ -14,9 +15,14 @@ import type {
 import {
   Activity,
   Aperture,
+  Download,
+  FilePlus2,
   Grip,
   Layers3,
   Move,
+  Save,
+  Trash2,
+  Upload,
   X,
 } from 'lucide-react'
 
@@ -53,13 +59,54 @@ type ResultTab =
   | 'surface'
   | 'bounce'
   | 'receiver'
+  | 'compare'
 
 interface RayTraceResultWindowProps {
   open: boolean
   result: RayTraceResult | null
   scene?: ScenePayload
   roiFaceIds?: number[]
+  cadDisplayName?: string
+  reportCases?: Array<{
+    caseId: string
+    name: string
+    cadName: string
+    result: RayTraceResult
+    note?: string
+  }>
+  onCaseMetadataChange?(caseId: string, name: string, note: string): void
   onOpenChange(open: boolean): void
+}
+
+interface AnalysisCase {
+  case_id: string
+  name: string
+  cad_name: string
+  note: string
+  saved_at: string
+  selected: boolean
+  result: RayTraceResult
+}
+
+interface AnalysisCaseFile {
+  format: 'tv-leakage-analysis-cases'
+  schema_version: 'analysis-cases.v1'
+  saved_at: string
+  cases: AnalysisCase[]
+}
+
+function caseFlux(result: RayTraceResult): number {
+  const summary = result.contribution_summary
+  return (
+    numeric(summary.direct_receiver_flux_lumen) +
+    numeric(summary.reflected_receiver_flux_lumen)
+  )
+}
+
+function percentChange(value: number, baseline: number): string {
+  if (baseline === 0) return value === 0 ? '0.0%' : '—'
+  const change = ((value - baseline) / Math.abs(baseline)) * 100
+  return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`
 }
 
 interface WindowFrame {
@@ -446,20 +493,49 @@ function Stat({
 
 export function RayTraceResultWindow({
   open,
-  result,
+  result: liveResult,
   scene,
   roiFaceIds,
+  cadDisplayName = 'CAD model',
+  reportCases = [],
+  onCaseMetadataChange,
   onOpenChange,
 }: RayTraceResultWindowProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const operationRef = useRef<PointerOperation | null>(null)
   const [tab, setTab] = useState<ResultTab>('summary')
+  const [analysisCases, setAnalysisCases] = useState<AnalysisCase[]>([])
+  const [reportCaseId, setReportCaseId] = useState<string | null>(null)
+  const [caseName, setCaseName] = useState('')
+  const [caseNote, setCaseNote] = useState('')
+  const caseFileInputRef = useRef<HTMLInputElement>(null)
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
     y: 58,
     width: 960,
     height: 880,
   })
+
+  useEffect(() => {
+    if (reportCases.length === 0) return
+    setAnalysisCases((current) => {
+      const merged = new Map(current.map((item) => [item.case_id, item]))
+      for (const item of reportCases) {
+        const existing = merged.get(item.caseId)
+        merged.set(item.caseId, {
+          case_id: item.caseId,
+          name: item.name,
+          cad_name: item.cadName,
+          note: item.note ?? existing?.note ?? '',
+          saved_at: new Date().toISOString(),
+          selected: existing?.selected ?? true,
+          result: structuredClone(item.result),
+        })
+      }
+      return [...merged.values()]
+    })
+    setReportCaseId((current) => current ?? reportCases[0]?.caseId ?? null)
+  }, [reportCases])
 
   useEffect(() => {
     if (!open) return
@@ -536,6 +612,9 @@ export function RayTraceResultWindow({
     }
   }, [open])
 
+  const result =
+    analysisCases.find((item) => item.case_id === reportCaseId)?.result ??
+    liveResult
   if (!open || !result) return null
 
   const begin = (
@@ -573,11 +652,91 @@ export function RayTraceResultWindow({
     { id: 'surface', label: 'Surface optical', icon: Layers3 },
     { id: 'bounce', label: 'Multi-bounce', icon: Move },
     { id: 'receiver', label: 'Receiver', icon: Aperture },
+    { id: 'compare', label: 'Compare cases', icon: Layers3 },
   ]
   const hitRatio =
     result.total_rays > 0
       ? result.receiver_hit_count / result.total_rays
       : 0
+  const selectedCases = analysisCases.filter((item) => item.selected)
+  const baselineCase = selectedCases[0] ?? null
+
+  const saveCurrentCase = () => {
+    const nextName = caseName.trim() || `Case ${analysisCases.length + 1}`
+    const nextCase: AnalysisCase = {
+      case_id: `${result.run_id}-${Date.now()}`,
+      name: nextName,
+      cad_name: cadDisplayName,
+      note: caseNote.trim(),
+      saved_at: new Date().toISOString(),
+      selected: true,
+      result: structuredClone(result),
+    }
+    setAnalysisCases((current) => [...current, nextCase])
+    setCaseName('')
+    setCaseNote('')
+  }
+
+  const exportCases = () => {
+    const cases = selectedCases.length > 0 ? selectedCases : analysisCases
+    if (cases.length === 0) return
+    const payload: AnalysisCaseFile = {
+      format: 'tv-leakage-analysis-cases',
+      schema_version: 'analysis-cases.v1',
+      saved_at: new Date().toISOString(),
+      cases,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `ray-analysis-${new Date().toISOString().slice(0, 10)}.bitsam-report`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const importCases = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await file.text()) as Partial<AnalysisCaseFile>
+      if (
+        parsed.format !== 'tv-leakage-analysis-cases' ||
+        parsed.schema_version !== 'analysis-cases.v1' ||
+        !Array.isArray(parsed.cases)
+      ) {
+        throw new Error('Invalid analysis case file')
+      }
+      setAnalysisCases((current) => {
+        const merged = new Map(current.map((item) => [item.case_id, item]))
+        for (const item of parsed.cases ?? []) {
+          if (!item?.case_id || !item.result?.run_id) continue
+          merged.set(item.case_id, { ...item, selected: true })
+        }
+        return [...merged.values()]
+      })
+      setTab('compare')
+    } catch {
+      window.alert('지원되는 .bitsam-report 파일이 아닙니다.')
+    }
+  }
+
+  const updateCaseMetadata = (
+    caseId: string,
+    patch: { name?: string; note?: string },
+  ) => {
+    setAnalysisCases((current) =>
+      current.map((item) => {
+        if (item.case_id !== caseId) return item
+        const next = { ...item, ...patch }
+        onCaseMetadataChange?.(caseId, next.name, next.note)
+        return next
+      }),
+    )
+  }
 
   return (
     <div
@@ -598,7 +757,9 @@ export function RayTraceResultWindow({
           onPointerDown={(event) => {
             if (
               event.target instanceof HTMLElement &&
-              event.target.closest('button')
+              event.target.closest(
+                'button, select, input, textarea, option, [role="combobox"]',
+              )
             ) {
               return
             }
@@ -614,6 +775,22 @@ export function RayTraceResultWindow({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {analysisCases.length > 0 ? (
+              <select
+                aria-label="Report active case"
+                className="h-7 max-w-52 cursor-pointer rounded-md border border-border bg-background px-2 text-[0.68rem]"
+                value={reportCaseId ?? ''}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+                onChange={(event) => setReportCaseId(event.currentTarget.value)}
+              >
+                {analysisCases.map((item) => (
+                  <option key={item.case_id} value={item.case_id}>
+                    {item.name} · {item.cad_name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <Badge className="bg-primary/12 text-primary">Complete</Badge>
             <Button
               size="icon-xs"
@@ -647,6 +824,180 @@ export function RayTraceResultWindow({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          {tab === 'compare' ? (
+            <div className="space-y-3">
+              <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <FilePlus2 className="size-4 text-primary" />
+                  Save current result as a case
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
+                  <input
+                    aria-label="Analysis case name"
+                    className="h-9 rounded-md border border-border bg-background px-3 text-xs"
+                    value={caseName}
+                    placeholder={`Case name · ${cadDisplayName}`}
+                    onChange={(event) => setCaseName(event.currentTarget.value)}
+                  />
+                  <input
+                    aria-label="Analysis case note"
+                    className="h-9 rounded-md border border-border bg-background px-3 text-xs"
+                    value={caseNote}
+                    placeholder="Structure change / memo"
+                    onChange={(event) => setCaseNote(event.currentTarget.value)}
+                  />
+                  <Button size="sm" onClick={saveCurrentCase}>
+                    <Save /> Save case
+                  </Button>
+                </div>
+              </section>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs text-muted-foreground">
+                  첫 번째 체크 Case가 증감률 기준입니다. 체크 해제하면 비교 Report에서 제외됩니다.
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    ref={caseFileInputRef}
+                    type="file"
+                    accept=".bitsam-report,application/json"
+                    className="hidden"
+                    aria-label="Load analysis cases"
+                    onChange={importCases}
+                  />
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => caseFileInputRef.current?.click()}
+                  >
+                    <Upload /> Load report
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={analysisCases.length === 0}
+                    onClick={exportCases}
+                  >
+                    <Download /> Save report
+                  </Button>
+                </div>
+              </div>
+
+              {analysisCases.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
+                  현재 결과를 Case로 저장하거나 기존 `.bitsam-report` 파일을 불러오세요.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <table className="w-full min-w-[900px] border-collapse text-xs">
+                    <thead className="bg-muted/45 text-left">
+                      <tr>
+                        <th className="p-2">Compare</th>
+                        <th className="p-2">Case / CAD</th>
+                        <th className="p-2 text-right">Total rays</th>
+                        <th className="p-2 text-right">Receiver hits</th>
+                        <th className="p-2 text-right">Hit ratio</th>
+                        <th className="p-2 text-right">Total flux</th>
+                        <th className="p-2 text-right">vs baseline</th>
+                        <th className="p-2 text-right">Surface hits</th>
+                        <th className="p-2 text-right">Runtime</th>
+                        <th className="p-2 text-right">Paths</th>
+                        <th className="p-2" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analysisCases.map((item) => {
+                        const itemHitRatio = item.result.total_rays > 0
+                          ? item.result.receiver_hit_count / item.result.total_rays
+                          : 0
+                        const flux = caseFlux(item.result)
+                        const baselineFlux = baselineCase
+                          ? caseFlux(baselineCase.result)
+                          : 0
+                        return (
+                          <tr
+                            key={item.case_id}
+                            className={`${item.selected ? 'border-t border-border bg-primary/[0.035]' : 'border-t border-border opacity-55'} ${reportCaseId === item.case_id ? 'ring-1 ring-inset ring-primary/50' : ''} cursor-pointer`}
+                            onClick={(event) => {
+                              if (
+                                event.target instanceof HTMLElement &&
+                                event.target.closest('input, button, select, textarea')
+                              ) return
+                              setReportCaseId(item.case_id)
+                            }}
+                          >
+                            <td className="p-2 text-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`Compare ${item.name}`}
+                                checked={item.selected}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) => {
+                                  const selected = event.currentTarget.checked
+                                  setAnalysisCases((current) =>
+                                    current.map((candidate) =>
+                                      candidate.case_id === item.case_id
+                                        ? { ...candidate, selected }
+                                        : candidate,
+                                    ),
+                                  )
+                                }}
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                aria-label={`Case name ${item.case_id}`}
+                                className="h-7 w-full min-w-36 rounded border border-transparent bg-transparent px-1 font-semibold hover:border-border focus:border-primary focus:bg-background"
+                                value={item.name}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  updateCaseMetadata(item.case_id, {
+                                    name: event.currentTarget.value,
+                                  })
+                                }
+                              />
+                              <div className="text-[0.62rem] text-muted-foreground">{item.cad_name}</div>
+                              <input
+                                aria-label={`Case condition ${item.case_id}`}
+                                className="mt-1 h-6 w-full min-w-36 rounded border border-transparent bg-transparent px-1 text-[0.62rem] text-muted-foreground hover:border-border focus:border-primary focus:bg-background"
+                                value={item.note}
+                                placeholder="조건 또는 변경 내용 입력"
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  updateCaseMetadata(item.case_id, {
+                                    note: event.currentTarget.value,
+                                  })
+                                }
+                              />
+                            </td>
+                            <td className="p-2 text-right tabular-nums">{item.result.total_rays.toLocaleString()}</td>
+                            <td className="p-2 text-right tabular-nums">{item.result.receiver_hit_count.toLocaleString()}</td>
+                            <td className="p-2 text-right tabular-nums">{(itemHitRatio * 100).toFixed(3)}%</td>
+                            <td className="p-2 text-right tabular-nums">{formatMetric(flux)} lm</td>
+                            <td className="p-2 text-right font-semibold tabular-nums">{baselineCase ? percentChange(flux, baselineFlux) : '—'}</td>
+                            <td className="p-2 text-right tabular-nums">{item.result.surface_hit_count.toLocaleString()}</td>
+                            <td className="p-2 text-right tabular-nums">{item.result.runtime_sec.toFixed(2)} s</td>
+                            <td className="p-2 text-right tabular-nums">{item.result.stored_paths.length.toLocaleString()}</td>
+                            <td className="p-2 text-right">
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                aria-label={`Delete ${item.name}`}
+                                onClick={() => setAnalysisCases((current) => current.filter((candidate) => candidate.case_id !== item.case_id))}
+                              >
+                                <Trash2 />
+                              </Button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ) : null}
           {tab === 'summary' ? (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

@@ -25,6 +25,71 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('switches the detailed report with the header case selector', () => {
+    const first = createRayTraceResultFixture()
+    const second = {
+      ...createRayTraceResultFixture(),
+      run_id: 'run-second-case',
+      runtime_sec: 2.5,
+    }
+    render(
+      <RayTraceResultWindow
+        open
+        result={first}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: first },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: second },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const selector = screen.getByRole('combobox', {
+      name: 'Report active case',
+    })
+    fireEvent.pointerDown(selector)
+    fireEvent.change(selector, { target: { value: 'case-2' } })
+    expect(screen.getByText(/run-second-case/)).not.toBeNull()
+  })
+
+  it('saves the current result as a selectable comparison case', () => {
+    render(
+      <RayTraceResultWindow
+        open
+        result={createRayTraceResultFixture()}
+        cadDisplayName="structure-a.step"
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.change(screen.getByLabelText('Analysis case name'), {
+      target: { value: 'Baseline structure' },
+    })
+    fireEvent.change(screen.getByLabelText('Analysis case note'), {
+      target: { value: 'Original chassis' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save case' }))
+
+    const caseNameInput = screen.getByDisplayValue('Baseline structure')
+    expect(caseNameInput).not.toBeNull()
+    expect(screen.getByText('structure-a.step')).not.toBeNull()
+    expect(screen.getByDisplayValue('Original chassis')).not.toBeNull()
+    const compareCheckbox = screen.getByRole('checkbox', {
+      name: 'Compare Baseline structure',
+    })
+    expect(compareCheckbox).toHaveProperty('checked', true)
+    fireEvent.click(compareCheckbox)
+    expect(compareCheckbox).toHaveProperty('checked', false)
+    expect(
+      screen.getByRole('dialog', { name: 'Ray Tracing Analysis Result' }),
+    ).not.toBeNull()
+    fireEvent.change(caseNameInput, {
+      target: { value: 'Updated baseline' },
+    })
+    expect(screen.getByDisplayValue('Updated baseline')).not.toBeNull()
+  })
+
   it('opens the analysis window at the expanded default size', () => {
     vi.stubGlobal('innerWidth', 1200)
     vi.stubGlobal('innerHeight', 1000)

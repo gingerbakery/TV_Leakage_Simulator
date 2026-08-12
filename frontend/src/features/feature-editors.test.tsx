@@ -898,10 +898,12 @@ describe('Step 07·08 feature editors', () => {
       }),
     )
     expect(workspaceStore.getState().emitterFaceSelectionArmed).toBe(true)
-    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+    // Editing keeps the currently assigned CAD surface highlighted until
+    // the user clicks another surface or toggles this one off.
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
     expect(
       screen.getByRole('button', { name: 'Save emitter' }),
-    ).toHaveProperty('disabled', true)
+    ).toHaveProperty('disabled', false)
 
     act(() => {
       workspaceStore.getState().actions.setSelectedFaceIds([2])

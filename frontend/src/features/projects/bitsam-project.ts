@@ -53,6 +53,13 @@ export interface BitsamCompatibility {
   warnings: string[]
 }
 
+export interface BitsamSettingsOnlyRestore {
+  workspace: WorkspaceProjectState
+  restoredDatumEmitters: number
+  restoredDatumReceivers: number
+  skippedGeometryItems: number
+}
+
 export class BitsamProjectError extends Error {
   constructor(message: string) {
     super(message)
@@ -248,6 +255,8 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       'reference_plane',
     ]) &&
     isIdArray(value.face_indices) &&
+    (value.source_face_indices === undefined ||
+      isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&
     isBoolean(value.normal_flip) &&
     (value.custom_normal === null || isVec3(value.custom_normal)) &&
@@ -294,6 +303,8 @@ function isReceiverSpec(value: unknown): value is ReceiverSpec {
       'reference_plane',
       'current_view',
     ]) &&
+    (value.source_face_indices === undefined ||
+      isIdArray(value.source_face_indices)) &&
     isVec3(value.center) &&
     isVec3(value.normal) &&
     (value.u_axis === null || isVec3(value.u_axis)) &&
@@ -634,6 +645,51 @@ export function compareBitsamProjectScene(
     compatible: reasons.length === 0,
     reasons,
     warnings,
+  }
+}
+
+/** Safely restore reusable settings when the loaded CAD geometry differs. */
+export function createBitsamSettingsOnlyState(
+  project: BitsamProject,
+): BitsamSettingsOnlyRestore {
+  const source = project.workspace
+  const datumEmitters = source.emitters.filter(
+    (emitter) => emitter.emitter_type === 'datum_plane',
+  )
+  const datumReceivers = source.receivers.filter(
+    (receiver) => receiver.placement_mode === 'datum_plane',
+  )
+  const skippedGeometryItems =
+    source.hiddenComponentIds.length +
+    source.excludedComponentIds.length +
+    source.deletedComponentIds.length +
+    Object.keys(source.componentNameOverrides).length +
+    Object.keys(source.componentColorOverrides).length +
+    source.materialAssignments.length +
+    source.transformRules.length +
+    source.roiScopes.length +
+    (source.emitters.length - datumEmitters.length) +
+    (source.receivers.length - datumReceivers.length)
+
+  return {
+    workspace: structuredClone({
+      hiddenComponentIds: [],
+      excludedComponentIds: [],
+      deletedComponentIds: [],
+      componentNameOverrides: {},
+      componentColorOverrides: {},
+      materialAssignments: [],
+      transformRules: [],
+      roiScopes: [],
+      roiScopeSequence: 0,
+      emitters: datumEmitters,
+      receivers: datumReceivers,
+      rayTraceConfig: source.rayTraceConfig,
+      rayPathDisplayFilters: source.rayPathDisplayFilters,
+    }),
+    restoredDatumEmitters: datumEmitters.length,
+    restoredDatumReceivers: datumReceivers.length,
+    skippedGeometryItems,
   }
 }
 

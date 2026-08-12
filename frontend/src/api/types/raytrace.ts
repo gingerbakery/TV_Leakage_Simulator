@@ -13,6 +13,8 @@ export interface EmitterSpec {
   emitter_id: string
   emitter_type: EmitterType
   face_indices: number[]
+  /** CAD faces used to place a datum plane; display/edit reference only. */
+  source_face_indices?: number[]
   normal_mode: EmitterNormalMode
   normal_flip: boolean
   custom_normal: Vec3 | null
@@ -51,6 +53,8 @@ export interface ReceiverSpec {
   receiver_type: ReceiverType
   display_name: string
   placement_mode: ReceiverPlacementMode
+  /** CAD faces used to place this receiver; display/edit reference only. */
+  source_face_indices?: number[]
   center: Vec3
   normal: Vec3
   u_axis: Vec3 | null

@@ -29,6 +29,7 @@ import { MaterialEditorDialog } from '@/features/materials'
 import {
   BitsamProjectError,
   compareBitsamProjectScene,
+  createBitsamSettingsOnlyState,
   createBitsamProject,
   saveBitsamProject,
   readBitsamProjectFile,
@@ -82,6 +83,10 @@ export function SimulatorShell() {
   }, [theme])
   const lastOpenedResultRunIdRef = useRef('')
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
+  const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const activeCadCaseVisible =
+    cadCases.find((item) => item.caseId === activeCadCaseId)?.visible ?? true
   const nameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
@@ -107,14 +112,14 @@ export function SimulatorShell() {
 
   useEffect(() => {
     if (!rayTraceResult) {
-      setRayTraceResultOpen(false)
       return
     }
+    actions.setActiveCadCaseResult(rayTraceResult)
     if (lastOpenedResultRunIdRef.current === rayTraceResult.run_id) return
     lastOpenedResultRunIdRef.current = rayTraceResult.run_id
     setActiveSection('result')
     setRayTraceResultOpen(true)
-  }, [rayTraceResult])
+  }, [actions, rayTraceResult])
 
   const openFeatureNotice = (title: string, description: string) => {
     if (document.activeElement instanceof HTMLElement) {
@@ -135,11 +140,17 @@ export function SimulatorShell() {
       const attemptKey = `${pendingProject.saved_at}:${scene.metadata.scene_token}`
       if (projectLoadAttemptRef.current === attemptKey) return
       projectLoadAttemptRef.current = attemptKey
+      const settingsOnly = createBitsamSettingsOnlyState(pendingProject)
+      actions.restoreProjectState(settingsOnly.workspace)
+      setPendingProject(null)
       openFeatureNotice(
-        'CAD 모델이 일치하지 않습니다',
+        '설정 조건만 불러왔습니다',
         [
-          `${pendingProject.cad.display_name} 모델을 불러온 뒤 다시 시도해 주세요.`,
-          ...compatibility.reasons,
+          '저장 당시 CAD와 현재 CAD의 Surface 구조가 달라 형상 연결 항목은 제외했습니다.',
+          'Ray 개수, 최대 반사 횟수, 종료 조건, Stored paths 및 표시 조건을 복원했습니다.',
+          `Datum emitter ${settingsOnly.restoredDatumEmitters}개 / Datum receiver ${settingsOnly.restoredDatumReceivers}개를 복원했습니다.`,
+          `CAD Component·Face·ROI 연결 항목 ${settingsOnly.skippedGeometryItems}개는 잘못된 면 연결을 방지하기 위해 제외했습니다.`,
+          ...compatibility.reasons.map((reason) => `불일치: ${reason}`),
         ].join('\n'),
       )
       return
@@ -361,7 +372,8 @@ export function SimulatorShell() {
           }
         />
         <ViewerWorkspace
-          scene={scene}
+          cadDisplayName={activeCad?.displayName}
+          scene={activeCadCaseVisible ? scene : undefined}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onCameraFrameChange={setViewerCameraFrame}

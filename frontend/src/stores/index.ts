@@ -9,6 +9,7 @@ export {
 } from './workspace-store'
 export type {
   ActiveCad,
+  CadCase,
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,

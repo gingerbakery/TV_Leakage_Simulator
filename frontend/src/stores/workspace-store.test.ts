@@ -11,6 +11,46 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('keeps simulation settings isolated when switching CAD cases', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.setHiddenComponentIds([3])
+    actions.setExcludedComponentIds([4])
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      ray_count: 25_000,
+      max_depth: 7,
+    })
+
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+    expect(caseB).not.toBe(caseA)
+    expect(store.getState().hiddenComponentIds).toEqual([])
+    actions.setHiddenComponentIds([8])
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      ray_count: 5_000,
+      max_depth: 2,
+    })
+
+    actions.setActiveCadCase(caseA)
+    expect(store.getState().hiddenComponentIds).toEqual([3])
+    expect(store.getState().excludedComponentIds).toEqual([4])
+    expect(store.getState().rayTraceConfig).toMatchObject({
+      ray_count: 25_000,
+      max_depth: 7,
+    })
+
+    actions.setActiveCadCase(caseB)
+    expect(store.getState().hiddenComponentIds).toEqual([8])
+    expect(store.getState().rayTraceConfig).toMatchObject({
+      ray_count: 5_000,
+      max_depth: 2,
+    })
+  })
+
   it('normalizes selection IDs and supports toggling', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()

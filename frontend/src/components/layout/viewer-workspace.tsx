@@ -85,6 +85,7 @@ const ThreeViewerCanvas = lazy(() =>
 )
 
 interface ViewerWorkspaceProps {
+  cadDisplayName?: string
   scene?: ScenePayload
   isSceneLoading?: boolean
   sceneErrorMessage?: string
@@ -101,6 +102,7 @@ interface ViewerWorkspaceProps {
 }
 
 export function ViewerWorkspace({
+  cadDisplayName,
   scene,
   isSceneLoading = false,
   sceneErrorMessage,
@@ -123,6 +125,25 @@ export function ViewerWorkspace({
   const [axisScalePercent, setAxisScalePercent] = useState(50)
   const [surfaceTransparencyPercent, setSurfaceTransparencyPercent] =
     useState(0)
+  const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
+  const reportCases = useMemo(
+    () =>
+      cadCases.flatMap((item) =>
+        item.latestResult
+          ? [
+              {
+                caseId: item.caseId,
+                name:
+                  item.name || `CASE ${String(item.order).padStart(2, '0')}`,
+                cadName: item.cad.displayName,
+                result: item.latestResult,
+                note: item.note,
+              },
+            ]
+          : [],
+      ),
+    [cadCases],
+  )
   const [sceneLoadingElapsedSec, setSceneLoadingElapsedSec] =
     useState(0)
   const [statusMessage, setStatusMessage] = useState(
@@ -652,6 +673,11 @@ export function ViewerWorkspace({
             result={rayTraceResult ?? null}
             scene={scene}
             roiFaceIds={activeRoiFaceIds}
+            cadDisplayName={cadDisplayName}
+            reportCases={reportCases}
+            onCaseMetadataChange={(caseId, name, note) =>
+              actions.updateCadCaseMetadata(caseId, name, note)
+            }
             onOpenChange={(open) =>
               onRayTraceResultOpenChange?.(open)
             }

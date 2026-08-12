@@ -4,12 +4,24 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import type {
   EmitterSpec,
   RayTraceConfigRequest,
+  RayTraceResult,
   ReceiverSpec,
 } from '@/api'
 
 export interface ActiveCad {
   path: string
   displayName: string
+}
+
+export interface CadCase {
+  caseId: string
+  order: number
+  cad: ActiveCad
+  visible: boolean
+  name?: string
+  note?: string
+  workspaceState?: WorkspaceProjectState
+  latestResult?: RayTraceResult | null
 }
 
 export interface Vector3Value {
@@ -24,6 +36,7 @@ export interface Vector3Value {
 export interface DatumFacePickResult {
   center: Vector3Value
   normal: Vector3Value
+  faceIds: number[]
 }
 
 export type MaterialTargetType = 'part' | 'faces'
@@ -152,6 +165,8 @@ export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
 
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
+  cadCases: CadCase[]
+  activeCadCaseId: string | null
   selectedFaceIds: number[]
   selectedComponentIds: number[]
   hiddenComponentIds: number[]
@@ -208,6 +223,11 @@ export type WorkspaceProjectState = Pick<
 
 export interface WorkspaceActions {
   setActiveCad(cad: ActiveCad | null): void
+  addCadCase(cad: ActiveCad): void
+  setActiveCadCase(caseId: string): void
+  setCadCaseVisible(caseId: string, visible: boolean): void
+  setActiveCadCaseResult(result: RayTraceResult): void
+  updateCadCaseMetadata(caseId: string, name: string, note: string): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
   toggleSelectedFaceId(faceId: number): void
   setSelectedComponentIds(componentIds: Iterable<number>): void
@@ -530,6 +550,56 @@ function normalizeProjectState(
   }
 }
 
+function projectStateFromSnapshot(
+  state: WorkspaceSnapshot,
+): WorkspaceProjectState {
+  return structuredClone({
+    hiddenComponentIds: state.hiddenComponentIds,
+    excludedComponentIds: state.excludedComponentIds,
+    deletedComponentIds: state.deletedComponentIds,
+    componentNameOverrides: state.componentNameOverrides,
+    componentColorOverrides: state.componentColorOverrides,
+    materialAssignments: state.materialAssignments,
+    transformRules: state.transformRules,
+    roiScopes: state.roiScopes,
+    roiScopeSequence: state.roiScopeSequence,
+    emitters: state.emitters,
+    receivers: state.receivers,
+    rayTraceConfig: state.rayTraceConfig,
+    rayPathDisplayFilters: state.rayPathDisplayFilters,
+  })
+}
+
+function blankProjectState(): WorkspaceProjectState {
+  const blank = createSceneSnapshot()
+  return projectStateFromSnapshot({
+    activeCad: null,
+    cadCases: [],
+    activeCadCaseId: null,
+    ...blank,
+  })
+}
+
+function restoredSceneState(projectState: WorkspaceProjectState) {
+  return {
+    ...normalizeProjectState(projectState),
+    selectedFaceIds: [],
+    selectedComponentIds: [],
+    roiBoxSelectionArmed: false,
+    emitterFaceSelectionArmed: false,
+    materialFacePickArmed: false,
+    pivotPickArmed: false,
+    pivotPickPoint: null,
+    pivotPreviewPoint: null,
+    datumFacePickArmed: false,
+    datumFacePickResult: null,
+    roiDraftLabel: '',
+    placementPreviewEmitter: null,
+    placementPreviewReceiver: null,
+    activeRayTraceJobId: null,
+  }
+}
+
 function invalidateRayTraceState() {
   return {
     activeRayTraceJobId: null,
@@ -548,7 +618,10 @@ function samePlacementPreview(
   )
 }
 
-function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
+function createSceneSnapshot(): Omit<
+  WorkspaceSnapshot,
+  'activeCad' | 'cadCases' | 'activeCadCaseId'
+> {
   return {
     selectedFaceIds: [],
     selectedComponentIds: [],
@@ -584,6 +657,8 @@ function createSceneSnapshot(): Omit<WorkspaceSnapshot, 'activeCad'> {
 function createWorkspaceSnapshot(): WorkspaceSnapshot {
   return {
     activeCad: null,
+    cadCases: [],
+    activeCadCaseId: null,
     ...createSceneSnapshot(),
   }
 }
@@ -597,6 +672,115 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           activeCad,
           ...createSceneSnapshot(),
         })
+      },
+      addCadCase: (cad) => {
+        set((state) => {
+          const existing = state.cadCases.find(
+            (item) => item.cad.path === cad.path,
+          )
+          const nextCase = existing ?? {
+            caseId: `cad-case-${Date.now()}-${state.cadCases.length + 1}`,
+            order: state.cadCases.length + 1,
+            cad,
+            visible: true,
+            workspaceState: blankProjectState(),
+            latestResult: null,
+          }
+          const savedCases = state.cadCases.map((item) =>
+            item.caseId === state.activeCadCaseId
+              ? { ...item, workspaceState: projectStateFromSnapshot(state) }
+              : item,
+          )
+          return {
+            activeCad: cad,
+            activeCadCaseId: nextCase.caseId,
+            cadCases: existing
+              ? savedCases.map((item) =>
+                  item.caseId === existing.caseId
+                    ? { ...item, visible: true }
+                    : { ...item, visible: false },
+                )
+              : [
+                  ...savedCases.map((item) => ({ ...item, visible: false })),
+                  nextCase,
+                ],
+            ...restoredSceneState(nextCase.workspaceState ?? blankProjectState()),
+          }
+        })
+      },
+      setActiveCadCase: (caseId) => {
+        set((state) => {
+          const target = state.cadCases.find(
+            (item) => item.caseId === caseId,
+          )
+          if (!target || target.caseId === state.activeCadCaseId) return state
+          const cadCases = state.cadCases.map((item) =>
+            item.caseId === state.activeCadCaseId
+              ? { ...item, workspaceState: projectStateFromSnapshot(state) }
+              : item,
+          )
+          return {
+            activeCad: target.cad,
+            activeCadCaseId: target.caseId,
+            cadCases,
+            ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+          }
+        })
+      },
+      setCadCaseVisible: (caseId, visible) => {
+        set((state) => {
+          const target = state.cadCases.find((item) => item.caseId === caseId)
+          if (!target) return state
+          if (!visible) {
+            return {
+              cadCases: state.cadCases.map((item) =>
+                item.caseId === caseId ? { ...item, visible: false } : item,
+              ),
+            }
+          }
+          if (caseId === state.activeCadCaseId) {
+            return {
+              cadCases: state.cadCases.map((item) => ({
+                ...item,
+                visible: item.caseId === caseId,
+              })),
+            }
+          }
+          return {
+            activeCad: target.cad,
+            activeCadCaseId: target.caseId,
+            cadCases: state.cadCases.map((item) => ({
+              ...item,
+              visible: item.caseId === caseId,
+              ...(item.caseId === state.activeCadCaseId
+                ? { workspaceState: projectStateFromSnapshot(state) }
+                : {}),
+            })),
+            ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+          }
+        })
+      },
+      setActiveCadCaseResult: (result) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === state.activeCadCaseId
+              ? {
+                  ...item,
+                  workspaceState: projectStateFromSnapshot(state),
+                  latestResult: structuredClone(result),
+                }
+              : item,
+          ),
+        }))
+      },
+      updateCadCaseMetadata: (caseId, name, note) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === caseId
+              ? { ...item, name: name.trim(), note: note.trim() }
+              : item,
+          ),
+        }))
       },
       setSelectedFaceIds: (faceIds) => {
         set({ selectedFaceIds: normalizeIds(faceIds) })
@@ -1043,6 +1227,8 @@ export function useWorkspaceStore<T>(
 
 export const workspaceSelectors = {
   activeCad: (state: WorkspaceStore) => state.activeCad,
+  cadCases: (state: WorkspaceStore) => state.cadCases,
+  activeCadCaseId: (state: WorkspaceStore) => state.activeCadCaseId,
   selectedFaceIds: (state: WorkspaceStore) => state.selectedFaceIds,
   selectedComponentIds: (state: WorkspaceStore) =>
     state.selectedComponentIds,
