@@ -16,11 +16,9 @@ import {
   Activity,
   Aperture,
   Download,
-  FilePlus2,
   Grip,
   Layers3,
   Move,
-  Save,
   Trash2,
   Upload,
   X,
@@ -66,7 +64,6 @@ interface RayTraceResultWindowProps {
   result: RayTraceResult | null
   scene?: ScenePayload
   roiFaceIds?: number[]
-  cadDisplayName?: string
   reportCases?: Array<{
     caseId: string
     name: string
@@ -92,6 +89,7 @@ interface AnalysisCaseFile {
   format: 'tv-leakage-analysis-cases'
   schema_version: 'analysis-cases.v1'
   saved_at: string
+  baseline_case_id?: string | null
   cases: AnalysisCase[]
 }
 
@@ -738,7 +736,6 @@ export function RayTraceResultWindow({
   result: liveResult,
   scene,
   roiFaceIds,
-  cadDisplayName = 'CAD model',
   reportCases = [],
   onCaseMetadataChange,
   onOpenChange,
@@ -747,9 +744,8 @@ export function RayTraceResultWindow({
   const operationRef = useRef<PointerOperation | null>(null)
   const [tab, setTab] = useState<ResultTab>('summary')
   const [analysisCases, setAnalysisCases] = useState<AnalysisCase[]>([])
+  const [baselineCaseId, setBaselineCaseId] = useState<string | null>(null)
   const [reportCaseId, setReportCaseId] = useState<string | null>(null)
-  const [caseName, setCaseName] = useState('')
-  const [caseNote, setCaseNote] = useState('')
   const caseFileInputRef = useRef<HTMLInputElement>(null)
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
@@ -778,6 +774,16 @@ export function RayTraceResultWindow({
     })
     setReportCaseId((current) => current ?? reportCases[0]?.caseId ?? null)
   }, [reportCases])
+
+  useEffect(() => {
+    setBaselineCaseId((current) => {
+      if (
+        current &&
+        analysisCases.some((item) => item.case_id === current && item.selected)
+      ) return current
+      return analysisCases.find((item) => item.selected)?.case_id ?? null
+    })
+  }, [analysisCases])
 
   useEffect(() => {
     if (!open) return
@@ -901,23 +907,10 @@ export function RayTraceResultWindow({
       ? result.receiver_hit_count / result.total_rays
       : 0
   const selectedCases = analysisCases.filter((item) => item.selected)
-  const baselineCase = selectedCases[0] ?? null
-
-  const saveCurrentCase = () => {
-    const nextName = caseName.trim() || `Case ${analysisCases.length + 1}`
-    const nextCase: AnalysisCase = {
-      case_id: `${result.run_id}-${Date.now()}`,
-      name: nextName,
-      cad_name: cadDisplayName,
-      note: caseNote.trim(),
-      saved_at: new Date().toISOString(),
-      selected: true,
-      result: structuredClone(result),
-    }
-    setAnalysisCases((current) => [...current, nextCase])
-    setCaseName('')
-    setCaseNote('')
-  }
+  const baselineCase =
+    selectedCases.find((item) => item.case_id === baselineCaseId) ??
+    selectedCases[0] ??
+    null
 
   const exportCases = () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
@@ -926,6 +919,7 @@ export function RayTraceResultWindow({
       format: 'tv-leakage-analysis-cases',
       schema_version: 'analysis-cases.v1',
       saved_at: new Date().toISOString(),
+      baseline_case_id: baselineCase?.case_id ?? null,
       cases,
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -960,6 +954,9 @@ export function RayTraceResultWindow({
         }
         return [...merged.values()]
       })
+      if (typeof parsed.baseline_case_id === 'string') {
+        setBaselineCaseId(parsed.baseline_case_id)
+      }
       setTab('compare')
     } catch {
       window.alert('지원되는 .bitsam-report 파일이 아닙니다.')
@@ -1068,35 +1065,9 @@ export function RayTraceResultWindow({
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {tab === 'compare' ? (
             <div className="space-y-3">
-              <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <FilePlus2 className="size-4 text-primary" />
-                  Save current result as a case
-                </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
-                  <input
-                    aria-label="Analysis case name"
-                    className="h-9 rounded-md border border-border bg-background px-3 text-xs"
-                    value={caseName}
-                    placeholder={`Case name · ${cadDisplayName}`}
-                    onChange={(event) => setCaseName(event.currentTarget.value)}
-                  />
-                  <input
-                    aria-label="Analysis case note"
-                    className="h-9 rounded-md border border-border bg-background px-3 text-xs"
-                    value={caseNote}
-                    placeholder="Structure change / memo"
-                    onChange={(event) => setCaseNote(event.currentTarget.value)}
-                  />
-                  <Button size="sm" onClick={saveCurrentCase}>
-                    <Save /> Save case
-                  </Button>
-                </div>
-              </section>
-
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  첫 번째 체크 Case가 증감률 기준입니다. 체크 해제하면 비교 Report에서 제외됩니다.
+                  Import CAD Case의 마지막 Ray 결과를 자동 비교합니다. Compare 대상을 체크하고 Baseline을 직접 선택하세요.
                 </div>
                 <div className="flex gap-2">
                   <input
@@ -1131,11 +1102,12 @@ export function RayTraceResultWindow({
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[1100px] border-collapse text-xs">
+                  <table className="w-full min-w-[1020px] border-collapse text-xs">
                     <thead className="bg-muted/45 text-left">
                       <tr>
                         <th className="p-2">Compare</th>
-                        <th className="p-2">Case / CAD</th>
+                        <th className="p-2 text-center">Baseline</th>
+                        <th className="w-40 p-2">Case / CAD</th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
                             빛샘 개선 점수
@@ -1222,10 +1194,30 @@ export function RayTraceResultWindow({
                                 }}
                               />
                             </td>
-                            <td className="p-2">
+                            <td className="p-2 text-center">
+                              <input
+                                type="radio"
+                                name="analysis-baseline"
+                                aria-label={`Set ${item.name} as baseline`}
+                                checked={baselineCase?.case_id === item.case_id}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={() => {
+                                  setBaselineCaseId(item.case_id)
+                                  setAnalysisCases((current) =>
+                                    current.map((candidate) =>
+                                      candidate.case_id === item.case_id
+                                        ? { ...candidate, selected: true }
+                                        : candidate,
+                                    ),
+                                  )
+                                }}
+                              />
+                            </td>
+                            <td className="w-40 max-w-40 p-2">
                               <input
                                 aria-label={`Case name ${item.case_id}`}
-                                className="h-7 w-full min-w-36 rounded border border-transparent bg-transparent px-1 font-semibold hover:border-border focus:border-primary focus:bg-background"
+                                className="h-7 w-full min-w-0 rounded border border-transparent bg-transparent px-1 font-semibold hover:border-border focus:border-primary focus:bg-background"
                                 value={item.name}
                                 onClick={(event) => event.stopPropagation()}
                                 onChange={(event) =>
@@ -1234,10 +1226,10 @@ export function RayTraceResultWindow({
                                   })
                                 }
                               />
-                              <div className="text-[0.62rem] text-muted-foreground">{item.cad_name}</div>
+                              <div className="truncate text-[0.62rem] text-muted-foreground" title={item.cad_name}>{item.cad_name}</div>
                               <input
                                 aria-label={`Case condition ${item.case_id}`}
-                                className="mt-1 h-6 w-full min-w-36 rounded border border-transparent bg-transparent px-1 text-[0.62rem] text-muted-foreground hover:border-border focus:border-primary focus:bg-background"
+                                className="mt-1 h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-1 text-[0.62rem] text-muted-foreground hover:border-border focus:border-primary focus:bg-background"
                                 value={item.note}
                                 placeholder="조건 또는 변경 내용 입력"
                                 onClick={(event) => event.stopPropagation()}

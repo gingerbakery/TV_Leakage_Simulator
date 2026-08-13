@@ -85,7 +85,6 @@ const ThreeViewerCanvas = lazy(() =>
 )
 
 interface ViewerWorkspaceProps {
-  cadDisplayName?: string
   cadModelVisible?: boolean
   scene?: ScenePayload
   isSceneLoading?: boolean
@@ -103,7 +102,6 @@ interface ViewerWorkspaceProps {
 }
 
 export function ViewerWorkspace({
-  cadDisplayName,
   cadModelVisible = true,
   scene,
   isSceneLoading = false,
@@ -676,7 +674,6 @@ export function ViewerWorkspace({
             result={rayTraceResult ?? null}
             scene={scene}
             roiFaceIds={activeRoiFaceIds}
-            cadDisplayName={cadDisplayName}
             reportCases={reportCases}
             onCaseMetadataChange={(caseId, name, note) =>
               actions.updateCadCaseMetadata(caseId, name, note)

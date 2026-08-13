@@ -382,7 +382,6 @@ export function SimulatorShell() {
           }
         />
         <ViewerWorkspace
-          cadDisplayName={activeCad?.displayName}
           scene={scene}
           cadModelVisible={activeCadCaseVisible}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}

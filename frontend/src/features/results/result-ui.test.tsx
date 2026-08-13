@@ -52,25 +52,59 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText(/run-second-case/)).not.toBeNull()
   })
 
-  it('saves the current result as a selectable comparison case', () => {
+  it('lets the user choose the comparison baseline case', () => {
+    const first = createRayTraceResultFixture()
+    const second = {
+      ...createRayTraceResultFixture(),
+      run_id: 'run-second-baseline',
+    }
     render(
       <RayTraceResultWindow
         open
-        result={createRayTraceResultFixture()}
-        cadDisplayName="structure-a.step"
+        result={first}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: first },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: second },
+        ]}
         onOpenChange={vi.fn()}
       />,
     )
 
     fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
-    fireEvent.change(screen.getByLabelText('Analysis case name'), {
-      target: { value: 'Baseline structure' },
+    const firstBaseline = screen.getByRole('radio', {
+      name: 'Set CASE 01 as baseline',
     })
-    fireEvent.change(screen.getByLabelText('Analysis case note'), {
-      target: { value: 'Original chassis' },
+    const secondBaseline = screen.getByRole('radio', {
+      name: 'Set CASE 02 as baseline',
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Save case' }))
+    expect(firstBaseline).toHaveProperty('checked', true)
+    fireEvent.click(secondBaseline)
+    expect(secondBaseline).toHaveProperty('checked', true)
+    expect(firstBaseline).toHaveProperty('checked', false)
+  })
 
+  it('uses the automatically synchronized CAD result as a comparison case', () => {
+    const result = createRayTraceResultFixture()
+    const onCaseMetadataChange = vi.fn()
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          {
+            caseId: 'case-1',
+            name: 'Baseline structure',
+            cadName: 'structure-a.step',
+            note: 'Original chassis',
+            result,
+          },
+        ]}
+        onCaseMetadataChange={onCaseMetadataChange}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
     const caseNameInput = screen.getByDisplayValue('Baseline structure')
     expect(caseNameInput).not.toBeNull()
     expect(screen.getByText('structure-a.step')).not.toBeNull()
@@ -90,6 +124,7 @@ describe('Step 11 result UI', () => {
       target: { value: 'Updated baseline' },
     })
     expect(screen.getByDisplayValue('Updated baseline')).not.toBeNull()
+    expect(onCaseMetadataChange).toHaveBeenCalled()
     expect(screen.getByText('빛샘 개선 점수')).not.toBeNull()
     expect(screen.getByText('광영역(@5%)')).not.toBeNull()
   })
