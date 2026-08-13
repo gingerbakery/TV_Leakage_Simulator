@@ -399,6 +399,12 @@ export function buildRayTraceRequest({
   const optical = buildOpticalPayload(materialAssignments)
   const deleted = new Set(deletedComponentIds)
   const roiFaces = activeRoiFaces(roiScopes, deleted)
+  const {
+    auto_convergence: _autoConvergence,
+    convergence_target_percent: _convergenceTarget,
+    max_convergence_multiplier: _maxConvergenceMultiplier,
+    ...backendConfig
+  } = config
 
   return {
     scene_token: scene.metadata.scene_token,
@@ -432,7 +438,7 @@ export function buildRayTraceRequest({
     ].sort((left, right) => left - right),
     ...(roiFaces.length > 0 ? { roi_faces: roiFaces } : {}),
     config: {
-      ...config,
+      ...backendConfig,
       ray_count: Math.max(1, totalRayCount),
     },
   }

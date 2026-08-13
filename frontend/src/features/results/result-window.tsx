@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -7,6 +8,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react'
 import type {
+  RayHit,
   RayTraceResult,
   ReceiverGrid,
   ReceiverSpec,
@@ -93,7 +95,30 @@ interface AnalysisCaseFile {
   cases: AnalysisCase[]
 }
 
-function caseFlux(result: RayTraceResult): number {
+type ReceiverCompareScope = 'all' | number
+
+function scopedReceivers(
+  result: RayTraceResult,
+  receiverScope: ReceiverCompareScope,
+): ReceiverSpec[] {
+  const enabled = result.receivers.filter((item) => item.enabled)
+  return receiverScope === 'all'
+    ? enabled
+    : enabled[receiverScope]
+      ? [enabled[receiverScope]]
+      : []
+}
+
+function caseFlux(
+  result: RayTraceResult,
+  receiverScope: ReceiverCompareScope = 'all',
+): number {
+  if (receiverScope !== 'all') {
+    const receiver = scopedReceivers(result, receiverScope)[0]
+    return receiver
+      ? numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen)
+      : 0
+  }
   const summary = result.contribution_summary
   return (
     numeric(summary.direct_receiver_flux_lumen) +
@@ -101,7 +126,21 @@ function caseFlux(result: RayTraceResult): number {
   )
 }
 
-function caseLuminance(result: RayTraceResult): {
+function caseReceiverHits(
+  result: RayTraceResult,
+  receiverScope: ReceiverCompareScope,
+): number {
+  if (receiverScope === 'all') return result.receiver_hit_count
+  const receiver = scopedReceivers(result, receiverScope)[0]
+  return receiver
+    ? numeric(objectValue(result.metrics, receiver.receiver_id).hit_count)
+    : 0
+}
+
+function caseLuminance(
+  result: RayTraceResult,
+  receiverScope: ReceiverCompareScope = 'all',
+): {
   peakNit: number
   meanNit: number
   lightAreaMm2: Record<1 | 5 | 10, number>
@@ -110,7 +149,9 @@ function caseLuminance(result: RayTraceResult): {
   let peakNit = 0
   let weightedMean = 0
   let totalArea = 0
-  for (const receiver of result.receivers) {
+  const receivers = scopedReceivers(result, receiverScope)
+  const receiverIds = new Set(receivers.map((item) => item.receiver_id))
+  for (const receiver of receivers) {
     const metrics = objectValue(result.metrics, receiver.receiver_id)
     const receiverPeak = numeric(metrics.peak_nit_est)
     const receiverMean = numeric(metrics.mean_nit_est)
@@ -123,7 +164,7 @@ function caseLuminance(result: RayTraceResult): {
   const thresholds = [1, 5, 10] as const
   const lightAreaMm2: Record<1 | 5 | 10, number> = { 1: 0, 5: 0, 10: 0 }
   let sampledAreaMm2 = 0
-  for (const grid of result.receiver_grids) {
+  for (const grid of result.receiver_grids.filter((item) => receiverIds.has(item.receiver_id))) {
     const binAreaMm2 = Math.max(0, numeric(grid.bin_area_mm2))
     const binAreaM2 = binAreaMm2 * 1e-6
     for (const row of grid.flux_lumen) {
@@ -190,6 +231,7 @@ function receiverLightAreas(
 function comparisonConditionMismatches(
   result: RayTraceResult,
   baseline: RayTraceResult,
+  receiverScope: ReceiverCompareScope = 'all',
 ): string[] {
   const mismatches: string[] = []
   const equivalent = (left: unknown, right: unknown): boolean => {
@@ -269,9 +311,9 @@ function comparisonConditionMismatches(
     }
   }
 
-  const receivers = result.receivers.filter((item) => item.enabled)
-  const baselineReceivers = baseline.receivers.filter((item) => item.enabled)
-  if (receivers.length !== baselineReceivers.length) {
+  const receivers = scopedReceivers(result, receiverScope)
+  const baselineReceivers = scopedReceivers(baseline, receiverScope)
+  if (receiverScope === 'all' && receivers.length !== baselineReceivers.length) {
     mismatches.push('Receiver · 활성 개수')
   }
   const receiverFields = [
@@ -320,15 +362,16 @@ function comparisonConditionMismatches(
 function leakageImprovementScore(
   result: RayTraceResult,
   baseline: RayTraceResult,
+  receiverScope: ReceiverCompareScope = 'all',
 ): number | null {
-  if (comparisonConditionMismatches(result, baseline).length > 0) {
+  if (comparisonConditionMismatches(result, baseline, receiverScope).length > 0) {
     return null
   }
-  const current = caseLuminance(result)
-  const base = caseLuminance(baseline)
+  const current = caseLuminance(result, receiverScope)
+  const base = caseLuminance(baseline, receiverScope)
   const metrics = [
     { value: current.peakNit, baseline: base.peakNit, weight: 0.6 },
-    { value: caseFlux(result), baseline: caseFlux(baseline), weight: 0.25 },
+    { value: caseFlux(result, receiverScope), baseline: caseFlux(baseline, receiverScope), weight: 0.25 },
     { value: current.lightAreaMm2[5], baseline: base.lightAreaMm2[5], weight: 0.15 },
   ]
   const usable = metrics.filter((metric) => metric.baseline > 0)
@@ -361,6 +404,13 @@ interface ReceiverHeatmapHover extends ReceiverHeatmapSample {
   pointerYPercent: number
 }
 
+interface ReceiverRegion {
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+}
+
 function numeric(value: unknown): number {
   return Number.isFinite(Number(value)) ? Number(value) : 0
 }
@@ -391,9 +441,23 @@ function formatMetric(value: unknown, digits = 3) {
 function ReceiverHeatmap({
   grid,
   receiver,
+  kAbs,
+  kBrdf,
+  storedPaths,
+  componentNames,
+  errorTargetPercent,
+  sampleCount,
+  faceSourceIds,
 }: {
   grid: ReceiverGrid
   receiver: ReceiverSpec
+  kAbs: number
+  kBrdf: number
+  storedPaths: RayHit[][]
+  componentNames: Map<number, string>
+  errorTargetPercent: number
+  sampleCount: number
+  faceSourceIds?: number[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [viewport, setViewport] = useState({
@@ -401,6 +465,17 @@ function ReceiverHeatmap({
   })
   const [hover, setHover] =
     useState<ReceiverHeatmapHover | null>(null)
+  const [profileColumn, setProfileColumn] = useState(() =>
+    Math.floor(Math.max(1, grid.resolution[0]) / 2),
+  )
+  const [profileDisplayRow, setProfileDisplayRow] = useState(() =>
+    Math.floor(Math.max(1, grid.resolution[1]) / 2),
+  )
+  const [profileDragging, setProfileDragging] = useState(false)
+  const [interactionMode, setInteractionMode] = useState<'profile' | 'region'>('profile')
+  const [region, setRegion] = useState<ReceiverRegion | null>(null)
+  const regionStartRef = useRef<{ x: number; y: number } | null>(null)
+  const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
@@ -432,7 +507,141 @@ function ReceiverHeatmap({
   useEffect(() => {
     setViewport({ ...initialReceiverHeatmapViewport })
     setHover(null)
-  }, [grid, receiver.height_mm, receiver.width_mm])
+    setProfileColumn(Math.floor(columns / 2))
+    setProfileDisplayRow(Math.floor(rows / 2))
+  }, [columns, grid, receiver.height_mm, receiver.width_mm, rows])
+
+  const luminanceValues = useMemo(() => {
+    const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
+    const scale = (kAbs * kBrdf) / (binAreaM2 * Math.PI)
+    return receiverHeatmapDisplayValues(grid).map((value) => value * scale)
+  }, [grid, kAbs, kBrdf])
+  const errorValues = useMemo(() => {
+    const squaredGrid = grid.flux_squared_lumen2_grid
+    if (!squaredGrid) return []
+    const n = Math.max(0, sampleCount)
+    if (n <= 1) return []
+    const values: number[] = []
+    for (let displayRow = 0; displayRow < rows; displayRow += 1) {
+      const sourceRow = rows - 1 - displayRow
+      for (let column = 0; column < columns; column += 1) {
+        const flux = numeric(grid.flux_lumen[sourceRow]?.[column])
+        const squared = numeric(squaredGrid[sourceRow]?.[column])
+        values.push(flux > 0 ? Math.sqrt(Math.max(0, (n * squared / (flux * flux) - 1) / (n - 1))) * 100 : 0)
+      }
+    }
+    return values
+  }, [columns, grid, rows, sampleCount])
+  const xProfile = useMemo(
+    () => Array.from({ length: columns }, (_, column) =>
+      numeric(luminanceValues[profileDisplayRow * columns + column]),
+    ),
+    [columns, luminanceValues, profileDisplayRow],
+  )
+  const yProfile = useMemo(
+    () => Array.from({ length: rows }, (_, displayRow) =>
+      numeric(luminanceValues[displayRow * columns + profileColumn]),
+    ).reverse(),
+    [columns, luminanceValues, profileColumn, rows],
+  )
+  const regionAnalysis = useMemo(() => {
+    if (!region) return null
+    let selectedFlux = 0
+    let selectedCells = 0
+    for (let displayRow = 0; displayRow < rows; displayRow += 1) {
+      const normalizedY = (displayRow + 0.5) / rows
+      if (normalizedY < region.minY || normalizedY > region.maxY) continue
+      const sourceRow = rows - 1 - displayRow
+      for (let column = 0; column < columns; column += 1) {
+        const normalizedX = (column + 0.5) / columns
+        if (normalizedX < region.minX || normalizedX > region.maxX) continue
+        selectedCells += 1
+        selectedFlux += numeric(grid.flux_lumen[sourceRow]?.[column])
+      }
+    }
+    const totalFlux = receiverHeatmapDisplayValues(grid).reduce(
+      (sum, value) => sum + value,
+      0,
+    )
+    const uAxis = receiver.u_axis ?? receiver.base_u_axis
+    const vAxis = receiver.v_axis ?? receiver.base_v_axis
+    const matchingPaths = storedPaths.filter((path) => {
+      const hit = [...path].reverse().find(
+        (event) => event.event_type === 'receiver' && event.receiver_id === receiver.receiver_id,
+      )
+      if (!hit || !uAxis || !vAxis) return false
+      const delta = hit.point.map((value, index) => value - receiver.center[index])
+      const localU = delta.reduce((sum, value, index) => sum + value * uAxis[index], 0)
+      const localV = delta.reduce((sum, value, index) => sum + value * vAxis[index], 0)
+      const normalizedX = localU / receiver.width_mm + 0.5
+      const normalizedY = 0.5 - localV / receiver.height_mm
+      return normalizedX >= region.minX && normalizedX <= region.maxX &&
+        normalizedY >= region.minY && normalizedY <= region.maxY
+    })
+    const directCount = matchingPaths.filter(
+      (path) => !path.some((event) => event.event_type === 'surface'),
+    ).length
+    const componentContributions = new Map<number, { count: number; flux: number }>()
+    const faceContributions = new Map<number, { count: number; flux: number }>()
+    const lobeContributions = new Map<string, { count: number; flux: number }>()
+    const depthContributions = new Map<number, { count: number; flux: number }>()
+    const sequences = new Map<string, { count: number; flux: number }>()
+    for (const path of matchingPaths) {
+      const receiverHit = [...path].reverse().find((event) => event.event_type === 'receiver')
+      const pathFlux = numeric(receiverHit?.receiver_flux_lumen ?? receiverHit?.incoming_energy_lumen)
+      const componentIds = path
+        .filter((event) => event.event_type === 'surface' && event.component_id !== null)
+        .map((event) => event.component_id as number)
+      for (const componentId of new Set(componentIds)) {
+        const current = componentContributions.get(componentId) ?? { count: 0, flux: 0 }
+        current.count += 1
+        current.flux += pathFlux
+        componentContributions.set(componentId, current)
+      }
+      const surfaceEvents = path.filter((event) => event.event_type === 'surface')
+      for (const faceId of new Set(surfaceEvents.map((event) => faceSourceIds?.[event.face_index] ?? event.face_index))) {
+        const current = faceContributions.get(faceId) ?? { count: 0, flux: 0 }
+        current.count += 1
+        current.flux += pathFlux
+        faceContributions.set(faceId, current)
+      }
+      const lobe = receiverHit?.ray_kind ?? (surfaceEvents.length > 0 ? 'reflected' : 'direct')
+      const currentLobe = lobeContributions.get(lobe) ?? { count: 0, flux: 0 }
+      currentLobe.count += 1
+      currentLobe.flux += pathFlux
+      lobeContributions.set(lobe, currentLobe)
+      const depth = Math.max(0, ...surfaceEvents.map((event) => event.depth + 1))
+      const currentDepth = depthContributions.get(depth) ?? { count: 0, flux: 0 }
+      currentDepth.count += 1
+      currentDepth.flux += pathFlux
+      depthContributions.set(depth, currentDepth)
+      const sequence = componentIds.length > 0
+        ? componentIds.map((id) => componentNames.get(id) ?? `Component ${id}`).join(' → ')
+        : 'Direct to Receiver'
+      const currentSequence = sequences.get(sequence) ?? { count: 0, flux: 0 }
+      currentSequence.count += 1
+      currentSequence.flux += pathFlux
+      sequences.set(sequence, currentSequence)
+    }
+    return {
+      areaMm2: selectedCells * grid.bin_area_mm2,
+      selectedFlux,
+      fluxRatio: totalFlux > 0 ? selectedFlux / totalFlux : 0,
+      matchingPathCount: matchingPaths.length,
+      directCount,
+      components: [...componentContributions.entries()]
+        .sort((left, right) => right[1].flux - left[1].flux)
+        .slice(0, 5),
+      faces: [...faceContributions.entries()]
+        .sort((left, right) => right[1].flux - left[1].flux)
+        .slice(0, 5),
+      lobes: [...lobeContributions.entries()].sort((left, right) => right[1].flux - left[1].flux),
+      depths: [...depthContributions.entries()].sort((left, right) => left[0] - right[0]),
+      sequences: [...sequences.entries()]
+        .sort((left, right) => right[1].flux - left[1].flux)
+        .slice(0, 5),
+    }
+  }, [columns, componentNames, faceSourceIds, grid, receiver, region, rows, storedPaths])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -440,12 +649,14 @@ function ReceiverHeatmap({
     if (!canvas || !context) return
     canvas.width = columns
     canvas.height = rows
-    const values = receiverHeatmapDisplayValues(grid)
+    const fluxValues = receiverHeatmapDisplayValues(grid)
+    const values = displayMode === 'error' && errorValues.length > 0 ? errorValues : fluxValues
     const peak = Math.max(...values, 0)
     const image = context.createImageData(columns, rows)
     for (let index = 0; index < columns * rows; index += 1) {
-      const normalized =
-        peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0
+      const normalized = displayMode === 'error'
+        ? Math.min(1, (values[index] || 0) / Math.max(errorTargetPercent * 2, 0.01))
+        : peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0
       const pixel = index * 4
       const [red, green, blue] = receiverHeatmapColor(normalized)
       image.data[pixel] = red
@@ -454,7 +665,7 @@ function ReceiverHeatmap({
       image.data[pixel + 3] = 255
     }
     context.putImageData(image, 0, 0)
-  }, [columns, grid, rows])
+  }, [columns, displayMode, errorTargetPercent, errorValues, grid, rows])
 
   const pointerPosition = (
     element: HTMLDivElement,
@@ -473,6 +684,35 @@ function ReceiverHeatmap({
         Math.max(0, (clientY - bounds.top) / bounds.height),
       ),
     }
+  }
+
+  const receiverPosition = (
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const pointer = pointerPosition(element, clientX, clientY)
+    if (!pointer) return null
+    return {
+      x: viewportBounds.minX + pointer.x * (viewportBounds.maxX - viewportBounds.minX),
+      y: viewportBounds.minY + pointer.y * (viewportBounds.maxY - viewportBounds.minY),
+    }
+  }
+
+  const updateRegion = (
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const current = receiverPosition(element, clientX, clientY)
+    const start = regionStartRef.current
+    if (!current || !start) return
+    setRegion({
+      minX: Math.min(start.x, current.x),
+      maxX: Math.max(start.x, current.x),
+      minY: Math.min(start.y, current.y),
+      maxY: Math.max(start.y, current.y),
+    })
   }
 
   const updateHover = (
@@ -495,6 +735,25 @@ function ReceiverHeatmap({
       pointerXPercent: pointer.x * 100,
       pointerYPercent: pointer.y * 100,
     })
+  }
+
+  const updateProfileSelection = (
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const pointer = pointerPosition(element, clientX, clientY)
+    if (!pointer) return
+    const sample = receiverHeatmapSample(
+      grid,
+      layout.widthMm,
+      layout.heightMm,
+      viewport,
+      pointer.x,
+      pointer.y,
+    )
+    setProfileColumn(sample.column)
+    setProfileDisplayRow(sample.displayRow)
   }
 
   const handleWheel = (
@@ -531,7 +790,31 @@ function ReceiverHeatmap({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-[0.6rem] text-muted-foreground">
-        <span>Flux distribution · Receiver local plane</span>
+        <div className="flex items-center gap-2">
+          <span>Flux distribution · Receiver local plane</span>
+          <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+            <button
+              type="button"
+              aria-pressed={interactionMode === 'profile'}
+              className={`rounded px-2 py-0.5 ${interactionMode === 'profile' ? 'bg-primary/15 font-semibold text-primary' : ''}`}
+              onClick={() => setInteractionMode('profile')}
+            >
+              Profile
+            </button>
+            <button
+              type="button"
+              aria-pressed={interactionMode === 'region'}
+              className={`rounded px-2 py-0.5 ${interactionMode === 'region' ? 'bg-primary/15 font-semibold text-primary' : ''}`}
+              onClick={() => setInteractionMode('region')}
+            >
+              Analyze area
+            </button>
+          </div>
+          <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+            <button type="button" aria-pressed={displayMode === 'luminance'} className={`rounded px-2 py-0.5 ${displayMode === 'luminance' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('luminance')}>Luminance</button>
+            <button type="button" aria-pressed={displayMode === 'error'} disabled={errorValues.length === 0} className={`rounded px-2 py-0.5 disabled:opacity-35 ${displayMode === 'error' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('error')}>Error map</button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <span>
             {formatReceiverCoordinate(layout.widthMm)} ×{' '}
@@ -554,33 +837,64 @@ function ReceiverHeatmap({
         </div>
       </div>
       <div
-        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_3.75rem] grid-rows-[auto_2.75rem]"
+        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_3.75rem_minmax(8rem,11rem)] grid-rows-[auto_2.75rem_9rem] gap-x-2"
         style={{
-          width: `${layout.preferredWidthPx + 60}px`,
+          width: `${layout.preferredWidthPx + 244}px`,
         }}
       >
         <div
           data-testid={`${grid.receiver_id}-heatmap-frame`}
           data-width-mm={layout.widthMm}
           data-height-mm={layout.heightMm}
-          className="relative min-w-0 overflow-visible"
+          className="relative col-start-1 row-start-1 min-w-0 overflow-visible"
           style={{
             aspectRatio: `${layout.widthMm} / ${layout.heightMm}`,
           }}
         >
           <div
             data-testid={`${grid.receiver_id}-heatmap-viewport`}
-            title="Wheel to zoom at the cursor. Double-click to reset."
+            title="마우스 휠로 커서 위치를 확대하고, 더블클릭하면 화면이 초기화됩니다."
             className="absolute inset-0 cursor-crosshair touch-none overflow-hidden border border-slate-300/75 bg-[#0814be]"
             onDoubleClick={resetViewport}
-            onPointerLeave={() => setHover(null)}
-            onPointerMove={(event) =>
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture?.(event.pointerId)
+              if (interactionMode === 'region') {
+                regionStartRef.current = receiverPosition(
+                  event.currentTarget,
+                  event.clientX,
+                  event.clientY,
+                )
+                updateRegion(event.currentTarget, event.clientX, event.clientY)
+              } else {
+                setProfileDragging(true)
+                updateProfileSelection(event.currentTarget, event.clientX, event.clientY)
+              }
+            }}
+            onPointerUp={(event) => {
+              setProfileDragging(false)
+              regionStartRef.current = null
+              if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                event.currentTarget.releasePointerCapture?.(event.pointerId)
+              }
+            }}
+            onPointerCancel={() => setProfileDragging(false)}
+            onPointerLeave={() => {
+              setHover(null)
+              setProfileDragging(false)
+            }}
+            onPointerMove={(event) => {
               updateHover(
                 event.currentTarget,
                 event.clientX,
                 event.clientY,
               )
-            }
+              if (profileDragging) {
+                updateProfileSelection(event.currentTarget, event.clientX, event.clientY)
+              }
+              if (interactionMode === 'region' && regionStartRef.current) {
+                updateRegion(event.currentTarget, event.clientX, event.clientY)
+              }
+            }}
             onWheel={handleWheel}
           >
             <canvas
@@ -598,6 +912,32 @@ function ReceiverHeatmap({
                 width: `${viewport.zoom * 100}%`,
               }}
             />
+            {interactionMode === 'profile' ? <><div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow-[0_0_4px_1px_rgba(255,255,255,0.9)]"
+              style={{
+                left: `${(((profileColumn + 0.5) / columns - viewportBounds.minX) / (viewportBounds.maxX - viewportBounds.minX)) * 100}%`,
+              }}
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 z-10 h-px bg-white shadow-[0_0_4px_1px_rgba(255,255,255,0.9)]"
+              style={{
+                top: `${(((profileDisplayRow + 0.5) / rows - viewportBounds.minY) / (viewportBounds.maxY - viewportBounds.minY)) * 100}%`,
+              }}
+            /></> : null}
+            {region ? (
+              <div
+                data-testid={`${grid.receiver_id}-analysis-region`}
+                className="pointer-events-none absolute z-10 border-2 border-orange-300 bg-orange-300/20 shadow-[0_0_8px_rgba(251,146,60,0.8)]"
+                style={{
+                  left: `${((region.minX - viewportBounds.minX) / (viewportBounds.maxX - viewportBounds.minX)) * 100}%`,
+                  top: `${((region.minY - viewportBounds.minY) / (viewportBounds.maxY - viewportBounds.minY)) * 100}%`,
+                  width: `${((region.maxX - region.minX) / (viewportBounds.maxX - viewportBounds.minX)) * 100}%`,
+                  height: `${((region.maxY - region.minY) / (viewportBounds.maxY - viewportBounds.minY)) * 100}%`,
+                }}
+              />
+            ) : null}
           </div>
           {hover ? (
             <div
@@ -655,14 +995,31 @@ function ReceiverHeatmap({
                 <span className="text-right font-mono">
                   {formatMetric(hover.illuminanceLux)} lx
                 </span>
+                {errorValues.length > 0 ? (
+                  <>
+                    <span className="text-slate-400">Pixel error</span>
+                    <span className="text-right font-mono">
+                      {formatMetric(errorValues[hover.displayRow * columns + hover.column], 2)}%
+                    </span>
+                  </>
+                ) : null}
               </div>
             </div>
           ) : null}
         </div>
+        <div className="col-start-3 row-start-1 min-h-0">
+          <ReceiverProfileChart
+            axis="Y"
+            values={yProfile}
+            minimumMm={-layout.heightMm / 2}
+            maximumMm={layout.heightMm / 2}
+            fixedCoordinateMm={((profileColumn + 0.5) / columns - 0.5) * layout.widthMm}
+          />
+        </div>
         <div
           data-testid={`${grid.receiver_id}-y-axis`}
           aria-label="Receiver Y axis in millimeters"
-          className="relative text-[0.58rem] tabular-nums text-muted-foreground"
+          className="relative col-start-2 row-start-1 text-[0.58rem] tabular-nums text-muted-foreground"
         >
           {yTicks.map((tick) => (
             <div
@@ -684,7 +1041,7 @@ function ReceiverHeatmap({
         <div
           data-testid={`${grid.receiver_id}-x-axis`}
           aria-label="Receiver X axis in millimeters"
-          className="relative text-[0.58rem] tabular-nums text-muted-foreground"
+          className="relative col-start-1 row-start-2 text-[0.58rem] tabular-nums text-muted-foreground"
         >
           {xTicks.map((tick) => (
             <div
@@ -703,8 +1060,137 @@ function ReceiverHeatmap({
             X (mm)
           </span>
         </div>
-        <div aria-hidden="true" />
+        <div className="col-start-1 row-start-3 min-w-0">
+          <ReceiverProfileChart
+            axis="X"
+            values={xProfile}
+            minimumMm={-layout.widthMm / 2}
+            maximumMm={layout.widthMm / 2}
+            fixedCoordinateMm={(0.5 - (profileDisplayRow + 0.5) / rows) * layout.heightMm}
+          />
+        </div>
       </div>
+      {regionAnalysis ? (
+        <details className="mt-3 rounded-lg border border-orange-300/45 bg-orange-50/5 p-3" open>
+          <summary className="cursor-pointer text-xs font-semibold">
+            Selected-area ray contribution
+          </summary>
+          <div className="mt-2 grid grid-cols-2 gap-1.5 md:grid-cols-4">
+            <Stat label="Area" value={`${formatMetric(regionAnalysis.areaMm2)} mm²`} />
+            <Stat label="Receiver flux" value={`${formatMetric(regionAnalysis.selectedFlux)} lm`} />
+            <Stat label="Flux share" value={`${formatMetric(regionAnalysis.fluxRatio * 100, 1)}%`} />
+            <Stat label="Stored paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help="선택 영역에 도달한 대표 저장 경로 수입니다. 전체 Ray가 아니라 경로 원인을 확인하기 위해 저장된 진단용 표본입니다." />
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div>
+              <div className="text-[0.65rem] font-semibold">Path type</div>
+              <div className="mt-1 rounded-md border border-border bg-background/35 p-2 text-[0.65rem]">
+                Direct {regionAnalysis.directCount.toLocaleString()} · Reflected{' '}
+                {(regionAnalysis.matchingPathCount - regionAnalysis.directCount).toLocaleString()}
+              </div>
+              <div className="mt-2 text-[0.65rem] font-semibold">Top components</div>
+              <div className="mt-1 space-y-1">
+                {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => (
+                  <div key={id} className="flex justify-between rounded border border-border px-2 py-1 text-[0.62rem]">
+                    <span>{componentNames.get(id) ?? `Component ${id}`}</span>
+                    <span className="font-mono">{value.count} paths · {formatMetric(value.flux)} lm</span>
+                  </div>
+                )) : <div className="text-[0.62rem] text-muted-foreground">No reflected stored path in this area.</div>}
+              </div>
+            </div>
+            <div>
+              <div className="text-[0.65rem] font-semibold">Representative sequences</div>
+              <div className="mt-1 space-y-1">
+                {regionAnalysis.sequences.length > 0 ? regionAnalysis.sequences.map(([sequence, value]) => (
+                  <div key={sequence} className="rounded border border-border px-2 py-1 text-[0.62rem]">
+                    <div className="truncate font-medium" title={sequence}>{sequence}</div>
+                    <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
+                  </div>
+                )) : <div className="text-[0.62rem] text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
+              </div>
+            </div>
+          </div>
+          <details className="mt-2 rounded-md border border-border bg-background/25 p-2">
+            <summary className="cursor-pointer text-[0.65rem] font-semibold">Detailed face, reflection type and bounce contribution</summary>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <div>
+                <div className="text-[0.6rem] font-semibold text-muted-foreground">Reflection type</div>
+                {regionAnalysis.lobes.map(([name, value]) => <div key={name} className="flex justify-between text-[0.6rem]"><span className="capitalize">{name}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+              </div>
+              <div>
+                <div className="text-[0.6rem] font-semibold text-muted-foreground">Reflection count</div>
+                {regionAnalysis.depths.map(([depth, value]) => <div key={depth} className="flex justify-between text-[0.6rem]"><span>{depth} bounce</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+              </div>
+              <div>
+                <div className="text-[0.6rem] font-semibold text-muted-foreground">Top CAD faces</div>
+                {regionAnalysis.faces.map(([face, value]) => <div key={face} className="flex justify-between text-[0.6rem]"><span>Face {face}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+              </div>
+            </div>
+          </details>
+          <p className="mt-2 text-[0.58rem] leading-4 text-muted-foreground">
+            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component와 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다.
+          </p>
+        </details>
+      ) : interactionMode === 'region' ? (
+        <p className="mt-2 rounded-md border border-dashed border-orange-300/50 p-2 text-center text-[0.65rem] text-muted-foreground">
+          Heatmap에서 빛샘을 확인할 영역을 사각형으로 드래그해 주세요.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function ReceiverProfileChart({
+  axis,
+  values,
+  minimumMm,
+  maximumMm,
+  fixedCoordinateMm,
+}: {
+  axis: 'X' | 'Y'
+  values: number[]
+  minimumMm: number
+  maximumMm: number
+  fixedCoordinateMm: number
+}) {
+  const peak = Math.max(...values, 0)
+  const points = values
+    .map((value, index) => {
+      const position = values.length <= 1 ? 0 : (index / (values.length - 1)) * 100
+      const normalizedValue = peak > 0 ? value / peak : 0
+      const x = axis === 'X' ? position : normalizedValue * 38
+      const y = axis === 'X' ? 38 - normalizedValue * 34 : 100 - position
+      return `${x},${y}`
+    })
+    .join(' ')
+  return (
+    <div className={`h-full rounded-lg border border-border bg-muted/15 p-2 ${axis === 'Y' ? 'flex min-h-0 flex-col' : ''}`}>
+      <div className={`mb-1 gap-1 text-[0.62rem] ${axis === 'X' ? 'flex items-center justify-between' : 'space-y-0.5'}`}>
+        <span className="font-semibold">{axis}축 휘도 프로파일</span>
+        <span className="font-mono text-muted-foreground">
+          {axis === 'X' ? 'Y' : 'X'}={formatReceiverCoordinate(fixedCoordinateMm)} mm · 최대 {formatMetric(peak)} nit
+        </span>
+      </div>
+      <svg
+        role="img"
+        aria-label={`${axis}-axis luminance profile`}
+        viewBox={axis === 'X' ? '0 0 100 42' : '0 0 42 100'}
+        preserveAspectRatio="none"
+        className={axis === 'X' ? 'h-20 w-full overflow-visible' : 'min-h-0 w-full flex-1 overflow-visible'}
+      >
+        <path d={axis === 'X' ? 'M0 38 H100 M0 4 V38' : 'M0 0 V100 M0 100 H38'} fill="none" className="stroke-border" strokeWidth="0.5" />
+        <polyline points={points} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+      {axis === 'X' ? (
+        <div className="flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+          <span>{formatReceiverCoordinate(minimumMm)} mm</span>
+          <span>{formatReceiverCoordinate(maximumMm)} mm</span>
+        </div>
+      ) : (
+        <div className="flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+          <span>0</span><span>{formatMetric(peak)} nit</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -745,7 +1231,10 @@ export function RayTraceResultWindow({
   const [tab, setTab] = useState<ResultTab>('summary')
   const [analysisCases, setAnalysisCases] = useState<AnalysisCase[]>([])
   const [baselineCaseId, setBaselineCaseId] = useState<string | null>(null)
+  const [receiverCompareScope, setReceiverCompareScope] =
+    useState<ReceiverCompareScope>('all')
   const [reportCaseId, setReportCaseId] = useState<string | null>(null)
+  const [errorTargetPercent, setErrorTargetPercent] = useState(5)
   const caseFileInputRef = useRef<HTMLInputElement>(null)
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
@@ -863,7 +1352,18 @@ export function RayTraceResultWindow({
   const result =
     analysisCases.find((item) => item.case_id === reportCaseId)?.result ??
     liveResult
+  useEffect(() => {
+    if (result?.config.convergence_target_percent) {
+      setErrorTargetPercent(result.config.convergence_target_percent)
+    }
+  }, [result?.config.convergence_target_percent, result?.run_id])
   if (!open || !result) return null
+  const componentNames = new Map(
+    (scene?.components ?? []).map((component) => [
+      component.component_id,
+      component.component_name || component.object_name,
+    ]),
+  )
 
   const begin = (
     event: ReactPointerEvent,
@@ -881,6 +1381,9 @@ export function RayTraceResultWindow({
   const performance = metricGroup(result, '_performance_summary')
   const reflection = metricGroup(result, '_reflection_summary')
   const optical = metricGroup(result, '_optical_summary')
+  const convergenceHistory = Array.isArray(result.metrics._convergence_history)
+    ? result.metrics._convergence_history as Record<string, unknown>[]
+    : []
   const componentRows = Object.entries(contribution.components)
     .map(([name, value]) => ({
       name,
@@ -911,6 +1414,9 @@ export function RayTraceResultWindow({
     selectedCases.find((item) => item.case_id === baselineCaseId) ??
     selectedCases[0] ??
     null
+  const receiverCompareOptions = (
+    baselineCase?.result ?? result
+  ).receivers.filter((item) => item.enabled)
 
   const exportCases = () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
@@ -1070,6 +1576,28 @@ export function RayTraceResultWindow({
                   Import CAD Case의 마지막 Ray 결과를 자동 비교합니다. Compare 대상을 체크하고 Baseline을 직접 선택하세요.
                 </div>
                 <div className="flex gap-2">
+                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    Receiver
+                    <select
+                      aria-label="Compare receiver"
+                      className="h-7 max-w-48 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                      value={receiverCompareScope}
+                      onChange={(event) =>
+                        setReceiverCompareScope(
+                          event.currentTarget.value === 'all'
+                            ? 'all'
+                            : Number(event.currentTarget.value),
+                        )
+                      }
+                    >
+                      <option value="all">All Receivers</option>
+                      {receiverCompareOptions.map((receiver, index) => (
+                        <option key={receiver.receiver_id} value={index}>
+                          Receiver {index + 1} · {receiver.display_name || receiver.receiver_id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <input
                     ref={caseFileInputRef}
                     type="file"
@@ -1147,18 +1675,30 @@ export function RayTraceResultWindow({
                     </thead>
                     <tbody>
                       {analysisCases.map((item) => {
+                        const scopedHits = caseReceiverHits(
+                          item.result,
+                          receiverCompareScope,
+                        )
                         const itemHitRatio = item.result.total_rays > 0
-                          ? item.result.receiver_hit_count / item.result.total_rays
+                          ? scopedHits / item.result.total_rays
                           : 0
-                        const flux = caseFlux(item.result)
-                        const luminance = caseLuminance(item.result)
+                        const flux = caseFlux(item.result, receiverCompareScope)
+                        const luminance = caseLuminance(
+                          item.result,
+                          receiverCompareScope,
+                        )
                         const score = baselineCase
-                          ? leakageImprovementScore(item.result, baselineCase.result)
+                          ? leakageImprovementScore(
+                              item.result,
+                              baselineCase.result,
+                              receiverCompareScope,
+                            )
                           : null
                         const conditionMismatches = baselineCase
                           ? comparisonConditionMismatches(
                               item.result,
                               baselineCase.result,
+                              receiverCompareScope,
                             )
                           : []
                         const conditionsMatch = Boolean(baselineCase) &&
@@ -1543,6 +2083,23 @@ export function RayTraceResultWindow({
 
           {tab === 'receiver' ? (
             <div className="grid gap-3">
+              {convergenceHistory.length > 0 ? (
+                <details className="rounded-lg border border-border bg-background/40 p-3">
+                  <summary className="cursor-pointer text-xs font-semibold">Ray convergence history</summary>
+                  <div className="mt-2 overflow-x-auto">
+                    <div className="grid min-w-[520px] grid-cols-5 gap-2 text-[0.62rem]">
+                      {['Rays', 'Total Error', 'Peak-area Error', 'Peak nit', 'Flux'].map((label) => <span key={label} className="font-semibold text-muted-foreground">{label}</span>)}
+                      {convergenceHistory.flatMap((item, index) => [
+                        <span key={`${index}-r`} className="font-mono">{Math.round(numeric(item.rays)).toLocaleString()}</span>,
+                        <span key={`${index}-e`} className="font-mono">{formatMetric(item.totalError, 2)}%</span>,
+                        <span key={`${index}-p`} className="font-mono">{formatMetric(item.peakError, 2)}%</span>,
+                        <span key={`${index}-n`} className="font-mono">{formatMetric(item.peakNit)}</span>,
+                        <span key={`${index}-f`} className="font-mono">{formatMetric(item.flux)} lm</span>,
+                      ])}
+                    </div>
+                  </div>
+                </details>
+              ) : null}
               {result.receivers.map((receiver) => {
                 const values = objectValue(
                   result.metrics,
@@ -1556,15 +2113,39 @@ export function RayTraceResultWindow({
                   result,
                   receiver.receiver_id,
                 )
+                const totalError = typeof values.error_estimate_percent === 'number'
+                  ? numeric(values.error_estimate_percent) : null
+                const peakAreaError = typeof values.peak_area_error_estimate_percent === 'number'
+                  ? numeric(values.peak_area_error_estimate_percent) : null
+                const receiverHits = numeric(values.hit_count)
+                const convergence = receiverHits < 30 || totalError === null || peakAreaError === null
+                  ? { label: 'Insufficient samples', tone: 'border-amber-300/50 bg-amber-100/10 text-amber-700 dark:text-amber-300' }
+                  : totalError <= errorTargetPercent && peakAreaError <= errorTargetPercent
+                    ? { label: 'Converged', tone: 'border-emerald-400/45 bg-emerald-100/10 text-emerald-700 dark:text-emerald-300' }
+                    : totalError <= errorTargetPercent * 2 && peakAreaError <= errorTargetPercent * 2
+                      ? { label: 'Nearly converged', tone: 'border-sky-400/45 bg-sky-100/10 text-sky-700 dark:text-sky-300' }
+                      : { label: 'Not converged', tone: 'border-rose-400/45 bg-rose-100/10 text-rose-700 dark:text-rose-300' }
                 return (
                   <section
                     key={receiver.receiver_id}
                     className="rounded-lg border border-border bg-background/40 p-3"
                   >
-                    <div className="text-xs font-semibold">
-                      {receiver.display_name || receiver.receiver_id}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-semibold">{receiver.display_name || receiver.receiver_id}</div>
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full border px-2 py-0.5 text-[0.62rem] font-semibold ${convergence.tone}`}>{convergence.label}</span>
+                        <label className="flex items-center gap-1 text-[0.6rem] text-muted-foreground">
+                          Target
+                          <input aria-label="Convergence target percent" className="h-7 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground" type="number" min={0.1} max={100} step={0.5} value={errorTargetPercent} onChange={(event) => setErrorTargetPercent(Math.max(0.1, numeric(event.currentTarget.value)))} />%
+                        </label>
+                      </div>
                     </div>
-                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 lg:grid-cols-4">
+                      <Stat
+                        label="Peak-area Error"
+                        value={peakAreaError === null || receiverHits <= 0 ? '—' : `${formatMetric(peakAreaError, 2)}%`}
+                        help="Receiver Peak의 5% 이상인 셀 영역에 대한 Monte Carlo 상대 오차입니다. Total Flux Error와 Peak-area Error가 모두 목표 오차 이하일 때 Converged로 판단합니다."
+                      />
                       <Stat
                         label="Peak nit_est"
                         value={formatMetric(values.peak_nit_est)}
@@ -1581,6 +2162,16 @@ export function RayTraceResultWindow({
                           values.total_flux_lumen,
                         )} lm`}
                         help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
+                      />
+                      <Stat
+                        label="Error Estimate"
+                        value={
+                          typeof values.error_estimate_percent === 'number' &&
+                          numeric(values.total_flux_lumen) > 0
+                            ? `${formatMetric(values.error_estimate_percent, 2)}%`
+                            : '—'
+                        }
+                        help="Receiver 전체 Flux 추정값에 대한 Monte Carlo 1σ 상대 표준오차입니다. 값이 낮을수록 통계적으로 잘 수렴한 결과입니다. CAD 형상, 재질 물성 및 물리 모델 자체의 오차는 포함하지 않습니다."
                       />
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-1.5">
@@ -1629,6 +2220,13 @@ export function RayTraceResultWindow({
                         <ReceiverHeatmap
                           grid={grid}
                           receiver={receiver}
+                          kAbs={result.config.k_abs}
+                          kBrdf={result.config.k_brdf}
+                          storedPaths={result.stored_paths}
+                          componentNames={componentNames}
+                          errorTargetPercent={errorTargetPercent}
+                          sampleCount={result.total_rays}
+                          faceSourceIds={scene?.mesh.face_source_ids}
                         />
                       </div>
                     ) : null}

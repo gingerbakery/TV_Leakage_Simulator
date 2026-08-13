@@ -1,5 +1,5 @@
 import { useRef, type ChangeEvent } from 'react'
-import { Check, Eye, EyeOff, FolderOpen, LoaderCircle } from 'lucide-react'
+import { Check, Eye, EyeOff, FolderOpen, LoaderCircle, Trash2 } from 'lucide-react'
 
 import { useUploadCadMutation } from '@/api'
 import { Button } from '@/components/ui/button'
@@ -74,6 +74,20 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     <div className="truncate text-[0.62rem] text-muted-foreground">{item.cad.displayName}</div>
                   </div>
                   {item.visible ? <Eye className="size-3.5 text-primary" /> : <EyeOff className="size-3.5 text-muted-foreground" />}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Delete CASE ${item.order}`}
+                    title="Remove imported CAD case"
+                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      actions.removeCadCase(item.caseId)
+                    }}
+                  >
+                    <Trash2 />
+                  </Button>
                 </div>
               )
             })}

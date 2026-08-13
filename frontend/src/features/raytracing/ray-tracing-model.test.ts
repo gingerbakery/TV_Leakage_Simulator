@@ -212,6 +212,9 @@ describe('ray tracing model', () => {
     expect(request.roi_faces).toEqual([0, 1])
     expect(request.excluded_component_ids).toEqual([1, 8, 9])
     expect(request.config.ray_count).toBe(12_000)
+    expect(request.config).not.toHaveProperty('auto_convergence')
+    expect(request.config).not.toHaveProperty('convergence_target_percent')
+    expect(request.config).not.toHaveProperty('max_convergence_multiplier')
     expect(request.optical_profiles).toHaveLength(1)
     expect(request.optical_profiles[0]).toMatchObject({
       reflectance: 0.2,

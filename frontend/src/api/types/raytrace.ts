@@ -141,6 +141,10 @@ export interface RayTraceConfig {
   intersection_backend: IntersectionBackend
   store_ray_paths: boolean
   max_stored_paths: number
+  /** Frontend-only iterative run control; not sent to the trace backend. */
+  auto_convergence?: boolean
+  convergence_target_percent?: number
+  max_convergence_multiplier?: number
 }
 
 export type RayTraceConfigRequest = Omit<
@@ -163,7 +167,12 @@ export interface RayTraceRequest {
   transform_rules: TransformRule[]
   excluded_component_ids: number[]
   roi_faces?: number[]
-  config: RayTraceConfigRequest
+  config: Omit<
+    RayTraceConfigRequest,
+    | 'auto_convergence'
+    | 'convergence_target_percent'
+    | 'max_convergence_multiplier'
+  >
 }
 
 export interface RayHit {
@@ -183,6 +192,7 @@ export interface RayHit {
   scatter_model: ScatterModel | null
   optical_assignment_source: string | null
   ray_kind: string | null
+  receiver_flux_lumen?: number | null
 }
 
 export interface ReceiverGrid {
@@ -191,6 +201,8 @@ export interface ReceiverGrid {
   bin_area_mm2: number
   flux_lumen: number[][]
   hit_count: number
+  flux_squared_lumen2?: number
+  flux_squared_lumen2_grid?: number[][]
 }
 
 type ContributionBreakdown = Record<string, Record<string, unknown>>

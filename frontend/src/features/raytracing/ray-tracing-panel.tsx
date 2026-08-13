@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
@@ -114,6 +114,8 @@ function NumberField({
   decimals,
   disabled = false,
   description,
+  className = '',
+  labelClassName = '',
 }: {
   label: string
   ariaLabel?: string
@@ -125,10 +127,12 @@ function NumberField({
   decimals?: number
   disabled?: boolean
   description?: string
+  className?: string
+  labelClassName?: string
 }) {
   return (
-    <label className={fieldLabelClassName}>
-      <span className="flex items-center gap-1.5">
+    <label className={`${fieldLabelClassName} ${className}`}>
+      <span className={`flex items-center gap-1.5 ${labelClassName}`}>
         {label}
         {description ? (
           <HelpTooltip label={`${label} 도움말`}>{description}</HelpTooltip>
@@ -664,6 +668,9 @@ function ReceiverDialog({
   const [height, setHeight] = useState(receiverDefaultSizeMm)
   const [resolutionX, setResolutionX] = useState(80)
   const [resolutionY, setResolutionY] = useState(24)
+  const [pixelSize, setPixelSize] = useState(
+    receiverDefaultSizeMm / Math.sqrt(80 * 24),
+  )
   const [acceptance, setAcceptance] = useState(90)
   const [viewDistance, setViewDistance] = useState(
     currentViewDefaultDistanceMm,
@@ -713,6 +720,15 @@ function ReceiverDialog({
     setHeight(initialReceiver?.height_mm ?? receiverDefaultSizeMm)
     setResolutionX(initialReceiver?.resolution[0] ?? 80)
     setResolutionY(initialReceiver?.resolution[1] ?? 24)
+    const initialResolution = initialReceiver?.resolution ?? [80, 24]
+    const initialWidth = initialReceiver?.width_mm ?? receiverDefaultSizeMm
+    const initialHeight = initialReceiver?.height_mm ?? receiverDefaultSizeMm
+    setPixelSize(
+      Math.sqrt(
+        (initialWidth / initialResolution[0]) *
+          (initialHeight / initialResolution[1]),
+      ),
+    )
     setAcceptance(initialReceiver?.acceptance_angle_deg ?? 90)
     setViewDistance(initialDistance)
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
@@ -785,6 +801,25 @@ function ReceiverDialog({
   }, [actions, open])
 
   const canApply = mode === 'datum_plane' || capturedFrame !== null
+  const updatePixelSizeFromResolution = (
+    nextResolutionX: number,
+    nextResolutionY: number,
+  ) => {
+    const columns = Math.max(1, Math.trunc(nextResolutionX))
+    const rows = Math.max(1, Math.trunc(nextResolutionY))
+    setPixelSize(
+      Math.sqrt(
+        (Math.max(0.001, width) / columns) *
+          (Math.max(0.001, height) / rows),
+      ),
+    )
+  }
+  const updateResolutionFromPixelSize = (nextPixelSize: number) => {
+    const pitch = Math.max(0.001, nextPixelSize)
+    setPixelSize(pitch)
+    setResolutionX(Math.max(1, Math.round(width / pitch)))
+    setResolutionY(Math.max(1, Math.round(height / pitch)))
+  }
   const previewReceiver = useMemo(() => {
     if (!open) return null
     const receiver =
@@ -1052,13 +1087,26 @@ function ReceiverDialog({
             />
           </div>
         </fieldset>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-[1.15fr_1fr_1fr] items-end gap-2">
+          <NumberField
+            label="Pixel Size (mm)"
+            value={pixelSize}
+            min={0.1}
+            step={0.1}
+            decimals={1}
+            labelClassName="whitespace-nowrap"
+            onChange={updateResolutionFromPixelSize}
+            description="Square pixel target size. Entering a value automatically calculates Resolution X/Y. When resolution is edited, this shows the equivalent pixel size from the actual X/Y cell area."
+          />
           <NumberField
             label="Resolution X"
             value={resolutionX}
             min={1}
             step={1}
-            onChange={setResolutionX}
+            onChange={(value) => {
+              setResolutionX(value)
+              updatePixelSizeFromResolution(value, resolutionY)
+            }}
             description="수광면을 가로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
           />
           <NumberField
@@ -1066,15 +1114,21 @@ function ReceiverDialog({
             value={resolutionY}
             min={1}
             step={1}
-            onChange={setResolutionY}
+            onChange={(value) => {
+              setResolutionY(value)
+              updatePixelSizeFromResolution(resolutionX, value)
+            }}
             description="수광면을 세로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
           />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
           <NumberField
-            label="Acceptance (deg)"
+            label="Acceptance Angle (deg)"
             ariaLabel="Acceptance angle (deg)"
             value={acceptance}
             min={0.1}
             max={180}
+            labelClassName="whitespace-nowrap"
             onChange={setAcceptance}
             description="이 각도보다 큰 입사각으로 도달한 ray는 수광 대상에서 제외합니다 (0=정면만, 180=모든 각도)."
           />
@@ -1112,6 +1166,24 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${minutes}m ${remainder}s`
 }
 
+function ConvergenceSparkline({ label, values }: { label: string; values: number[] }) {
+  const maximum = Math.max(...values.filter(Number.isFinite), 0)
+  const points = values.map((value, index) => {
+    const x = values.length <= 1 ? 0 : index / (values.length - 1) * 100
+    const y = maximum > 0 && Number.isFinite(value) ? 28 - value / maximum * 24 : 28
+    return `${x},${y}`
+  }).join(' ')
+  return (
+    <div className="rounded border border-border bg-background/40 p-1.5">
+      <div className="text-[0.56rem] text-muted-foreground">{label}</div>
+      <svg viewBox="0 0 100 30" preserveAspectRatio="none" className="mt-1 h-10 w-full">
+        <path d="M0 28 H100" className="stroke-border" strokeWidth="0.7" />
+        <polyline points={points} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  )
+}
+
 export function RayTracingPanel({
   scene,
   cameraFrame,
@@ -1126,6 +1198,15 @@ export function RayTracingPanel({
     useState<string | null>(null)
   const [editingReceiverId, setEditingReceiverId] =
     useState<string | null>(null)
+  const autoConvergenceActiveRef = useRef(false)
+  const convergenceMultiplierRef = useRef(1)
+  const handledConvergenceJobRef = useRef<string | null>(null)
+  const [convergenceHistory, setConvergenceHistory] = useState<
+    { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
+  >([])
+  const convergenceHistoryRef = useRef<
+    { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
+  >([])
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -1232,12 +1313,15 @@ export function RayTracingPanel({
     actions.setRayTraceConfig({ ...config, ...patch })
   }
 
-  const handleRun = async () => {
+  const launchRun = useCallback(async (rayMultiplier = 1) => {
     if (!scene || !canRun) return
     const request = buildRayTraceRequest({
       scene,
       projectName: activeCad?.displayName || 'TV-Leakage-Direct',
-      emitters,
+      emitters: emitters.map((emitter) => ({
+        ...emitter,
+        ray_count: Math.max(1, Math.trunc(emitter.ray_count * rayMultiplier)),
+      })),
       receivers,
       materialAssignments,
       transformRules,
@@ -1252,7 +1336,60 @@ export function RayTracingPanel({
     } catch {
       // The mutation state renders the backend error in the panel.
     }
+  }, [activeCad?.displayName, canRun, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, transformRules, actions])
+
+  const handleRun = async () => {
+    autoConvergenceActiveRef.current = config.auto_convergence ?? false
+    convergenceMultiplierRef.current = 1
+    handledConvergenceJobRef.current = null
+    setConvergenceHistory([])
+    convergenceHistoryRef.current = []
+    await launchRun(1)
   }
+
+  useEffect(() => {
+    if (!job || job.status !== 'completed' || !job.result) return
+    if (handledConvergenceJobRef.current === job.job_id) return
+    handledConvergenceJobRef.current = job.job_id
+    const enabledIds = receivers.filter((receiver) => receiver.enabled).map((receiver) => receiver.receiver_id)
+    const receiverMetrics = enabledIds.map((id) => {
+      const value = job.result?.metrics[id]
+      return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+    })
+    const metricError = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : Infinity
+    const totalError = Math.max(...receiverMetrics.map((value) => metricError(value.error_estimate_percent)))
+    const peakError = Math.max(...receiverMetrics.map((value) => metricError(value.peak_area_error_estimate_percent)))
+    const peakNit = Math.max(...receiverMetrics.map((value) => Number(value.peak_nit_est) || 0), 0)
+    const flux = receiverMetrics.reduce((sum, value) => sum + (Number(value.total_flux_lumen) || 0), 0)
+    const enoughSamples = receiverMetrics.every((value) => (Number(value.hit_count) || 0) >= 30)
+    const historyEntry = {
+      rays: job.result!.total_rays,
+      totalError,
+      peakError,
+      peakNit,
+      flux,
+    }
+    const nextHistory = [...convergenceHistoryRef.current, historyEntry]
+    convergenceHistoryRef.current = nextHistory
+    setConvergenceHistory(nextHistory)
+    job.result.metrics._convergence_history = nextHistory
+    actions.setActiveCadCaseResult(job.result)
+    const convergenceTarget = config.convergence_target_percent ?? 5
+    const converged = enoughSamples &&
+      totalError <= convergenceTarget &&
+      peakError <= convergenceTarget
+    if (!autoConvergenceActiveRef.current || converged) {
+      autoConvergenceActiveRef.current = false
+      return
+    }
+    const nextMultiplier = convergenceMultiplierRef.current * 2
+    if (nextMultiplier > (config.max_convergence_multiplier ?? 8)) {
+      autoConvergenceActiveRef.current = false
+      return
+    }
+    convergenceMultiplierRef.current = nextMultiplier
+    void launchRun(nextMultiplier)
+  }, [actions, config.convergence_target_percent, config.max_convergence_multiplier, job, launchRun, receivers])
 
   const progress =
     job?.status === 'completed'
@@ -1511,6 +1648,46 @@ export function RayTracingPanel({
               }
             />
           </div>
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+            <label className="flex items-center gap-2 text-xs font-semibold">
+              <input
+                type="checkbox"
+                checked={config.auto_convergence}
+                disabled={isRunning}
+                onChange={(event) => updateConfig({ auto_convergence: event.currentTarget.checked })}
+              />
+              Auto convergence
+              <HelpTooltip label="Auto convergence help">
+                Total Flux Error와 Peak-area Error가 모두 목표 오차 이하가 될 때까지
+                Ray 수를 2배씩 늘려 자동으로 다시 해석합니다. 각 단계는 전체 해석을
+                새로 실행하므로 Emitter의 총광량 정규화가 올바르게 유지됩니다.
+              </HelpTooltip>
+            </label>
+            {config.auto_convergence ? (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <NumberField
+                  label="Target error (%)"
+                  value={config.convergence_target_percent ?? 5}
+                  min={0.1}
+                  max={100}
+                  step={0.5}
+                  disabled={isRunning}
+                  onChange={(value) => updateConfig({ convergence_target_percent: value })}
+                  description="자동 수렴의 목표 오차입니다. Receiver의 Total Flux Error와 Peak-area Error가 모두 이 값 이하가 되면 Converged로 판단하고 자동 해석을 종료합니다. 값이 낮을수록 더 많은 Ray와 계산 시간이 필요합니다."
+                />
+                <NumberField
+                  label="Max ray multiplier"
+                  value={config.max_convergence_multiplier ?? 8}
+                  min={1}
+                  max={64}
+                  step={1}
+                  disabled={isRunning}
+                  onChange={(value) => updateConfig({ max_convergence_multiplier: Math.trunc(value) })}
+                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 최대 80,000 Ray까지 해석합니다."
+                />
+              </div>
+            ) : null}
+          </div>
           <NumberField
             label={`Max reflections (0-${maxReflectionDepth})`}
             value={config.max_depth}
@@ -1634,7 +1811,10 @@ export function RayTracingPanel({
             className="w-full"
             variant="destructive"
             disabled={stopMutation.isPending || job?.phase === 'stopping'}
-            onClick={() => stopMutation.mutate({ jobId: activeJobId })}
+            onClick={() => {
+              autoConvergenceActiveRef.current = false
+              stopMutation.mutate({ jobId: activeJobId })
+            }}
           >
             {stopMutation.isPending || job?.phase === 'stopping' ? (
               <LoaderCircle className="animate-spin" />
@@ -1710,6 +1890,23 @@ export function RayTracingPanel({
               </div>
             ))}
           </div>
+        ) : null}
+
+        {convergenceHistory.length > 0 ? (
+          <details className="rounded-lg border border-border bg-muted/15 p-2" open={config.auto_convergence}>
+            <summary className="cursor-pointer text-[0.65rem] font-semibold">
+              Convergence history · {convergenceHistory.length} run{convergenceHistory.length > 1 ? 's' : ''}
+            </summary>
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              <ConvergenceSparkline label="Error %" values={convergenceHistory.map((item) => Math.max(item.totalError, item.peakError))} />
+              <ConvergenceSparkline label="Peak nit" values={convergenceHistory.map((item) => item.peakNit)} />
+              <ConvergenceSparkline label="Flux lm" values={convergenceHistory.map((item) => item.flux)} />
+            </div>
+            <div className="mt-1 flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+              <span>{convergenceHistory[0]?.rays.toLocaleString()} rays</span>
+              <span>{convergenceHistory.at(-1)?.rays.toLocaleString()} rays</span>
+            </div>
+          </details>
         ) : null}
 
         {errorMessage ? (

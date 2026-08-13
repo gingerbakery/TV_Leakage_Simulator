@@ -228,6 +228,7 @@ export interface WorkspaceActions {
   addCadCase(cad: ActiveCad): void
   setActiveCadCase(caseId: string): void
   setCadCaseVisible(caseId: string, visible: boolean): void
+  removeCadCase(caseId: string): void
   setActiveCadCaseResult(result: RayTraceResult): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
@@ -402,6 +403,9 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   intersection_backend: 'auto',
   store_ray_paths: true,
   max_stored_paths: 500,
+  auto_convergence: false,
+  convergence_target_percent: 5,
+  max_convergence_multiplier: 8,
 }
 
 export const maxReflectionDepth = 20
@@ -435,6 +439,15 @@ function normalizeRayTraceConfig(
     max_stored_paths: Math.max(
       0,
       Math.min(1000, Math.trunc(config.max_stored_paths || 0)),
+    ),
+    auto_convergence: Boolean(config.auto_convergence),
+    convergence_target_percent: Math.max(
+      0.1,
+      Number(config.convergence_target_percent) || 5,
+    ),
+    max_convergence_multiplier: Math.max(
+      1,
+      Math.min(64, Math.trunc(config.max_convergence_multiplier || 8)),
     ),
   }
 }
@@ -776,6 +789,46 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             })),
             ...restoredSceneState(target.workspaceState ?? blankProjectState()),
             activeRayTraceJobId: target.latestJobId ?? null,
+          }
+        })
+      },
+      removeCadCase: (caseId) => {
+        set((state) => {
+          const removedIndex = state.cadCases.findIndex(
+            (item) => item.caseId === caseId,
+          )
+          if (removedIndex < 0) return state
+          const remaining = state.cadCases.filter(
+            (item) => item.caseId !== caseId,
+          )
+          const reordered = remaining.map((item, index) => ({
+            ...item,
+            order: index + 1,
+          }))
+          if (caseId !== state.activeCadCaseId) {
+            return { cadCases: reordered }
+          }
+          const nextCase =
+            reordered[Math.min(removedIndex, reordered.length - 1)] ?? null
+          if (!nextCase) {
+            return {
+              activeCad: null,
+              activeCadCaseId: null,
+              cadCases: [],
+              ...createSceneSnapshot(),
+            }
+          }
+          return {
+            activeCad: nextCase.cad,
+            activeCadCaseId: nextCase.caseId,
+            cadCases: reordered.map((item) => ({
+              ...item,
+              visible: item.caseId === nextCase.caseId,
+            })),
+            ...restoredSceneState(
+              nextCase.workspaceState ?? blankProjectState(),
+            ),
+            activeRayTraceJobId: nextCase.latestJobId ?? null,
           }
         })
       },

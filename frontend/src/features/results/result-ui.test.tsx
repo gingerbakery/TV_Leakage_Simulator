@@ -83,6 +83,46 @@ describe('Step 11 result UI', () => {
     expect(firstBaseline).toHaveProperty('checked', false)
   })
 
+  it('compares results for the selected Receiver area', () => {
+    const result = createRayTraceResultFixture()
+    const receiverTwo = {
+      ...structuredClone(result.receivers[0]),
+      receiver_id: 'receiver_002',
+      display_name: 'Right corner',
+    }
+    result.receivers.push(receiverTwo)
+    result.receiver_grids.push({
+      receiver_id: receiverTwo.receiver_id,
+      resolution: [2, 2],
+      bin_area_mm2: 1,
+      flux_lumen: [[0.005, 0.005], [0.005, 0.005]],
+      hit_count: 7,
+    })
+    result.metrics.receiver_002 = {
+      peak_nit_est: 6,
+      mean_nit_est: 5,
+      total_flux_lumen: 0.02,
+      hit_count: 7,
+    }
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compare receiver' }), {
+      target: { value: '1' },
+    })
+    expect(screen.getByText('0.020 lm')).not.toBeNull()
+    expect(screen.getByText('6.000')).not.toBeNull()
+  })
+
   it('uses the automatically synchronized CAD result as a comparison case', () => {
     const result = createRayTraceResultFixture()
     const onCaseMetadataChange = vi.fn()
@@ -268,6 +308,15 @@ describe('Step 11 result UI', () => {
     expect(yAxis.querySelector('[data-axis-tick="0"]')).not.toBeNull()
     expect(screen.getByText('X (mm)')).not.toBeNull()
     expect(screen.getByText('Y (mm)')).not.toBeNull()
+    expect(screen.getByText('Error Estimate')).not.toBeNull()
+    expect(screen.getByText('2.75%')).not.toBeNull()
+    expect(screen.getByText('Converged')).not.toBeNull()
+    expect(
+      screen.getByRole('img', { name: 'X-axis luminance profile' }),
+    ).not.toBeNull()
+    expect(
+      screen.getByRole('img', { name: 'Y-axis luminance profile' }),
+    ).not.toBeNull()
     expect(createImageData).toHaveBeenCalledWith(2, 2)
     expect(putImageData).toHaveBeenCalledOnce()
 
@@ -283,8 +332,22 @@ describe('Step 11 result UI', () => {
     expect(frame.contains(tooltip)).toBe(true)
     expect(viewport.contains(tooltip)).toBe(false)
     expect(tooltip.textContent).toContain('10 mm')
-    expect(tooltip.textContent).toContain('5 mm')
-    expect(tooltip.textContent).toContain('0.004000 lm')
+    fireEvent.pointerDown(viewport, {
+      clientX: 20,
+      clientY: 180,
+      pointerId: 1,
+    })
+    expect(screen.getByText(/Y=.*mm · 최대/)).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Error map' }))
+    expect(screen.getByRole('button', { name: 'Error map' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze area' }))
+    fireEvent.pointerDown(viewport, { clientX: 100, clientY: 50, pointerId: 2 })
+    fireEvent.pointerMove(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
+    fireEvent.pointerUp(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
+    expect(screen.getByText('Selected-area ray contribution')).not.toBeNull()
+    expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
+    expect(tooltip.textContent).toContain('Incident flux')
+    expect(tooltip.textContent).toContain('Pixel error')
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset view' }))
     expect(screen.getByTestId('receiver_001-zoom').textContent).toBe(
