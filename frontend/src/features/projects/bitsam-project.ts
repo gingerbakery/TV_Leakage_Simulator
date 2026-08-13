@@ -1,6 +1,7 @@
 import type {
   EmitterSpec,
   RayTraceConfigRequest,
+  RayTraceResult,
   ReceiverSpec,
   ScenePayload,
 } from '@/api'
@@ -45,6 +46,8 @@ export interface BitsamProject {
   project_name: string
   cad: BitsamCadReference
   workspace: WorkspaceProjectState
+  /** Last completed analysis, including receiver grids and stored ray paths. */
+  analysis_result?: RayTraceResult | null
 }
 
 export interface BitsamCompatibility {
@@ -55,6 +58,8 @@ export interface BitsamCompatibility {
 
 export interface BitsamSettingsOnlyRestore {
   workspace: WorkspaceProjectState
+  /** Last completed analysis, including receiver grids and stored ray paths. */
+  analysis_result?: RayTraceResult | null
   restoredDatumEmitters: number
   restoredDatumReceivers: number
   skippedGeometryItems: number
@@ -384,6 +389,24 @@ function isComponentNameOverrides(
   )
 }
 
+function isSavedRayTraceResult(value: unknown): value is RayTraceResult {
+  return (
+    isRecord(value) &&
+    isString(value.run_id) &&
+    isRayTraceConfig(value.config) &&
+    isArrayOf(value.emitters, isEmitterSpec) &&
+    isArrayOf(value.receivers, isReceiverSpec) &&
+    Array.isArray(value.receiver_grids) &&
+    Array.isArray(value.stored_paths) &&
+    isFiniteNumber(value.total_rays) &&
+    isFiniteNumber(value.receiver_hit_count) &&
+    isFiniteNumber(value.surface_hit_count) &&
+    isFiniteNumber(value.runtime_sec) &&
+    isRecord(value.metrics) &&
+    isRecord(value.contribution_summary)
+  )
+}
+
 function isComponentColorOverrides(
   value: unknown,
 ): value is Record<number, string> {
@@ -522,6 +545,7 @@ export function createBitsamProject(
   scene: ScenePayload,
   workspace: WorkspaceSnapshot,
   savedAt = new Date(),
+  analysisResult?: RayTraceResult | null,
 ): BitsamProject {
   if (!workspace.activeCad) {
     throw new BitsamProjectError(
@@ -543,6 +567,9 @@ export function createBitsamProject(
       fingerprint: createSceneFingerprint(scene),
     },
     workspace: createWorkspaceProjectState(workspace),
+    analysis_result: analysisResult
+      ? structuredClone(analysisResult)
+      : undefined,
   }
 }
 
@@ -583,7 +610,10 @@ export function parseBitsamProject(source: string): BitsamProject {
     Number.isNaN(Date.parse(parsed.saved_at)) ||
     !isString(parsed.project_name) ||
     !isBitsamCadReference(parsed.cad) ||
-    !isWorkspaceProjectState(parsed.workspace)
+    !isWorkspaceProjectState(parsed.workspace) ||
+    (parsed.analysis_result !== undefined &&
+      parsed.analysis_result !== null &&
+      !isSavedRayTraceResult(parsed.analysis_result))
   ) {
     throw new BitsamProjectError(
       'BITSAM 프로젝트의 필수 데이터가 없거나 손상되었습니다.',

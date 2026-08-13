@@ -51,6 +51,26 @@ describe('workspace store', () => {
     })
   })
 
+  it('restores each CAD case ray job across show/hide and case switching', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.setActiveRayTraceJobId('ray-job-a')
+
+    actions.setCadCaseVisible(caseA, false)
+    expect(store.getState().activeRayTraceJobId).toBe('ray-job-a')
+
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+    actions.setActiveRayTraceJobId('ray-job-b')
+
+    actions.setActiveCadCase(caseA)
+    expect(store.getState().activeRayTraceJobId).toBe('ray-job-a')
+    actions.setActiveCadCase(caseB)
+    expect(store.getState().activeRayTraceJobId).toBe('ray-job-b')
+  })
+
   it('normalizes selection IDs and supports toggling', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()

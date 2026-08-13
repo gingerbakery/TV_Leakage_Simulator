@@ -21,6 +21,7 @@ export interface CadCase {
   name?: string
   note?: string
   workspaceState?: WorkspaceProjectState
+  latestJobId?: string | null
   latestResult?: RayTraceResult | null
 }
 
@@ -201,6 +202,7 @@ export interface WorkspaceSnapshot {
   placementPreviewReceiver: ReceiverSpec | null
   rayTraceConfig: RayTraceConfigRequest
   activeRayTraceJobId: string | null
+  restoredRayTraceResult: RayTraceResult | null
   rayPathDisplayFilters: RayPathDisplayFilters
 }
 
@@ -271,6 +273,7 @@ export interface WorkspaceActions {
   setPlacementPreviewReceiver(receiver: ReceiverSpec | null): void
   setRayTraceConfig(config: RayTraceConfigRequest): void
   setActiveRayTraceJobId(jobId: string | null): void
+  setRestoredRayTraceResult(result: RayTraceResult | null): void
   setRayPathDisplayFilter(
     filter: RayPathDisplayFilter,
     visible: boolean,
@@ -597,12 +600,14 @@ function restoredSceneState(projectState: WorkspaceProjectState) {
     placementPreviewEmitter: null,
     placementPreviewReceiver: null,
     activeRayTraceJobId: null,
+    restoredRayTraceResult: null,
   }
 }
 
 function invalidateRayTraceState() {
   return {
     activeRayTraceJobId: null,
+    restoredRayTraceResult: null,
   }
 }
 
@@ -650,6 +655,7 @@ function createSceneSnapshot(): Omit<
     placementPreviewReceiver: null,
     rayTraceConfig: { ...defaultRayTraceConfig },
     activeRayTraceJobId: null,
+    restoredRayTraceResult: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
   }
 }
@@ -688,7 +694,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           }
           const savedCases = state.cadCases.map((item) =>
             item.caseId === state.activeCadCaseId
-              ? { ...item, workspaceState: projectStateFromSnapshot(state) }
+              ? {
+                  ...item,
+                  workspaceState: projectStateFromSnapshot(state),
+                  latestJobId: state.activeRayTraceJobId,
+                }
               : item,
           )
           return {
@@ -716,7 +726,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           if (!target || target.caseId === state.activeCadCaseId) return state
           const cadCases = state.cadCases.map((item) =>
             item.caseId === state.activeCadCaseId
-              ? { ...item, workspaceState: projectStateFromSnapshot(state) }
+              ? {
+                  ...item,
+                  workspaceState: projectStateFromSnapshot(state),
+                  latestJobId: state.activeRayTraceJobId,
+                }
               : item,
           )
           return {
@@ -724,6 +738,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             activeCadCaseId: target.caseId,
             cadCases,
             ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+            activeRayTraceJobId: target.latestJobId ?? null,
           }
         })
       },
@@ -753,10 +768,14 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ...item,
               visible: item.caseId === caseId,
               ...(item.caseId === state.activeCadCaseId
-                ? { workspaceState: projectStateFromSnapshot(state) }
+                ? {
+                    workspaceState: projectStateFromSnapshot(state),
+                    latestJobId: state.activeRayTraceJobId,
+                  }
                 : {}),
             })),
             ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+            activeRayTraceJobId: target.latestJobId ?? null,
           }
         })
       },
@@ -1163,7 +1182,23 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         })
       },
       setActiveRayTraceJobId: (activeRayTraceJobId) => {
-        set({ activeRayTraceJobId })
+        set((state) => ({
+          activeRayTraceJobId,
+          restoredRayTraceResult: null,
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === state.activeCadCaseId
+              ? { ...item, latestJobId: activeRayTraceJobId }
+              : item,
+          ),
+        }))
+      },
+      setRestoredRayTraceResult: (restoredRayTraceResult) => {
+        set({
+          restoredRayTraceResult: restoredRayTraceResult
+            ? structuredClone(restoredRayTraceResult)
+            : null,
+          activeRayTraceJobId: null,
+        })
       },
       setRayPathDisplayFilter: (filter, visible) => {
         set((state) => ({
@@ -1199,6 +1234,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           placementPreviewEmitter: null,
           placementPreviewReceiver: null,
           activeRayTraceJobId: null,
+          restoredRayTraceResult: null,
         })
       },
       clearSceneState: () => {
@@ -1274,6 +1310,8 @@ export const workspaceSelectors = {
     state.rayTraceConfig ?? defaultRayTraceConfig,
   activeRayTraceJobId: (state: WorkspaceStore) =>
     state.activeRayTraceJobId,
+  restoredRayTraceResult: (state: WorkspaceStore) =>
+    state.restoredRayTraceResult ?? null,
   rayPathDisplayFilters: (state: WorkspaceStore) =>
     state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
   actions: (state: WorkspaceStore) => state.actions,

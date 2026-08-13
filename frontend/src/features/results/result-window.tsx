@@ -189,56 +189,141 @@ function receiverLightAreas(
   return areas
 }
 
-function comparisonConditionSignature(result: RayTraceResult): string {
-  const config = result.config
-  return JSON.stringify({
-    trace: {
-      ray_count: config.ray_count,
-      max_depth: config.max_depth,
-      seed: config.seed,
-      min_energy: config.min_energy,
-      epsilon_mm: config.epsilon_mm,
-      k_abs: config.k_abs,
-      k_brdf: config.k_brdf,
-      termination_mode: config.termination_mode,
-    },
-    emitters: result.emitters.filter((item) => item.enabled).map((item) => ({
-      type: item.emitter_type,
-      normal_flip: item.normal_flip,
-      custom_normal: item.custom_normal,
-      distribution: item.direction_distribution,
-      gaussian_sigma_deg: item.gaussian_sigma_deg,
-      power_mode: item.power_mode,
-      power_lumen: item.power_lumen,
-      power_density_lm_per_m2: item.power_density_lm_per_m2,
-      luminance_nit: item.luminance_nit,
-      center: item.center,
-      u_axis: item.u_axis,
-      v_axis: item.v_axis,
-      width_mm: item.width_mm,
-      height_mm: item.height_mm,
-      ray_count: item.ray_count,
-      seed: item.seed,
-    })),
-    receivers: result.receivers.filter((item) => item.enabled).map((item) => ({
-      center: item.center,
-      normal: item.normal,
-      u_axis: item.u_axis,
-      v_axis: item.v_axis,
-      width_mm: item.width_mm,
-      height_mm: item.height_mm,
-      resolution: item.resolution,
-      acceptance_angle_deg: item.acceptance_angle_deg,
-      normal_flip: item.normal_flip,
-    })),
-  })
+function comparisonConditionMismatches(
+  result: RayTraceResult,
+  baseline: RayTraceResult,
+): string[] {
+  const mismatches: string[] = []
+  const equivalent = (left: unknown, right: unknown): boolean => {
+    if (typeof left === 'number' && typeof right === 'number') {
+      const scale = Math.max(1, Math.abs(left), Math.abs(right))
+      return Math.abs(left - right) <= scale * 1e-6
+    }
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return left.length === right.length &&
+        left.every((value, index) => equivalent(value, right[index]))
+    }
+    return left === right || (left == null && right == null)
+  }
+  const different = (left: unknown, right: unknown) =>
+    !equivalent(left, right)
+  const traceFields = [
+    ['Ray count', 'ray_count'],
+    ['Max reflection', 'max_depth'],
+    ['Seed', 'seed'],
+    ['Minimum energy', 'min_energy'],
+    ['Intersection epsilon', 'epsilon_mm'],
+    ['k_abs', 'k_abs'],
+    ['k_brdf', 'k_brdf'],
+    ['Termination mode', 'termination_mode'],
+  ] as const
+  for (const [label, key] of traceFields) {
+    if (different(result.config[key], baseline.config[key])) {
+      mismatches.push(`Ray 설정 · ${label}`)
+    }
+  }
+
+  const emitters = result.emitters.filter((item) => item.enabled)
+  const baselineEmitters = baseline.emitters.filter((item) => item.enabled)
+  if (emitters.length !== baselineEmitters.length) {
+    mismatches.push('Emitter · 활성 개수')
+  }
+  const commonEmitterFields = [
+    ['형식', 'emitter_type'],
+    ['방향 반전', 'normal_flip'],
+    ['분포 방식', 'direction_distribution'],
+    ['Power mode', 'power_mode'],
+    ['중심 위치', 'center'],
+    ['U축', 'u_axis'],
+    ['V축', 'v_axis'],
+    ['폭', 'width_mm'],
+    ['높이', 'height_mm'],
+    ['Ray count', 'ray_count'],
+    ['Seed', 'seed'],
+  ] as const
+  for (let index = 0; index < Math.min(emitters.length, baselineEmitters.length); index += 1) {
+    const emitter = emitters[index]
+    const baseEmitter = baselineEmitters[index]
+    for (const [label, key] of commonEmitterFields) {
+      if (different(emitter[key], baseEmitter[key])) {
+        mismatches.push(`Emitter ${index + 1} · ${label}`)
+      }
+    }
+    if (
+      emitter.normal_mode === 'custom' &&
+      baseEmitter.normal_mode === 'custom' &&
+      different(emitter.custom_normal, baseEmitter.custom_normal)
+    ) mismatches.push(`Emitter ${index + 1} · 사용자 방향`)
+    if (
+      emitter.direction_distribution === 'gaussian' &&
+      baseEmitter.direction_distribution === 'gaussian' &&
+      different(emitter.gaussian_sigma_deg, baseEmitter.gaussian_sigma_deg)
+    ) mismatches.push(`Emitter ${index + 1} · Gaussian Sigma`)
+    if (emitter.power_mode === baseEmitter.power_mode) {
+      const powerField = emitter.power_mode === 'set_luminance'
+        ? ['휘도', 'luminance_nit'] as const
+        : emitter.power_mode === 'power_per_area'
+          ? ['Power density', 'power_density_lm_per_m2'] as const
+          : ['Total power', 'power_lumen'] as const
+      if (different(emitter[powerField[1]], baseEmitter[powerField[1]])) {
+        mismatches.push(`Emitter ${index + 1} · ${powerField[0]}`)
+      }
+    }
+  }
+
+  const receivers = result.receivers.filter((item) => item.enabled)
+  const baselineReceivers = baseline.receivers.filter((item) => item.enabled)
+  if (receivers.length !== baselineReceivers.length) {
+    mismatches.push('Receiver · 활성 개수')
+  }
+  const receiverFields = [
+    ['중심 위치', 'center'],
+    ['법선 방향', 'normal'],
+    ['폭', 'width_mm'],
+    ['높이', 'height_mm'],
+    ['해상도', 'resolution'],
+    ['수광 각도', 'acceptance_angle_deg'],
+    ['방향 반전', 'normal_flip'],
+  ] as const
+  for (let index = 0; index < Math.min(receivers.length, baselineReceivers.length); index += 1) {
+    const receiver = receivers[index]
+    const baseReceiver = baselineReceivers[index]
+    for (const [label, key] of receiverFields) {
+      if (different(receiver[key], baseReceiver[key])) {
+        mismatches.push(`Receiver ${index + 1} · ${label}`)
+      }
+    }
+    const axesParallel = (
+      left: readonly number[] | null,
+      right: readonly number[] | null,
+    ) => {
+      if (left === null || right === null) return left === right
+      if (left.length !== 3 || right.length !== 3) return false
+      const leftLength = Math.hypot(left[0], left[1], left[2])
+      const rightLength = Math.hypot(right[0], right[1], right[2])
+      if (leftLength <= 1e-12 || rightLength <= 1e-12) return false
+      const cosine =
+        (left[0] * right[0] + left[1] * right[1] + left[2] * right[2]) /
+        (leftLength * rightLength)
+      // +axis and -axis describe the same physical Receiver edge. Only an
+      // actual in-plane rotation should invalidate a structural comparison.
+      return Math.abs(Math.abs(cosine) - 1) <= 1e-6
+    }
+    if (
+      !axesParallel(receiver.u_axis, baseReceiver.u_axis) ||
+      !axesParallel(receiver.v_axis, baseReceiver.v_axis)
+    ) {
+      mismatches.push(`Receiver ${index + 1} · 면 회전 방향`)
+    }
+  }
+  return mismatches
 }
 
 function leakageImprovementScore(
   result: RayTraceResult,
   baseline: RayTraceResult,
 ): number | null {
-  if (comparisonConditionSignature(result) !== comparisonConditionSignature(baseline)) {
+  if (comparisonConditionMismatches(result, baseline).length > 0) {
     return null
   }
   const current = caseLuminance(result)
@@ -1098,10 +1183,14 @@ export function RayTraceResultWindow({
                         const score = baselineCase
                           ? leakageImprovementScore(item.result, baselineCase.result)
                           : null
-                        const conditionsMatch = baselineCase
-                          ? comparisonConditionSignature(item.result) ===
-                            comparisonConditionSignature(baselineCase.result)
-                          : false
+                        const conditionMismatches = baselineCase
+                          ? comparisonConditionMismatches(
+                              item.result,
+                              baselineCase.result,
+                            )
+                          : []
+                        const conditionsMatch = Boolean(baselineCase) &&
+                          conditionMismatches.length === 0
                         return (
                           <tr
                             key={item.case_id}
@@ -1163,9 +1252,23 @@ export function RayTraceResultWindow({
                               {score === null ? '—' : score.toFixed(1)}
                             </td>
                             <td className="p-2 text-center">
-                              <Badge variant={conditionsMatch ? 'secondary' : 'destructive'}>
-                                {conditionsMatch ? '일치' : '불일치'}
-                              </Badge>
+                              <span className="inline-flex items-center gap-1">
+                                <Badge variant={conditionsMatch ? 'secondary' : 'destructive'}>
+                                  {conditionsMatch ? '일치' : '불일치'}
+                                </Badge>
+                                <HelpTooltip label={`${item.name} 비교 조건 설명`}>
+                                  {conditionsMatch ? (
+                                    'Baseline과 Ray, Emitter, Receiver 설정 조건이 모두 일치합니다.'
+                                  ) : (
+                                    <span className="block">
+                                      <span className="mb-1 block font-semibold">Baseline과 다른 설정</span>
+                                      {conditionMismatches.map((mismatch) => (
+                                        <span key={mismatch} className="block">• {mismatch}</span>
+                                      ))}
+                                    </span>
+                                  )}
+                                </HelpTooltip>
+                              </span>
                             </td>
                             <td className="p-2 text-right tabular-nums">{(itemHitRatio * 100).toFixed(3)}%</td>
                             <td className="p-2 text-right tabular-nums">{formatMetric(flux)} lm</td>

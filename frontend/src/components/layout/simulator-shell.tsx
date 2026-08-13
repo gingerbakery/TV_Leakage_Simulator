@@ -94,11 +94,16 @@ export function SimulatorShell() {
   const activeRayTraceJobId = useWorkspaceStore(
     workspaceSelectors.activeRayTraceJobId,
   )
+  const restoredRayTraceResult = useWorkspaceStore(
+    workspaceSelectors.restoredRayTraceResult,
+  )
   const sceneQuery = useSceneQuery(activeCad?.path ?? '')
   const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
   const rayTraceJob = rayTraceJobQuery.data
   const rayTraceResult =
-    rayTraceJob?.status === 'completed' ? rayTraceJob.result : null
+    rayTraceJob?.status === 'completed'
+      ? rayTraceJob.result
+      : restoredRayTraceResult
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
   const activeComponent =
@@ -157,6 +162,9 @@ export function SimulatorShell() {
     }
 
     actions.restoreProjectState(pendingProject.workspace)
+    actions.setRestoredRayTraceResult(
+      pendingProject.analysis_result ?? null,
+    )
     setPendingProject(null)
     projectLoadAttemptRef.current = ''
     openFeatureNotice(
@@ -182,6 +190,8 @@ export function SimulatorShell() {
       const project = createBitsamProject(
         scene,
         workspaceStore.getState(),
+        new Date(),
+        rayTraceResult,
       )
       const saveResult = await saveBitsamProject(project)
       if (saveResult === 'cancelled') return

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createWorkspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 
 import {
   BitsamProjectError,
@@ -104,6 +105,28 @@ describe('BITSAM project format', () => {
     expect(compatibility.compatible).toBe(false)
     expect(compatibility.reasons).toContain(
       '부품 ID 또는 형상 경계 정보가 다릅니다.',
+    )
+  })
+
+  it('round-trips the latest analysis result and stored ray paths', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.setActiveCad({
+      path: 'model.step',
+      displayName: 'model.step',
+    })
+    const result = createRayTraceResultFixture()
+    const project = createBitsamProject(
+      createSceneFixture(),
+      store.getState(),
+      new Date('2026-08-13T00:00:00.000Z'),
+      result,
+    )
+
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.analysis_result?.run_id).toBe(result.run_id)
+    expect(restored.analysis_result?.stored_paths).toEqual(result.stored_paths)
+    expect(restored.analysis_result?.receiver_grids).toEqual(
+      result.receiver_grids,
     )
   })
 
