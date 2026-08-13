@@ -79,6 +79,8 @@ describe('Step 11 result UI', () => {
       name: 'Compare Baseline structure',
     })
     expect(compareCheckbox).toHaveProperty('checked', true)
+    expect(screen.getByText('50.0')).not.toBeNull()
+    expect(screen.getByText('4.000 mm²')).not.toBeNull()
     fireEvent.click(compareCheckbox)
     expect(compareCheckbox).toHaveProperty('checked', false)
     expect(
@@ -88,6 +90,8 @@ describe('Step 11 result UI', () => {
       target: { value: 'Updated baseline' },
     })
     expect(screen.getByDisplayValue('Updated baseline')).not.toBeNull()
+    expect(screen.getByText('빛샘 개선 점수')).not.toBeNull()
+    expect(screen.getByText('광영역(@5%)')).not.toBeNull()
   })
 
   it('opens the analysis window at the expanded default size', () => {
@@ -199,6 +203,13 @@ describe('Step 11 result UI', () => {
       </div>,
     )
     fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+
+    expect(screen.getByText('광영역 @1%')).not.toBeNull()
+    expect(screen.getByText('광영역 @5%')).not.toBeNull()
+    expect(screen.getByText('광영역 @10%')).not.toBeNull()
+    expect(
+      screen.getByRole('button', { name: 'Receiver 광영역 5% 설명' }),
+    ).not.toBeNull()
 
     const frame = screen.getByTestId('receiver_001-heatmap-frame')
     expect(frame.style.aspectRatio).toBe('40 / 20')

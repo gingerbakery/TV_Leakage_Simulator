@@ -1,5 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { ArrowLeftRight } from 'lucide-react'
 import type { RayHit, ReceiverSpec, ScenePayload } from '@/api'
+import { Button } from '@/components/ui/button'
 
 import { renderRaySectionImage } from './ray-section-view'
 
@@ -22,17 +24,35 @@ export function RaySectionImage({
   storedPaths,
   roiFaceIds,
 }: RaySectionImageProps) {
+  const [reverseDirection, setReverseDirection] = useState(false)
   const dataUrl = useMemo(
     () =>
-      renderRaySectionImage({ scene, receiver, storedPaths, roiFaceIds }),
-    [scene, receiver, storedPaths, roiFaceIds],
+      renderRaySectionImage({
+        scene,
+        receiver,
+        storedPaths,
+        roiFaceIds,
+        reverseDirection,
+      }),
+    [scene, receiver, storedPaths, roiFaceIds, reverseDirection],
   )
   const label = receiver.display_name || receiver.receiver_id
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-background/40">
-      <div className="border-b border-border bg-muted/20 px-3 py-1.5 text-xs font-semibold">
-        {label}
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-1.5">
+        <span className="text-xs font-semibold">{label}</span>
+        <Button
+          type="button"
+          size="xs"
+          variant={reverseDirection ? 'secondary' : 'outline'}
+          aria-pressed={reverseDirection}
+          onClick={() => setReverseDirection((value) => !value)}
+          title="동일한 단면을 반대편에서 봅니다"
+        >
+          <ArrowLeftRight />
+          방향 반전 {reverseDirection ? 'ON' : 'OFF'}
+        </Button>
       </div>
       {dataUrl ? (
         <>

@@ -78,6 +78,8 @@ export interface RaySectionImageOptions {
    * the user is actually looking at in the ROI-clipped viewer instead of
    * the full, uncropped model. */
   roiFaceIds?: number[]
+  /** View the same section plane from the opposite side. */
+  reverseDirection?: boolean
   width?: number
   height?: number
 }
@@ -152,6 +154,7 @@ export function renderRaySectionImage({
   receiver,
   storedPaths,
   roiFaceIds,
+  reverseDirection = false,
   width = defaultWidth,
   height = defaultHeight,
 }: RaySectionImageOptions): string | null {
@@ -249,7 +252,10 @@ export function renderRaySectionImage({
       positiveExtent = Math.max(positiveExtent, projection)
       negativeExtent = Math.max(negativeExtent, -projection)
     }
-    const cameraSide = positiveExtent >= negativeExtent ? -1 : 1
+    const automaticCameraSide = positiveExtent >= negativeExtent ? -1 : 1
+    const cameraSide = reverseDirection
+      ? -automaticCameraSide
+      : automaticCameraSide
 
     const clipPlane = new Plane().setFromNormalAndCoplanarPoint(
       basis.viewNormal.clone().multiplyScalar(-cameraSide),

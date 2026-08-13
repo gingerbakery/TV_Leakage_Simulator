@@ -4,6 +4,7 @@ import { CircleHelp } from 'lucide-react'
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 
@@ -17,23 +18,25 @@ export interface HelpTooltipProps {
  *  user doesn't need it. */
 export function HelpTooltip({ label, children }: HelpTooltipProps) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          sideOffset={6}
+          className="max-w-72 whitespace-normal text-left leading-5"
         >
-          <CircleHelp className="size-3.5" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="right"
-        sideOffset={6}
-        className="max-w-72 whitespace-normal text-left leading-5"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
+          {children}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }

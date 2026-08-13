@@ -118,6 +118,7 @@ export interface ViewerRayObjectContextTarget {
 
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
+  cadModelVisible?: boolean
   axisScalePercent: number
   surfaceTransparencyPercent: number
   cameraPreset: ViewerCameraPreset
@@ -844,7 +845,11 @@ function faceOverlayMaterial(
     side: DoubleSide,
     transparent: opacity < 1,
     opacity,
-    depthWrite: opacity >= 1,
+    // ROI component/material layers are coplanar display overlays. Let the
+    // underlying clipped CAD surface own the depth buffer; writing depth
+    // here intermittently occludes the real B-rep edge lines rendered
+    // afterwards and produces broken, noisy internal-line artifacts.
+    depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -1192,6 +1197,7 @@ function createComponentNode(
 
 export function ThreeViewerCanvas({
   scene,
+  cadModelVisible = true,
   axisScalePercent,
   surfaceTransparencyPercent,
   cameraPreset,
@@ -3071,7 +3077,7 @@ export function ThreeViewerCanvas({
     ]
     const activeRoiFaceSet = new Set(activeRoiFaceIds)
     const selectionFaceIds =
-      emitterFaceSelectionArmed || materialFacePickArmed
+      emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed
       ? selectedFaceIds.filter((faceId) =>
           activeRoiFaceSet.has(faceId),
         )
@@ -3122,12 +3128,16 @@ export function ThreeViewerCanvas({
         roiPointTransform,
       )
       if (selectedClipped) {
-        const selectionColor = materialFacePickArmed
+        const selectionColor = datumFacePickArmed
+          ? selectedComponentSurfaceColor
+          : materialFacePickArmed
           ? selectedMaterialFaceHighlightColor
           : emitterFaceSelectionArmed
             ? selectedFaceHighlightColorArmed
             : selectedComponentSurfaceColor
-        const selectionOpacity = materialFacePickArmed
+        const selectionOpacity = datumFacePickArmed
+          ? 0.72
+          : materialFacePickArmed
           ? 0.62
           : emitterFaceSelectionArmed
             ? 0.52
@@ -3201,11 +3211,11 @@ export function ThreeViewerCanvas({
               color: selectionColor,
               transparent: true,
               opacity:
-                emitterFaceSelectionArmed || materialFacePickArmed
+                emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed
                   ? 1
                   : 0.88,
               depthTest:
-                emitterFaceSelectionArmed || materialFacePickArmed,
+                emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed,
               depthWrite: false,
               toneMapped: false,
             }),
@@ -3480,6 +3490,7 @@ export function ThreeViewerCanvas({
       const isSelected =
         isEditing ||
         (!emitterFaceSelectionArmed &&
+          !datumFacePickArmed &&
           selectedComponentIds.includes(componentId))
       const isUnavailable =
         hiddenComponentIds.includes(componentId) ||
@@ -3587,7 +3598,7 @@ export function ThreeViewerCanvas({
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
-      if (isSelected && !emitterFaceSelectionArmed) {
+      if (isSelected && !emitterFaceSelectionArmed && !datumFacePickArmed) {
         const targetSurface = new Mesh(
           node.surface.geometry.clone(),
           new MeshBasicMaterial({
@@ -3707,6 +3718,7 @@ export function ThreeViewerCanvas({
       if (componentSelectedFaceIds.length > 0) {
         const isEmitterSurfaceDraft = emitterFaceSelectionArmed
         const isMaterialSurfaceDraft = materialFacePickArmed
+        const isDatumSurfaceDraft = datumFacePickArmed
         const bundle = createFaceGeometry(
           scene,
           componentSelectedFaceIds,
@@ -3716,14 +3728,18 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshBasicMaterial({
-              color: isMaterialSurfaceDraft
+              color: isDatumSurfaceDraft
+                ? selectedComponentSurfaceColor
+                : isMaterialSurfaceDraft
                 ? selectedMaterialFaceHighlightColor
                 : isEmitterSurfaceDraft
                   ? selectedFaceHighlightColorArmed
                   : selectedFaceHighlightColorEditing,
               side: DoubleSide,
               transparent: true,
-              opacity: isMaterialSurfaceDraft
+              opacity: isDatumSurfaceDraft
+                ? 0.76
+                : isMaterialSurfaceDraft
                 ? 0.72
                 : isEmitterSurfaceDraft
                   ? 0.94
@@ -3764,7 +3780,9 @@ export function ThreeViewerCanvas({
             if (outlineBoundary) {
               outlineBoundary.name = `selected-face-outline-${componentId}`
               outlineBoundary.material.color.set(
-                isMaterialSurfaceDraft ? 0xffb347 : 0xffffff,
+                isDatumSurfaceDraft || isMaterialSurfaceDraft
+                  ? 0xffb347
+                  : 0xffffff,
               )
               outlineBoundary.material.depthTest = true
               outlineBoundary.renderOrder = 93
@@ -3918,9 +3936,18 @@ export function ThreeViewerCanvas({
         node.transformOverlayRoot.add(overlay)
       }
     }
+    // CAD visibility is a display-only switch. Keep the scene and ray
+    // overlay mounted so stored paths remain available while the model is
+    // hidden from the Import CAD List.
+    if (!cadModelVisible) {
+      runtime.modelRoot.visible = false
+      runtime.roiPreviewRoot.visible = false
+      runtime.roiBoundsMarker.visible = false
+    }
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
+    datumFacePickArmed,
     emitterFaceSelectionArmed,
     emitters,
     editingComponentId,
@@ -3941,6 +3968,7 @@ export function ThreeViewerCanvas({
     selectedFaceIds,
     surfaceOpacity,
     transformRules,
+    cadModelVisible,
     onStatusMessage,
   ])
 

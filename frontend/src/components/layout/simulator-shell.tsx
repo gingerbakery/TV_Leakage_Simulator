@@ -373,7 +373,8 @@ export function SimulatorShell() {
         />
         <ViewerWorkspace
           cadDisplayName={activeCad?.displayName}
-          scene={activeCadCaseVisible ? scene : undefined}
+          scene={scene}
+          cadModelVisible={activeCadCaseVisible}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onCameraFrameChange={setViewerCameraFrame}

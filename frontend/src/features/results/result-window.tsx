@@ -103,10 +103,160 @@ function caseFlux(result: RayTraceResult): number {
   )
 }
 
-function percentChange(value: number, baseline: number): string {
-  if (baseline === 0) return value === 0 ? '0.0%' : '—'
-  const change = ((value - baseline) / Math.abs(baseline)) * 100
-  return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`
+function caseLuminance(result: RayTraceResult): {
+  peakNit: number
+  meanNit: number
+  lightAreaMm2: Record<1 | 5 | 10, number>
+  lightAreaRatio: Record<1 | 5 | 10, number>
+} {
+  let peakNit = 0
+  let weightedMean = 0
+  let totalArea = 0
+  for (const receiver of result.receivers) {
+    const metrics = objectValue(result.metrics, receiver.receiver_id)
+    const receiverPeak = numeric(metrics.peak_nit_est)
+    const receiverMean = numeric(metrics.mean_nit_est)
+    const area = Math.max(0, receiver.width_mm * receiver.height_mm)
+    peakNit = Math.max(peakNit, receiverPeak)
+    weightedMean += receiverMean * area
+    totalArea += area
+  }
+  const meanNit = totalArea > 0 ? weightedMean / totalArea : 0
+  const thresholds = [1, 5, 10] as const
+  const lightAreaMm2: Record<1 | 5 | 10, number> = { 1: 0, 5: 0, 10: 0 }
+  let sampledAreaMm2 = 0
+  for (const grid of result.receiver_grids) {
+    const binAreaMm2 = Math.max(0, numeric(grid.bin_area_mm2))
+    const binAreaM2 = binAreaMm2 * 1e-6
+    for (const row of grid.flux_lumen) {
+      for (const flux of row) {
+        sampledAreaMm2 += binAreaMm2
+        const nit =
+          binAreaM2 > 0
+            ? (result.config.k_abs * result.config.k_brdf * numeric(flux)) /
+              binAreaM2 /
+              Math.PI
+            : 0
+        for (const threshold of thresholds) {
+          if (peakNit > 0 && nit >= peakNit * (threshold / 100)) {
+            lightAreaMm2[threshold] += binAreaMm2
+          }
+        }
+      }
+    }
+  }
+  return {
+    peakNit,
+    meanNit,
+    lightAreaMm2,
+    lightAreaRatio: {
+      1: sampledAreaMm2 > 0 ? (lightAreaMm2[1] / sampledAreaMm2) * 100 : 0,
+      5: sampledAreaMm2 > 0 ? (lightAreaMm2[5] / sampledAreaMm2) * 100 : 0,
+      10: sampledAreaMm2 > 0 ? (lightAreaMm2[10] / sampledAreaMm2) * 100 : 0,
+    },
+  }
+}
+
+function receiverLightAreas(
+  result: RayTraceResult,
+  receiverId: string,
+): Record<1 | 5 | 10, number> {
+  const areas: Record<1 | 5 | 10, number> = { 1: 0, 5: 0, 10: 0 }
+  const grid = result.receiver_grids.find(
+    (candidate) => candidate.receiver_id === receiverId,
+  )
+  if (!grid) return areas
+  const peakNit = numeric(
+    objectValue(result.metrics, receiverId).peak_nit_est,
+  )
+  if (peakNit <= 0) return areas
+  const binAreaMm2 = Math.max(0, numeric(grid.bin_area_mm2))
+  const binAreaM2 = binAreaMm2 * 1e-6
+  if (binAreaM2 <= 0) return areas
+  for (const row of grid.flux_lumen) {
+    for (const flux of row) {
+      const nit =
+        (result.config.k_abs * result.config.k_brdf * numeric(flux)) /
+        binAreaM2 /
+        Math.PI
+      for (const threshold of [1, 5, 10] as const) {
+        if (nit >= peakNit * (threshold / 100)) {
+          areas[threshold] += binAreaMm2
+        }
+      }
+    }
+  }
+  return areas
+}
+
+function comparisonConditionSignature(result: RayTraceResult): string {
+  const config = result.config
+  return JSON.stringify({
+    trace: {
+      ray_count: config.ray_count,
+      max_depth: config.max_depth,
+      seed: config.seed,
+      min_energy: config.min_energy,
+      epsilon_mm: config.epsilon_mm,
+      k_abs: config.k_abs,
+      k_brdf: config.k_brdf,
+      termination_mode: config.termination_mode,
+    },
+    emitters: result.emitters.filter((item) => item.enabled).map((item) => ({
+      type: item.emitter_type,
+      normal_flip: item.normal_flip,
+      custom_normal: item.custom_normal,
+      distribution: item.direction_distribution,
+      gaussian_sigma_deg: item.gaussian_sigma_deg,
+      power_mode: item.power_mode,
+      power_lumen: item.power_lumen,
+      power_density_lm_per_m2: item.power_density_lm_per_m2,
+      luminance_nit: item.luminance_nit,
+      center: item.center,
+      u_axis: item.u_axis,
+      v_axis: item.v_axis,
+      width_mm: item.width_mm,
+      height_mm: item.height_mm,
+      ray_count: item.ray_count,
+      seed: item.seed,
+    })),
+    receivers: result.receivers.filter((item) => item.enabled).map((item) => ({
+      center: item.center,
+      normal: item.normal,
+      u_axis: item.u_axis,
+      v_axis: item.v_axis,
+      width_mm: item.width_mm,
+      height_mm: item.height_mm,
+      resolution: item.resolution,
+      acceptance_angle_deg: item.acceptance_angle_deg,
+      normal_flip: item.normal_flip,
+    })),
+  })
+}
+
+function leakageImprovementScore(
+  result: RayTraceResult,
+  baseline: RayTraceResult,
+): number | null {
+  if (comparisonConditionSignature(result) !== comparisonConditionSignature(baseline)) {
+    return null
+  }
+  const current = caseLuminance(result)
+  const base = caseLuminance(baseline)
+  const metrics = [
+    { value: current.peakNit, baseline: base.peakNit, weight: 0.6 },
+    { value: caseFlux(result), baseline: caseFlux(baseline), weight: 0.25 },
+    { value: current.lightAreaMm2[5], baseline: base.lightAreaMm2[5], weight: 0.15 },
+  ]
+  const usable = metrics.filter((metric) => metric.baseline > 0)
+  const totalWeight = usable.reduce((sum, metric) => sum + metric.weight, 0)
+  if (totalWeight === 0) return null
+  const severityRatio = usable.reduce(
+    (sum, metric) =>
+      sum + (metric.weight / totalWeight) * (metric.value / metric.baseline),
+    0,
+  )
+  return Math.max(0, Math.min(100, 100 / (1 + severityRatio)))
 }
 
 interface WindowFrame {
@@ -479,13 +629,20 @@ function ReceiverHeatmap({
 function Stat({
   label,
   value,
+  help,
 }: {
   label: string
   value: string
+  help?: string
 }) {
   return (
     <div className="rounded-lg border border-border bg-background/45 p-2.5">
-      <div className="text-[0.62rem] text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+        {label}
+        {help ? (
+          <HelpTooltip label={`${label} 설명`}>{help}</HelpTooltip>
+        ) : null}
+      </div>
       <div className="mt-1 text-sm font-semibold">{value}</div>
     </div>
   )
@@ -889,19 +1046,45 @@ export function RayTraceResultWindow({
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[900px] border-collapse text-xs">
+                  <table className="w-full min-w-[1100px] border-collapse text-xs">
                     <thead className="bg-muted/45 text-left">
                       <tr>
                         <th className="p-2">Compare</th>
                         <th className="p-2">Case / CAD</th>
-                        <th className="p-2 text-right">Total rays</th>
-                        <th className="p-2 text-right">Receiver hits</th>
+                        <th className="p-2">
+                          <span className="flex items-center justify-end gap-1">
+                            빛샘 개선 점수
+                            <HelpTooltip label="빛샘 개선 점수 설명">
+                              Baseline 50점을 기준으로 Peak nit 60%, Total flux 25%, 광영역(@5%) 15%를 가중 평가합니다. 점수가 높을수록 빛샘이 개선된 구조입니다.
+                            </HelpTooltip>
+                          </span>
+                        </th>
+                        <th className="p-2 text-center">비교 조건</th>
                         <th className="p-2 text-right">Hit ratio</th>
-                        <th className="p-2 text-right">Total flux</th>
-                        <th className="p-2 text-right">vs baseline</th>
-                        <th className="p-2 text-right">Surface hits</th>
-                        <th className="p-2 text-right">Runtime</th>
-                        <th className="p-2 text-right">Paths</th>
+                        <th className="p-2">
+                          <span className="flex items-center justify-end gap-1">
+                            Total flux
+                            <HelpTooltip label="Total flux 설명">
+                              모든 Receiver에 도달한 전체 광량(lm)입니다. 값이 작을수록 유입된 빛샘 에너지가 적습니다.
+                            </HelpTooltip>
+                          </span>
+                        </th>
+                        <th className="p-2">
+                          <span className="flex items-center justify-end gap-1">
+                            Peak nit
+                            <HelpTooltip label="Peak nit 설명">
+                              Receiver Heatmap에서 가장 밝은 지점의 추정 휘도입니다. 체감상 강하게 보이는 국부 빛샘을 나타냅니다.
+                            </HelpTooltip>
+                          </span>
+                        </th>
+                        <th className="p-2">
+                          <span className="flex items-center justify-end gap-1">
+                            광영역(@5%)
+                            <HelpTooltip label="광영역 5% 설명">
+                              해당 Case의 최대 Peak nit 중 5% 이상인 Receiver Heatmap 셀의 실제 면적 합계(mm²)입니다.
+                            </HelpTooltip>
+                          </span>
+                        </th>
                         <th className="p-2" />
                       </tr>
                     </thead>
@@ -911,9 +1094,14 @@ export function RayTraceResultWindow({
                           ? item.result.receiver_hit_count / item.result.total_rays
                           : 0
                         const flux = caseFlux(item.result)
-                        const baselineFlux = baselineCase
-                          ? caseFlux(baselineCase.result)
-                          : 0
+                        const luminance = caseLuminance(item.result)
+                        const score = baselineCase
+                          ? leakageImprovementScore(item.result, baselineCase.result)
+                          : null
+                        const conditionsMatch = baselineCase
+                          ? comparisonConditionSignature(item.result) ===
+                            comparisonConditionSignature(baselineCase.result)
+                          : false
                         return (
                           <tr
                             key={item.case_id}
@@ -971,14 +1159,18 @@ export function RayTraceResultWindow({
                                 }
                               />
                             </td>
-                            <td className="p-2 text-right tabular-nums">{item.result.total_rays.toLocaleString()}</td>
-                            <td className="p-2 text-right tabular-nums">{item.result.receiver_hit_count.toLocaleString()}</td>
+                            <td className="p-2 text-right text-base font-bold tabular-nums">
+                              {score === null ? '—' : score.toFixed(1)}
+                            </td>
+                            <td className="p-2 text-center">
+                              <Badge variant={conditionsMatch ? 'secondary' : 'destructive'}>
+                                {conditionsMatch ? '일치' : '불일치'}
+                              </Badge>
+                            </td>
                             <td className="p-2 text-right tabular-nums">{(itemHitRatio * 100).toFixed(3)}%</td>
                             <td className="p-2 text-right tabular-nums">{formatMetric(flux)} lm</td>
-                            <td className="p-2 text-right font-semibold tabular-nums">{baselineCase ? percentChange(flux, baselineFlux) : '—'}</td>
-                            <td className="p-2 text-right tabular-nums">{item.result.surface_hit_count.toLocaleString()}</td>
-                            <td className="p-2 text-right tabular-nums">{item.result.runtime_sec.toFixed(2)} s</td>
-                            <td className="p-2 text-right tabular-nums">{item.result.stored_paths.length.toLocaleString()}</td>
+                            <td className="p-2 text-right tabular-nums">{formatMetric(luminance.peakNit)}</td>
+                            <td className="p-2 text-right font-semibold tabular-nums">{formatMetric(luminance.lightAreaMm2[5])} mm²</td>
                             <td className="p-2 text-right">
                               <Button
                                 size="icon-xs"
@@ -996,6 +1188,11 @@ export function RayTraceResultWindow({
                   </table>
                 </div>
               )}
+              <div className="rounded-lg border border-border bg-muted/20 p-2.5 text-[0.68rem] leading-5 text-muted-foreground">
+                <p>• 빛샘 개선 점수는 Baseline 50점을 기준으로 Peak nit 60%, Total flux 25%, 광영역(@5%) 15%를 반영합니다.</p>
+                <p className="pl-3">(점수가 높을수록 개선된 구조입니다.)</p>
+                <p>• 동일 Receiver/Emitter 설정 조건 기준으로 빛샘 개선 점수가 평가됩니다.</p>
+              </div>
             </div>
           ) : null}
           {tab === 'summary' ? (
@@ -1004,44 +1201,56 @@ export function RayTraceResultWindow({
                 <Stat
                   label="Total rays"
                   value={result.total_rays.toLocaleString()}
+                  help="이번 해석에서 실제로 추적한 전체 Ray 개수입니다. Case 비교 시 동일해야 하는 기본 샘플 수입니다."
                 />
                 <Stat
                   label="Receiver hits"
                   value={result.receiver_hit_count.toLocaleString()}
+                  help="하나 이상의 Receiver에 도달한 Ray 개수입니다. 동일 Ray 수 조건에서 많을수록 Receiver 방향으로 빛이 더 많이 전달된 것입니다."
                 />
                 <Stat
                   label="Hit ratio"
                   value={`${(hitRatio * 100).toFixed(3)}%`}
+                  help="전체 Ray 중 Receiver에 도달한 비율입니다. 도달 빈도를 뜻하며 Ray마다 가진 광량 차이는 반영하지 않습니다."
                 />
                 <Stat
                   label="Surface interactions"
                   value={result.surface_hit_count.toLocaleString()}
+                  help="Ray가 추적 가능한 CAD 표면과 충돌한 누적 횟수입니다. 하나의 Ray가 여러 번 반사되면 여러 번 집계됩니다."
                 />
                 <Stat
                   label="Direct flux"
                   value={`${formatMetric(
                     contribution.direct_receiver_flux_lumen,
                   )} lm`}
+                  help="CAD 표면에서 반사되지 않고 Emitter에서 Receiver로 직접 도달한 전체 광량입니다."
                 />
                 <Stat
                   label="Reflected flux"
                   value={`${formatMetric(
                     contribution.reflected_receiver_flux_lumen,
                   )} lm`}
+                  help="한 번 이상 CAD 표면과 상호작용한 뒤 Receiver에 도달한 전체 광량입니다. 구조적 반사 경로의 영향을 나타냅니다."
                 />
                 <Stat
                   label="Ray rate"
                   value={`${Math.round(
                     numeric(performance.rays_per_sec),
                   ).toLocaleString()} /s`}
+                  help="초당 처리한 Ray 개수로, 해석 성능 확인용 값입니다. 빛샘 품질을 평가하는 광학 결과값은 아닙니다."
                 />
                 <Stat
                   label="Stored paths"
                   value={result.stored_paths.length.toLocaleString()}
+                  help="3D 경로 및 Section View 확인을 위해 저장된 대표 Ray 경로 수입니다. 추적된 모든 Ray 수와 같지 않을 수 있습니다."
                 />
               </div>
-              <p className="rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
-                Intersection backend ·{' '}
+              <p className="flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+                Intersection backend
+                <HelpTooltip label="Intersection backend 설명">
+                  Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. BVH build는 가속 구조 생성 시간이며 빛샘 결과값이 아니라 성능 진단값입니다.
+                </HelpTooltip>
+                {' · '}
                 {String(
                   performance.intersection_backend ??
                     result.config.intersection_backend,
@@ -1086,16 +1295,19 @@ export function RayTraceResultWindow({
                   value={Math.round(
                     numeric(optical.surface_hit_count),
                   ).toLocaleString()}
+                  help="Ray가 CAD 표면에 충돌한 누적 횟수입니다. 반사 깊이가 증가할수록 한 Ray에서 여러 Surface hit가 발생할 수 있습니다."
                 />
                 <Stat
                   label="Unassigned"
                   value={Math.round(
                     numeric(optical.unassigned_surface_hit_count),
                   ).toLocaleString()}
+                  help="Material optical profile이 지정되지 않은 표면에서 발생한 충돌 수입니다. 값이 있으면 기본 광학값이 적용됐는지 확인해야 합니다."
                 />
                 <Stat
                   label="Components"
                   value={componentRows.length.toLocaleString()}
+                  help="Receiver 도달 경로에 기여한 것으로 상세 집계된 Component 수입니다. 전체 CAD Component 수와 다를 수 있습니다."
                 />
               </div>
               {componentRows.length === 0 ? (
@@ -1105,6 +1317,26 @@ export function RayTraceResultWindow({
                 </p>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-border">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-[0.62rem] text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      Component
+                      <HelpTooltip label="Surface component 설명">
+                        Receiver 도달 Ray가 상호작용한 기구 Component입니다.
+                      </HelpTooltip>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      Receiver hits
+                      <HelpTooltip label="Component Receiver hits 설명">
+                        해당 Component를 거친 뒤 Receiver에 도달한 Ray 경로 수입니다.
+                      </HelpTooltip>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      Flux
+                      <HelpTooltip label="Component flux 설명">
+                        해당 Component 경로가 Receiver에 전달한 광량 기여도입니다.
+                      </HelpTooltip>
+                    </span>
+                  </div>
                   {componentRows.map(({ name, values }) => (
                     <div
                       key={name}
@@ -1133,25 +1365,49 @@ export function RayTraceResultWindow({
                 <Stat
                   label="Direct hits"
                   value={contribution.direct_receiver_hit_count.toLocaleString()}
+                  help="CAD 표면 반사 없이 Receiver에 직접 도달한 Ray 수입니다."
                 />
                 <Stat
                   label="Reflected hits"
                   value={contribution.reflected_receiver_hit_count.toLocaleString()}
+                  help="한 번 이상 CAD 표면에서 반사 또는 산란된 뒤 Receiver에 도달한 Ray 수입니다."
                 />
                 <Stat
                   label="Blocked"
                   value={Math.round(
                     numeric(reflection.reflection_blocked_count),
                   ).toLocaleString()}
+                  help="표면 충돌 후 유효한 다음 경로를 만들지 못하고 차단된 반사 시도 수입니다."
                 />
                 <Stat
                   label="Escaped"
                   value={Math.round(
                     numeric(reflection.reflection_escaped_count),
                   ).toLocaleString()}
+                  help="반사 후 CAD 구조 밖으로 빠져나가 Receiver에 도달하지 않은 경로 수입니다."
                 />
               </div>
               <div className="overflow-hidden rounded-lg border border-border">
+                <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-[0.62rem] text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    Reflection model
+                    <HelpTooltip label="Reflection model 설명">
+                      Receiver에 도달한 반사 경로를 Specular, Gaussian, Lambertian 산란 방식별로 분류합니다.
+                    </HelpTooltip>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    Receiver hits
+                    <HelpTooltip label="Reflection Receiver hits 설명">
+                      해당 반사 방식으로 마지막 분류된 Receiver 도달 Ray 수입니다.
+                    </HelpTooltip>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    Flux
+                    <HelpTooltip label="Reflection flux 설명">
+                      해당 반사 방식의 경로가 Receiver에 전달한 전체 광량입니다.
+                    </HelpTooltip>
+                  </span>
+                </div>
                 {(['specular', 'gaussian', 'lambertian'] as const).map(
                   (name) => {
                     const values = objectValue(
@@ -1163,7 +1419,16 @@ export function RayTraceResultWindow({
                         key={name}
                         className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border px-3 py-2 text-xs capitalize last:border-b-0"
                       >
-                        <span className="font-medium">{name}</span>
+                        <span className="flex items-center gap-1 font-medium">
+                          {name}
+                          <HelpTooltip label={`${name} 반사 설명`}>
+                            {name === 'specular'
+                              ? '거울 반사처럼 입사각과 반사각을 따라 한 방향으로 집중된 반사 경로입니다.'
+                              : name === 'gaussian'
+                                ? '정반사 방향을 중심으로 설정된 Sigma 각도만큼 퍼지는 반사 경로입니다.'
+                                : '표면 법선 반구 방향으로 넓게 확산되는 난반사 경로입니다.'}
+                          </HelpTooltip>
+                        </span>
                         <span className="text-muted-foreground">
                           {Math.round(
                             numeric(values.receiver_hit_count),
@@ -1192,6 +1457,10 @@ export function RayTraceResultWindow({
                   (candidate) =>
                     candidate.receiver_id === receiver.receiver_id,
                 )
+                const lightAreas = receiverLightAreas(
+                  result,
+                  receiver.receiver_id,
+                )
                 return (
                   <section
                     key={receiver.receiver_id}
@@ -1204,23 +1473,69 @@ export function RayTraceResultWindow({
                       <Stat
                         label="Peak nit_est"
                         value={formatMetric(values.peak_nit_est)}
+                        help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
                       />
                       <Stat
                         label="Mean nit_est"
                         value={formatMetric(values.mean_nit_est)}
+                        help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
                       <Stat
                         label="Flux"
                         value={`${formatMetric(
                           values.total_flux_lumen,
                         )} lm`}
+                        help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
                       />
                     </div>
+                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                      <div className="rounded-lg border border-border bg-muted/20 p-2">
+                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                          광영역 @1%
+                          <HelpTooltip label="광영역 1% 설명">
+                            이 Receiver의 Peak nit 중 1% 이상인 Heatmap 셀 면적입니다. 사람 눈에 희미하게 보일 수 있는 약한 확산 영역까지 넓게 확인하는 참고값입니다.
+                          </HelpTooltip>
+                        </div>
+                        <div className="mt-1 font-mono text-xs font-semibold">
+                          {formatMetric(lightAreas[1])} mm²
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-primary/25 bg-primary/5 p-2">
+                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                          광영역 @5%
+                          <HelpTooltip label="Receiver 광영역 5% 설명">
+                            이 Receiver의 Peak nit 중 5% 이상인 Heatmap 셀 면적입니다. Compare 점수에서 대표 광영역으로 사용하는 기준입니다.
+                          </HelpTooltip>
+                        </div>
+                        <div className="mt-1 font-mono text-xs font-semibold">
+                          {formatMetric(lightAreas[5])} mm²
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border bg-muted/20 p-2">
+                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                          광영역 @10%
+                          <HelpTooltip label="광영역 10% 설명">
+                            이 Receiver의 Peak nit 중 10% 이상인 Heatmap 셀 면적입니다. 비교적 강하고 선명한 빛샘 중심 영역을 나타냅니다.
+                          </HelpTooltip>
+                        </div>
+                        <div className="mt-1 font-mono text-xs font-semibold">
+                          {formatMetric(lightAreas[10])} mm²
+                        </div>
+                      </div>
+                    </div>
                     {grid ? (
-                      <ReceiverHeatmap
-                        grid={grid}
-                        receiver={receiver}
-                      />
+                      <div className="mt-3">
+                        <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-muted-foreground">
+                          Receiver Heatmap
+                          <HelpTooltip label="Receiver Heatmap 설명">
+                            Receiver의 로컬 X/Y 좌표별 입사 광량과 추정 휘도 분포입니다. 색상은 현재 Heatmap 내 상대적인 세기를 나타내며, 마우스를 올리면 셀 위치·광량·조도·휘도를 확인할 수 있습니다.
+                          </HelpTooltip>
+                        </div>
+                        <ReceiverHeatmap
+                          grid={grid}
+                          receiver={receiver}
+                        />
+                      </div>
                     ) : null}
                   </section>
                 )

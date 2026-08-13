@@ -86,6 +86,7 @@ const ThreeViewerCanvas = lazy(() =>
 
 interface ViewerWorkspaceProps {
   cadDisplayName?: string
+  cadModelVisible?: boolean
   scene?: ScenePayload
   isSceneLoading?: boolean
   sceneErrorMessage?: string
@@ -103,6 +104,7 @@ interface ViewerWorkspaceProps {
 
 export function ViewerWorkspace({
   cadDisplayName,
+  cadModelVisible = true,
   scene,
   isSceneLoading = false,
   sceneErrorMessage,
@@ -591,6 +593,7 @@ export function ViewerWorkspace({
                 >
                   <ThreeViewerCanvas
                     scene={scene}
+                    cadModelVisible={cadModelVisible}
                     axisScalePercent={axisScalePercent}
                     surfaceTransparencyPercent={
                       surfaceTransparencyPercent
