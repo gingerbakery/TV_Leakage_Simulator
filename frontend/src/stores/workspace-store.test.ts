@@ -71,6 +71,29 @@ describe('workspace store', () => {
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-b')
   })
 
+  it('removes an imported CAD case and safely activates the next case', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+    actions.addCadCase({ path: 'case-c.step', displayName: 'case-c.step' })
+    const caseC = store.getState().activeCadCaseId!
+
+    actions.setActiveCadCase(caseB)
+    actions.removeCadCase(caseB)
+    expect(store.getState().activeCadCaseId).toBe(caseC)
+    expect(store.getState().activeCad?.path).toBe('case-c.step')
+    expect(store.getState().cadCases.map((item) => item.order)).toEqual([1, 2])
+
+    actions.removeCadCase(caseA)
+    actions.removeCadCase(caseC)
+    expect(store.getState().activeCad).toBeNull()
+    expect(store.getState().activeCadCaseId).toBeNull()
+    expect(store.getState().cadCases).toEqual([])
+  })
+
   it('normalizes selection IDs and supports toggling', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()

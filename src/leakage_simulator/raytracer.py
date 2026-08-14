@@ -111,6 +111,7 @@ class ReceiverHitCandidate:
             event_type="receiver",
             receiver_id=self.receiver_id,
             ray_kind=self.ray_kind,
+            receiver_flux_lumen=self.received_power_lumen,
         )
 
 
@@ -646,7 +647,7 @@ def run_direct_ray_trace(
         progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
     grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
-    metrics = _build_direct_metrics(grids, trace_input.config)
+    metrics = _build_direct_metrics(grids, trace_input.config, total_rays)
     metrics["_optical_summary"] = optical_summary
     metrics["_reflection_summary"] = reflection_summary
     metrics["_contribution_summary"] = contribution_summary.to_dict()
@@ -1990,9 +1991,17 @@ def _find_first_receiver_hit(
 def _record_receiver_hit(candidate: ReceiverHitCandidate) -> None:
     candidate.grid.flux_lumen[candidate.row][candidate.column] += candidate.received_power_lumen
     candidate.grid.hit_count += 1
+    candidate.grid.flux_squared_lumen2 += candidate.received_power_lumen**2
+    candidate.grid.flux_squared_lumen2_grid[candidate.row][candidate.column] += (
+        candidate.received_power_lumen**2
+    )
 
 
-def _build_direct_metrics(grids: List[ReceiverGrid], config: RayTraceConfig) -> Dict[str, Dict[str, float]]:
+def _build_direct_metrics(
+    grids: List[ReceiverGrid],
+    config: RayTraceConfig,
+    sample_count: int = 0,
+) -> Dict[str, Dict[str, float]]:
     metrics: Dict[str, Dict[str, float]] = {}
     for grid in grids:
         values = [value for row in grid.flux_lumen for value in row]
@@ -2010,13 +2019,41 @@ def _build_direct_metrics(grids: List[ReceiverGrid], config: RayTraceConfig) -> 
         else:
             p95 = 0.0
         area_above_zero = sum(1 for value in values if value > 0.0) * grid.bin_area_mm2
+        total_flux = sum(values)
+        def relative_error_percent(flux_sum: float, squared_sum: float) -> float:
+            if sample_count <= 1 or flux_sum <= 0.0:
+                return 0.0
+            relative_variance = max(
+                0.0,
+                (sample_count * squared_sum / (flux_sum * flux_sum) - 1.0)
+                / (sample_count - 1),
+            )
+            return math.sqrt(relative_variance) * 100.0
+
+        error_estimate_percent = relative_error_percent(
+            total_flux, grid.flux_squared_lumen2
+        )
+        peak_threshold = max(values, default=0.0) * 0.05
+        peak_area_flux = 0.0
+        peak_area_squared_flux = 0.0
+        for row_index, row in enumerate(grid.flux_lumen):
+            for column_index, flux in enumerate(row):
+                if flux >= peak_threshold and flux > 0.0:
+                    peak_area_flux += flux
+                    peak_area_squared_flux += grid.flux_squared_lumen2_grid[row_index][column_index]
+        peak_area_error_estimate_percent = relative_error_percent(
+            peak_area_flux, peak_area_squared_flux
+        )
         metrics[grid.receiver_id] = {
             "peak_nit_est": peak,
             "mean_nit_est": mean,
             "p95_nit_est": p95,
-            "total_flux_lumen": sum(values),
+            "total_flux_lumen": total_flux,
             "hit_count": float(grid.hit_count),
             "area_above_zero_mm2": area_above_zero,
+            "error_estimate_percent": error_estimate_percent,
+            "peak_area_error_estimate_percent": peak_area_error_estimate_percent,
+            "error_estimate_sample_count": float(sample_count),
         }
     return metrics
     summary = RunResultSummary(

@@ -80,6 +80,7 @@ interface WorkflowSidebarProps {
   sceneErrorMessage?: string
   rayTraceJob?: RayTraceJob
   rayObjectEditRequest?: RayObjectEditRequest | null
+  autoConvergenceCancelToken?: number
   onRayObjectEditRequestHandled?(): void
   onOpenRayTraceResult(): void
   onEditMaterial(request: ComponentEditorRequest): void
@@ -146,6 +147,7 @@ export function WorkflowSidebar({
   sceneErrorMessage,
   rayTraceJob,
   rayObjectEditRequest,
+  autoConvergenceCancelToken = 0,
   onRayObjectEditRequestHandled,
   onOpenRayTraceResult,
   onEditMaterial,
@@ -281,6 +283,7 @@ export function WorkflowSidebar({
           scene={scene}
           cameraFrame={cameraFrame}
           editRequest={rayObjectEditRequest}
+          autoConvergenceCancelToken={autoConvergenceCancelToken}
           onEditRequestHandled={onRayObjectEditRequestHandled}
         />
       )

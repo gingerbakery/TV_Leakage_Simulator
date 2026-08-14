@@ -512,6 +512,9 @@ class RayTraceConfig:
     intersection_backend: str = "auto"
     store_ray_paths: bool = False
     max_stored_paths: int = 500
+    auto_convergence: bool = False
+    convergence_target_percent: float = 5.0
+    max_convergence_multiplier: int = 8
 
     def __post_init__(self) -> None:
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
@@ -541,6 +544,13 @@ class RayTraceConfig:
         self.max_stored_paths = int(self.max_stored_paths)
         if self.max_stored_paths < 0:
             raise ValueError("max_stored_paths must be non-negative")
+        self.auto_convergence = bool(self.auto_convergence)
+        self.convergence_target_percent = require_positive(
+            self.convergence_target_percent, "convergence_target_percent"
+        )
+        self.max_convergence_multiplier = require_positive_int(
+            self.max_convergence_multiplier, "max_convergence_multiplier"
+        )
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -568,6 +578,7 @@ class RayHit:
     scatter_model: Optional[str] = None
     optical_assignment_source: Optional[str] = None
     ray_kind: Optional[str] = None
+    receiver_flux_lumen: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.face_index = int(self.face_index)
@@ -589,6 +600,10 @@ class RayHit:
             raise ValueError("depth must be non-negative")
         if self.reflectance is not None:
             self.reflectance = clamp(float(self.reflectance), 0.0, 1.0)
+        if self.receiver_flux_lumen is not None:
+            self.receiver_flux_lumen = require_non_negative(
+                self.receiver_flux_lumen, "receiver_flux_lumen"
+            )
         if self.scatter_model is not None:
             self.scatter_model = require_choice(self.scatter_model, "scatter_model", SCATTER_MODELS)
 
@@ -603,6 +618,8 @@ class ReceiverGrid:
     bin_area_mm2: float
     flux_lumen: List[List[float]]
     hit_count: int = 0
+    flux_squared_lumen2: float = 0.0
+    flux_squared_lumen2_grid: List[List[float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.resolution = int_pair_from(self.resolution, "resolution")
@@ -615,9 +632,20 @@ class ReceiverGrid:
         for row in self.flux_lumen:
             if len(row) != expected_columns:
                 raise ValueError("flux_lumen column count must match receiver resolution")
+        if not self.flux_squared_lumen2_grid:
+            self.flux_squared_lumen2_grid = [
+                [0.0 for _ in range(expected_columns)]
+                for _ in range(expected_rows)
+            ]
+        if len(self.flux_squared_lumen2_grid) != expected_rows:
+            raise ValueError("flux_squared_lumen2_grid row count must match receiver resolution")
+        for row in self.flux_squared_lumen2_grid:
+            if len(row) != expected_columns:
+                raise ValueError("flux_squared_lumen2_grid column count must match receiver resolution")
         self.hit_count = int(self.hit_count)
         if self.hit_count < 0:
             raise ValueError("hit_count must be non-negative")
+        self.flux_squared_lumen2 = max(0.0, float(self.flux_squared_lumen2))
 
     @classmethod
     def empty(cls, receiver: ReceiverSpec) -> "ReceiverGrid":
@@ -628,6 +656,10 @@ class ReceiverGrid:
             bin_area_mm2=receiver.bin_area_mm2(),
             flux_lumen=[[0.0 for _ in range(column_count)] for _ in range(row_count)],
             hit_count=0,
+            flux_squared_lumen2=0.0,
+            flux_squared_lumen2_grid=[
+                [0.0 for _ in range(column_count)] for _ in range(row_count)
+            ],
         )
 
     def to_dict(self) -> Dict:

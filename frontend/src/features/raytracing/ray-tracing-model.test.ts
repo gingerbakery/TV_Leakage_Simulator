@@ -80,9 +80,10 @@ describe('ray tracing model', () => {
     })
     expect(receiver.u_axis?.[0]).toBeCloseTo(0)
     expect(receiver.u_axis?.[1]).toBeCloseTo(1)
-    expect(receiver.v_axis?.[0]).toBeCloseTo(1)
+    expect(receiver.v_axis?.[0]).toBeCloseTo(-1)
     expect(receiver.v_axis?.[1]).toBeCloseTo(0)
-    expect(receiver.normal).toEqual([0, 0, -1])
+    expect(receiver.normal).toEqual([0, 0, 1])
+    expect(receiver.normal_flip).toBe(true)
   })
 
   it('offsets a datum plane receiver from its base center without a pivot', () => {
@@ -129,6 +130,8 @@ describe('ray tracing model', () => {
 
   it('derives a stable in-plane basis from a picked face normal', () => {
     const { uAxis, vAxis } = axesFromNormal([0, 0, 1])
+    expect(uAxis).toEqual([1, 0, 0])
+    expect(vAxis).toEqual([0, 1, 0])
     expect(Math.abs(uAxis[0] * vAxis[0] + uAxis[1] * vAxis[1] + uAxis[2] * vAxis[2])).toBeCloseTo(0)
     expect(Math.hypot(...uAxis)).toBeCloseTo(1)
     expect(Math.hypot(...vAxis)).toBeCloseTo(1)
@@ -212,6 +215,9 @@ describe('ray tracing model', () => {
     expect(request.roi_faces).toEqual([0, 1])
     expect(request.excluded_component_ids).toEqual([1, 8, 9])
     expect(request.config.ray_count).toBe(12_000)
+    expect(request.config).not.toHaveProperty('auto_convergence')
+    expect(request.config).not.toHaveProperty('convergence_target_percent')
+    expect(request.config).not.toHaveProperty('max_convergence_multiplier')
     expect(request.optical_profiles).toHaveLength(1)
     expect(request.optical_profiles[0]).toMatchObject({
       reflectance: 0.2,
