@@ -29,6 +29,7 @@ import {
 import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { getComponentDisplayName } from '@/features/components'
 
 import {
   formatReceiverCoordinate,
@@ -65,6 +66,7 @@ interface RayTraceResultWindowProps {
   open: boolean
   result: RayTraceResult | null
   scene?: ScenePayload
+  componentNameOverrides?: Record<number, string>
   roiFaceIds?: number[]
   reportCases?: Array<{
     caseId: string
@@ -96,6 +98,23 @@ interface AnalysisCaseFile {
 }
 
 type ReceiverCompareScope = 'all' | number
+
+function receiversInDisplayOrder(receivers: ReceiverSpec[]): ReceiverSpec[] {
+  return receivers
+    .map((receiver, index) => ({ receiver, index }))
+    .sort((left, right) => {
+      const leftNumber = Number(left.receiver.receiver_id.match(/(\d+)(?!.*\d)/)?.[1])
+      const rightNumber = Number(right.receiver.receiver_id.match(/(\d+)(?!.*\d)/)?.[1])
+      const leftHasNumber = Number.isFinite(leftNumber)
+      const rightHasNumber = Number.isFinite(rightNumber)
+      if (leftHasNumber && rightHasNumber && leftNumber !== rightNumber) {
+        return leftNumber - rightNumber
+      }
+      if (leftHasNumber !== rightHasNumber) return leftHasNumber ? -1 : 1
+      return left.index - right.index
+    })
+    .map(({ receiver }) => receiver)
+}
 
 function scopedReceivers(
   result: RayTraceResult,
@@ -476,6 +495,7 @@ function ReceiverHeatmap({
   const [region, setRegion] = useState<ReceiverRegion | null>(null)
   const regionStartRef = useRef<{ x: number; y: number } | null>(null)
   const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
+  const [colorMode, setColorMode] = useState<'color' | 'mono'>('color')
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
@@ -658,14 +678,16 @@ function ReceiverHeatmap({
         ? Math.min(1, (values[index] || 0) / Math.max(errorTargetPercent * 2, 0.01))
         : peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0
       const pixel = index * 4
-      const [red, green, blue] = receiverHeatmapColor(normalized)
+      const [red, green, blue] = colorMode === 'mono'
+        ? [Math.round(normalized * 255), Math.round(normalized * 255), Math.round(normalized * 255)]
+        : receiverHeatmapColor(normalized)
       image.data[pixel] = red
       image.data[pixel + 1] = green
       image.data[pixel + 2] = blue
       image.data[pixel + 3] = 255
     }
     context.putImageData(image, 0, 0)
-  }, [columns, displayMode, errorTargetPercent, errorValues, grid, rows])
+  }, [colorMode, columns, displayMode, errorTargetPercent, errorValues, grid, rows])
 
   const pointerPosition = (
     element: HTMLDivElement,
@@ -789,9 +811,9 @@ function ReceiverHeatmap({
 
   return (
     <div className="mt-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-[0.6rem] text-muted-foreground">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
-          <span>Flux distribution · Receiver local plane</span>
+          <span>FRONT view · +X right · +Y up</span>
           <div className="flex rounded-md border border-border bg-background/60 p-0.5">
             <button
               type="button"
@@ -813,6 +835,10 @@ function ReceiverHeatmap({
           <div className="flex rounded-md border border-border bg-background/60 p-0.5">
             <button type="button" aria-pressed={displayMode === 'luminance'} className={`rounded px-2 py-0.5 ${displayMode === 'luminance' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('luminance')}>Luminance</button>
             <button type="button" aria-pressed={displayMode === 'error'} disabled={errorValues.length === 0} className={`rounded px-2 py-0.5 disabled:opacity-35 ${displayMode === 'error' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('error')}>Error map</button>
+          </div>
+          <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+            <button type="button" aria-pressed={colorMode === 'color'} className={`rounded px-2 py-0.5 ${colorMode === 'color' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('color')}>Color</button>
+            <button type="button" aria-pressed={colorMode === 'mono'} className={`rounded px-2 py-0.5 ${colorMode === 'mono' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('mono')}>Mono</button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -837,9 +863,9 @@ function ReceiverHeatmap({
         </div>
       </div>
       <div
-        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_3.75rem_minmax(8rem,11rem)] grid-rows-[auto_2.75rem_9rem] gap-x-2"
+        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_4.5rem_minmax(11rem,14rem)] grid-rows-[auto_3.25rem_10rem] gap-x-2"
         style={{
-          width: `${layout.preferredWidthPx + 244}px`,
+          width: `${layout.preferredWidthPx + 292}px`,
         }}
       >
         <div
@@ -943,7 +969,7 @@ function ReceiverHeatmap({
             <div
               role="tooltip"
               data-testid={`${grid.receiver_id}-heatmap-tooltip`}
-              className="pointer-events-none absolute z-20 w-48 rounded-md border border-slate-500/70 bg-slate-950/95 p-2 text-[0.58rem] text-slate-100 shadow-xl"
+              className="pointer-events-none absolute z-20 w-52 rounded-md border border-slate-500/70 bg-slate-950/95 p-2 text-xs text-slate-100 shadow-xl"
               style={{
                 left: `${hover.pointerXPercent}%`,
                 top: `${hover.pointerYPercent}%`,
@@ -1019,7 +1045,7 @@ function ReceiverHeatmap({
         <div
           data-testid={`${grid.receiver_id}-y-axis`}
           aria-label="Receiver Y axis in millimeters"
-          className="relative col-start-2 row-start-1 text-[0.58rem] tabular-nums text-muted-foreground"
+          className="relative col-start-2 row-start-1 text-xs tabular-nums text-muted-foreground"
         >
           {yTicks.map((tick) => (
             <div
@@ -1034,14 +1060,14 @@ function ReceiverHeatmap({
               <span className="ml-1">{tick.label}</span>
             </div>
           ))}
-          <span className="absolute top-1/2 right-0 -translate-y-1/2 rotate-90 whitespace-nowrap text-[0.6rem] font-medium text-foreground">
+          <span className="absolute top-1/2 right-0 -translate-y-1/2 rotate-90 whitespace-nowrap text-xs font-medium text-foreground">
             Y (mm)
           </span>
         </div>
         <div
           data-testid={`${grid.receiver_id}-x-axis`}
           aria-label="Receiver X axis in millimeters"
-          className="relative col-start-1 row-start-2 text-[0.58rem] tabular-nums text-muted-foreground"
+          className="relative col-start-1 row-start-2 text-xs tabular-nums text-muted-foreground"
         >
           {xTicks.map((tick) => (
             <div
@@ -1056,7 +1082,7 @@ function ReceiverHeatmap({
               <span className="mt-0.5 block">{tick.label}</span>
             </div>
           ))}
-          <span className="absolute right-0 bottom-0 left-0 text-center text-[0.6rem] font-medium text-foreground">
+          <span className="absolute right-0 bottom-0 left-0 text-center text-xs font-medium text-foreground">
             X (mm)
           </span>
         </div>
@@ -1072,7 +1098,7 @@ function ReceiverHeatmap({
       </div>
       {regionAnalysis ? (
         <details className="mt-3 rounded-lg border border-orange-300/45 bg-orange-50/5 p-3" open>
-          <summary className="cursor-pointer text-xs font-semibold">
+          <summary className="cursor-pointer text-sm font-semibold">
             Selected-area ray contribution
           </summary>
           <div className="mt-2 grid grid-cols-2 gap-1.5 md:grid-cols-4">
@@ -1083,35 +1109,35 @@ function ReceiverHeatmap({
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
-              <div className="text-[0.65rem] font-semibold">Path type</div>
-              <div className="mt-1 rounded-md border border-border bg-background/35 p-2 text-[0.65rem]">
+              <div className="text-sm font-semibold">Path type</div>
+              <div className="mt-1 rounded-md border border-border bg-background/35 p-2 text-base">
                 Direct {regionAnalysis.directCount.toLocaleString()} · Reflected{' '}
                 {(regionAnalysis.matchingPathCount - regionAnalysis.directCount).toLocaleString()}
               </div>
-              <div className="mt-2 text-[0.65rem] font-semibold">Top components</div>
+              <div className="mt-2 text-sm font-semibold">Top components</div>
               <div className="mt-1 space-y-1">
                 {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => (
-                  <div key={id} className="flex justify-between rounded border border-border px-2 py-1 text-[0.62rem]">
+                  <div key={id} className="flex justify-between rounded border border-border px-2 py-1 text-base">
                     <span>{componentNames.get(id) ?? `Component ${id}`}</span>
                     <span className="font-mono">{value.count} paths · {formatMetric(value.flux)} lm</span>
                   </div>
-                )) : <div className="text-[0.62rem] text-muted-foreground">No reflected stored path in this area.</div>}
+                )) : <div className="popup-guide text-xs text-muted-foreground">No reflected stored path in this area.</div>}
               </div>
             </div>
             <div>
-              <div className="text-[0.65rem] font-semibold">Representative sequences</div>
+              <div className="text-sm font-semibold">Representative sequences</div>
               <div className="mt-1 space-y-1">
                 {regionAnalysis.sequences.length > 0 ? regionAnalysis.sequences.map(([sequence, value]) => (
-                  <div key={sequence} className="rounded border border-border px-2 py-1 text-[0.62rem]">
+                  <div key={sequence} className="rounded border border-border px-2 py-1 text-base">
                     <div className="truncate font-medium" title={sequence}>{sequence}</div>
                     <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
                   </div>
-                )) : <div className="text-[0.62rem] text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
+                )) : <div className="popup-guide text-xs text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
               </div>
             </div>
           </div>
           <details className="mt-2 rounded-md border border-border bg-background/25 p-2">
-            <summary className="cursor-pointer text-[0.65rem] font-semibold">Detailed face, reflection type and bounce contribution</summary>
+            <summary className="cursor-pointer text-sm font-semibold">Detailed face, reflection type and bounce contribution</summary>
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <div>
                 <div className="text-[0.6rem] font-semibold text-muted-foreground">Reflection type</div>
@@ -1127,7 +1153,7 @@ function ReceiverHeatmap({
               </div>
             </div>
           </details>
-          <p className="mt-2 text-[0.58rem] leading-4 text-muted-foreground">
+          <p className="popup-guide mt-2 text-xs leading-4 text-muted-foreground">
             선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component와 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다.
           </p>
         </details>
@@ -1153,6 +1179,7 @@ function ReceiverProfileChart({
   maximumMm: number
   fixedCoordinateMm: number
 }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const peak = Math.max(...values, 0)
   const points = values
     .map((value, index) => {
@@ -1165,29 +1192,50 @@ function ReceiverProfileChart({
     .join(' ')
   return (
     <div className={`h-full rounded-lg border border-border bg-muted/15 p-2 ${axis === 'Y' ? 'flex min-h-0 flex-col' : ''}`}>
-      <div className={`mb-1 gap-1 text-[0.62rem] ${axis === 'X' ? 'flex items-center justify-between' : 'space-y-0.5'}`}>
+      <div className={`mb-1 gap-1 text-sm ${axis === 'X' ? 'flex items-center justify-between' : 'space-y-0.5'}`}>
         <span className="font-semibold">{axis}축 휘도 프로파일</span>
         <span className="font-mono text-muted-foreground">
           {axis === 'X' ? 'Y' : 'X'}={formatReceiverCoordinate(fixedCoordinateMm)} mm · 최대 {formatMetric(peak)} nit
         </span>
       </div>
-      <svg
-        role="img"
-        aria-label={`${axis}-axis luminance profile`}
-        viewBox={axis === 'X' ? '0 0 100 42' : '0 0 42 100'}
-        preserveAspectRatio="none"
-        className={axis === 'X' ? 'h-20 w-full overflow-visible' : 'min-h-0 w-full flex-1 overflow-visible'}
-      >
-        <path d={axis === 'X' ? 'M0 38 H100 M0 4 V38' : 'M0 0 V100 M0 100 H38'} fill="none" className="stroke-border" strokeWidth="0.5" />
-        <polyline points={points} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-      </svg>
+      <div className={`relative ${axis === 'X' ? 'h-20 w-full' : 'min-h-0 w-full flex-1'}`}>
+        <svg
+          role="img"
+          aria-label={`${axis}-axis luminance profile`}
+          viewBox={axis === 'X' ? '0 0 100 42' : '0 0 42 100'}
+          preserveAspectRatio="none"
+          className="h-full w-full overflow-visible"
+          onPointerLeave={() => setHoverIndex(null)}
+          onPointerMove={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect()
+            const ratio = axis === 'X'
+              ? (event.clientX - bounds.left) / Math.max(bounds.width, 1)
+              : 1 - (event.clientY - bounds.top) / Math.max(bounds.height, 1)
+            setHoverIndex(Math.max(0, Math.min(values.length - 1, Math.round(ratio * (values.length - 1)))))
+          }}
+        >
+          <path d={axis === 'X' ? 'M0 38 H100 M0 4 V38' : 'M0 0 V100 M0 100 H38'} fill="none" className="stroke-border" strokeWidth="0.5" />
+          <polyline points={points} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+        </svg>
+        {hoverIndex !== null && values[hoverIndex] !== undefined ? (
+          <div
+            role="tooltip"
+            className="pointer-events-none absolute z-10 whitespace-nowrap rounded border border-slate-500/70 bg-slate-950/95 px-2 py-1 text-xs text-slate-100 shadow-lg"
+            style={axis === 'X'
+              ? { left: `${values.length <= 1 ? 0 : hoverIndex / (values.length - 1) * 100}%`, top: 4, transform: 'translateX(-50%)' }
+              : { left: 4, top: `${values.length <= 1 ? 100 : (1 - hoverIndex / (values.length - 1)) * 100}%`, transform: 'translateY(-50%)' }}
+          >
+            {formatReceiverCoordinate(minimumMm + (maximumMm - minimumMm) * (values.length <= 1 ? 0 : hoverIndex / (values.length - 1)))} mm · {formatMetric(values[hoverIndex])} nit
+          </div>
+        ) : null}
+      </div>
       {axis === 'X' ? (
-        <div className="flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+        <div className="flex justify-between font-mono text-xs text-muted-foreground">
           <span>{formatReceiverCoordinate(minimumMm)} mm</span>
           <span>{formatReceiverCoordinate(maximumMm)} mm</span>
         </div>
       ) : (
-        <div className="flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+        <div className="flex justify-between font-mono text-xs text-muted-foreground">
           <span>0</span><span>{formatMetric(peak)} nit</span>
         </div>
       )}
@@ -1199,20 +1247,22 @@ function Stat({
   label,
   value,
   help,
+  className = '',
 }: {
   label: string
   value: string
   help?: string
+  className?: string
 }) {
   return (
-    <div className="rounded-lg border border-border bg-background/45 p-2.5">
-      <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+    <div className={`rounded-lg border border-border bg-background/45 p-2.5 ${className}`}>
+      <div className="flex items-center gap-1 text-sm text-muted-foreground">
         {label}
         {help ? (
           <HelpTooltip label={`${label} 설명`}>{help}</HelpTooltip>
         ) : null}
       </div>
-      <div className="mt-1 text-sm font-semibold">{value}</div>
+      <div className="mt-1 text-base font-semibold">{value}</div>
     </div>
   )
 }
@@ -1221,6 +1271,7 @@ export function RayTraceResultWindow({
   open,
   result: liveResult,
   scene,
+  componentNameOverrides = {},
   roiFaceIds,
   reportCases = [],
   onCaseMetadataChange,
@@ -1239,7 +1290,7 @@ export function RayTraceResultWindow({
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
     y: 58,
-    width: 960,
+    width: 1120,
     height: 880,
   })
 
@@ -1361,7 +1412,7 @@ export function RayTraceResultWindow({
   const componentNames = new Map(
     (scene?.components ?? []).map((component) => [
       component.component_id,
-      component.component_name || component.object_name,
+      getComponentDisplayName(component, componentNameOverrides),
     ]),
   )
 
@@ -1488,7 +1539,7 @@ export function RayTraceResultWindow({
       ref={rootRef}
       role="dialog"
       aria-label="Ray Tracing Analysis Result"
-      className="fixed z-50 flex overflow-hidden rounded-xl border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl"
+      className="simulator-popup-typography fixed z-50 flex overflow-hidden rounded-xl border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl"
       style={{
         left: frame.x,
         top: frame.y,
@@ -1512,7 +1563,7 @@ export function RayTraceResultWindow({
           }}
         >
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">
+            <div className="truncate text-base font-semibold">
               Ray Tracing Analysis Result
             </div>
             <div className="text-[0.62rem] text-muted-foreground">
@@ -1559,6 +1610,7 @@ export function RayTraceResultWindow({
               role="tab"
               aria-selected={tab === id}
               size="xs"
+              className="text-base"
               variant={tab === id ? 'secondary' : 'ghost'}
               onClick={() => setTab(id)}
             >
@@ -1630,8 +1682,8 @@ export function RayTraceResultWindow({
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[1020px] border-collapse text-xs">
-                    <thead className="bg-muted/45 text-left">
+                  <table className="w-full min-w-[1020px] border-collapse text-base">
+                    <thead className="bg-muted/45 text-left text-sm">
                       <tr>
                         <th className="p-2">Compare</th>
                         <th className="p-2 text-center">Baseline</th>
@@ -1823,7 +1875,7 @@ export function RayTraceResultWindow({
                   </table>
                 </div>
               )}
-              <div className="rounded-lg border border-border bg-muted/20 p-2.5 text-[0.68rem] leading-5 text-muted-foreground">
+              <div className="popup-guide rounded-lg border border-border bg-muted/20 p-2.5 text-xs leading-5 text-muted-foreground">
                 <p>• 빛샘 개선 점수는 Baseline 50점을 기준으로 Peak nit 60%, Total flux 25%, 광영역(@5%) 15%를 반영합니다.</p>
                 <p className="pl-3">(점수가 높을수록 개선된 구조입니다.)</p>
                 <p>• 동일 Receiver/Emitter 설정 조건 기준으로 빛샘 개선 점수가 평가됩니다.</p>
@@ -1880,7 +1932,7 @@ export function RayTraceResultWindow({
                   help="3D 경로 및 Section View 확인을 위해 저장된 대표 Ray 경로 수입니다. 추적된 모든 Ray 수와 같지 않을 수 있습니다."
                 />
               </div>
-              <p className="flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+              <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
                 Intersection backend
                 <HelpTooltip label="Intersection backend 설명">
                   Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. BVH build는 가속 구조 생성 시간이며 빛샘 결과값이 아니라 성능 진단값입니다.
@@ -1895,7 +1947,7 @@ export function RayTraceResultWindow({
               </p>
               {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
                     Ray Section View
                     <HelpTooltip label="Ray Section View 도움말">
                       각 Receiver의 법선과 수직 방향을 지나는 단면으로 CAD를
@@ -1952,7 +2004,7 @@ export function RayTraceResultWindow({
                 </p>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-border">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-[0.62rem] text-muted-foreground">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
                     <span className="flex items-center gap-1">
                       Component
                       <HelpTooltip label="Surface component 설명">
@@ -1975,7 +2027,7 @@ export function RayTraceResultWindow({
                   {componentRows.map(({ name, values }) => (
                     <div
                       key={name}
-                      className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-border px-3 py-2 text-xs last:border-b-0"
+                      className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-border px-3 py-2 text-base last:border-b-0"
                     >
                       <span className="truncate font-medium">{name}</span>
                       <span className="text-muted-foreground">
@@ -2023,7 +2075,7 @@ export function RayTraceResultWindow({
                 />
               </div>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-[0.62rem] text-muted-foreground">
+                <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1">
                     Reflection model
                     <HelpTooltip label="Reflection model 설명">
@@ -2052,7 +2104,7 @@ export function RayTraceResultWindow({
                     return (
                       <div
                         key={name}
-                        className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border px-3 py-2 text-xs capitalize last:border-b-0"
+                        className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-border px-3 py-2 text-base capitalize last:border-b-0"
                       >
                         <span className="flex items-center gap-1 font-medium">
                           {name}
@@ -2085,9 +2137,9 @@ export function RayTraceResultWindow({
             <div className="grid gap-3">
               {convergenceHistory.length > 0 ? (
                 <details className="rounded-lg border border-border bg-background/40 p-3">
-                  <summary className="cursor-pointer text-xs font-semibold">Ray convergence history</summary>
+                  <summary className="cursor-pointer text-sm font-semibold">Ray convergence history</summary>
                   <div className="mt-2 overflow-x-auto">
-                    <div className="grid min-w-[520px] grid-cols-5 gap-2 text-[0.62rem]">
+                    <div className="grid min-w-[520px] grid-cols-5 gap-2 text-base">
                       {['Rays', 'Total Error', 'Peak-area Error', 'Peak nit', 'Flux'].map((label) => <span key={label} className="font-semibold text-muted-foreground">{label}</span>)}
                       {convergenceHistory.flatMap((item, index) => [
                         <span key={`${index}-r`} className="font-mono">{Math.round(numeric(item.rays)).toLocaleString()}</span>,
@@ -2100,7 +2152,7 @@ export function RayTraceResultWindow({
                   </div>
                 </details>
               ) : null}
-              {result.receivers.map((receiver) => {
+              {receiversInDisplayOrder(result.receivers).map((receiver) => {
                 const values = objectValue(
                   result.metrics,
                   receiver.receiver_id,
@@ -2131,32 +2183,36 @@ export function RayTraceResultWindow({
                     className="rounded-lg border border-border bg-background/40 p-3"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-xs font-semibold">{receiver.display_name || receiver.receiver_id}</div>
+                      <div className="text-sm font-semibold">{receiver.display_name || receiver.receiver_id}</div>
                       <div className="flex items-center gap-2">
-                        <span className={`rounded-full border px-2 py-0.5 text-[0.62rem] font-semibold ${convergence.tone}`}>{convergence.label}</span>
+                        <span className={`rounded-full border px-2 py-0.5 text-sm font-semibold ${convergence.tone}`}>{convergence.label}</span>
                         <label className="flex items-center gap-1 text-[0.6rem] text-muted-foreground">
                           Target
                           <input aria-label="Convergence target percent" className="h-7 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground" type="number" min={0.1} max={100} step={0.5} value={errorTargetPercent} onChange={(event) => setErrorTargetPercent(Math.max(0.1, numeric(event.currentTarget.value)))} />%
                         </label>
                       </div>
                     </div>
-                    <div className="mt-2 grid grid-cols-2 gap-1.5 lg:grid-cols-4">
+                    <div className="mt-2 grid grid-cols-6 gap-1.5">
                       <Stat
+                        className="order-1 col-span-3"
                         label="Peak-area Error"
                         value={peakAreaError === null || receiverHits <= 0 ? '—' : `${formatMetric(peakAreaError, 2)}%`}
                         help="Receiver Peak의 5% 이상인 셀 영역에 대한 Monte Carlo 상대 오차입니다. Total Flux Error와 Peak-area Error가 모두 목표 오차 이하일 때 Converged로 판단합니다."
                       />
                       <Stat
+                        className="order-3 col-span-2"
                         label="Peak nit_est"
                         value={formatMetric(values.peak_nit_est)}
                         help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
                       />
                       <Stat
+                        className="order-4 col-span-2"
                         label="Mean nit_est"
                         value={formatMetric(values.mean_nit_est)}
                         help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
                       <Stat
+                        className="order-5 col-span-2"
                         label="Flux"
                         value={`${formatMetric(
                           values.total_flux_lumen,
@@ -2164,6 +2220,7 @@ export function RayTraceResultWindow({
                         help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
                       />
                       <Stat
+                        className="order-2 col-span-3"
                         label="Error Estimate"
                         value={
                           typeof values.error_estimate_percent === 'number' &&
@@ -2176,42 +2233,42 @@ export function RayTraceResultWindow({
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-1.5">
                       <div className="rounded-lg border border-border bg-muted/20 p-2">
-                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
                           광영역 @1%
                           <HelpTooltip label="광영역 1% 설명">
                             이 Receiver의 Peak nit 중 1% 이상인 Heatmap 셀 면적입니다. 사람 눈에 희미하게 보일 수 있는 약한 확산 영역까지 넓게 확인하는 참고값입니다.
                           </HelpTooltip>
                         </div>
-                        <div className="mt-1 font-mono text-xs font-semibold">
+                        <div className="mt-1 font-mono text-base font-semibold">
                           {formatMetric(lightAreas[1])} mm²
                         </div>
                       </div>
                       <div className="rounded-lg border border-primary/25 bg-primary/5 p-2">
-                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
                           광영역 @5%
                           <HelpTooltip label="Receiver 광영역 5% 설명">
                             이 Receiver의 Peak nit 중 5% 이상인 Heatmap 셀 면적입니다. Compare 점수에서 대표 광영역으로 사용하는 기준입니다.
                           </HelpTooltip>
                         </div>
-                        <div className="mt-1 font-mono text-xs font-semibold">
+                        <div className="mt-1 font-mono text-base font-semibold">
                           {formatMetric(lightAreas[5])} mm²
                         </div>
                       </div>
                       <div className="rounded-lg border border-border bg-muted/20 p-2">
-                        <div className="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
                           광영역 @10%
                           <HelpTooltip label="광영역 10% 설명">
                             이 Receiver의 Peak nit 중 10% 이상인 Heatmap 셀 면적입니다. 비교적 강하고 선명한 빛샘 중심 영역을 나타냅니다.
                           </HelpTooltip>
                         </div>
-                        <div className="mt-1 font-mono text-xs font-semibold">
+                        <div className="mt-1 font-mono text-base font-semibold">
                           {formatMetric(lightAreas[10])} mm²
                         </div>
                       </div>
                     </div>
                     {grid ? (
                       <div className="mt-3">
-                        <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-muted-foreground">
+                        <div className="mb-2 flex items-center gap-1 text-sm font-semibold text-muted-foreground">
                           Receiver Heatmap
                           <HelpTooltip label="Receiver Heatmap 설명">
                             Receiver의 로컬 X/Y 좌표별 입사 광량과 추정 휘도 분포입니다. 색상은 현재 Heatmap 내 상대적인 세기를 나타내며, 마우스를 올리면 셀 위치·광량·조도·휘도를 확인할 수 있습니다.

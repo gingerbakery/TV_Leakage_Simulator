@@ -14,6 +14,7 @@ import {
   createCompletedRayTraceJobFixture,
   createRayTraceResultFixture,
 } from '@/test/raytrace-fixture'
+import { createSceneFixture } from '@/test/scene-fixture'
 
 import { ResultPanel } from './result-panel'
 import { RayTraceResultWindow } from './result-window'
@@ -25,6 +26,37 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('orders Receiver result cards and heatmaps by receiver number', () => {
+    const result = createRayTraceResultFixture()
+    const receiverTwo = structuredClone(result.receivers[0])
+    receiverTwo.receiver_id = 'receiver_002'
+    receiverTwo.display_name = 'Receiver 2'
+    const receiverOne = structuredClone(result.receivers[0])
+    receiverOne.receiver_id = 'receiver_001'
+    receiverOne.display_name = 'Receiver 1'
+    result.receivers = [receiverTwo, receiverOne]
+    result.receiver_grids = [
+      { ...structuredClone(result.receiver_grids[0]), receiver_id: 'receiver_002' },
+      { ...structuredClone(result.receiver_grids[0]), receiver_id: 'receiver_001' },
+    ]
+    result.metrics.receiver_002 = structuredClone(result.metrics.receiver_001)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenChange={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+
+    const first = screen.getByText('Receiver 1')
+    const second = screen.getByText('Receiver 2')
+    expect(
+      first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
   it('switches the detailed report with the header case selector', () => {
     const first = createRayTraceResultFixture()
     const second = {
@@ -186,7 +218,7 @@ describe('Step 11 result UI', () => {
     const dialog = screen.getByRole('dialog', {
       name: 'Ray Tracing Analysis Result',
     })
-    expect(dialog.style.width).toBe('960px')
+    expect(dialog.style.width).toBe('1120px')
     expect(dialog.style.height).toBe('880px')
   })
 
@@ -273,6 +305,8 @@ describe('Step 11 result UI', () => {
         <RayTraceResultWindow
           open
           result={result}
+          scene={createSceneFixture()}
+          componentNameOverrides={{ 1: 'Renamed chassis' }}
           onOpenChange={vi.fn()}
         />
       </div>,
@@ -319,6 +353,27 @@ describe('Step 11 result UI', () => {
     ).not.toBeNull()
     expect(createImageData).toHaveBeenCalledWith(2, 2)
     expect(putImageData).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Mono' }))
+    expect(screen.getByRole('button', { name: 'Mono' }).getAttribute('aria-pressed')).toBe('true')
+    expect(putImageData).toHaveBeenCalledTimes(2)
+
+    const xProfile = screen.getByRole('img', {
+      name: 'X-axis luminance profile',
+    })
+    vi.spyOn(xProfile, 'getBoundingClientRect').mockReturnValue({
+      bottom: 80,
+      height: 80,
+      left: 0,
+      right: 400,
+      top: 0,
+      width: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    fireEvent.pointerMove(xProfile, { clientX: 200, clientY: 20 })
+    expect(screen.getAllByRole('tooltip').some((item) => item.textContent?.includes('nit'))).toBe(true)
+    fireEvent.pointerLeave(xProfile)
 
     fireEvent.wheel(viewport, {
       clientX: 300,
@@ -345,6 +400,7 @@ describe('Step 11 result UI', () => {
     fireEvent.pointerMove(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     fireEvent.pointerUp(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     expect(screen.getByText('Selected-area ray contribution')).not.toBeNull()
+    expect(screen.getAllByText('Renamed chassis').length).toBeGreaterThan(0)
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
     expect(tooltip.textContent).toContain('Incident flux')
     expect(tooltip.textContent).toContain('Pixel error')

@@ -4,7 +4,7 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
-import { useRayTraceJobQuery, useSceneQuery } from '@/api'
+import { useRayTraceJobQuery, useSceneQuery, type RayTraceResult } from '@/api'
 import {
   Box,
   CircleDot,
@@ -59,6 +59,10 @@ export function SimulatorShell() {
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)
+  const [autoConvergenceCancelToken, setAutoConvergenceCancelToken] =
+    useState(0)
+  const [displayedRayTraceResult, setDisplayedRayTraceResult] =
+    useState<RayTraceResult | null>(null)
   const [rayObjectEditRequest, setRayObjectEditRequest] =
     useState<RayObjectEditRequest | null>(null)
   const [componentDialog, setComponentDialog] = useState<{
@@ -94,6 +98,9 @@ export function SimulatorShell() {
   const activeRayTraceJobId = useWorkspaceStore(
     workspaceSelectors.activeRayTraceJobId,
   )
+  const emitters = useWorkspaceStore(workspaceSelectors.emitters)
+  const receivers = useWorkspaceStore(workspaceSelectors.receivers)
+  const rayTraceConfig = useWorkspaceStore(workspaceSelectors.rayTraceConfig)
   const restoredRayTraceResult = useWorkspaceStore(
     workspaceSelectors.restoredRayTraceResult,
   )
@@ -116,15 +123,58 @@ export function SimulatorShell() {
     : ''
 
   useEffect(() => {
+    const savedCaseResult = cadCases.find(
+      (item) => item.caseId === activeCadCaseId,
+    )?.latestResult
+    setDisplayedRayTraceResult(
+      savedCaseResult ?? restoredRayTraceResult ?? null,
+    )
+  }, [activeCadCaseId, cadCases, restoredRayTraceResult])
+
+  useEffect(() => {
     if (!rayTraceResult) {
       return
     }
+    setDisplayedRayTraceResult(rayTraceResult)
     actions.setActiveCadCaseResult(rayTraceResult)
     if (lastOpenedResultRunIdRef.current === rayTraceResult.run_id) return
     lastOpenedResultRunIdRef.current = rayTraceResult.run_id
+    if (rayTraceConfig.auto_convergence) {
+      const target = rayTraceConfig.convergence_target_percent ?? 5
+      const enabledReceiverMetrics = receivers
+        .filter((receiver) => receiver.enabled)
+        .map((receiver) => {
+          const value = rayTraceResult.metrics[receiver.receiver_id]
+          return value && typeof value === 'object'
+            ? (value as Record<string, unknown>)
+            : {}
+        })
+      const metricNumber = (value: unknown) =>
+        Number.isFinite(Number(value)) ? Number(value) : Number.POSITIVE_INFINITY
+      const converged =
+        enabledReceiverMetrics.length > 0 &&
+        enabledReceiverMetrics.every(
+          (metric) =>
+            (Number(metric.hit_count) || 0) >= 30 &&
+            metricNumber(metric.error_estimate_percent) <= target &&
+            metricNumber(metric.peak_area_error_estimate_percent) <= target,
+        )
+      const baseRayCount = emitters
+        .filter((emitter) => emitter.enabled)
+        .reduce((sum, emitter) => sum + Math.max(1, emitter.ray_count), 0)
+      const currentMultiplier =
+        baseRayCount > 0 ? rayTraceResult.total_rays / baseRayCount : 1
+      const reachedMaximum =
+        currentMultiplier >= (rayTraceConfig.max_convergence_multiplier ?? 8)
+      if (!converged && !reachedMaximum) {
+        setActiveSection('ray-tracing')
+        setRayTraceResultOpen(true)
+        return
+      }
+    }
     setActiveSection('result')
     setRayTraceResultOpen(true)
-  }, [actions, rayTraceResult])
+  }, [actions, emitters, rayTraceConfig, rayTraceResult, receivers])
 
   const openFeatureNotice = (title: string, description: string) => {
     if (document.activeElement instanceof HTMLElement) {
@@ -191,7 +241,7 @@ export function SimulatorShell() {
         scene,
         workspaceStore.getState(),
         new Date(),
-        rayTraceResult,
+        displayedRayTraceResult,
       )
       const saveResult = await saveBitsamProject(project)
       if (saveResult === 'cancelled') return
@@ -364,12 +414,13 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           rayTraceJob={rayTraceJob}
+          autoConvergenceCancelToken={autoConvergenceCancelToken}
           rayObjectEditRequest={rayObjectEditRequest}
           onRayObjectEditRequestHandled={() =>
             setRayObjectEditRequest(null)
           }
           onOpenRayTraceResult={() => {
-            if (rayTraceResult) setRayTraceResultOpen(true)
+            if (displayedRayTraceResult) setRayTraceResultOpen(true)
           }}
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
@@ -387,9 +438,14 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           onCameraFrameChange={setViewerCameraFrame}
-          rayTraceResult={rayTraceResult}
+          rayTraceResult={displayedRayTraceResult}
           rayTraceResultOpen={rayTraceResultOpen}
-          onRayTraceResultOpenChange={setRayTraceResultOpen}
+          onRayTraceResultOpenChange={(open) => {
+            setRayTraceResultOpen(open)
+            if (!open) {
+              setAutoConvergenceCancelToken((current) => current + 1)
+            }
+          }}
           editingComponentId={
             componentDialog?.type === 'material' ||
             componentDialog?.type === 'transform'

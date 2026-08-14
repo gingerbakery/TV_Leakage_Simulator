@@ -214,3 +214,39 @@
     cursor: pointer;
   }
 }
+
+@layer components {
+  /* Shared readability scale for every simulator popup. Individual compact
+     controls may still opt into a smaller explicit size where space matters. */
+  .simulator-popup-typography {
+    font-size: 14px;
+  }
+
+  .simulator-popup-typography [data-slot="dialog-title"] {
+    font-size: 16px;
+  }
+
+  .simulator-popup-typography [data-slot="dialog-description"] {
+    font-size: 12px;
+  }
+
+  .simulator-popup-typography :where(h3, h4, legend, summary, th, label) {
+    font-size: 14px;
+  }
+
+  .simulator-popup-typography :where(legend, th) {
+    white-space: nowrap;
+  }
+
+  .simulator-popup-typography label:not(:has(p)):not(:has(.popup-guide)) {
+    white-space: nowrap;
+  }
+
+  .simulator-popup-typography :where(input, select, textarea, td) {
+    font-size: 16px;
+  }
+
+  .simulator-popup-typography :where(.popup-guide, [role="tooltip"]) {
+    font-size: 12px;
+  }
+}

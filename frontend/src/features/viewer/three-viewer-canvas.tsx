@@ -434,19 +434,19 @@ function createDirectionArrow(
   root.name = name
   const direction = normal.clone().normalize()
   const arrowLength = MathUtils.clamp(
-    normalLength * 0.28,
-    0.45,
-    5.5,
+    normalLength * 0.58,
+    1.5,
+    12,
   )
   const arrowHeadLength = MathUtils.clamp(
-    arrowLength * 0.2,
-    0.12,
-    0.85,
+    arrowLength * 0.3,
+    0.45,
+    2.8,
   )
   const arrowHeadWidth = MathUtils.clamp(
-    arrowLength * 0.11,
-    0.07,
-    0.48,
+    arrowLength * 0.18,
+    0.28,
+    1.5,
   )
   const reference =
     Math.abs(direction.z) < 0.9
@@ -484,7 +484,33 @@ function createDirectionArrow(
     }),
   )
   arrow.renderOrder = 23
-  root.add(arrow)
+  const shaftLength = Math.max(0.2, arrowLength - arrowHeadLength)
+  const shaftRadius = MathUtils.clamp(arrowHeadWidth * 0.2, 0.07, 0.3)
+  const up = new Vector3(0, 1, 0)
+  const solidMaterial = new MeshBasicMaterial({
+    color,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  })
+  const shaft = new Mesh(
+    new CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 14),
+    solidMaterial,
+  )
+  shaft.position.copy(center).addScaledVector(direction, shaftLength / 2)
+  shaft.quaternion.setFromUnitVectors(up, direction)
+  shaft.renderOrder = 24
+  const head = new Mesh(
+    new ConeGeometry(arrowHeadWidth, arrowHeadLength, 18),
+    solidMaterial.clone(),
+  )
+  head.position.copy(center).addScaledVector(
+    direction,
+    shaftLength + arrowHeadLength / 2,
+  )
+  head.quaternion.setFromUnitVectors(up, direction)
+  head.renderOrder = 25
+  root.add(arrow, shaft, head)
   return root
 }
 

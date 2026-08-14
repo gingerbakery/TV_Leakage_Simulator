@@ -673,6 +673,7 @@ export function ViewerWorkspace({
             open={rayTraceResultOpen}
             result={rayTraceResult ?? null}
             scene={scene}
+            componentNameOverrides={componentNameOverrides}
             roiFaceIds={activeRoiFaceIds}
             reportCases={reportCases}
             onCaseMetadataChange={(caseId, name, note) =>

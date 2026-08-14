@@ -252,7 +252,7 @@ describe('common overlays', () => {
       document.querySelector('[data-slot="dialog-overlay"]'),
     ).toBeNull()
     expect(header).not.toBeNull()
-    expect(dialog.style.left).toBe('672px')
+    expect(dialog.style.left).toBe('592px')
     expect(dialog.style.top).toBe('64px')
 
     fireEvent.pointerDown(header!, { clientX: 380, clientY: 70 })

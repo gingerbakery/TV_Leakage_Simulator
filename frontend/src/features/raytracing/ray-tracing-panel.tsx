@@ -64,6 +64,7 @@ interface RayTracingPanelProps {
   scene?: ScenePayload
   cameraFrame: ViewerCameraFrame | null
   editRequest?: RayObjectEditRequest | null
+  autoConvergenceCancelToken?: number
   onEditRequestHandled?(): void
 }
 
@@ -733,7 +734,9 @@ function ReceiverDialog({
     setViewDistance(initialDistance)
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
     setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
-    setNormalFlip(initialReceiver?.normal_flip ?? false)
+    setNormalFlip(
+      initialReceiver?.normal_flip ?? mode === 'current_view',
+    )
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialReceiver),
     )
@@ -1188,6 +1191,7 @@ export function RayTracingPanel({
   scene,
   cameraFrame,
   editRequest = null,
+  autoConvergenceCancelToken = 0,
   onEditRequestHandled,
 }: RayTracingPanelProps) {
   const [emitterMode, setEmitterMode] =
@@ -1207,6 +1211,7 @@ export function RayTracingPanel({
   const convergenceHistoryRef = useRef<
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
   >([])
+  const [autoConvergenceStatus, setAutoConvergenceStatus] = useState('')
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -1269,6 +1274,14 @@ export function RayTracingPanel({
     enabledReceiverCount > 0 &&
     !isRunning
 
+  useEffect(() => {
+    if (autoConvergenceCancelToken <= 0) return
+    autoConvergenceActiveRef.current = false
+    setAutoConvergenceStatus(
+      '결과 창을 닫아 이후 Auto convergence 재실행을 취소했습니다.',
+    )
+  }, [autoConvergenceCancelToken])
+
   useEffect(
     () => () => actions.setEmitterFaceSelectionArmed(false),
     [actions],
@@ -1314,7 +1327,11 @@ export function RayTracingPanel({
   }
 
   const launchRun = useCallback(async (rayMultiplier = 1) => {
-    if (!scene || !canRun) return
+    if (
+      !scene ||
+      !emitters.some((emitter) => emitter.enabled) ||
+      !receivers.some((receiver) => receiver.enabled)
+    ) return false
     const request = buildRayTraceRequest({
       scene,
       projectName: activeCad?.displayName || 'TV-Leakage-Direct',
@@ -1333,15 +1350,21 @@ export function RayTracingPanel({
     try {
       const startedJob = await startMutation.mutateAsync({ request })
       actions.setActiveRayTraceJobId(startedJob.job_id)
+      return true
     } catch {
-      // The mutation state renders the backend error in the panel.
+      autoConvergenceActiveRef.current = false
+      setAutoConvergenceStatus('자동 수렴의 다음 Ray 실행을 시작하지 못했습니다.')
+      return false
     }
-  }, [activeCad?.displayName, canRun, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, transformRules, actions])
+  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
     convergenceMultiplierRef.current = 1
     handledConvergenceJobRef.current = null
+    setAutoConvergenceStatus(
+      config.auto_convergence ? '자동 수렴 1차 해석을 시작합니다.' : '',
+    )
     setConvergenceHistory([])
     convergenceHistoryRef.current = []
     await launchRun(1)
@@ -1380,16 +1403,30 @@ export function RayTracingPanel({
       peakError <= convergenceTarget
     if (!autoConvergenceActiveRef.current || converged) {
       autoConvergenceActiveRef.current = false
+      if (config.auto_convergence) {
+        setAutoConvergenceStatus(
+          converged
+            ? `목표 오차 ${convergenceTarget}% 이하로 수렴했습니다.`
+            : '자동 수렴이 비활성화되어 현재 결과에서 종료했습니다.',
+        )
+      }
       return
     }
     const nextMultiplier = convergenceMultiplierRef.current * 2
     if (nextMultiplier > (config.max_convergence_multiplier ?? 8)) {
       autoConvergenceActiveRef.current = false
+      setAutoConvergenceStatus(
+        `최대 Ray 배수 ${(config.max_convergence_multiplier ?? 8)}배에 도달하여 종료했습니다.`,
+      )
       return
     }
     convergenceMultiplierRef.current = nextMultiplier
+    const nextTotalRays = enabledEmitterRayCount * nextMultiplier
+    setAutoConvergenceStatus(
+      `오차가 목표보다 높아 ${nextTotalRays.toLocaleString()} Ray로 다시 해석합니다.`,
+    )
     void launchRun(nextMultiplier)
-  }, [actions, config.convergence_target_percent, config.max_convergence_multiplier, job, launchRun, receivers])
+  }, [actions, config.auto_convergence, config.convergence_target_percent, config.max_convergence_multiplier, enabledEmitterRayCount, job, launchRun, receivers])
 
   const progress =
     job?.status === 'completed'
@@ -1907,6 +1944,15 @@ export function RayTracingPanel({
               <span>{convergenceHistory.at(-1)?.rays.toLocaleString()} rays</span>
             </div>
           </details>
+        ) : null}
+
+        {autoConvergenceStatus ? (
+          <p
+            role="status"
+            className="rounded-lg border border-primary/25 bg-primary/5 p-2 text-[0.65rem] leading-4 text-foreground"
+          >
+            {autoConvergenceStatus}
+          </p>
         ) : null}
 
         {errorMessage ? (

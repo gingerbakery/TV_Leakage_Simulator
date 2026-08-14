@@ -206,8 +206,17 @@ export function axesFromNormal(normal: Vec3): {
   vAxis: Vec3
 } {
   const n = normalizeVector(normal)
-  const reference: Vec3 = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]
-  const uAxis = normalizeVector(crossVector(reference, n))
+  // Keep Receiver heatmaps aligned with the product/front-view convention:
+  // project world +X onto the picked plane for heatmap +X, then derive +Y.
+  // Side faces parallel to world X fall back to projected world +Y.
+  const preferred: Vec3 = Math.abs(n[0]) < 0.95 ? [1, 0, 0] : [0, 1, 0]
+  const projection =
+    preferred[0] * n[0] + preferred[1] * n[1] + preferred[2] * n[2]
+  const uAxis = normalizeVector([
+    preferred[0] - n[0] * projection,
+    preferred[1] - n[1] * projection,
+    preferred[2] - n[2] * projection,
+  ])
   const vAxis = crossVector(n, uAxis)
   return { uAxis, vAxis }
 }
@@ -292,9 +301,17 @@ export function createCurrentViewReceiver(
     baseCenter[1] + positionOffset[1],
     baseCenter[2] + positionOffset[2],
   ]
-  const normal = rotateVector(frame.normal, tiltDeg)
+  const viewingNormal = rotateVector(frame.normal, tiltDeg)
   const uAxis = rotateVector(frame.uAxis, tiltDeg)
-  const vAxis = rotateVector(frame.vAxis, tiltDeg)
+  // viewerCameraFrame.vAxis points toward screen-bottom. Receiver local +Y
+  // must point toward screen-top, while its stored right-handed normal stays
+  // opposite the viewing/acceptance direction and is flipped for tracing.
+  const vAxis = rotateVector(
+    [-frame.vAxis[0], -frame.vAxis[1], -frame.vAxis[2]],
+    tiltDeg,
+  )
+  const opposite = (value: number) => value === 0 ? 0 : -value
+  const normal: Vec3 = viewingNormal.map(opposite) as Vec3
   return {
     ...createDatumReceiver(receiverId, center, [0, 0, 0]),
     placement_mode: 'current_view',
@@ -302,6 +319,7 @@ export function createCurrentViewReceiver(
     normal,
     u_axis: uAxis,
     v_axis: vAxis,
+    normal_flip: true,
     view_distance_mm: distance,
     base_center: baseCenter,
     base_u_axis: [...frame.uAxis],

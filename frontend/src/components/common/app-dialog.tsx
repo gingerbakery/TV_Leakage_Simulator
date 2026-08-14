@@ -49,9 +49,9 @@ export interface AppDialogProps {
 }
 
 const sizeClasses: Record<AppDialogSize, string> = {
-  sm: 'sm:max-w-sm',
-  md: 'sm:max-w-lg',
-  lg: 'sm:max-w-2xl',
+  sm: 'sm:max-w-[30rem]',
+  md: 'sm:max-w-2xl',
+  lg: 'sm:max-w-4xl',
 }
 
 const floatingPanelGap = 12
@@ -97,7 +97,7 @@ export function AppDialog({
     if (!viewerBounds || viewerBounds.width <= 0) return
 
     const panelWidth =
-      contentRef.current?.getBoundingClientRect().width ?? 340
+      contentRef.current?.getBoundingClientRect().width ?? 420
     setPosition({
       // Default to the right edge of the viewer instead of the left, so
       // the panel doesn't immediately sit over the model - still just a
@@ -216,10 +216,10 @@ export function AppDialog({
           returnFocusRef.current.focus()
         }}
         className={cn(
-          'border border-border bg-popover/98 shadow-2xl shadow-black/40',
+          'simulator-popup-typography border border-border bg-popover/98 shadow-2xl shadow-black/40',
           sizeClasses[size],
           floating &&
-            'left-0 top-0 max-h-[calc(100vh-4.5rem)] w-[21.25rem] max-w-[calc(100vw-1.5rem)] translate-x-0 translate-y-0 overflow-hidden sm:max-w-[21.25rem]',
+            'left-0 top-0 max-h-[calc(100vh-4.5rem)] w-[26.25rem] max-w-[calc(100vw-1.5rem)] translate-x-0 translate-y-0 overflow-hidden sm:max-w-[26.25rem]',
           contentClassName,
         )}
         style={
