@@ -69,6 +69,51 @@ class FastApiLayerTests(unittest.TestCase):
         )
         self.client = TestClient(create_app(self.runtime))
 
+    def test_default_runtime_reuses_prepared_bvh_for_non_geometry_changes(self):
+        runtime = ApiRuntime(Path(self.temp_dir.name))
+        scene_mesh = {
+            "vertices": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            "faces": [[0, 1, 2]],
+            "face_component_ids": [1],
+            "face_material_ids": ["default"],
+        }
+        payload = {
+            "scene_token": "scene-cache-test",
+            "emitters": [{
+                "emitter_id": "emitter_001",
+                "emitter_type": "datum_plane",
+                "center": [0, 0, 1],
+                "u_axis": [1, 0, 0],
+                "v_axis": [0, 1, 0],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+            "receivers": [{
+                "receiver_id": "receiver_001",
+                "center": [0, 0, 2],
+                "normal": [0, 0, -1],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+        }
+
+        first = runtime._build_trace_input_for_request(scene_mesh, payload)
+        changed_receiver = dict(payload)
+        changed_receiver["receivers"] = [
+            {**payload["receivers"][0], "width_mm": 2}
+        ]
+        second = runtime._build_trace_input_for_request(scene_mesh, changed_receiver)
+
+        self.assertFalse(first.geometry_cache_hit)
+        self.assertTrue(second.geometry_cache_hit)
+        self.assertIs(first.mesh, second.mesh)
+
+        changed_geometry = dict(payload)
+        changed_geometry["excluded_component_ids"] = [1]
+        third = runtime._build_trace_input_for_request(scene_mesh, changed_geometry)
+        self.assertFalse(third.geometry_cache_hit)
+        self.assertIsNot(first.mesh, third.mesh)
+
     def tearDown(self):
         self.client.close()
         self.temp_dir.cleanup()

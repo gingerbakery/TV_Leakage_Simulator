@@ -215,21 +215,21 @@ function ComponentTreeRow({
                 }}
               >
                 <span className="flex items-center gap-1.5">
-                  <span className="truncate text-xs font-semibold">
+                  <span className="truncate text-sm font-semibold">
                     {displayName}
                   </span>
                   {roiFaceCount !== undefined ? (
-                    <Badge variant="outline" className="h-4 px-1 text-[0.55rem]">
+                    <Badge variant="outline" className="h-5 px-1 text-xs">
                       ROI
                     </Badge>
                   ) : null}
                   {component.is_truncated ? (
-                    <Badge variant="outline" className="h-4 px-1 text-[0.55rem]">
+                    <Badge variant="outline" className="h-5 px-1 text-xs">
                       partial
                     </Badge>
                   ) : null}
                 </span>
-                <span className="mt-1 block text-[0.65rem] leading-4 text-muted-foreground">
+                <span className="mt-1 block text-xs leading-4 text-muted-foreground">
                   {formatArea(roiAreaMm2 ?? component.area_mm2)} mm²
                 </span>
               </button>
@@ -251,7 +251,7 @@ function ComponentTreeRow({
             </button>
             {isColorPaletteOpen ? (
               <div className="absolute top-8 right-0 z-30 w-40 rounded-lg border border-border bg-popover p-2 shadow-xl">
-                <div className="mb-1.5 text-[0.62rem] font-semibold text-muted-foreground">
+                <div className="mb-1.5 text-sm font-semibold text-muted-foreground">
                   표시색 팔레트
                 </div>
                 <div className="grid grid-cols-6 gap-1.5">
@@ -273,7 +273,7 @@ function ComponentTreeRow({
                 <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
                   <button
                     type="button"
-                    className="text-[0.62rem] font-medium text-primary hover:underline"
+                    className="text-xs font-medium text-primary hover:underline"
                     onClick={() => {
                       actions.setComponentColor(componentId, null)
                       setIsColorPaletteOpen(false)
@@ -281,7 +281,7 @@ function ComponentTreeRow({
                   >
                     CAD 원본색
                   </button>
-                  <label className="flex cursor-pointer items-center gap-1 text-[0.62rem] text-muted-foreground">
+                  <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
                     직접 지정
                     <input
                       type="color"
@@ -351,7 +351,7 @@ function ComponentTreeRow({
             aria-label={`Traceability ${traceable ? 'ON' : 'OFF'} for ${displayName}`}
             title={`현재 상태: Traceability ${traceable ? 'ON' : 'OFF'} · 클릭하여 ${traceable ? 'OFF' : 'ON'}`}
             className={cn(
-              'h-7 min-w-0 px-1 text-[0.58rem] font-bold tracking-tight',
+              'h-7 min-w-0 px-1 text-xs font-bold tracking-tight',
               traceable
                 ? 'bg-emerald-100/80 text-emerald-800 hover:bg-emerald-200/80 dark:bg-emerald-950/55 dark:text-emerald-300 dark:hover:bg-emerald-900/65'
                 : 'bg-slate-200/90 text-slate-600 hover:bg-slate-300/90 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700',
@@ -440,7 +440,7 @@ export function ComponentTreePanel({
     return (
       <div className="rounded-lg border border-destructive/35 bg-destructive/8 p-3 text-xs leading-5 text-destructive">
         Scene을 불러오지 못했습니다.
-        <span className="mt-1 block text-[0.68rem] opacity-85">
+        <span className="mt-1 block text-xs opacity-85">
           {errorMessage}
         </span>
       </div>
@@ -452,7 +452,7 @@ export function ComponentTreePanel({
       <div className="rounded-lg border border-dashed border-border bg-background/30 p-4 text-center">
         <Box className="mx-auto size-6 text-muted-foreground" />
         <div className="mt-2 text-xs font-medium">No component data</div>
-        <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
+        <p className="mt-1 text-xs leading-4 text-muted-foreground">
           CAD를 Import하면 실제 ScenePayload의 component가 표시됩니다.
         </p>
       </div>
@@ -461,7 +461,7 @@ export function ComponentTreePanel({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between text-[0.68rem] text-muted-foreground">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>{availableComponents.length} components</span>
         <span>{selectedComponentIds.length} selected</span>
       </div>
@@ -516,7 +516,7 @@ export function ComponentTreePanel({
         </div>
       ) : null}
       {deletedComponentIds.length > 0 ? (
-        <p className="text-[0.65rem] leading-4 text-muted-foreground">
+        <p className="text-xs leading-4 text-muted-foreground">
           {deletedComponentIds.length}개 component가 작업 상태에서
           제외되었습니다. CAD를 다시 Import하면 복원됩니다.
         </p>

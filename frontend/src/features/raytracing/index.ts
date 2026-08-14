@@ -8,6 +8,7 @@ export {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rayObjectDisplayName,
   rotationFromPlaneAxes,
 } from './ray-tracing-model'
 export type {

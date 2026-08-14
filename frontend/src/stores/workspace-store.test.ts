@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
+import {
+  createDatumEmitter,
+  createDatumReceiver,
+  createFaceEmitter,
+} from '@/features/raytracing/ray-tracing-model'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 
 import {
   createWorkspaceStore,
@@ -69,6 +74,179 @@ describe('workspace store', () => {
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-a')
     actions.setActiveCadCase(caseB)
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-b')
+  })
+
+  it('preserves unchecked Receiver results and replaces only the recalculated Receiver', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const result = createRayTraceResultFixture()
+    const receiverOne = result.receivers[0]
+    const receiverTwo = {
+      ...structuredClone(receiverOne),
+      receiver_id: 'receiver_002',
+      display_name: 'Receiver 2',
+    }
+    result.receivers = [receiverOne, receiverTwo]
+    result.receiver_grids.push({
+      ...structuredClone(result.receiver_grids[0]),
+      receiver_id: receiverTwo.receiver_id,
+    })
+    result.metrics[receiverTwo.receiver_id] = {
+      ...structuredClone(
+        result.metrics[receiverOne.receiver_id] as Record<string, unknown>,
+      ),
+      peak_nit_est: 8,
+    }
+    actions.upsertReceiver(receiverOne)
+    actions.upsertReceiver(receiverTwo)
+    actions.setActiveCadCaseResult(result)
+
+    actions.toggleComponentVisibility(1)
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseId)
+        ?.latestResult?.run_id,
+    ).toBe(result.run_id)
+
+    actions.setReceiverEnabled(receiverOne.receiver_id, false)
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseId)
+        ?.latestResult?.receivers.map((receiver) => receiver.receiver_id),
+    ).toEqual([receiverOne.receiver_id, receiverTwo.receiver_id])
+
+    const updatedReceiverTwo = {
+      ...receiverTwo,
+      width_mm: receiverTwo.width_mm + 1,
+    }
+    actions.upsertReceiver(updatedReceiverTwo)
+    const resultAfterEdit = store.getState().cadCases.find(
+      (item) => item.caseId === caseId,
+    )?.latestResult
+    expect(resultAfterEdit?.receivers.map((receiver) => receiver.receiver_id)).toEqual([
+      receiverOne.receiver_id,
+    ])
+    expect(store.getState().activeRayTraceJobId).toBeNull()
+
+    const receiverTwoRun = structuredClone(result)
+    receiverTwoRun.run_id = 'run-test-002'
+    receiverTwoRun.receivers = [updatedReceiverTwo]
+    receiverTwoRun.receiver_grids = receiverTwoRun.receiver_grids.filter(
+      (grid) => grid.receiver_id === receiverTwo.receiver_id,
+    )
+    receiverTwoRun.metrics = {
+      _performance_summary: structuredClone(result.metrics._performance_summary),
+      [receiverTwo.receiver_id]: {
+        ...structuredClone(
+          result.metrics[receiverTwo.receiver_id] as Record<string, unknown>,
+        ),
+        peak_nit_est: 6,
+      },
+    }
+    receiverTwoRun.stored_paths = []
+    actions.setActiveCadCaseResult(receiverTwoRun)
+
+    const merged = store.getState().cadCases.find(
+      (item) => item.caseId === caseId,
+    )?.latestResult
+    expect(merged).toBeDefined()
+    const mergedResult = merged!
+    expect(mergedResult.receivers.map((receiver) => receiver.receiver_id)).toEqual([
+      receiverOne.receiver_id,
+      receiverTwo.receiver_id,
+    ])
+    expect(
+      (mergedResult.metrics[receiverOne.receiver_id] as Record<string, number>)
+        .peak_nit_est,
+    ).toBe(12.5)
+    expect(
+      (mergedResult.metrics[receiverTwo.receiver_id] as Record<string, number>)
+        .peak_nit_est,
+    ).toBe(6)
+  })
+
+  it('copies analysis setup while requiring CAD Surface Emitter face reselection', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const sourceCaseId = store.getState().activeCadCaseId!
+    actions.upsertEmitter(createFaceEmitter('face-emitter', [10, 11]))
+    actions.upsertEmitter(
+      createDatumEmitter('datum-emitter', [1, 2, 3], [0, 0, 0]),
+    )
+    actions.upsertReceiver(
+      createDatumReceiver('receiver-1', [4, 5, 6], [0, 0, 0]),
+    )
+    actions.renameComponent(2, 'Chassis rear')
+    actions.setExcludedComponentIds([2])
+    actions.upsertMaterialAssignment({
+      assignmentId: 'part-material',
+      componentId: 2,
+      targetType: 'part',
+      faceIds: [],
+      baseMaterialId: 'pc_black',
+      surfaceId: 'matte_black_resin',
+      profileId: '',
+      bsdfAssetId: '',
+      enabled: true,
+    })
+    actions.upsertMaterialAssignment({
+      assignmentId: 'face-material',
+      componentId: 3,
+      targetType: 'faces',
+      faceIds: [10],
+      baseMaterialId: 'pc_white',
+      surfaceId: 'normal',
+      profileId: '',
+      bsdfAssetId: '',
+      enabled: true,
+    })
+    actions.upsertTransformRule({
+      ruleId: 'component-transform',
+      componentId: 2,
+      targetType: 'component',
+      selectionMethod: 'click',
+      faceIds: [],
+      move: { x: 1, y: 2, z: 3 },
+      tilt: { x: 0, y: 0, z: 5 },
+      enabled: true,
+    })
+    actions.upsertTransformRule({
+      ruleId: 'face-transform',
+      componentId: 3,
+      targetType: 'faces',
+      selectionMethod: 'click',
+      faceIds: [10],
+      move: { x: 1, y: 0, z: 0 },
+      tilt: { x: 0, y: 0, z: 0 },
+      enabled: true,
+    })
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const targetCaseId = store.getState().activeCadCaseId!
+    actions.setActiveCadCase(sourceCaseId)
+
+    actions.copyActiveSetupToCases([
+      {
+        caseId: targetCaseId,
+        componentIdMap: { 2: 20, 3: 30 },
+      },
+    ])
+    const copied = store.getState().cadCases.find(
+      (item) => item.caseId === targetCaseId,
+    )?.workspaceState
+
+    expect(copied?.emitters.find((item) => item.emitter_id === 'face-emitter')?.face_indices).toEqual([])
+    expect(copied?.emitters.find((item) => item.emitter_id === 'datum-emitter')?.center).toEqual([1, 2, 3])
+    expect(copied?.receivers[0]?.center).toEqual([4, 5, 6])
+    expect(copied?.hiddenComponentIds).toEqual([])
+    expect(copied?.excludedComponentIds).toEqual([20])
+    expect(copied?.componentNameOverrides).toEqual({ 20: 'Chassis rear' })
+    expect(copied?.materialAssignments).toMatchObject([
+      { assignmentId: 'part-material', componentId: 20, faceIds: [] },
+    ])
+    expect(copied?.transformRules).toMatchObject([
+      { ruleId: 'component-transform', componentId: 20, faceIds: [] },
+    ])
   })
 
   it('removes an imported CAD case and safely activates the next case', () => {

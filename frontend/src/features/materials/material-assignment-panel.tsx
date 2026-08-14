@@ -54,14 +54,14 @@ export function MaterialAssignmentPanel({
             key={label}
             className="rounded-lg border border-border bg-background/40 p-2 text-center"
           >
-            <div className="text-[0.6rem] text-muted-foreground">{label}</div>
-            <div className="mt-0.5 text-xs font-semibold">{value}</div>
+            <div className="text-xs text-muted-foreground">{label}</div>
+            <div className="mt-0.5 text-base font-semibold">{value}</div>
           </div>
         ))}
       </div>
 
       <div className="flex items-center justify-between">
-        <div className="text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+        <div className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
           Assignments
         </div>
         <Badge variant="outline">{assignments.length}</Badge>
@@ -71,7 +71,7 @@ export function MaterialAssignmentPanel({
         <div className="rounded-lg border border-dashed border-border bg-background/30 p-4 text-center">
           <Palette className="mx-auto size-5 text-muted-foreground" />
           <p className="mt-2 text-xs font-medium">No assignments</p>
-          <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
+          <p className="mt-1 text-xs leading-4 text-muted-foreground">
             Components에서 Material을 선택해 part 또는 face profile을
             지정하세요.
           </p>
@@ -103,10 +103,10 @@ export function MaterialAssignmentPanel({
                       })
                     }
                   >
-                    <span className="block truncate text-xs font-semibold">
+                    <span className="block truncate text-sm font-semibold">
                       {componentName}
                     </span>
-                    <span className="mt-1 block text-[0.65rem] leading-4 text-muted-foreground">
+                    <span className="mt-1 block text-xs leading-4 text-muted-foreground">
                       {assignment.targetType === 'faces'
                         ? surface.name
                         : `${base.name} · ${surface.name}`}

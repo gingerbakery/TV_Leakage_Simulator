@@ -30,6 +30,8 @@ import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { getComponentDisplayName } from '@/features/components'
+import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
+import { useWorkspaceStore, workspaceSelectors } from '@/stores'
 
 import {
   formatReceiverCoordinate,
@@ -463,6 +465,7 @@ function ReceiverHeatmap({
   kAbs,
   kBrdf,
   storedPaths,
+  runId,
   componentNames,
   errorTargetPercent,
   sampleCount,
@@ -473,11 +476,21 @@ function ReceiverHeatmap({
   kAbs: number
   kBrdf: number
   storedPaths: RayHit[][]
+  runId: string
   componentNames: Map<number, string>
   errorTargetPercent: number
   sampleCount: number
   faceSourceIds?: number[]
 }) {
+  const receiverLabel = rayObjectDisplayName(
+    'receiver',
+    receiver.receiver_id,
+    receiver.display_name,
+  )
+  const highlightedSelection = useWorkspaceStore(
+    workspaceSelectors.highlightedRayPathSelection,
+  )
+  const actions = useWorkspaceStore(workspaceSelectors.actions)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [viewport, setViewport] = useState({
     ...initialReceiverHeatmapViewport,
@@ -585,7 +598,9 @@ function ReceiverHeatmap({
     )
     const uAxis = receiver.u_axis ?? receiver.base_u_axis
     const vAxis = receiver.v_axis ?? receiver.base_v_axis
-    const matchingPaths = storedPaths.filter((path) => {
+    const matchingPaths = storedPaths
+      .map((path, pathIndex) => ({ path, pathIndex }))
+      .filter(({ path }) => {
       const hit = [...path].reverse().find(
         (event) => event.event_type === 'receiver' && event.receiver_id === receiver.receiver_id,
       )
@@ -597,16 +612,19 @@ function ReceiverHeatmap({
       const normalizedY = 0.5 - localV / receiver.height_mm
       return normalizedX >= region.minX && normalizedX <= region.maxX &&
         normalizedY >= region.minY && normalizedY <= region.maxY
-    })
+      })
     const directCount = matchingPaths.filter(
-      (path) => !path.some((event) => event.event_type === 'surface'),
+      ({ path }) => !path.some((event) => event.event_type === 'surface'),
     ).length
     const componentContributions = new Map<number, { count: number; flux: number }>()
     const faceContributions = new Map<number, { count: number; flux: number }>()
     const lobeContributions = new Map<string, { count: number; flux: number }>()
     const depthContributions = new Map<number, { count: number; flux: number }>()
-    const sequences = new Map<string, { count: number; flux: number }>()
-    for (const path of matchingPaths) {
+    const sequences = new Map<
+      string,
+      { count: number; flux: number; pathIndices: number[] }
+    >()
+    for (const { path, pathIndex } of matchingPaths) {
       const receiverHit = [...path].reverse().find((event) => event.event_type === 'receiver')
       const pathFlux = numeric(receiverHit?.receiver_flux_lumen ?? receiverHit?.incoming_energy_lumen)
       const componentIds = path
@@ -638,9 +656,14 @@ function ReceiverHeatmap({
       const sequence = componentIds.length > 0
         ? componentIds.map((id) => componentNames.get(id) ?? `Component ${id}`).join(' → ')
         : 'Direct to Receiver'
-      const currentSequence = sequences.get(sequence) ?? { count: 0, flux: 0 }
+      const currentSequence = sequences.get(sequence) ?? {
+        count: 0,
+        flux: 0,
+        pathIndices: [],
+      }
       currentSequence.count += 1
       currentSequence.flux += pathFlux
+      currentSequence.pathIndices.push(pathIndex)
       sequences.set(sequence, currentSequence)
     }
     return {
@@ -813,7 +836,22 @@ function ReceiverHeatmap({
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
-          <span>FRONT view · +X right · +Y up</span>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>좌표 기준 = Receiver Local X/Y</span>
+            <span className="font-semibold text-red-500">
+              −X 왼쪽 · +X 오른쪽
+            </span>
+            <span className="font-semibold text-emerald-500">
+              +Y 위쪽 · −Y 아래쪽
+            </span>
+            <span>중심 0, 0</span>
+            <HelpTooltip label="Receiver Heatmap 좌표 방향 도움말">
+              Receiver Width는 X축, Height는 Y축이며,
+              3D Viewer의 빨간 X+ 화살표와 녹색 Y+ 화살표가 Heatmap의
+              오른쪽·위쪽과 각각 일치합니다. Flip receiving normal은
+              수광 방향만 반전하며 Heatmap X/Y 좌표는 변경하지 않습니다.
+            </HelpTooltip>
+          </span>
           <div className="flex rounded-md border border-border bg-background/60 p-0.5">
             <button
               type="button"
@@ -925,7 +963,7 @@ function ReceiverHeatmap({
           >
             <canvas
               ref={canvasRef}
-              aria-label={`${grid.receiver_id} flux heatmap`}
+              aria-label={`${receiverLabel} Flux Heatmap`}
               className="absolute max-w-none select-none"
               style={{
                 height: `${viewport.zoom * 100}%`,
@@ -1033,14 +1071,19 @@ function ReceiverHeatmap({
             </div>
           ) : null}
         </div>
-        <div className="col-start-3 row-start-1 min-h-0">
-          <ReceiverProfileChart
-            axis="Y"
-            values={yProfile}
-            minimumMm={-layout.heightMm / 2}
-            maximumMm={layout.heightMm / 2}
-            fixedCoordinateMm={((profileColumn + 0.5) / columns - 0.5) * layout.widthMm}
-          />
+        <div
+          data-testid={`${grid.receiver_id}-y-profile-frame`}
+          className="relative col-start-3 row-start-1 min-h-0 overflow-hidden"
+        >
+          <div className="absolute inset-0">
+            <ReceiverProfileChart
+              axis="Y"
+              values={yProfile}
+              minimumMm={-layout.heightMm / 2}
+              maximumMm={layout.heightMm / 2}
+              fixedCoordinateMm={((profileColumn + 0.5) / columns - 0.5) * layout.widthMm}
+            />
+          </div>
         </div>
         <div
           data-testid={`${grid.receiver_id}-y-axis`}
@@ -1103,18 +1146,18 @@ function ReceiverHeatmap({
           </summary>
           <div className="mt-2 grid grid-cols-2 gap-1.5 md:grid-cols-4">
             <Stat label="Area" value={`${formatMetric(regionAnalysis.areaMm2)} mm²`} />
-            <Stat label="Receiver flux" value={`${formatMetric(regionAnalysis.selectedFlux)} lm`} />
+            <Stat label="Receiver Flux" value={`${formatMetric(regionAnalysis.selectedFlux)} lm`} />
             <Stat label="Flux share" value={`${formatMetric(regionAnalysis.fluxRatio * 100, 1)}%`} />
-            <Stat label="Stored paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help="선택 영역에 도달한 대표 저장 경로 수입니다. 전체 Ray가 아니라 경로 원인을 확인하기 위해 저장된 진단용 표본입니다." />
+            <Stat label="Stored Paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help="선택 영역에 도달한 대표 저장 경로 수입니다. 전체 Ray가 아니라 경로 원인을 확인하기 위해 저장된 진단용 표본입니다." />
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
-              <div className="text-sm font-semibold">Path type</div>
+              <div className="text-sm font-semibold">Path Type</div>
               <div className="mt-1 rounded-md border border-border bg-background/35 p-2 text-base">
                 Direct {regionAnalysis.directCount.toLocaleString()} · Reflected{' '}
                 {(regionAnalysis.matchingPathCount - regionAnalysis.directCount).toLocaleString()}
               </div>
-              <div className="mt-2 text-sm font-semibold">Top components</div>
+              <div className="mt-2 text-sm font-semibold">Top Components</div>
               <div className="mt-1 space-y-1">
                 {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => (
                   <div key={id} className="flex justify-between rounded border border-border px-2 py-1 text-base">
@@ -1125,14 +1168,32 @@ function ReceiverHeatmap({
               </div>
             </div>
             <div>
-              <div className="text-sm font-semibold">Representative sequences</div>
+              <div className="text-sm font-semibold">Representative Sequences</div>
               <div className="mt-1 space-y-1">
-                {regionAnalysis.sequences.length > 0 ? regionAnalysis.sequences.map(([sequence, value]) => (
-                  <div key={sequence} className="rounded border border-border px-2 py-1 text-base">
-                    <div className="truncate font-medium" title={sequence}>{sequence}</div>
-                    <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
-                  </div>
-                )) : <div className="popup-guide text-xs text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
+                {regionAnalysis.sequences.length > 0 ? regionAnalysis.sequences.map(([sequence, value]) => {
+                  const selected = highlightedSelection?.runId === runId &&
+                    highlightedSelection.label === sequence
+                  return (
+                    <button
+                      type="button"
+                      key={sequence}
+                      aria-pressed={selected}
+                      className={`block w-full rounded border px-2 py-1 text-left text-base transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
+                      onClick={() => actions.setHighlightedRayPathSelection(
+                        selected
+                          ? null
+                          : {
+                              runId,
+                              pathIndices: value.pathIndices,
+                              label: sequence,
+                            },
+                      )}
+                    >
+                      <div className="truncate font-medium" title={sequence}>{sequence}</div>
+                      <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
+                    </button>
+                  )
+                }) : <div className="popup-guide text-xs text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
               </div>
             </div>
           </div>
@@ -1140,16 +1201,16 @@ function ReceiverHeatmap({
             <summary className="cursor-pointer text-sm font-semibold">Detailed face, reflection type and bounce contribution</summary>
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <div>
-                <div className="text-[0.6rem] font-semibold text-muted-foreground">Reflection type</div>
-                {regionAnalysis.lobes.map(([name, value]) => <div key={name} className="flex justify-between text-[0.6rem]"><span className="capitalize">{name}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+                <div className="text-sm font-semibold text-muted-foreground">Reflection Type</div>
+                {regionAnalysis.lobes.map(([name, value]) => <div key={name} className="flex justify-between text-base"><span className="capitalize">{name}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
               </div>
               <div>
-                <div className="text-[0.6rem] font-semibold text-muted-foreground">Reflection count</div>
-                {regionAnalysis.depths.map(([depth, value]) => <div key={depth} className="flex justify-between text-[0.6rem]"><span>{depth} bounce</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+                <div className="text-sm font-semibold text-muted-foreground">Reflection Count</div>
+                {regionAnalysis.depths.map(([depth, value]) => <div key={depth} className="flex justify-between text-base"><span>{depth} Bounce</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
               </div>
               <div>
-                <div className="text-[0.6rem] font-semibold text-muted-foreground">Top CAD faces</div>
-                {regionAnalysis.faces.map(([face, value]) => <div key={face} className="flex justify-between text-[0.6rem]"><span>Face {face}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
+                <div className="text-sm font-semibold text-muted-foreground">Top CAD Faces</div>
+                {regionAnalysis.faces.map(([face, value]) => <div key={face} className="flex justify-between text-base"><span>Face {face}</span><span>{value.count} · {formatMetric(value.flux)} lm</span></div>)}
               </div>
             </div>
           </details>
@@ -1158,7 +1219,7 @@ function ReceiverHeatmap({
           </p>
         </details>
       ) : interactionMode === 'region' ? (
-        <p className="mt-2 rounded-md border border-dashed border-orange-300/50 p-2 text-center text-[0.65rem] text-muted-foreground">
+        <p className="mt-2 rounded-md border border-dashed border-orange-300/50 p-2 text-center text-xs text-muted-foreground">
           Heatmap에서 빛샘을 확인할 영역을 사각형으로 드래그해 주세요.
         </p>
       ) : null}
@@ -1574,7 +1635,7 @@ export function RayTraceResultWindow({
             {analysisCases.length > 0 ? (
               <select
                 aria-label="Report active case"
-                className="h-7 max-w-52 cursor-pointer rounded-md border border-border bg-background px-2 text-[0.68rem]"
+                className="h-7 max-w-52 cursor-pointer rounded-md border border-border bg-background px-2 text-sm"
                 value={reportCaseId ?? ''}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
@@ -1631,7 +1692,7 @@ export function RayTraceResultWindow({
                   <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     Receiver
                     <select
-                      aria-label="Compare receiver"
+                      aria-label="Compare Receiver"
                       className="h-7 max-w-48 rounded-md border border-border bg-background px-2 text-xs text-foreground"
                       value={receiverCompareScope}
                       onChange={(event) =>
@@ -1645,7 +1706,11 @@ export function RayTraceResultWindow({
                       <option value="all">All Receivers</option>
                       {receiverCompareOptions.map((receiver, index) => (
                         <option key={receiver.receiver_id} value={index}>
-                          Receiver {index + 1} · {receiver.display_name || receiver.receiver_id}
+                          {rayObjectDisplayName(
+                            'receiver',
+                            receiver.receiver_id,
+                            receiver.display_name,
+                          )}
                         </option>
                       ))}
                     </select>
@@ -1697,10 +1762,10 @@ export function RayTraceResultWindow({
                           </span>
                         </th>
                         <th className="p-2 text-center">비교 조건</th>
-                        <th className="p-2 text-right">Hit ratio</th>
+                        <th className="p-2 text-right">Hit Ratio</th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Total flux
+                            Total Flux
                             <HelpTooltip label="Total flux 설명">
                               모든 Receiver에 도달한 전체 광량(lm)입니다. 값이 작을수록 유입된 빛샘 에너지가 적습니다.
                             </HelpTooltip>
@@ -1708,7 +1773,7 @@ export function RayTraceResultWindow({
                         </th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Peak nit
+                            Peak Nit
                             <HelpTooltip label="Peak nit 설명">
                               Receiver Heatmap에서 가장 밝은 지점의 추정 휘도입니다. 체감상 강하게 보이는 국부 빛샘을 나타냅니다.
                             </HelpTooltip>
@@ -1818,10 +1883,10 @@ export function RayTraceResultWindow({
                                   })
                                 }
                               />
-                              <div className="truncate text-[0.62rem] text-muted-foreground" title={item.cad_name}>{item.cad_name}</div>
+                              <div className="truncate text-xs text-muted-foreground" title={item.cad_name}>{item.cad_name}</div>
                               <input
                                 aria-label={`Case condition ${item.case_id}`}
-                                className="mt-1 h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-1 text-[0.62rem] text-muted-foreground hover:border-border focus:border-primary focus:bg-background"
+                                className="mt-1 h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-1 text-xs text-muted-foreground hover:border-border focus:border-primary focus:bg-background"
                                 value={item.note}
                                 placeholder="조건 또는 변경 내용 입력"
                                 onClick={(event) => event.stopPropagation()}
@@ -1886,48 +1951,48 @@ export function RayTraceResultWindow({
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Stat
-                  label="Total rays"
+                  label="Total Rays"
                   value={result.total_rays.toLocaleString()}
                   help="이번 해석에서 실제로 추적한 전체 Ray 개수입니다. Case 비교 시 동일해야 하는 기본 샘플 수입니다."
                 />
                 <Stat
-                  label="Receiver hits"
+                  label="Receiver Hits"
                   value={result.receiver_hit_count.toLocaleString()}
                   help="하나 이상의 Receiver에 도달한 Ray 개수입니다. 동일 Ray 수 조건에서 많을수록 Receiver 방향으로 빛이 더 많이 전달된 것입니다."
                 />
                 <Stat
-                  label="Hit ratio"
+                  label="Hit Ratio"
                   value={`${(hitRatio * 100).toFixed(3)}%`}
                   help="전체 Ray 중 Receiver에 도달한 비율입니다. 도달 빈도를 뜻하며 Ray마다 가진 광량 차이는 반영하지 않습니다."
                 />
                 <Stat
-                  label="Surface interactions"
+                  label="Surface Interactions"
                   value={result.surface_hit_count.toLocaleString()}
                   help="Ray가 추적 가능한 CAD 표면과 충돌한 누적 횟수입니다. 하나의 Ray가 여러 번 반사되면 여러 번 집계됩니다."
                 />
                 <Stat
-                  label="Direct flux"
+                  label="Direct Flux"
                   value={`${formatMetric(
                     contribution.direct_receiver_flux_lumen,
                   )} lm`}
                   help="CAD 표면에서 반사되지 않고 Emitter에서 Receiver로 직접 도달한 전체 광량입니다."
                 />
                 <Stat
-                  label="Reflected flux"
+                  label="Reflected Flux"
                   value={`${formatMetric(
                     contribution.reflected_receiver_flux_lumen,
                   )} lm`}
                   help="한 번 이상 CAD 표면과 상호작용한 뒤 Receiver에 도달한 전체 광량입니다. 구조적 반사 경로의 영향을 나타냅니다."
                 />
                 <Stat
-                  label="Ray rate"
+                  label="Ray Rate"
                   value={`${Math.round(
                     numeric(performance.rays_per_sec),
                   ).toLocaleString()} /s`}
                   help="초당 처리한 Ray 개수로, 해석 성능 확인용 값입니다. 빛샘 품질을 평가하는 광학 결과값은 아닙니다."
                 />
                 <Stat
-                  label="Stored paths"
+                  label="Stored Paths"
                   value={result.stored_paths.length.toLocaleString()}
                   help="3D 경로 및 Section View 확인을 위해 저장된 대표 Ray 경로 수입니다. 추적된 모든 Ray 수와 같지 않을 수 있습니다."
                 />
@@ -1935,7 +2000,7 @@ export function RayTraceResultWindow({
               <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
                 Intersection backend
                 <HelpTooltip label="Intersection backend 설명">
-                  Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. BVH build는 가속 구조 생성 시간이며 빛샘 결과값이 아니라 성능 진단값입니다.
+                  Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. Cache Hit는 동일 형상 조건의 BVH를 재사용했음을 뜻하며, Rebuilt는 형상 변경으로 새로 생성했음을 뜻합니다.
                 </HelpTooltip>
                 {' · '}
                 {String(
@@ -1944,6 +2009,8 @@ export function RayTraceResultWindow({
                 ).toUpperCase()}
                 {' · '}BVH build{' '}
                 {formatMetric(performance.bvh_build_sec)} s
+                {' · '}
+                {performance.bvh_cache_hit ? 'Cache Hit' : 'Rebuilt'}
               </p>
               {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">
@@ -1978,7 +2045,7 @@ export function RayTraceResultWindow({
             <div className="space-y-3">
               <div className="grid grid-cols-3 gap-2">
                 <Stat
-                  label="Surface hits"
+                  label="Surface Hits"
                   value={Math.round(
                     numeric(optical.surface_hit_count),
                   ).toLocaleString()}
@@ -2183,10 +2250,16 @@ export function RayTraceResultWindow({
                     className="rounded-lg border border-border bg-background/40 p-3"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm font-semibold">{receiver.display_name || receiver.receiver_id}</div>
+                      <div className="text-sm font-semibold">
+                        {rayObjectDisplayName(
+                          'receiver',
+                          receiver.receiver_id,
+                          receiver.display_name,
+                        )}
+                      </div>
                       <div className="flex items-center gap-2">
                         <span className={`rounded-full border px-2 py-0.5 text-sm font-semibold ${convergence.tone}`}>{convergence.label}</span>
-                        <label className="flex items-center gap-1 text-[0.6rem] text-muted-foreground">
+                        <label className="flex items-center gap-1 text-xs text-muted-foreground">
                           Target
                           <input aria-label="Convergence target percent" className="h-7 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground" type="number" min={0.1} max={100} step={0.5} value={errorTargetPercent} onChange={(event) => setErrorTargetPercent(Math.max(0.1, numeric(event.currentTarget.value)))} />%
                         </label>
@@ -2201,13 +2274,13 @@ export function RayTraceResultWindow({
                       />
                       <Stat
                         className="order-3 col-span-2"
-                        label="Peak nit_est"
+                        label="Peak Nit"
                         value={formatMetric(values.peak_nit_est)}
                         help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
                       />
                       <Stat
                         className="order-4 col-span-2"
-                        label="Mean nit_est"
+                        label="Mean Nit"
                         value={formatMetric(values.mean_nit_est)}
                         help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
@@ -2280,9 +2353,14 @@ export function RayTraceResultWindow({
                           kAbs={result.config.k_abs}
                           kBrdf={result.config.k_brdf}
                           storedPaths={result.stored_paths}
+                          runId={result.run_id}
                           componentNames={componentNames}
                           errorTargetPercent={errorTargetPercent}
-                          sampleCount={result.total_rays}
+                          sampleCount={Math.max(
+                            0,
+                            numeric(values.error_estimate_sample_count) ||
+                              result.total_rays,
+                          )}
                           faceSourceIds={scene?.mesh.face_source_ids}
                         />
                       </div>

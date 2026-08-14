@@ -39,6 +39,7 @@ import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
 } from '@/features/raytracing'
+import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import { RayTraceResultWindow } from '@/features/results'
 import {
   getActiveRoiFaceIds,
@@ -328,14 +329,26 @@ export function ViewerWorkspace({
         actions.setReceiverEnabled(id, !contextRayObject.enabled)
       }
       setStatusMessage(
-        `${kind === 'emitter' ? 'Emitter' : 'Receiver'} ${id} · ${contextRayObject.enabled ? 'Disabled' : 'Enabled'}`,
+        `${rayObjectDisplayName(
+          kind,
+          id,
+          kind === 'receiver' && 'display_name' in contextRayObject
+            ? contextRayObject.display_name
+            : undefined,
+        )} · ${contextRayObject.enabled ? 'Disabled' : 'Enabled'}`,
       )
       return
     }
     if (kind === 'emitter') actions.removeEmitter(id)
     else actions.removeReceiver(id)
     setStatusMessage(
-      `${kind === 'emitter' ? 'Emitter' : 'Receiver'} ${id} 삭제`,
+      `${rayObjectDisplayName(
+        kind,
+        id,
+        kind === 'receiver' && 'display_name' in contextRayObject
+          ? contextRayObject.display_name
+          : undefined,
+      )} 삭제`,
     )
   }
 
@@ -348,8 +361,8 @@ export function ViewerWorkspace({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-sm font-semibold">3D Viewer</h1>
-            <p className="text-[0.7rem] text-muted-foreground">
-              Three.js mesh · ROI, Emitter, Receiver and ray overlays · Step 11
+            <p className="text-xs text-muted-foreground">
+              Three.js Mesh · ROI, Emitter, Receiver and Ray Overlays · Step 11
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -402,7 +415,7 @@ export function ViewerWorkspace({
                 </Button>
               ))}
             </div>
-            <label className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-[0.65rem] text-muted-foreground dark:border-blue-900/70 dark:bg-blue-950/30">
+            <label className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground dark:border-blue-900/70 dark:bg-blue-950/30">
               <span className="font-medium whitespace-nowrap">
                 Axis size
               </span>
@@ -425,7 +438,7 @@ export function ViewerWorkspace({
               </span>
             </label>
             <label
-              className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-[0.65rem] text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45 dark:border-blue-900/70 dark:bg-blue-950/30"
+              className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45 dark:border-blue-900/70 dark:bg-blue-950/30"
               title={
                 renderMode === 'Wireframe'
                   ? 'Surface 또는 Surface + Edge 모드에서 사용할 수 있습니다.'
@@ -502,8 +515,8 @@ export function ViewerWorkspace({
             {emitterFaceSelectionArmed ? (
               <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
                 {selectedFaceIds.length > 0
-                  ? 'Emitter surface · selected'
-                  : 'Emitter surface · click a face'}
+                  ? 'Emitter Surface · Selected'
+                  : 'Emitter Surface · Click a Face'}
               </Badge>
             ) : selectedFaceIds.length > 0 ? (
               <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
@@ -531,13 +544,13 @@ export function ViewerWorkspace({
               <div className="mt-1 text-xs text-muted-foreground">
                 Tessellation과 component metadata를 읽는 중입니다.
               </div>
-              <div className="mt-2 rounded-full border border-border bg-background/55 px-3 py-1 text-[0.68rem] tabular-nums text-muted-foreground">
+              <div className="mt-2 rounded-full border border-border bg-background/55 px-3 py-1 text-xs tabular-nums text-muted-foreground">
                 {sceneLoadingElapsedSec < 60
                   ? `${sceneLoadingElapsedSec}s elapsed`
                   : `${Math.floor(sceneLoadingElapsedSec / 60)}m ${sceneLoadingElapsedSec % 60}s elapsed`}
               </div>
               {sceneLoadingElapsedSec >= 30 ? (
-                <p className="mt-3 max-w-sm text-[0.68rem] leading-5 text-muted-foreground">
+                <p className="mt-3 max-w-sm text-xs leading-5 text-muted-foreground">
                   회사 PC에서 오래 멈추면 서버 창의 마지막
                   {' [CAD] '}단계를 확인해 주세요. 동일 CAD의 중복 요청은
                   자동으로 하나로 합쳐 처리합니다.
@@ -562,7 +575,7 @@ export function ViewerWorkspace({
                 Empty workspace
               </div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                왼쪽 Model import에서 CAD를 선택하면 실제 Three.js scene이
+                왼쪽 Model Import에서 CAD를 선택하면 실제 Three.js Scene이
                 생성됩니다.
               </p>
             </div>
@@ -653,6 +666,14 @@ export function ViewerWorkspace({
                   open
                   kind={rayObjectContextTarget.kind}
                   objectId={rayObjectContextTarget.id}
+                  objectLabel={rayObjectDisplayName(
+                    rayObjectContextTarget.kind,
+                    rayObjectContextTarget.id,
+                    rayObjectContextTarget.kind === 'receiver' &&
+                      'display_name' in contextRayObject
+                      ? contextRayObject.display_name
+                      : undefined,
+                  )}
                   position={{
                     x: rayObjectContextTarget.clientX,
                     y: rayObjectContextTarget.clientY,
@@ -686,7 +707,7 @@ export function ViewerWorkspace({
         </div>
       </div>
 
-      <footer className="flex min-h-9 items-center justify-between gap-3 border-t border-border bg-background/55 px-3 py-2 text-[0.68rem] text-muted-foreground">
+      <footer className="flex min-h-9 items-center justify-between gap-3 border-t border-border bg-background/55 px-3 py-2 text-xs text-muted-foreground">
         <span className="truncate">{statusMessage}</span>
         <span className="hidden shrink-0 items-center gap-1 sm:flex">
           <CircleDot className="size-3 text-primary" />

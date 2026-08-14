@@ -1,15 +1,22 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
 } from 'react'
-import { useRayTraceJobQuery, useSceneQuery, type RayTraceResult } from '@/api'
+import {
+  apiClient,
+  useRayTraceJobQuery,
+  useSceneQuery,
+  type RayTraceResult,
+} from '@/api'
 import {
   Box,
+  BookOpen,
   CircleDot,
+  Copy,
   FolderOpen,
-  Info,
   Moon,
   Save,
   Sun,
@@ -35,15 +42,23 @@ import {
   readBitsamProjectFile,
   type BitsamProject,
 } from '@/features/projects'
+import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
 } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import {
+  groupRoiFacesByComponent,
+  resolveFacesInRoiBox,
+  resolveNearestVisibleFace,
+} from '@/features/roi'
+import {
+  mergeRayTraceReceiverResults,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,
+  type CopySetupTarget,
 } from '@/stores'
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
@@ -73,6 +88,9 @@ export function SimulatorShell() {
     title: string
     description: string
   } | null>(null)
+  const [copySetupOpen, setCopySetupOpen] = useState(false)
+  const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
+  const [copySetupPending, setCopySetupPending] = useState(false)
   const [pendingProject, setPendingProject] =
     useState<BitsamProject | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
@@ -86,6 +104,9 @@ export function SimulatorShell() {
     window.localStorage.setItem('tv-leakage-theme', theme)
   }, [theme])
   const lastOpenedResultRunIdRef = useRef('')
+  const previousActiveCaseIdRef = useRef<string | null>(null)
+  const suppressedCaseJobIdRef = useRef<string | null>(null)
+  const suppressedCaseRunIdRef = useRef<string | null>(null)
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
@@ -100,6 +121,7 @@ export function SimulatorShell() {
   )
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
+  const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
   const rayTraceConfig = useWorkspaceStore(workspaceSelectors.rayTraceConfig)
   const restoredRayTraceResult = useWorkspaceStore(
     workspaceSelectors.restoredRayTraceResult,
@@ -107,10 +129,24 @@ export function SimulatorShell() {
   const sceneQuery = useSceneQuery(activeCad?.path ?? '')
   const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
   const rayTraceJob = rayTraceJobQuery.data
-  const rayTraceResult =
+  const rawRayTraceResult =
     rayTraceJob?.status === 'completed'
       ? rayTraceJob.result
       : restoredRayTraceResult
+  const savedActiveCaseResult = cadCases.find(
+    (item) => item.caseId === activeCadCaseId,
+  )?.latestResult
+  const rayTraceResult = useMemo(() => {
+    if (!rawRayTraceResult) return rawRayTraceResult
+    if (savedActiveCaseResult?.run_id === rawRayTraceResult.run_id) {
+      return savedActiveCaseResult
+    }
+    return mergeRayTraceReceiverResults(
+      savedActiveCaseResult,
+      rawRayTraceResult,
+      receivers,
+    )
+  }, [rawRayTraceResult, receivers, savedActiveCaseResult])
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
   const activeComponent =
@@ -121,6 +157,46 @@ export function SimulatorShell() {
   const activeComponentName = activeComponent
     ? getComponentDisplayName(activeComponent, nameOverrides)
     : ''
+
+  useEffect(() => {
+    const previousCaseId = previousActiveCaseIdRef.current
+    previousActiveCaseIdRef.current = activeCadCaseId
+    if (previousCaseId === null || previousCaseId === activeCadCaseId) return
+    const targetCase = cadCases.find(
+      (item) => item.caseId === activeCadCaseId,
+    )
+    suppressedCaseJobIdRef.current = targetCase?.latestJobId ?? null
+    suppressedCaseRunIdRef.current = targetCase?.latestResult?.run_id ?? null
+    setRayTraceResultOpen(false)
+  }, [activeCadCaseId, cadCases])
+
+  useEffect(() => {
+    if (!scene || !roiScopes.some((scope) => scope.components.length === 0)) {
+      return
+    }
+    let changed = false
+    const remapped = roiScopes.map((scope) => {
+      if (scope.components.length > 0) return scope
+      const faceIds = scope.clipBox
+        ? resolveFacesInRoiBox(scene, scope.clipBox, [])
+        : scope.point
+          ? [resolveNearestVisibleFace(scene, scope.point, [])].filter(
+              (faceId): faceId is number => faceId !== null,
+            )
+          : []
+      const components = groupRoiFacesByComponent(
+        scene,
+        faceIds,
+        nameOverrides,
+      )
+      if (components.length > 0) changed = true
+      return {
+        ...scope,
+        components,
+      }
+    })
+    if (changed) actions.setRoiScopes(remapped)
+  }, [actions, nameOverrides, roiScopes, scene])
 
   useEffect(() => {
     const savedCaseResult = cadCases.find(
@@ -136,7 +212,19 @@ export function SimulatorShell() {
       return
     }
     setDisplayedRayTraceResult(rayTraceResult)
-    actions.setActiveCadCaseResult(rayTraceResult)
+    if (savedActiveCaseResult?.run_id !== rayTraceResult.run_id) {
+      actions.setActiveCadCaseResult(rayTraceResult)
+    }
+    const restoredByCaseSwitch =
+      (activeRayTraceJobId !== null &&
+        activeRayTraceJobId === suppressedCaseJobIdRef.current) ||
+      rayTraceResult.run_id === suppressedCaseRunIdRef.current
+    if (restoredByCaseSwitch) {
+      suppressedCaseJobIdRef.current = null
+      suppressedCaseRunIdRef.current = null
+      lastOpenedResultRunIdRef.current = rayTraceResult.run_id
+      return
+    }
     if (lastOpenedResultRunIdRef.current === rayTraceResult.run_id) return
     lastOpenedResultRunIdRef.current = rayTraceResult.run_id
     if (rayTraceConfig.auto_convergence) {
@@ -174,7 +262,7 @@ export function SimulatorShell() {
     }
     setActiveSection('result')
     setRayTraceResultOpen(true)
-  }, [actions, emitters, rayTraceConfig, rayTraceResult, receivers])
+  }, [actions, activeRayTraceJobId, emitters, rayTraceConfig, rayTraceResult, receivers, savedActiveCaseResult?.run_id])
 
   const openFeatureNotice = (title: string, description: string) => {
     if (document.activeElement instanceof HTMLElement) {
@@ -221,7 +309,7 @@ export function SimulatorShell() {
       'BITSAM 프로젝트 불러오기 완료',
       [
         `${pendingProject.project_name} 설정을 현재 CAD에 복원했습니다.`,
-        'ROI, Component 상태, Transform, Material, Emitter, Receiver와 Ray tracing 설정이 적용되었습니다.',
+        'ROI, Component 상태, Transform, Material, Emitter, Receiver와 Ray Tracing 설정이 적용되었습니다.',
         ...compatibility.warnings,
       ].join('\n'),
     )
@@ -300,6 +388,102 @@ export function SimulatorShell() {
     })
   }
 
+  const handleCopyAnalysisSetup = async () => {
+    if (!scene || copySetupTargetIds.length === 0) return
+    setCopySetupPending(true)
+    try {
+      const selectedCases = cadCases.filter((item) =>
+        copySetupTargetIds.includes(item.caseId),
+      )
+      const settled = await Promise.allSettled(
+        selectedCases.map(async (item) => {
+          const targetScene = await apiClient.getScene(item.cad.path)
+          return {
+            item,
+            match: matchSetupComponents(scene, targetScene),
+          }
+        }),
+      )
+      const successful = settled.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      )
+      const failedCases = settled.flatMap((result, index) =>
+        result.status === 'rejected'
+          ? [
+              selectedCases[index]?.name ||
+                selectedCases[index]?.cad.displayName ||
+                `Case ${index + 1}`,
+            ]
+          : [],
+      )
+      if (successful.length === 0) {
+        openFeatureNotice(
+          'Copy Setup Failed',
+          `대상 CAD Scene을 불러오지 못했습니다.${
+            failedCases.length > 0
+              ? `\n확인 필요: ${failedCases.join(', ')}`
+              : ''
+          }`,
+        )
+        return
+      }
+
+      const copyTargets: CopySetupTarget[] = successful.map(
+        ({ item, match }) => ({
+          caseId: item.caseId,
+          componentIdMap: match.componentIdMap,
+        }),
+      )
+      actions.copyActiveSetupToCases(copyTargets)
+      const sourceState = workspaceStore.getState()
+      const matchedComponents = successful.reduce(
+        (sum, item) => sum + item.match.matched,
+        0,
+      )
+      const unmatchedComponents = successful.reduce(
+        (sum, item) => sum + item.match.unmatched,
+        0,
+      )
+      const faceSpecificSkipped =
+        successful.length *
+        (sourceState.materialAssignments.filter(
+          (assignment) => assignment.targetType === 'faces',
+        ).length +
+          sourceState.transformRules.filter(
+            (rule) => rule.targetType === 'faces',
+          ).length)
+      const surfaceEmittersToReselect =
+        successful.length *
+        sourceState.emitters.filter(
+          (emitter) => emitter.emitter_type === 'face',
+        ).length
+      setCopySetupOpen(false)
+      setCopySetupTargetIds([])
+      openFeatureNotice(
+        'Copy Setup Complete',
+        [
+          `${successful.length}개 Case에 안전한 전체 설정 복사를 완료했습니다.`,
+          `Component 연결: ${matchedComponents}개 일치 / ${unmatchedComponents}개 불일치 제외`,
+          `Face 종속 Material·Transform: ${faceSpecificSkipped}개 안전을 위해 제외`,
+          `CAD Surface Emitter: ${surfaceEmittersToReselect}개 Face 재선택 필요`,
+          'ROI는 좌표 기준으로 재매핑되며 Hidden/Delete 상태와 기존 Ray 결과는 복사하지 않습니다.',
+          ...(failedCases.length > 0
+            ? [`Scene 로드 실패로 제외된 Case: ${failedCases.join(', ')}`]
+            : []),
+        ].join('\n'),
+      )
+    } catch (error) {
+      openFeatureNotice(
+        'Copy Setup Failed',
+        error instanceof Error
+          ? error.message
+          : '설정을 복사하는 중 알 수 없는 오류가 발생했습니다.',
+      )
+    } finally {
+      setCopySetupPending(false)
+    }
+  }
+
   return (
     <div className="grid min-h-svh bg-background text-foreground lg:h-svh lg:grid-rows-[3.25rem_minmax(0,1fr)] lg:overflow-hidden">
       <header className="sticky top-0 z-30 flex h-13 items-center justify-between border-b border-border bg-background/92 px-3 backdrop-blur-xl lg:static lg:px-4">
@@ -311,7 +495,7 @@ export function SimulatorShell() {
             <div className="truncate text-sm font-semibold tracking-tight">
               TV Leakage Simulator
             </div>
-            <div className="hidden text-[0.68rem] text-muted-foreground sm:block">
+            <div className="hidden text-xs text-muted-foreground sm:block">
               React workspace shell
             </div>
           </div>
@@ -345,6 +529,20 @@ export function SimulatorShell() {
           >
             <Save data-icon="inline-start" />
             <span className="hidden sm:inline">Save</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="Copy Setup"
+            disabled={!activeCadCaseId || cadCases.length < 2}
+            title="현재 Case의 해석 설정을 다른 Case로 복사"
+            onClick={() => {
+              setCopySetupTargetIds([])
+              setCopySetupOpen(true)
+            }}
+          >
+            <Copy data-icon="inline-start" />
+            <span className="hidden sm:inline">Copy Setup</span>
           </Button>
           <Button
             variant="outline"
@@ -391,16 +589,16 @@ export function SimulatorShell() {
           <Button
             variant="outline"
             size="sm"
-            aria-label="Layout guide"
+            aria-label="Manual Guide"
             onClick={() =>
               openFeatureNotice(
-                'Feature migration boundary',
-                'ROI 박스 드래그와 좌표 입력, 다중 scope 활성화, 정밀 mesh clipping과 폐곡선 section cap이 React Viewer에 연결되었습니다.',
+                'Manual Guide',
+                '시뮬레이터 완성 후 전체 작업 순서, 각 Step과 버튼의 기능, 입력 조건 및 결과 해석 가이드를 연결할 예정입니다.',
               )
             }
           >
-            <Info data-icon="inline-start" />
-            <span className="hidden sm:inline">Layout guide</span>
+            <BookOpen data-icon="inline-start" />
+            <span className="hidden sm:inline">Manual Guide</span>
           </Button>
         </div>
       </header>
@@ -475,11 +673,82 @@ export function SimulatorShell() {
       </div>
 
       <AppDialog
+        open={copySetupOpen}
+        onOpenChange={setCopySetupOpen}
+        title="Copy Analysis Setup"
+        description="현재 활성 Case의 해석 조건을 선택한 Case에 복사합니다. 대상 Case의 기존 설정과 Ray 결과는 교체됩니다."
+        footer={
+          <>
+            <Button
+              variant="outline"
+              disabled={copySetupPending}
+              onClick={() => setCopySetupOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={copySetupTargetIds.length === 0 || copySetupPending}
+              onClick={() => void handleCopyAnalysisSetup()}
+            >
+              {copySetupPending
+                ? 'Checking Components...'
+                : `Copy to ${copySetupTargetIds.length} Cases`}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <div className="text-sm text-muted-foreground">Source Case</div>
+            <div className="mt-1 text-base font-semibold">
+              {cadCases.find((item) => item.caseId === activeCadCaseId)?.name ||
+                cadCases.find((item) => item.caseId === activeCadCaseId)?.cad.displayName ||
+                'Active Case'}
+            </div>
+          </div>
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-semibold">Target Cases</legend>
+            {cadCases
+              .filter((item) => item.caseId !== activeCadCaseId)
+              .map((item) => (
+                <label
+                  key={item.caseId}
+                  className="flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3 hover:border-primary/40 hover:bg-primary/5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={copySetupTargetIds.includes(item.caseId)}
+                    onChange={(event) =>
+                      setCopySetupTargetIds((current) =>
+                        event.currentTarget.checked
+                          ? [...current, item.caseId]
+                          : current.filter((caseId) => caseId !== item.caseId),
+                      )
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">
+                      {item.name || `CASE ${String(item.order).padStart(2, '0')}`}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {item.cad.displayName}
+                    </span>
+                  </span>
+                </label>
+              ))}
+          </fieldset>
+          <div className="rounded-lg border border-orange-300/60 bg-orange-50/70 p-3 text-xs leading-5 text-orange-950 dark:border-orange-800 dark:bg-orange-950/30 dark:text-orange-100">
+            전체 해석 설정을 안전하게 복사합니다. Component 설정은 CAD 이름이 일치하는 부품에만 연결하고, ROI는 동일 공간 좌표로 재매핑합니다. Face 종속 Material·Transform은 제외하며 CAD Surface Emitter는 Face를 다시 선택해야 합니다.
+          </div>
+        </div>
+      </AppDialog>
+
+      <AppDialog
         open={noticeDialog !== null}
         onOpenChange={(open) => {
           if (!open) setNoticeDialog(null)
         }}
-        title={noticeDialog?.title ?? 'Migration notice'}
+        title={noticeDialog?.title ?? 'Notice'}
         description={noticeDialog?.description}
         returnFocusRef={noticeReturnFocusRef}
         footer={
@@ -489,8 +758,7 @@ export function SimulatorShell() {
         }
       >
         <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-5 text-muted-foreground">
-          공통 Dialog는 focus trap, Escape 닫기, 배경 interaction 차단을 Radix
-          계층에서 처리합니다.
+          안내 내용은 현재 기능 구성에 맞춰 단계적으로 업데이트됩니다.
         </div>
       </AppDialog>
 
@@ -521,7 +789,7 @@ export function SimulatorShell() {
           if (!open) setComponentDialog(null)
         }}
         title={`Delete ${activeComponentName || 'component'}?`}
-        description="Viewer와 ray tracing 대상에서 제외하며 연결된 Material assignment와 Transform rule도 함께 정리합니다. CAD를 다시 Import하면 복원됩니다."
+        description="Viewer와 Ray Tracing 대상에서 제외하며 연결된 Material Assignment와 Transform Rule도 함께 정리합니다. CAD를 다시 Import하면 복원됩니다."
         confirmLabel="Delete component"
         cancelLabel="Cancel"
         destructive

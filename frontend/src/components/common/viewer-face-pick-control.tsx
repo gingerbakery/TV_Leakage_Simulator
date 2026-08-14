@@ -56,7 +56,7 @@ export function ViewerFacePickControl({
       <div
         role="status"
         className={cn(
-          'mt-2 flex items-center gap-1.5 text-[0.68rem] font-medium',
+          'mt-2 flex items-center gap-1.5 text-xs font-medium',
           armed
             ? 'text-orange-800'
             : assigned

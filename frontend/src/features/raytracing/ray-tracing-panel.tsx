@@ -51,6 +51,7 @@ import {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rayObjectDisplayName,
   rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
@@ -75,8 +76,8 @@ const receiverDefaultSizeMm = 30
 const currentViewDefaultDistanceMm = 30
 
 const inputClassName =
-  'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
-const fieldLabelClassName = 'space-y-1 text-[0.68rem] font-medium'
+  'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-base outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
+const fieldLabelClassName = 'space-y-1 text-sm font-medium'
 
 function sceneCenter(scene: ScenePayload | undefined): Vec3 {
   if (!scene || scene.components.length === 0) return [0, 0, 0]
@@ -173,7 +174,7 @@ function VectorFields({
 }) {
   return (
     <fieldset className="space-y-1.5">
-      <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
+      <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
         {label}
         {help ? (
           <HelpTooltip label={`${label} 도움말`}>{help}</HelpTooltip>
@@ -300,6 +301,9 @@ function EmitterDialog({
     const { uAxis, vAxis } = axesFromNormal(normalVector)
     setCenter(nextCenter)
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    // Re-selecting a CAD face explicitly adopts the Receiver front-view
+    // convention: look from the arrow start along the arrow, X+ right/Y+ up.
+    setNormalFlip(true)
     setDatumFaceAssigned(true)
     setSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
@@ -409,10 +413,10 @@ function EmitterDialog({
       floating
       title={
         initialEmitter
-          ? `Edit ${initialEmitter.emitter_id}`
+          ? `Edit ${rayObjectDisplayName('emitter', initialEmitter.emitter_id)}`
           : mode === 'face'
-            ? 'CAD surface emitter'
-            : 'Datum plane emitter'
+            ? 'CAD Surface Emitter'
+            : 'Datum Plane Emitter'
       }
       help={
         mode === 'face'
@@ -427,7 +431,7 @@ function EmitterDialog({
             Cancel
           </Button>
           <Button disabled={!canApply} onClick={handleApply}>
-            {initialEmitter ? 'Save emitter' : 'Add emitter'}
+            {initialEmitter ? 'Save Emitter' : 'Add Emitter'}
           </Button>
         </>
       }
@@ -435,7 +439,7 @@ function EmitterDialog({
       <div className="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
         {mode === 'face' ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-            <div className="text-xs font-semibold">
+            <div className="text-sm font-semibold">
               {initialEmitter ? 'Emitter faces' : 'Selected faces'}
               {emitterCadFaceCount > 0
                 ? ` · CAD 면 ${emitterCadFaceCount}개`
@@ -492,7 +496,7 @@ function EmitterDialog({
               onChange={setRotation}
             />
             <fieldset className="space-y-1.5">
-              <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
+              <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
                 Emitter Size (mm)
                 <HelpTooltip label="Emitter Size 도움말">
                   발광면의 가로(Width)·세로(Height) 크기입니다 (mm).
@@ -570,7 +574,7 @@ function EmitterDialog({
             />
           )}
           {powerMode === 'set_luminance' ? (
-            <div className="rounded-lg border border-blue-200 bg-blue-50/65 p-2.5 text-[0.68rem] leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100 sm:col-span-2">
+            <div className="rounded-lg border border-blue-200 bg-blue-50/65 p-2.5 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100 sm:col-span-2">
               <div className="font-semibold">SET luminance conversion</div>
               <div>
                 Emitter area {emitterAreaMm2.toLocaleString(undefined, { maximumFractionDigits: 2 })} mm²
@@ -700,13 +704,10 @@ function ReceiverDialog({
   useEffect(() => {
     if (!open) return
     const initialDistance =
-      initialReceiver?.view_distance_mm ??
-      currentViewDefaultDistanceMm
+      initialReceiver?.view_distance_mm ?? currentViewDefaultDistanceMm
     setDisplayName(initialReceiver?.display_name ?? '')
     setCenter(
-      (mode === 'datum_plane'
-        ? initialReceiver?.base_center
-        : null) ??
+      initialReceiver?.base_center ??
         initialReceiver?.center ??
         defaultCenter,
     )
@@ -734,28 +735,18 @@ function ReceiverDialog({
     setViewDistance(initialDistance)
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
     setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
-    setNormalFlip(
-      initialReceiver?.normal_flip ?? mode === 'current_view',
-    )
-    setDatumFaceAssigned(
-      mode === 'datum_plane' && Boolean(initialReceiver),
-    )
+    setNormalFlip(initialReceiver?.normal_flip ?? true)
+    setDatumFaceAssigned(Boolean(initialReceiver))
     const initialSourceFaceIds = initialReceiver?.source_face_indices ?? []
     setReceiverSourceFaceIds(initialSourceFaceIds)
     if (mode === 'datum_plane') {
       actions.setSelectedFaceIds(initialSourceFaceIds)
     }
     if (mode === 'current_view' && initialReceiver) {
-      const normal =
-        initialReceiver.base_normal ?? initialReceiver.normal
-      const uAxis =
-        initialReceiver.base_u_axis ??
-        initialReceiver.u_axis
-      const vAxis =
-        initialReceiver.base_v_axis ??
-        initialReceiver.v_axis
-      const baseCenter =
-        initialReceiver.base_center ?? initialReceiver.center
+      const normal = initialReceiver.base_normal ?? initialReceiver.normal
+      const uAxis = initialReceiver.base_u_axis ?? initialReceiver.u_axis
+      const vAxis = initialReceiver.base_v_axis ?? initialReceiver.v_axis
+      const baseCenter = initialReceiver.base_center ?? initialReceiver.center
       setCapturedFrame(
         uAxis && vAxis
           ? {
@@ -790,9 +781,22 @@ function ReceiverDialog({
       datumFacePickResult
     const nextCenter: Vec3 = [pickedCenter.x, pickedCenter.y, pickedCenter.z]
     const normalVector: Vec3 = [pickedNormal.x, pickedNormal.y, pickedNormal.z]
-    const { uAxis, vAxis } = axesFromNormal(normalVector)
+    const aligned = {
+      normal: normalVector,
+      ...axesFromNormal(normalVector),
+    }
     setCenter(nextCenter)
-    setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
+    setRotation(
+      rotationFromPlaneAxes(
+        aligned.uAxis,
+        aligned.vAxis,
+        aligned.normal,
+      ),
+    )
+    // Receiver FRONT is always read from the arrow tail toward its tip.
+    // Keeping the flip enabled makes that trace direction match the Viewer
+    // direction used above while +X remains right and +Y remains up.
+    setNormalFlip(true)
     setDatumFaceAssigned(true)
     setReceiverSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
@@ -898,7 +902,9 @@ function ReceiverDialog({
       ...receiver,
       source_face_indices:
         mode === 'datum_plane' ? receiverSourceFaceIds : [],
-      display_name: displayName.trim() || receiverId,
+      display_name:
+        displayName.trim() ||
+        rayObjectDisplayName('receiver', receiverId),
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       resolution: [
@@ -919,15 +925,19 @@ function ReceiverDialog({
       floating
       title={
         initialReceiver
-          ? `Edit ${initialReceiver.display_name}`
+          ? `Edit ${rayObjectDisplayName(
+              'receiver',
+              initialReceiver.receiver_id,
+              initialReceiver.display_name,
+            )}`
           : mode === 'current_view'
-            ? 'Current view receiver'
-            : 'Datum plane receiver'
+            ? 'Current View Receiver'
+            : 'Datum Plane Receiver'
       }
       help={
         mode === 'current_view'
-          ? '현재 메인 Viewer의 카메라 방향과 화면 수평축을 수광면 좌표계로 저장합니다.'
-          : '중심 좌표와 회전으로 가상 사각 수광면을 배치합니다.'
+          ? '현재 3D Viewer의 카메라 위치와 방향을 기준으로 Receiver를 생성합니다.'
+          : 'CAD Face 또는 중심 좌표와 Receiver Tilt로 사각 수광면을 배치합니다.'
       }
       size="lg"
       onSubmit={handleApply}
@@ -937,7 +947,7 @@ function ReceiverDialog({
             Cancel
           </Button>
           <Button disabled={!canApply} onClick={handleApply}>
-            {initialReceiver ? 'Save receiver' : 'Add receiver'}
+            {initialReceiver ? 'Save Receiver' : 'Add Receiver'}
           </Button>
         </>
       }
@@ -958,56 +968,66 @@ function ReceiverDialog({
             onChange={(event) => setDisplayName(event.currentTarget.value)}
           />
         </label>
-        {mode === 'datum_plane' ? (
-          <>
-            <ViewerFacePickControl
-              armed={datumFacePickArmed}
-              assigned={datumFaceAssigned}
-              kind="datum"
-              onToggle={() =>
-                actions.setDatumFacePickArmed(!datumFacePickArmed)
-              }
-            />
-            <VectorFields
-              label="Receiver Center 좌표 (mm)"
-              help="수광면의 중심 좌표입니다 (mm)."
-              labels={['X', 'Y', 'Z']}
-              ariaLabels={[
-                'Receiver center X',
-                'Receiver center Y',
-                'Receiver center Z',
-              ]}
-              value={center}
-              onChange={setCenter}
-            />
-            <VectorFields
-              label="Receiver Offset (mm)"
-              help="Center 좌표에 추가로 더해지는 이동값입니다 (mm). Datum plane 기준에서 살짝 옮기고 싶을 때 사용합니다."
-              labels={['X', 'Y', 'Z']}
-              ariaLabels={[
-                'Receiver offset X',
-                'Receiver offset Y',
-                'Receiver offset Z',
-              ]}
-              value={positionOffset}
-              onChange={setPositionOffset}
-            />
-            <VectorFields
-              label="Receiver Rotation (deg)"
-              help="수광면의 X/Y/Z축 기준 회전(도)입니다."
-              labels={['X', 'Y', 'Z']}
-              ariaLabels={[
-                'Receiver rotation X',
-                'Receiver rotation Y',
-                'Receiver rotation Z',
-              ]}
-              value={rotation}
-              onChange={setRotation}
-            />
-          </>
-        ) : (
+        {mode === 'datum_plane' ? <>
+        <ViewerFacePickControl
+          armed={datumFacePickArmed}
+          assigned={datumFaceAssigned}
+          kind="datum"
+          onToggle={() =>
+            actions.setDatumFacePickArmed(!datumFacePickArmed)
+          }
+        />
+        <div className="rounded-lg border border-blue-200 bg-blue-50/65 p-2.5 dark:border-blue-900/70 dark:bg-blue-950/30">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 text-xs leading-5 text-muted-foreground">
+              Heatmap 좌표 = 3D Viewer의 빨간 X+ · 녹색 Y+ 축
+            </div>
+            <HelpTooltip label="Receiver Heatmap 좌표 도움말">
+              3D Viewer에 표시되는 Receiver의 빨간 X+와 녹색 Y+가 Heatmap의
+              오른쪽과 위쪽에 각각 대응합니다. Receiver Tilt를 변경하면 면과
+              로컬 X/Y 축이 함께 회전합니다.
+            </HelpTooltip>
+          </div>
+        </div>
+        <VectorFields
+          label="Receiver Center 좌표 (mm)"
+          help="수광면의 중심 좌표입니다 (mm)."
+          labels={['X', 'Y', 'Z']}
+          ariaLabels={[
+            'Receiver center X',
+            'Receiver center Y',
+            'Receiver center Z',
+          ]}
+          value={center}
+          onChange={setCenter}
+        />
+        <VectorFields
+          label="Receiver Offset (mm)"
+          help="Center 좌표에 추가하는 이동값입니다 (mm)."
+          labels={['X', 'Y', 'Z']}
+          ariaLabels={[
+            'Receiver offset X',
+            'Receiver offset Y',
+            'Receiver offset Z',
+          ]}
+          value={positionOffset}
+          onChange={setPositionOffset}
+        />
+        <VectorFields
+          label="Receiver Tilt (deg)"
+          help="Receiver 면과 로컬 X/Y 좌표축을 X/Y/Z 기준으로 함께 회전합니다. 면 안에서 X/Y 방향만 돌리려면 면의 normal 방향에 해당하는 축의 Tilt 값을 조정하세요."
+          labels={['X', 'Y', 'Z']}
+          ariaLabels={[
+            'Receiver tilt X',
+            'Receiver tilt Y',
+            'Receiver tilt Z',
+          ]}
+          value={rotation}
+          onChange={setRotation}
+        />
+        </> : (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-            <div className="flex items-center gap-2 text-xs font-semibold">
+            <div className="flex items-center gap-2 text-sm font-semibold">
               <Camera className="size-3.5 text-primary" />
               {capturedFrame ? 'Receiver view captured' : 'Camera unavailable'}
             </div>
@@ -1018,7 +1038,7 @@ function ReceiverDialog({
                   value={viewDistance}
                   min={0.001}
                   onChange={setViewDistance}
-                  description="현재 카메라 시점(view) 중심에서 카메라 방향으로 얼마나 떨어진 위치에 수광면을 배치할지 지정합니다."
+                  description="현재 Viewer의 시점 중심에서 카메라 방향으로 떨어진 Receiver 위치를 지정합니다."
                 />
               </div>
               <Button
@@ -1029,14 +1049,14 @@ function ReceiverDialog({
                 onClick={() => setCapturedFrame(cameraFrame)}
               >
                 <RefreshCw />
-                Use current camera
+                Use Current Camera
               </Button>
             </div>
             {capturedFrame && previewReceiver?.base_center ? (
               <div className="mt-4 space-y-3 border-t border-primary/15 pt-3">
                 <VectorFields
                   label="Center (mm)"
-                  help="캡처된 카메라 시점 기준 수광면의 실제 중심 좌표입니다. 값을 바꾸면 Receiver Offset이 자동으로 계산됩니다."
+                  help="캡처한 카메라 기준으로 계산된 Receiver 중심 좌표입니다."
                   labels={[
                     'Receiver center X',
                     'Receiver center Y',
@@ -1052,9 +1072,10 @@ function ReceiverDialog({
                   }
                 />
                 <VectorFields
-                  label="Tilt (deg)"
-                  help="캡처된 카메라 시점을 기준으로 수광면을 추가로 회전시킵니다."
-                  labels={[
+                  label="Receiver Tilt (deg)"
+                  help="캡처한 카메라 기준 Receiver 면과 X/Y 좌표축을 함께 회전합니다."
+                  labels={['X', 'Y', 'Z']}
+                  ariaLabels={[
                     'Receiver tilt X',
                     'Receiver tilt Y',
                     'Receiver tilt Z',
@@ -1067,7 +1088,7 @@ function ReceiverDialog({
           </div>
         )}
         <fieldset className="space-y-1.5">
-          <legend className="flex items-center gap-1.5 text-[0.68rem] font-semibold text-muted-foreground">
+          <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
             Receiver Size (mm)
             <HelpTooltip label="Receiver Size 도움말">
               수광면의 가로(Width)·세로(Height) 크기입니다 (mm).
@@ -1110,7 +1131,7 @@ function ReceiverDialog({
               setResolutionX(value)
               updatePixelSizeFromResolution(value, resolutionY)
             }}
-            description="수광면을 가로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
+            description="수광면을 가로로 몇 개의 Grid Cell로 나눠 Hit 분포(Heatmap)를 기록할지 지정합니다."
           />
           <NumberField
             label="Resolution Y"
@@ -1121,7 +1142,7 @@ function ReceiverDialog({
               setResolutionY(value)
               updatePixelSizeFromResolution(resolutionX, value)
             }}
-            description="수광면을 세로로 몇 개의 grid cell로 나눠 hit 분포(heatmap)를 기록할지 지정합니다."
+            description="수광면을 세로로 몇 개의 Grid Cell로 나눠 Hit 분포(Heatmap)를 기록할지 지정합니다."
           />
         </div>
         <div className="grid grid-cols-1 gap-2">
@@ -1136,13 +1157,6 @@ function ReceiverDialog({
             description="이 각도보다 큰 입사각으로 도달한 ray는 수광 대상에서 제외합니다 (0=정면만, 180=모든 각도)."
           />
         </div>
-        {mode === 'current_view' ? (
-          <p className="text-[0.68rem] leading-4 text-muted-foreground">
-            기본 수광면은 {receiverDefaultSizeMm} ×{' '}
-            {receiverDefaultSizeMm} mm이며, View distance는 모델 중심에서
-            카메라 방향으로 떨어진 거리입니다.
-          </p>
-        ) : null}
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
@@ -1152,7 +1166,9 @@ function ReceiverDialog({
           <span className="flex items-center gap-1.5">
             Flip receiving normal
             <HelpTooltip label="Flip receiving normal 도움말">
-              수광면이 향하는 방향(normal)을 반대로 뒤집습니다.
+              Emitter의 Flip normal direction과 동일하게 Receiver가 빛을
+              받는 방향과 3D Viewer 화살표 방향만 반대로 뒤집습니다.
+              Receiver Width/Height와 X/Y 좌표축은 변경하지 않습니다.
             </HelpTooltip>
           </span>
         </label>
@@ -1178,7 +1194,7 @@ function ConvergenceSparkline({ label, values }: { label: string; values: number
   }).join(' ')
   return (
     <div className="rounded border border-border bg-background/40 p-1.5">
-      <div className="text-[0.56rem] text-muted-foreground">{label}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
       <svg viewBox="0 0 100 30" preserveAspectRatio="none" className="mt-1 h-10 w-full">
         <path d="M0 28 H100" className="stroke-border" strokeWidth="0.7" />
         <polyline points={points} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
@@ -1441,7 +1457,7 @@ export function RayTracingPanel({
     <div className="space-y-4">
       <section className="space-y-2">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
             <Lightbulb className="size-3.5 text-warning" />
             Emitter
             <HelpTooltip label="Emitter 도움말">
@@ -1457,7 +1473,7 @@ export function RayTracingPanel({
           <Button
             variant="outline"
             size="sm"
-            aria-label="Add CAD surface emitter"
+            aria-label="Add CAD Surface Emitter"
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingEmitterId(null)
@@ -1468,12 +1484,12 @@ export function RayTracingPanel({
             }}
           >
             <Plus />
-            CAD surface
+            CAD Surface
           </Button>
           <Button
             variant="outline"
             size="sm"
-            aria-label="Add datum plane emitter"
+            aria-label="Add Datum Plane Emitter"
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingEmitterId(null)
@@ -1482,11 +1498,11 @@ export function RayTracingPanel({
             }}
           >
             <Plus />
-            Datum plane
+            Datum Plane
           </Button>
         </div>
         {emitters.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-border p-3 text-center text-[0.68rem] text-muted-foreground">
+          <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
             등록된 광원이 없습니다.
           </p>
         ) : (
@@ -1497,7 +1513,7 @@ export function RayTracingPanel({
                 className="flex items-center gap-2 rounded-lg border border-border bg-background/40 p-2"
               >
                 <input
-                  aria-label={`Enable ${emitter.emitter_id}`}
+                  aria-label={`Enable ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
                   type="checkbox"
                   checked={emitter.enabled}
                   disabled={isRunning}
@@ -1509,21 +1525,21 @@ export function RayTracingPanel({
                   }
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-semibold">
-                    {emitter.emitter_id}
+                  <div className="truncate text-sm font-semibold">
+                    {rayObjectDisplayName('emitter', emitter.emitter_id)}
                   </div>
-                  <div className="text-[0.62rem] text-muted-foreground">
+                  <div className="text-xs text-muted-foreground">
                     {emitter.emitter_type === 'face'
-                      ? 'CAD surface'
+                      ? 'CAD Surface'
                       : `${emitter.width_mm} × ${emitter.height_mm} mm`}
                     {' · '}
-                    {emitter.ray_count.toLocaleString()} rays
+                    {emitter.ray_count.toLocaleString()} Rays
                   </div>
                 </div>
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Edit ${emitter.emitter_id}`}
+                  aria-label={`Edit ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
                   disabled={isRunning}
                   onClick={() => {
                     actions.setEmitterFaceSelectionArmed(false)
@@ -1538,7 +1554,7 @@ export function RayTracingPanel({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Delete ${emitter.emitter_id}`}
+                  aria-label={`Delete ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
                   disabled={isRunning}
                   onClick={() =>
                     actions.removeEmitter(emitter.emitter_id)
@@ -1554,7 +1570,7 @@ export function RayTracingPanel({
 
       <section className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
             <Aperture className="size-3.5 text-primary" />
             Receiver
             <HelpTooltip label="Receiver 도움말">
@@ -1570,7 +1586,7 @@ export function RayTracingPanel({
           <Button
             variant="outline"
             size="sm"
-            aria-label="Add datum plane receiver"
+            aria-label="Add Datum Plane Receiver"
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingReceiverId(null)
@@ -1578,12 +1594,12 @@ export function RayTracingPanel({
             }}
           >
             <Plus />
-            Datum plane
+            Datum Plane
           </Button>
           <Button
             variant="outline"
             size="sm"
-            aria-label="Add current view receiver"
+            aria-label="Add Current View Receiver"
             disabled={!scene || !cameraFrame || isRunning}
             onClick={() => {
               setEditingReceiverId(null)
@@ -1591,11 +1607,11 @@ export function RayTracingPanel({
             }}
           >
             <Camera />
-            Current view
+            Current View
           </Button>
         </div>
         {receivers.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-border p-3 text-center text-[0.68rem] text-muted-foreground">
+          <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
             등록된 수광부가 없습니다.
           </p>
         ) : (
@@ -1606,7 +1622,11 @@ export function RayTracingPanel({
                 className="flex items-center gap-2 rounded-lg border border-border bg-background/40 p-2"
               >
                 <input
-                  aria-label={`Enable ${receiver.receiver_id}`}
+                  aria-label={`Enable ${rayObjectDisplayName(
+                    'receiver',
+                    receiver.receiver_id,
+                    receiver.display_name,
+                  )}`}
                   type="checkbox"
                   checked={receiver.enabled}
                   disabled={isRunning}
@@ -1618,11 +1638,17 @@ export function RayTracingPanel({
                   }
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-semibold">
-                    {receiver.display_name}
+                  <div className="truncate text-sm font-semibold">
+                    {rayObjectDisplayName(
+                      'receiver',
+                      receiver.receiver_id,
+                      receiver.display_name,
+                    )}
                   </div>
-                  <div className="text-[0.62rem] text-muted-foreground">
-                    {receiver.placement_mode.replace('_', ' ')}
+                  <div className="text-xs text-muted-foreground">
+                    {receiver.placement_mode === 'current_view'
+                      ? 'Current View'
+                      : 'Datum Plane'}
                     {' · '}
                     {receiver.width_mm} × {receiver.height_mm} mm
                   </div>
@@ -1630,7 +1656,11 @@ export function RayTracingPanel({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Edit ${receiver.receiver_id}`}
+                  aria-label={`Edit ${rayObjectDisplayName(
+                    'receiver',
+                    receiver.receiver_id,
+                    receiver.display_name,
+                  )}`}
                   disabled={isRunning}
                   onClick={() => {
                     setReceiverMode(null)
@@ -1642,7 +1672,11 @@ export function RayTracingPanel({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Delete ${receiver.receiver_id}`}
+                  aria-label={`Delete ${rayObjectDisplayName(
+                    'receiver',
+                    receiver.receiver_id,
+                    receiver.display_name,
+                  )}`}
                   disabled={isRunning}
                   onClick={() =>
                     actions.removeReceiver(receiver.receiver_id)
@@ -1656,16 +1690,21 @@ export function RayTracingPanel({
         )}
       </section>
 
-      <section className="space-y-3 border-t border-border pt-3">
-        <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
-          <Activity className="size-3.5" />
-          Run options
-          <HelpTooltip label="Run options 도움말">
-            반사 횟수, 종료 조건, 저장할 ray path 수 등 시뮬레이션 계산
-            방식을 설정합니다. 각 항목 아래 설명을 참고하세요.
-          </HelpTooltip>
-        </div>
-        <div className="grid grid-cols-1 gap-2.5">
+      <section className="border-t border-border pt-3">
+        <details className="group rounded-lg border border-border bg-background/35">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-primary/5 [&::-webkit-details-marker]:hidden">
+            <Activity className="size-3.5" />
+            <span className="flex-1">Run Options</span>
+            <span className="hidden text-xs font-medium normal-case tracking-normal text-muted-foreground group-open:inline">
+              접기
+            </span>
+            <HelpTooltip label="Run Options 도움말">
+              반사 횟수, 종료 조건, 저장할 Ray Path 수 등 전문 계산 조건을
+              설정합니다. 필요한 경우에만 펼쳐서 변경하세요.
+            </HelpTooltip>
+          </summary>
+          <div className="space-y-3 border-t border-border p-3">
+            <div className="grid grid-cols-1 gap-2.5">
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
             <NumberField
               label="Emitter rays"
@@ -1686,7 +1725,7 @@ export function RayTracingPanel({
             />
           </div>
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
-            <label className="flex items-center gap-2 text-xs font-semibold">
+            <label className="flex items-center gap-2 text-sm font-semibold">
               <input
                 type="checkbox"
                 checked={config.auto_convergence}
@@ -1819,8 +1858,8 @@ export function RayTracingPanel({
               <option value="detailed">Detailed</option>
             </select>
           </label>
-        </div>
-        <label className="flex items-center gap-2 text-xs">
+            </div>
+            <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
             checked={config.store_ray_paths}
@@ -1839,7 +1878,9 @@ export function RayTracingPanel({
               끄면 3D Viewer·Ray Section View의 ray 표시가 비활성화됩니다.
             </HelpTooltip>
           </span>
-        </label>
+            </label>
+          </div>
+        </details>
       </section>
 
       <section className="space-y-2 border-t border-border pt-3">
@@ -1869,10 +1910,10 @@ export function RayTracingPanel({
             onClick={() => void handleRun()}
           >
             <Play />
-            Run ray tracing
+            Run Ray Tracing
           </Button>
         )}
-        <p className="text-[0.65rem] leading-4 text-muted-foreground">
+        <p className="text-xs leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·
           Rays {enabledEmitterRayCount.toLocaleString()} · ROI{' '}
           {roiScopes.filter((scope) => scope.active).length} scope
@@ -1880,7 +1921,7 @@ export function RayTracingPanel({
 
         {job ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-            <div className="flex items-center justify-between gap-2 text-[0.68rem]">
+            <div className="flex items-center justify-between gap-2 text-sm">
               <span className="flex items-center gap-1.5 font-semibold">
                 <CircleDot className="size-3 text-primary" />
                 {job.phase}
@@ -1893,7 +1934,7 @@ export function RayTracingPanel({
                 style={{ width: `${progress * 100}%` }}
               />
             </div>
-            <div className="mt-2 flex justify-between text-[0.62rem] text-muted-foreground">
+            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
               <span>
                 {job.processed_rays.toLocaleString()} /{' '}
                 {job.total_rays.toLocaleString()} rays
@@ -1918,10 +1959,10 @@ export function RayTracingPanel({
                 key={label}
                 className="rounded-lg border border-border bg-background/40 p-2 text-center"
               >
-                <div className="text-[0.58rem] text-muted-foreground">
+                <div className="text-xs text-muted-foreground">
                   {label}
                 </div>
-                <div className="mt-0.5 text-[0.68rem] font-semibold">
+                <div className="mt-0.5 text-base font-semibold">
                   {value}
                 </div>
               </div>
@@ -1931,7 +1972,7 @@ export function RayTracingPanel({
 
         {convergenceHistory.length > 0 ? (
           <details className="rounded-lg border border-border bg-muted/15 p-2" open={config.auto_convergence}>
-            <summary className="cursor-pointer text-[0.65rem] font-semibold">
+            <summary className="cursor-pointer text-sm font-semibold">
               Convergence history · {convergenceHistory.length} run{convergenceHistory.length > 1 ? 's' : ''}
             </summary>
             <div className="mt-2 grid grid-cols-3 gap-1.5">
@@ -1939,7 +1980,7 @@ export function RayTracingPanel({
               <ConvergenceSparkline label="Peak nit" values={convergenceHistory.map((item) => item.peakNit)} />
               <ConvergenceSparkline label="Flux lm" values={convergenceHistory.map((item) => item.flux)} />
             </div>
-            <div className="mt-1 flex justify-between font-mono text-[0.56rem] text-muted-foreground">
+            <div className="mt-1 flex justify-between font-mono text-xs text-muted-foreground">
               <span>{convergenceHistory[0]?.rays.toLocaleString()} rays</span>
               <span>{convergenceHistory.at(-1)?.rays.toLocaleString()} rays</span>
             </div>
@@ -1949,14 +1990,14 @@ export function RayTracingPanel({
         {autoConvergenceStatus ? (
           <p
             role="status"
-            className="rounded-lg border border-primary/25 bg-primary/5 p-2 text-[0.65rem] leading-4 text-foreground"
+            className="rounded-lg border border-primary/25 bg-primary/5 p-2 text-xs leading-4 text-foreground"
           >
             {autoConvergenceStatus}
           </p>
         ) : null}
 
         {errorMessage ? (
-          <p className="rounded-lg border border-destructive/30 bg-destructive/8 p-2 text-[0.68rem] leading-4 text-destructive">
+          <p className="rounded-lg border border-destructive/30 bg-destructive/8 p-2 text-xs leading-4 text-destructive">
             {errorMessage}
           </p>
         ) : null}
@@ -1993,10 +2034,8 @@ export function RayTracingPanel({
       <ReceiverDialog
         open={receiverMode !== null || editingReceiver !== null}
         mode={
-          editingReceiver
-            ? editingReceiver.placement_mode === 'current_view'
-              ? 'current_view'
-              : 'datum_plane'
+          editingReceiver?.placement_mode === 'current_view'
+            ? 'current_view'
             : receiverMode ?? 'datum_plane'
         }
         scene={scene}

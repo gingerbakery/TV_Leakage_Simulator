@@ -60,6 +60,7 @@ export type RayObjectContextAction = 'edit' | 'enabled' | 'delete'
 export interface ViewerRayObjectActionMenuProps {
   kind: 'emitter' | 'receiver'
   objectId: string
+  objectLabel?: string
   open: boolean
   position: { x: number; y: number }
   enabled: boolean
@@ -83,7 +84,7 @@ export function ComponentContextMenu({
           <span className="block truncate text-sm font-semibold text-foreground">
             {componentName}
           </span>
-          <span className="mt-0.5 block text-[0.7rem] font-normal text-muted-foreground">
+          <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
             {visible ? 'Visible' : 'Hidden'} ·{' '}
             {traceable ? 'Traceability on' : 'Traceability off'}
           </span>
@@ -218,7 +219,7 @@ export function ViewerComponentActionMenu({
           <span className="block truncate text-sm font-semibold text-foreground">
             {componentName}
           </span>
-          <span className="mt-0.5 block text-[0.7rem] text-muted-foreground">
+          <span className="mt-0.5 block text-xs text-muted-foreground">
             {visible ? 'Visible' : 'Hidden'} ·{' '}
             {traceable ? 'Traceability on' : 'Traceability off'}
           </span>
@@ -286,6 +287,7 @@ export function ViewerComponentActionMenu({
 export function ViewerRayObjectActionMenu({
   kind,
   objectId,
+  objectLabel,
   open,
   position,
   enabled,
@@ -348,6 +350,7 @@ export function ViewerRayObjectActionMenu({
     'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0'
   const Icon = kind === 'emitter' ? Lightbulb : Aperture
   const label = kind === 'emitter' ? 'Emitter' : 'Receiver'
+  const displayLabel = objectLabel || objectId
 
   return createPortal(
     <div
@@ -362,7 +365,7 @@ export function ViewerRayObjectActionMenu({
       <div
         ref={menuRef}
         role="menu"
-        aria-label={`${label} actions for ${objectId}`}
+        aria-label={`${label} actions for ${displayLabel}`}
         className="fixed w-64 rounded-lg border border-border bg-popover/98 p-1 text-popover-foreground shadow-2xl shadow-black/40 ring-1 ring-foreground/10"
         style={{ left, top }}
         onPointerDown={(event) => event.stopPropagation()}
@@ -375,9 +378,9 @@ export function ViewerRayObjectActionMenu({
           <Icon className="size-4 text-primary" />
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold">
-              {objectId}
+              {displayLabel}
             </span>
-            <span className="block text-[0.7rem] text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {label} · {enabled ? 'Enabled' : 'Disabled'}
             </span>
           </span>

@@ -45,10 +45,10 @@ function ActiveCadCaseLabel() {
   if (!active) return null
   return (
     <div className="rounded-lg border border-primary/25 bg-primary/7 px-3 py-2">
-      <div className="text-[0.62rem] font-semibold tracking-wide text-primary uppercase">
+      <div className="text-sm font-semibold tracking-wide text-primary uppercase">
         Active · CASE {String(active.order).padStart(2, '0')}
       </div>
-      <div className="mt-0.5 truncate text-xs font-medium">{active.cad.displayName}</div>
+      <div className="mt-0.5 truncate text-sm font-medium">{active.cad.displayName}</div>
     </div>
   )
 }
@@ -92,7 +92,7 @@ const workflowSections: WorkflowSection[] = [
   {
     id: 'model-import',
     step: '01',
-    label: 'Model import',
+    label: 'Model Import',
     guide:
       'STEP/STP, X_T/X_B, STL, OBJ 등 CAD 파일을 face 단위 mesh로 변환합니다. 가져온 뒤에는 원본 CAD 파일 없이도 현재 작업 상태를 .bitsam 프로젝트 파일로 저장해 나중에 다시 불러올 수 있습니다 (단, 같은 CAD를 다시 Import해야 기하가 맞물려 복원됩니다).',
     icon: FileBox,
@@ -102,7 +102,7 @@ const workflowSections: WorkflowSection[] = [
     step: '02',
     label: 'ROI',
     guide:
-      '박스 드래그 또는 좌표 선택으로 분석 대상 face 범위(ROI)를 지정합니다. 체크박스로 활성화한 scope만 이후 Ray tracing·결과 집계와 Viewer 격리 표시에 반영되고, 비활성 scope는 목록에 남아있어도 계산에서 제외됩니다.',
+      '박스 드래그 또는 좌표 선택으로 분석 대상 Face 범위(ROI)를 지정합니다. 체크박스로 활성화한 Scope만 이후 Ray Tracing·결과 집계와 Viewer 격리 표시에 반영되고, 비활성 Scope는 목록에 남아있어도 계산에서 제외됩니다.',
     icon: BoxSelect,
   },
   {
@@ -116,9 +116,9 @@ const workflowSections: WorkflowSection[] = [
   {
     id: 'ray-tracing',
     step: '04',
-    label: 'Ray tracing',
+    label: 'Ray Tracing',
     guide:
-      'Emitter(발광면)와 Receiver(수광면)를 CAD surface 또는 Datum plane으로 배치하고, Run options(반사 횟수, 종료 조건, 저장할 ray path 수 등)를 설정한 뒤 시뮬레이션을 실행합니다.',
+      'Emitter(발광면)와 Receiver(수광면)를 CAD Surface 또는 Datum Plane으로 배치하고, Run Options(반사 횟수, 종료 조건, 저장할 Ray Path 수 등)를 설정한 뒤 시뮬레이션을 실행합니다.',
     icon: Play,
   },
   {
@@ -126,14 +126,14 @@ const workflowSections: WorkflowSection[] = [
     step: '05',
     label: 'Result',
     guide:
-      '완료된 Ray trace 결과를 확인합니다. Receiver별 hit 통계, Viewer에 표시되는 3D ray path, 그리고 Receiver를 지나는 단면으로 잘라 CAD와 ray를 함께 보여주는 Ray Section View 이미지를 제공합니다.',
+      '완료된 Ray Trace 결과를 확인합니다. Receiver별 Hit 통계, Viewer에 표시되는 3D Ray Path, 그리고 Receiver를 지나는 단면으로 잘라 CAD와 Ray를 함께 보여주는 Ray Section View 이미지를 제공합니다.',
     icon: ScanSearch,
   },
   {
     id: 'applied-settings',
     label: 'Applied Settings',
     guide:
-      '지금까지 지정한 모든 Material assignment(부품/Face별 재질)와 Transform rule(이동·회전)을 한 곳에서 검토하고 개별적으로 삭제할 수 있는 목록입니다. Step 03 Components에서 지정한 내용이 여기 반영됩니다.',
+      '지금까지 지정한 모든 Material Assignment(부품/Face별 재질)와 Transform Rule(이동·회전)을 한 곳에서 검토하고 개별적으로 삭제할 수 있는 목록입니다. Step 03 Components에서 지정한 내용이 여기 반영됩니다.',
     icon: Settings2,
   },
 ]
@@ -226,7 +226,7 @@ export function WorkflowSidebar({
               role="tab"
               aria-selected={appliedSettingsTab === 'material'}
               className={cn(
-                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[0.68rem] font-medium transition-colors',
+                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-medium transition-colors',
                 appliedSettingsTab === 'material'
                   ? 'bg-primary/15 text-primary'
                   : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
@@ -241,7 +241,7 @@ export function WorkflowSidebar({
               role="tab"
               aria-selected={appliedSettingsTab === 'transform'}
               className={cn(
-                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[0.68rem] font-medium transition-colors',
+                'flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-medium transition-colors',
                 appliedSettingsTab === 'transform'
                   ? 'bg-primary/15 text-primary'
                   : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
@@ -257,7 +257,7 @@ export function WorkflowSidebar({
             role="tabpanel"
             aria-label={
               appliedSettingsTab === 'material'
-                ? 'Material assignments'
+                ? 'Material Assignments'
                 : 'Transform rules'
             }
           >
@@ -304,7 +304,7 @@ export function WorkflowSidebar({
             <div className="mb-2 flex items-center justify-between px-1">
               <h2
                 id="workflow-navigation-title"
-                className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                className="text-sm font-semibold tracking-wide text-muted-foreground uppercase"
               >
                 Workflow
               </h2>
@@ -361,7 +361,7 @@ export function WorkflowSidebar({
                         {section.step ? (
                           <span
                             className={cn(
-                              'block text-[0.68rem] font-medium tracking-wide',
+                              'block text-sm font-medium tracking-wide',
                               isActive
                                 ? 'text-blue-700/75 dark:text-sky-300/85'
                                 : 'text-slate-500 dark:text-slate-400',

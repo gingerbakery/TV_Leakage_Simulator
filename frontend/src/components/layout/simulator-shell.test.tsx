@@ -5,17 +5,23 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
+  within,
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
+import { createSceneFixture } from '@/test/scene-fixture'
+import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
 
 import { SimulatorShell } from './simulator-shell'
 
 const apiHookState = vi.hoisted(() => ({
   rayTraceJob: undefined as unknown,
+  scene: undefined as ReturnType<typeof createSceneFixture> | undefined,
 }))
 
 vi.mock('@/api', async () => {
@@ -23,7 +29,7 @@ vi.mock('@/api', async () => {
   return {
     ...actual,
     useSceneQuery: () => ({
-      data: undefined,
+      data: apiHookState.scene,
       error: null,
       isPending: false,
     }),
@@ -63,10 +69,28 @@ function renderShell() {
 afterEach(() => {
   cleanup()
   apiHookState.rayTraceJob = undefined
+  apiHookState.scene = undefined
   workspaceStore.getState().actions.resetWorkspace()
 })
 
 describe('SimulatorShell', () => {
+  it('matches Copy Setup Components by CAD name instead of numeric ID', () => {
+    const source = createSceneFixture()
+    const target = structuredClone(source)
+    target.components = target.components.map((component, index) => ({
+      ...component,
+      component_id: (index + 1) * 100,
+      component_name: ` ${component.component_name.toUpperCase()} `,
+    }))
+    target.objects = target.components
+
+    expect(matchSetupComponents(source, target)).toEqual({
+      componentIdMap: { 1: 100, 2: 200 },
+      matched: 2,
+      unmatched: 0,
+    })
+  })
+
   it('renders the empty CAD boundary and switches feature panels', () => {
     renderShell()
 
@@ -89,7 +113,7 @@ describe('SimulatorShell', () => {
       screen.queryByRole('button', { name: /Step 05 Material/ }),
     ).toBeNull()
     expect(
-      screen.getByRole('button', { name: /Step 04 Ray tracing/ }),
+      screen.getByRole('button', { name: /Step 04 Ray Tracing/ }),
     ).not.toBeNull()
 
     fireEvent.click(
@@ -103,14 +127,14 @@ describe('SimulatorShell', () => {
     expect(screen.getByText('No transform rules')).not.toBeNull()
   })
 
-  it('opens the common feature migration boundary dialog', async () => {
+  it('opens the Manual Guide placeholder dialog', async () => {
     renderShell()
 
-    fireEvent.click(screen.getByRole('button', { name: /Layout guide/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Manual Guide' }))
 
     expect(
       await screen.findByRole('dialog', {
-        name: 'Feature migration boundary',
+        name: 'Manual Guide',
       }),
     ).not.toBeNull()
   })
@@ -118,7 +142,7 @@ describe('SimulatorShell', () => {
   it('moves from Ray tracing to Result when tracing completes', () => {
     const view = renderShell()
     const rayTracingStep = screen.getByRole('button', {
-      name: 'Step 04 Ray tracing',
+      name: 'Step 04 Ray Tracing',
     })
     const resultStep = screen.getByRole('button', {
       name: 'Step 05 Result',
@@ -135,5 +159,58 @@ describe('SimulatorShell', () => {
     )
 
     expect(resultStep.getAttribute('aria-current')).toBe('step')
+  })
+
+  it('stores a restored result once without entering a render loop', async () => {
+    const result = createCompletedRayTraceJobFixture().result
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    actions.upsertReceiver(result.receivers[0])
+    actions.setRestoredRayTraceResult(result)
+    const saveResult = vi.spyOn(actions, 'setActiveCadCaseResult')
+
+    renderShell()
+
+    await waitFor(() => expect(saveResult).toHaveBeenCalledTimes(1))
+    saveResult.mockRestore()
+  })
+
+  it('copies the full setup with safe Component name matching', async () => {
+    const sourceScene = createSceneFixture()
+    const targetScene = structuredClone(sourceScene)
+    targetScene.components = targetScene.components.map((component, index) => ({
+      ...component,
+      component_id: (index + 1) * 100,
+    }))
+    targetScene.objects = targetScene.components
+    apiHookState.scene = sourceScene
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const sourceCaseId = workspaceStore.getState().activeCadCaseId!
+    actions.renameComponent(1, 'Renamed chassis')
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const targetCaseId = workspaceStore.getState().activeCadCaseId!
+    actions.setActiveCadCase(sourceCaseId)
+    const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(targetScene)
+
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Setup' }))
+    const copyDialog = screen.getByRole('dialog', {
+      name: 'Copy Analysis Setup',
+    })
+    const targetLabel = within(copyDialog).getByText('case-b.step').closest('label')
+    fireEvent.click(targetLabel!.querySelector('input')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to 1 Cases' }))
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Copy Setup Complete' }),
+    ).not.toBeNull()
+    expect(getScene).toHaveBeenCalledWith('case-b.step')
+    expect(
+      workspaceStore.getState().cadCases.find(
+        (item) => item.caseId === targetCaseId,
+      )?.workspaceState?.componentNameOverrides,
+    ).toEqual({ 100: 'Renamed chassis' })
+    getScene.mockRestore()
   })
 })

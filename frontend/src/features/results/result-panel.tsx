@@ -59,11 +59,11 @@ export function ResultPanel({
     <div className="space-y-4">
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
             <Activity className="size-3.5" />
             Result status
             <HelpTooltip label="Result status 도움말">
-              Ray tracing job의 진행 상태입니다. 완료되면 총 ray 수,
+              Ray Tracing Job의 진행 상태입니다. 완료되면 총 Ray 수,
               Receiver hit 수·비율, 실행 시간을 보여주고 "분석 결과
               보기"로 상세 리포트(Result window)를 엽니다.
             </HelpTooltip>
@@ -80,15 +80,15 @@ export function ResultPanel({
           </Badge>
         </div>
         {!job ? (
-          <p className="rounded-lg border border-dashed border-border p-3 text-center text-[0.68rem] leading-4 text-muted-foreground">
-            Ray tracing을 실행하면 결과와 저장 경로가 표시됩니다.
+          <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs leading-4 text-muted-foreground">
+            Ray Tracing을 실행하면 결과와 저장 경로가 표시됩니다.
           </p>
         ) : job.status === 'failed' ? (
-          <p className="rounded-lg border border-destructive/30 bg-destructive/8 p-2 text-[0.68rem] text-destructive">
+          <p className="rounded-lg border border-destructive/30 bg-destructive/8 p-2 text-xs text-destructive">
             {job.error}
           </p>
         ) : job.status !== 'completed' ? (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-[0.68rem]">
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
             <div className="flex justify-between">
               <span className="font-semibold">{job.phase}</span>
               <span>{(job.progress * 100).toFixed(1)}%</span>
@@ -106,7 +106,7 @@ export function ResultPanel({
               {[
                 ['Total rays', result!.total_rays.toLocaleString()],
                 [
-                  'Receiver hits',
+                  'Receiver Hits',
                   result!.receiver_hit_count.toLocaleString(),
                 ],
                 ['Hit ratio', `${(hitRatio * 100).toFixed(3)}%`],
@@ -116,10 +116,10 @@ export function ResultPanel({
                   key={label}
                   className="rounded-lg border border-border bg-background/40 p-2"
                 >
-                  <div className="text-[0.58rem] text-muted-foreground">
+                  <div className="text-sm text-muted-foreground">
                     {label}
                   </div>
-                  <div className="mt-0.5 text-xs font-semibold">{value}</div>
+                  <div className="mt-0.5 text-base font-semibold">{value}</div>
                 </div>
               ))}
             </div>
@@ -137,13 +137,13 @@ export function ResultPanel({
 
       <section className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
             <Route className="size-3.5" />
             3D Ray path 표시
             <HelpTooltip label="3D Ray path 표시 도움말">
               3D Viewer에 표시할 ray 종류를 선택합니다. 저장된 ray 중
               Max stored paths 설정 내에서 실제 저장된 것만 대상이며,
-              통계(Total rays·Receiver hits)에는 영향을 주지 않습니다.
+              통계(Total Rays·Receiver Hits)에는 영향을 주지 않습니다.
             </HelpTooltip>
           </div>
           <Badge variant="outline">
@@ -156,7 +156,7 @@ export function ResultPanel({
             return (
               <label
                 key={filter}
-                className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-[0.68rem] ${
+                className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm ${
                   index < 2
                     ? 'border-primary/15 bg-primary/5'
                     : 'border-border bg-background/35'
@@ -223,7 +223,7 @@ export function ResultPanel({
             All off
           </Button>
         </div>
-        <p className="text-[0.62rem] leading-4 text-muted-foreground">
+        <p className="text-xs leading-4 text-muted-foreground">
           필터 변경은 재계산 없이 Viewer overlay에 즉시 반영됩니다.
         </p>
       </section>

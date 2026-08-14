@@ -66,6 +66,7 @@ class DirectRayTraceInput:
     config: RayTraceConfig
     project_name: str = "TV-Leakage-RT2C"
     optical_assignments: List[OpticalAssignment] = field(default_factory=list)
+    geometry_cache_hit: bool = False
 
 
 @dataclass(slots=True)
@@ -661,7 +662,13 @@ def run_direct_ray_trace(
         "configured_intersection_backend": acceleration_info["configured_backend"],
         "bvh_node_count": acceleration_info["bvh_node_count"],
         "bvh_leaf_count": acceleration_info["bvh_leaf_count"],
-        "bvh_build_sec": acceleration_info["bvh_build_sec"],
+        "bvh_build_sec": (
+            0.0
+            if trace_input.geometry_cache_hit
+            else acceleration_info["bvh_build_sec"]
+        ),
+        "bvh_cached_build_sec": acceleration_info["bvh_build_sec"],
+        "bvh_cache_hit": trace_input.geometry_cache_hit,
         "fast_primary_ray_count": fast_primary_ray_count,
         "scalar_primary_ray_count": scalar_primary_ray_count,
         "resolved_optical_face_cache_count": len(resolved_optical_by_face),

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ArrowLeftRight } from 'lucide-react'
 import type { RayHit, ReceiverSpec, ScenePayload } from '@/api'
 import { Button } from '@/components/ui/button'
+import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 
 import { renderRaySectionImage } from './ray-section-view'
 
@@ -36,12 +37,16 @@ export function RaySectionImage({
       }),
     [scene, receiver, storedPaths, roiFaceIds, reverseDirection],
   )
-  const label = receiver.display_name || receiver.receiver_id
+  const label = rayObjectDisplayName(
+    'receiver',
+    receiver.receiver_id,
+    receiver.display_name,
+  )
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-background/40">
       <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-1.5">
-        <span className="text-xs font-semibold">{label}</span>
+        <span className="text-sm font-semibold">{label}</span>
         <Button
           type="button"
           size="xs"
@@ -61,7 +66,7 @@ export function RaySectionImage({
             alt={`${label} ray section view`}
             className="block w-full"
           />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
             {legendEntries.map((entry) => (
               <span key={entry.label} className="flex items-center gap-1.5">
                 <span

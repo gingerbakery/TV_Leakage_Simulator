@@ -26,6 +26,23 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('shows a formatted Receiver name instead of its internal ID', () => {
+    const result = createRayTraceResultFixture()
+    result.receivers[0].display_name = 'receiver_001'
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenChange={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+
+    expect(screen.getByText('Receiver 1')).not.toBeNull()
+    expect(screen.queryByText('receiver_001')).toBeNull()
+  })
+
   it('orders Receiver result cards and heatmaps by receiver number', () => {
     const result = createRayTraceResultFixture()
     const receiverTwo = structuredClone(result.receivers[0])
@@ -148,7 +165,7 @@ describe('Step 11 result UI', () => {
     )
 
     fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Compare receiver' }), {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
       target: { value: '1' },
     })
     expect(screen.getByText('0.020 lm')).not.toBeNull()
@@ -338,8 +355,14 @@ describe('Step 11 result UI', () => {
     })
     const xAxis = screen.getByTestId('receiver_001-x-axis')
     const yAxis = screen.getByTestId('receiver_001-y-axis')
+    const yProfileFrame = screen.getByTestId(
+      'receiver_001-y-profile-frame',
+    )
     expect(xAxis.querySelector('[data-axis-tick="0"]')).not.toBeNull()
     expect(yAxis.querySelector('[data-axis-tick="0"]')).not.toBeNull()
+    expect(yProfileFrame.firstElementChild?.className).toContain(
+      'absolute inset-0',
+    )
     expect(screen.getByText('X (mm)')).not.toBeNull()
     expect(screen.getByText('Y (mm)')).not.toBeNull()
     expect(screen.getByText('Error Estimate')).not.toBeNull()

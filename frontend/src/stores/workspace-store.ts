@@ -25,6 +25,11 @@ export interface CadCase {
   latestResult?: RayTraceResult | null
 }
 
+export interface CopySetupTarget {
+  caseId: string
+  componentIdMap: Record<number, number>
+}
+
 export interface Vector3Value {
   x: number
   y: number
@@ -204,6 +209,11 @@ export interface WorkspaceSnapshot {
   activeRayTraceJobId: string | null
   restoredRayTraceResult: RayTraceResult | null
   rayPathDisplayFilters: RayPathDisplayFilters
+  highlightedRayPathSelection: {
+    runId: string
+    pathIndices: number[]
+    label: string
+  } | null
 }
 
 export type WorkspaceProjectState = Pick<
@@ -231,6 +241,7 @@ export interface WorkspaceActions {
   removeCadCase(caseId: string): void
   setActiveCadCaseResult(result: RayTraceResult): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
+  copyActiveSetupToCases(targets: Iterable<CopySetupTarget>): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
   toggleSelectedFaceId(faceId: number): void
   setSelectedComponentIds(componentIds: Iterable<number>): void
@@ -251,6 +262,7 @@ export interface WorkspaceActions {
   setTransformRuleEnabled(ruleId: string, enabled: boolean): void
   removeTransformRule(ruleId: string): void
   addRoiScope(scope: RoiScopeInput): void
+  setRoiScopes(scopes: RoiScope[]): void
   setRoiScopeActive(scopeId: string, active: boolean): void
   removeRoiScope(scopeId: string): void
   clearRoiScopes(): void
@@ -282,6 +294,11 @@ export interface WorkspaceActions {
   setRayPathDisplayFilters(
     filters: Partial<RayPathDisplayFilters>,
   ): void
+  setHighlightedRayPathSelection(selection: {
+    runId: string
+    pathIndices: number[]
+    label: string
+  } | null): void
   restoreProjectState(projectState: WorkspaceProjectState): void
   clearSceneState(): void
   resetWorkspace(): void
@@ -617,10 +634,148 @@ function restoredSceneState(projectState: WorkspaceProjectState) {
   }
 }
 
-function invalidateRayTraceState() {
+function invalidateRayTraceState(state?: WorkspaceSnapshot) {
   return {
     activeRayTraceJobId: null,
     restoredRayTraceResult: null,
+    highlightedRayPathSelection: null,
+    ...(state
+      ? {
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === state.activeCadCaseId
+              ? { ...item, latestJobId: null, latestResult: null }
+              : item,
+          ),
+        }
+      : {}),
+  }
+}
+
+function storedPathReceiverId(
+  path: RayTraceResult['stored_paths'][number],
+): string | null {
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    const receiverId = path[index]?.receiver_id
+    if (receiverId) return receiverId
+  }
+  return null
+}
+
+/**
+ * Combines independently calculated Receiver results without treating a
+ * disabled Receiver as deleted. The newest run replaces only the Receivers
+ * included in that run; unchanged Receiver cards, heatmaps and stored paths
+ * remain available in the Case report.
+ */
+export function mergeRayTraceReceiverResults(
+  previous: RayTraceResult | null | undefined,
+  current: RayTraceResult,
+  workspaceReceivers: ReceiverSpec[],
+): RayTraceResult {
+  if (!previous) return structuredClone(current)
+
+  const validIds = new Set(
+    workspaceReceivers.map((receiver) => receiver.receiver_id),
+  )
+  const updatedIds = new Set(
+    current.receivers.map((receiver) => receiver.receiver_id),
+  )
+  const retainedIds = new Set(
+    previous.receivers
+      .map((receiver) => receiver.receiver_id)
+      .filter((receiverId) => validIds.has(receiverId) && !updatedIds.has(receiverId)),
+  )
+  if (retainedIds.size === 0) return structuredClone(current)
+
+  const previousReceivers = new Map(
+    previous.receivers.map((receiver) => [receiver.receiver_id, receiver]),
+  )
+  const currentReceivers = new Map(
+    current.receivers.map((receiver) => [receiver.receiver_id, receiver]),
+  )
+  const receivers = workspaceReceivers.flatMap((workspaceReceiver) => {
+    const receiver =
+      currentReceivers.get(workspaceReceiver.receiver_id) ??
+      previousReceivers.get(workspaceReceiver.receiver_id)
+    return receiver ? [structuredClone(receiver)] : []
+  })
+  const receiverGrids = [
+    ...previous.receiver_grids.filter((grid) => retainedIds.has(grid.receiver_id)),
+    ...current.receiver_grids,
+  ].map((grid) => structuredClone(grid))
+  const metrics = structuredClone(current.metrics)
+  for (const receiverId of retainedIds) {
+    if (receiverId in previous.metrics) {
+      metrics[receiverId] = structuredClone(previous.metrics[receiverId])
+    }
+  }
+  const contributionSummary = structuredClone(current.contribution_summary)
+  for (const receiverId of retainedIds) {
+    const retainedContribution = previous.contribution_summary.receivers[receiverId]
+    if (retainedContribution) {
+      contributionSummary.receivers[receiverId] = structuredClone(retainedContribution)
+    }
+  }
+  const retainedPaths = previous.stored_paths.filter((path) => {
+    const receiverId = storedPathReceiverId(path)
+    return receiverId !== null && retainedIds.has(receiverId)
+  })
+
+  return {
+    ...structuredClone(current),
+    receivers,
+    receiver_grids: receiverGrids,
+    contribution_summary: contributionSummary,
+    stored_paths: [
+      ...retainedPaths.map((path) => structuredClone(path)),
+      ...current.stored_paths.map((path) => structuredClone(path)),
+    ],
+    metrics,
+  }
+}
+
+function removeReceiverFromRayTraceResult(
+  result: RayTraceResult | null | undefined,
+  receiverId: string,
+): RayTraceResult | null {
+  if (!result) return null
+  const receivers = result.receivers.filter(
+    (receiver) => receiver.receiver_id !== receiverId,
+  )
+  if (receivers.length === 0) return null
+  const next = structuredClone(result)
+  next.receivers = receivers
+  next.receiver_grids = next.receiver_grids.filter(
+    (grid) => grid.receiver_id !== receiverId,
+  )
+  next.stored_paths = next.stored_paths.filter(
+    (path) => storedPathReceiverId(path) !== receiverId,
+  )
+  delete next.metrics[receiverId]
+  delete next.contribution_summary.receivers[receiverId]
+  return next
+}
+
+function invalidateReceiverRayTraceState(
+  state: WorkspaceSnapshot,
+  receiverId: string,
+) {
+  return {
+    activeRayTraceJobId: null,
+    restoredRayTraceResult: null,
+    highlightedRayPathSelection: null,
+    cadCases: state.cadCases.map((item) =>
+      item.caseId === state.activeCadCaseId
+        ? {
+            ...item,
+            latestJobId: null,
+            latestResult: removeReceiverFromRayTraceResult(
+              item.latestResult,
+              receiverId,
+            ),
+          }
+        : item,
+    ),
   }
 }
 
@@ -670,6 +825,7 @@ function createSceneSnapshot(): Omit<
     activeRayTraceJobId: null,
     restoredRayTraceResult: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
+    highlightedRayPathSelection: null,
   }
 }
 
@@ -839,7 +995,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ? {
                   ...item,
                   workspaceState: projectStateFromSnapshot(state),
-                  latestResult: structuredClone(result),
+                  latestResult: mergeRayTraceReceiverResults(
+                    item.latestResult,
+                    result,
+                    state.receivers,
+                  ),
                 }
               : item,
           ),
@@ -877,16 +1037,114 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set({ hiddenComponentIds: normalizeIds(componentIds) })
       },
       setExcludedComponentIds: (componentIds) => {
-        set({
+        set((state) => ({
           excludedComponentIds: normalizeIds(componentIds),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
+        }))
+      },
+      copyActiveSetupToCases: (targets) => {
+        const targetMappings = new Map(
+          Array.from(targets, (target) => [
+            target.caseId,
+            target.componentIdMap,
+          ]),
+        )
+        set((state) => {
+          if (!state.activeCadCaseId || targetMappings.size === 0) return state
+          const source = projectStateFromSnapshot(state)
+          return {
+            cadCases: state.cadCases.map((item) => {
+              const componentIdMap = targetMappings.get(item.caseId)
+              if (!componentIdMap || item.caseId === state.activeCadCaseId) {
+                return item
+              }
+              const remapId = (componentId: number) =>
+                componentIdMap[componentId]
+              const remapComponentRecord = <T>(record: Record<number, T>) =>
+                Object.fromEntries(
+                  Object.entries(record).flatMap(([sourceId, value]) => {
+                    const targetId = remapId(Number(sourceId))
+                    return targetId === undefined
+                      ? []
+                      : [[targetId, structuredClone(value)]]
+                  }),
+                ) as Record<number, T>
+              const copiedState: WorkspaceProjectState = {
+                ...structuredClone(source),
+                hiddenComponentIds: [],
+                deletedComponentIds: [],
+                excludedComponentIds: source.excludedComponentIds.flatMap(
+                  (componentId) => {
+                    const targetId = remapId(componentId)
+                    return targetId === undefined ? [] : [targetId]
+                  },
+                ),
+                componentNameOverrides: remapComponentRecord(
+                  source.componentNameOverrides,
+                ),
+                componentColorOverrides: remapComponentRecord(
+                  source.componentColorOverrides,
+                ),
+                materialAssignments: source.materialAssignments.flatMap(
+                  (assignment) => {
+                    const targetId = remapId(assignment.componentId)
+                    return targetId === undefined ||
+                      assignment.targetType === 'faces'
+                      ? []
+                      : [
+                          {
+                            ...structuredClone(assignment),
+                            componentId: targetId,
+                            faceIds: [],
+                          },
+                        ]
+                  },
+                ),
+                transformRules: source.transformRules.flatMap((rule) => {
+                  const targetId = remapId(rule.componentId)
+                  return targetId === undefined || rule.targetType === 'faces'
+                    ? []
+                    : [
+                        {
+                          ...structuredClone(rule),
+                          componentId: targetId,
+                          faceIds: [],
+                        },
+                      ]
+                }),
+                roiScopes: source.roiScopes.map((scope) => ({
+                  ...structuredClone(scope),
+                  components: [],
+                })),
+                emitters: source.emitters.map((emitter) =>
+                  emitter.emitter_type === 'face'
+                    ? {
+                        ...structuredClone(emitter),
+                        face_indices: [],
+                        source_face_indices: [],
+                      }
+                    : structuredClone(emitter),
+                ),
+                receivers: source.receivers.map((receiver) => ({
+                  ...structuredClone(receiver),
+                  source_face_indices: [],
+                })),
+              }
+              return {
+                ...item,
+                workspaceState: copiedState,
+                latestJobId: null,
+                latestResult: null,
+              }
+            }),
+          }
         })
       },
       setDeletedComponentIds: (componentIds) => {
-        set({
+        set((state) => ({
           deletedComponentIds: normalizeIds(componentIds),
-          ...invalidateRayTraceState(),
-        })
+          ...invalidateRayTraceState(state),
+        }))
       },
       toggleComponentVisibility: (componentId) => {
         set((state) => ({
@@ -902,7 +1160,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             state.excludedComponentIds,
             componentId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       renameComponent: (componentId, name) => {
@@ -981,7 +1239,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               (rule) => rule.componentId !== componentId,
             ),
             roiScopes,
-            ...invalidateRayTraceState(),
+            ...invalidateRayTraceState(state),
           }
         })
       },
@@ -994,7 +1252,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ),
             normalized,
           ],
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       removeMaterialAssignment: (assignmentId) => {
@@ -1002,7 +1260,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           materialAssignments: state.materialAssignments.filter(
             (assignment) => assignment.assignmentId !== assignmentId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       addCustomOpticalProfile: (profile) => {
@@ -1031,7 +1289,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ),
             normalized,
           ],
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       setTransformRuleEnabled: (ruleId, enabled) => {
@@ -1039,7 +1297,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           transformRules: state.transformRules.map((rule) =>
             rule.ruleId === ruleId ? { ...rule, enabled } : rule,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       removeTransformRule: (ruleId) => {
@@ -1047,7 +1305,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           transformRules: state.transformRules.filter(
             (rule) => rule.ruleId !== ruleId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       addRoiScope: (scope) => {
@@ -1078,7 +1336,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                   : undefined,
               },
             ],
-            ...invalidateRayTraceState(),
+            ...invalidateRayTraceState(state),
           }
         })
       },
@@ -1087,7 +1345,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           roiScopes: state.roiScopes.map((scope) =>
             scope.id === scopeId ? { ...scope, active } : scope,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       removeRoiScope: (scopeId) => {
@@ -1095,16 +1353,16 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           roiScopes: state.roiScopes.filter(
             (scope) => scope.id !== scopeId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       clearRoiScopes: () => {
-        set({
+        set((state) => ({
           roiScopes: [],
           roiBoxSelectionArmed: false,
           roiDraftLabel: '',
-          ...invalidateRayTraceState(),
-        })
+          ...invalidateRayTraceState(state),
+        }))
       },
       setRoiBoxSelectionArmed: (roiBoxSelectionArmed) => {
         set({ roiBoxSelectionArmed })
@@ -1125,7 +1383,17 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set({ pivotPreviewPoint })
       },
       setDatumFacePickArmed: (datumFacePickArmed) => {
-        set({ datumFacePickArmed })
+        set({
+          datumFacePickArmed,
+          ...(datumFacePickArmed ? { selectedComponentIds: [] } : {}),
+        })
+      },
+      setRoiScopes: (roiScopes) => {
+        set((state) => ({
+          roiScopes: structuredClone(roiScopes),
+          roiScopeSequence: Math.max(state.roiScopeSequence, roiScopes.length),
+          ...invalidateRayTraceState(state),
+        }))
       },
       setDatumFacePickResult: (datumFacePickResult) => {
         set({ datumFacePickResult })
@@ -1145,7 +1413,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ray_count: Math.max(1, Math.trunc(emitter.ray_count || 1)),
             },
           ],
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       setEmitterRayCount: (rayCount) => {
@@ -1158,7 +1426,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...emitter,
             ray_count: normalizedRayCount,
           })),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       setEmitterEnabled: (emitterId, enabled) => {
@@ -1168,7 +1436,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ? { ...emitter, enabled }
               : emitter,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       removeEmitter: (emitterId) => {
@@ -1176,7 +1444,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           emitters: state.emitters.filter(
             (emitter) => emitter.emitter_id !== emitterId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateRayTraceState(state),
         }))
       },
       upsertReceiver: (receiver) => {
@@ -1187,7 +1455,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ),
             receiver,
           ],
-          ...invalidateRayTraceState(),
+          ...invalidateReceiverRayTraceState(state, receiver.receiver_id),
         }))
       },
       setReceiverEnabled: (receiverId, enabled) => {
@@ -1197,7 +1465,6 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               ? { ...receiver, enabled }
               : receiver,
           ),
-          ...invalidateRayTraceState(),
         }))
       },
       removeReceiver: (receiverId) => {
@@ -1205,7 +1472,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           receivers: state.receivers.filter(
             (receiver) => receiver.receiver_id !== receiverId,
           ),
-          ...invalidateRayTraceState(),
+          ...invalidateReceiverRayTraceState(state, receiverId),
         }))
       },
       setPlacementPreviewEmitter: (placementPreviewEmitter) => {
@@ -1229,10 +1496,10 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         )
       },
       setRayTraceConfig: (rayTraceConfig) => {
-        set({
+        set((state) => ({
           rayTraceConfig: normalizeRayTraceConfig(rayTraceConfig),
-          ...invalidateRayTraceState(),
-        })
+          ...invalidateRayTraceState(state),
+        }))
       },
       setActiveRayTraceJobId: (activeRayTraceJobId) => {
         set((state) => ({
@@ -1268,6 +1535,13 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...filters,
           },
         }))
+      },
+      setHighlightedRayPathSelection: (selection) => {
+        set({
+          highlightedRayPathSelection: selection
+            ? { ...selection, pathIndices: normalizeIds(selection.pathIndices) }
+            : null,
+        })
       },
       restoreProjectState: (projectState) => {
         const normalized = normalizeProjectState(projectState)
@@ -1367,5 +1641,7 @@ export const workspaceSelectors = {
     state.restoredRayTraceResult ?? null,
   rayPathDisplayFilters: (state: WorkspaceStore) =>
     state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
+  highlightedRayPathSelection: (state: WorkspaceStore) =>
+    state.highlightedRayPathSelection ?? null,
   actions: (state: WorkspaceStore) => state.actions,
 }

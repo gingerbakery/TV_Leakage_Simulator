@@ -49,7 +49,7 @@ interface MaterialEditorDialogProps {
 }
 
 const selectClassName =
-  'h-9 w-full rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
+  'h-9 w-full rounded-lg border border-input bg-background px-2.5 text-base outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 
 function buildAssignmentId(
   componentId: number,
@@ -106,9 +106,12 @@ function OpticalValueEditor({
 
   return (
     <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-900 dark:bg-blue-950/25">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {fields.map(([key, label]) => (
-          <label key={key} className="space-y-1 text-[0.68rem] font-medium">
+          <label
+            key={key}
+            className="grid min-w-0 grid-cols-1 gap-1 text-sm font-medium"
+          >
             <span>{label}</span>
             <input
               type="number"
@@ -116,7 +119,7 @@ function OpticalValueEditor({
               max="1"
               step="0.01"
               aria-label={`Custom ${label}`}
-              className={selectClassName}
+              className={`${selectClassName} block min-w-0 max-w-full`}
               value={value[key]}
               onChange={(event) =>
                 onChange({
@@ -128,7 +131,7 @@ function OpticalValueEditor({
           </label>
         ))}
       </div>
-      <p className={`text-[0.65rem] ${energyValid && scatterValid ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive'}`}>
+      <p className={`text-xs ${energyValid && scatterValid ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive'}`}>
         Reflectance + Loss = { (value.reflectance + value.loss).toFixed(3) } · Specular + Diffuse = { (value.specularRatio + value.diffuseRatio).toFixed(3) }
       </p>
     </div>
@@ -156,7 +159,7 @@ function CompiledPreview({
 
   return (
     <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-      <div className="flex items-center gap-2 text-xs font-semibold">
+      <div className="flex items-center gap-2 text-sm font-semibold">
         <Sparkles className="size-3.5 text-primary" />
         Compiled optical preview
       </div>
@@ -171,16 +174,16 @@ function CompiledPreview({
             key={label}
             className="rounded-lg border border-border bg-background/45 p-2"
           >
-            <div className="text-[0.62rem] text-muted-foreground">
+            <div className="text-sm text-muted-foreground">
               {label}
             </div>
-            <div className="mt-1 font-mono text-sm font-semibold">
+            <div className="mt-1 font-mono text-base font-semibold">
               {value}
             </div>
           </div>
         ))}
       </div>
-      <p className="mt-3 text-[0.68rem] leading-4 text-muted-foreground">
+      <p className="mt-3 text-xs leading-4 text-muted-foreground">
         {selectedBase.category} · {selectedSurface.scatterModel} ·
         roughness {compiledProfile.roughness.toFixed(2)} · σ{' '}
         {compiledProfile.scatterSigmaDeg.toFixed(1)}°
@@ -200,13 +203,13 @@ function SurfacePropertySelect({
 }) {
   const fieldId = useId()
   return (
-    <div className="space-y-1.5 text-xs font-medium">
+    <div className="space-y-1.5 text-sm font-medium">
       <div className="flex items-center gap-1.5">
-        <label htmlFor={fieldId}>Surface property</label>
-        <HelpTooltip label="Surface property 도움말">
-          표면 마감(광택도)입니다. Base material의 반사율을 얼마나 정반사
+        <label htmlFor={fieldId}>Surface Property</label>
+        <HelpTooltip label="Surface Property 도움말">
+          표면 마감(광택도)입니다. Base Material의 반사율을 얼마나 정반사
           방향으로 집중시킬지(Gloss) vs 사방으로 흩뿌릴지(Matte)를
-          결정합니다. 선택한 Base material의 category(Metal/Resin/Tape/Foam)에
+          결정합니다. 선택한 Base Material의 Category(Metal/Resin/Tape/Foam)에
           맞는 항목만 표시됩니다.
         </HelpTooltip>
       </div>
@@ -484,13 +487,14 @@ export function MaterialEditorDialog({
       open={open}
       onOpenChange={onOpenChange}
       floating
-      title="Material assignment"
+      title="Material Assignment"
       help={
         component
-          ? `${componentName}의 Base material · Surface property를 지정하고, 필요하면 특정 Face만 다른 Surface property로 바꿉니다.`
+          ? `${componentName}의 Base Material · Surface Property를 지정하고, 필요하면 특정 Face만 다른 Surface Property로 바꿉니다.`
           : 'Material 대상을 선택하세요.'
       }
       size="lg"
+      contentClassName="w-[36rem] sm:max-w-[36rem]"
       returnFocusRef={returnFocusRef}
       onSubmit={faceEditor ? handleApplyFaceEditor : handleApplyPart}
       footer={
@@ -503,7 +507,7 @@ export function MaterialEditorDialog({
         <section className="rounded-xl border border-border bg-background/45 p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-[0.65rem] tracking-wide text-muted-foreground uppercase">
+              <div className="text-xs tracking-wide text-muted-foreground uppercase">
                 Target
               </div>
               <div className="mt-1 text-sm font-semibold">
@@ -522,11 +526,11 @@ export function MaterialEditorDialog({
             the dialog reads as one consistent stack of cards. */}
         <section className="rounded-xl border border-border bg-background/45 p-3 space-y-3">
           <div className="space-y-1.5">
-            <div className="space-y-1.5 text-xs font-medium">
+            <div className="space-y-1.5 text-sm font-medium">
               <div className="flex items-center gap-1.5">
                 <label htmlFor={profileFieldId}>Saved optical profile</label>
                 <HelpTooltip label="Saved optical profile 도움말">
-                  Base material + Surface property 조합을 이름 붙여
+                  Base Material + Surface Property 조합을 이름 붙여
                   저장해두고 나중에 다시 고를 수 있습니다. 아래 저장 아이콘
                   (💾)으로 현재 조합을 새 프로필로 저장하고, 내가 만든
                   프로필을 선택 중일 때만 삭제 아이콘이 나타납니다.
@@ -639,14 +643,14 @@ export function MaterialEditorDialog({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5 text-xs font-medium">
+            <div className="space-y-1.5 text-sm font-medium">
               <div className="flex items-center gap-1.5">
-                <label htmlFor={baseMaterialFieldId}>Base material</label>
-                <HelpTooltip label="Base material 도움말">
+                <label htmlFor={baseMaterialFieldId}>Base Material</label>
+                <HelpTooltip label="Base Material 도움말">
                   부품의 소재입니다. Metal(Aluminum/SECC 계열)과
                   Resin(PC/ABS/HIPS × Black/Gray/White)으로 나뉘고, 소재별
                   기본 반사율을 결정합니다. 고른 소재의 category에 따라
-                  아래 Surface property 선택지가 달라집니다.
+                  아래 Surface Property 선택지가 달라집니다.
                 </HelpTooltip>
               </div>
               <select
@@ -670,13 +674,13 @@ export function MaterialEditorDialog({
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5 text-xs font-medium">
+            <div className="space-y-1.5 text-sm font-medium">
               <div className="flex items-center gap-1.5">
                 <label htmlFor={surfacePropertyFieldId}>
-                  Surface property
+                  Surface Property
                 </label>
-                <HelpTooltip label="Surface property 도움말">
-                  표면 마감(광택도)입니다. Base material의 반사율을 얼마나
+                <HelpTooltip label="Surface Property 도움말">
+                  표면 마감(광택도)입니다. Base Material의 반사율을 얼마나
                   정반사 방향으로 집중시킬지(Gloss) vs 사방으로
                   흩뿌릴지(Matte)를 결정합니다. Metal은 Low gloss/Normal/
                   Gloss, Resin은 Matte/Normal/High-gloss 3단계입니다.
@@ -713,7 +717,7 @@ export function MaterialEditorDialog({
           />
 
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs font-semibold">
+            <label className="flex items-center gap-2 text-sm font-semibold">
               <input
                 type="checkbox"
                 checked={Boolean(partDraft.opticalOverride)}
@@ -727,7 +731,7 @@ export function MaterialEditorDialog({
                   })
                 }
               />
-              Use custom optical values
+              Use Custom Optical Values
             </label>
             {partDraft.opticalOverride ? (
               <OpticalValueEditor
@@ -764,10 +768,10 @@ export function MaterialEditorDialog({
         <section className="rounded-xl border border-border bg-background/45 p-3 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
-              <div className="text-xs font-semibold">Add surface property</div>
-              <HelpTooltip label="Add surface property 도움말">
-                기본값은 위 부품 Surface property를 따라갑니다. 특정 Face만
-                다른 마감으로 바꾸고 싶을 때만 추가하세요. Base material은
+              <div className="text-sm font-semibold">Add Surface Property</div>
+              <HelpTooltip label="Add Surface Property 도움말">
+                기본값은 위 부품 Surface Property를 따라갑니다. 특정 Face만
+                다른 마감으로 바꾸고 싶을 때만 추가하세요. Base Material은
                 항상 부품과 동일합니다. 이미 만든 항목도 연필 아이콘으로
                 다시 열어 면을 추가·제거할 수 있습니다.
               </HelpTooltip>
@@ -791,10 +795,10 @@ export function MaterialEditorDialog({
                     }`}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-semibold">
+                      <div className="truncate text-sm font-semibold">
                         {surface.name}
                       </div>
-                      <div className="mt-0.5 text-[0.62rem] text-muted-foreground">
+                      <div className="mt-0.5 text-xs text-muted-foreground">
                         CAD 면 {cadFaceCount(assignment.faceIds)}개
                       </div>
                     </div>
@@ -827,10 +831,10 @@ export function MaterialEditorDialog({
           {faceEditor ? (
             <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-semibold">
+                <div className="text-sm font-semibold">
                   {faceEditor.assignmentId
-                    ? 'Surface property 편집'
-                    : '새 Surface property'}
+                    ? 'Surface Property 편집'
+                    : '새 Surface Property'}
                 </div>
                 <Button variant="ghost" size="sm" onClick={closeFaceEditor}>
                   취소

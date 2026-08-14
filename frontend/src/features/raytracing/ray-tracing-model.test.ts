@@ -12,11 +12,27 @@ import {
   createFaceEmitter,
   nextSpecId,
   planeAxesFromRotation,
+  rayObjectDisplayName,
   rotationFromPlaneAxes,
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
-  it('builds stable emitter and current-view receiver contracts', () => {
+  it('formats internal ray object IDs without changing custom names', () => {
+    expect(rayObjectDisplayName('receiver', 'receiver_001')).toBe(
+      'Receiver 1',
+    )
+    expect(
+      rayObjectDisplayName('receiver', 'receiver_002', 'receiver_002'),
+    ).toBe('Receiver 2')
+    expect(
+      rayObjectDisplayName('receiver', 'receiver_002', 'Right corner'),
+    ).toBe('Right corner')
+    expect(rayObjectDisplayName('emitter', 'emitter_003')).toBe(
+      'Emitter 3',
+    )
+  })
+
+  it('builds stable emitter and datum Receiver contracts', () => {
     expect(nextSpecId('emitter', ['emitter_001', 'emitter_004'])).toBe(
       'emitter_005',
     )
@@ -41,6 +57,19 @@ describe('ray tracing model', () => {
     expect(compoundRotation[1]).toBeCloseTo(-30)
     expect(compoundRotation[2]).toBeCloseTo(45)
 
+    const receiver = createDatumReceiver(
+      'receiver_001',
+      [10, 20, 80],
+      [0, 0, 0],
+    )
+    expect(receiver).toMatchObject({
+      placement_mode: 'datum_plane',
+      center: [10, 20, 80],
+      view_distance_mm: null,
+    })
+  })
+
+  it('creates a Current View Receiver from the captured camera frame', () => {
     const receiver = createCurrentViewReceiver(
       'receiver_001',
       {
@@ -55,35 +84,10 @@ describe('ray tracing model', () => {
       placement_mode: 'current_view',
       center: [10, 20, 80],
       view_distance_mm: 50,
+      u_axis: [1, 0, 0],
+      v_axis: [0, 1, 0],
+      normal_flip: true,
     })
-  })
-
-  it('applies Current View Receiver position and tilt adjustments', () => {
-    const receiver = createCurrentViewReceiver(
-      'receiver_001',
-      {
-        target: [10, 20, 30],
-        normal: [0, 0, -1],
-        uAxis: [1, 0, 0],
-        vAxis: [0, -1, 0],
-      },
-      50,
-      [4, -2, 3],
-      [0, 0, 90],
-    )
-
-    expect(receiver).toMatchObject({
-      base_center: [10, 20, 80],
-      center: [14, 18, 83],
-      position_offset_mm: [4, -2, 3],
-      tilt_xyz_deg: [0, 0, 90],
-    })
-    expect(receiver.u_axis?.[0]).toBeCloseTo(0)
-    expect(receiver.u_axis?.[1]).toBeCloseTo(1)
-    expect(receiver.v_axis?.[0]).toBeCloseTo(-1)
-    expect(receiver.v_axis?.[1]).toBeCloseTo(0)
-    expect(receiver.normal).toEqual([0, 0, 1])
-    expect(receiver.normal_flip).toBe(true)
   })
 
   it('offsets a datum plane receiver from its base center without a pivot', () => {
@@ -141,15 +145,10 @@ describe('ray tracing model', () => {
     const scene = createSceneFixture()
     const emitter = createFaceEmitter('emitter_001', [0])
     emitter.ray_count = 2_000
-    const receiver = createCurrentViewReceiver(
+    const receiver = createDatumReceiver(
       'receiver_001',
-      {
-        target: [0, 0, 0],
-        normal: [0, 0, -1],
-        uAxis: [1, 0, 0],
-        vAxis: [0, -1, 0],
-      },
-      10,
+      [0, 0, 10],
+      [0, 0, 0],
     )
 
     const request = buildRayTraceRequest({

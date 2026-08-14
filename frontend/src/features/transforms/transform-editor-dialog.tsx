@@ -30,7 +30,7 @@ type Axis = keyof Vector3Value
 
 const zeroVector = (): Vector3Value => ({ x: 0, y: 0, z: 0 })
 const inputClassName =
-  'h-9 w-full rounded-lg border border-input bg-background px-2.5 font-mono text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
+  'h-9 w-full rounded-lg border border-input bg-background px-2.5 font-mono text-base outline-none focus:border-primary focus:ring-2 focus:ring-primary/20'
 
 function buildRuleId(componentId: number): string {
   return `transform-component-${componentId}`
@@ -175,7 +175,7 @@ export function TransformEditorDialog({
       open={open}
       onOpenChange={onOpenChange}
       floating
-      title="Transform editor"
+      title="Transform Editor"
       help={
         component
           ? `${componentName}의 move·tilt rule을 편집합니다.`
@@ -221,7 +221,7 @@ export function TransformEditorDialog({
         <section className="rounded-xl border border-border bg-background/45 p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="flex items-center gap-1.5 text-[0.65rem] tracking-wide text-muted-foreground uppercase">
+              <div className="flex items-center gap-1.5 text-sm tracking-wide text-muted-foreground uppercase">
                 Target
                 <HelpTooltip label="Target 도움말">
                   선택한 부품 전체를 이동·회전합니다.
@@ -255,7 +255,7 @@ export function TransformEditorDialog({
         />
 
         <fieldset className="rounded-xl border border-border bg-background/35 p-3">
-          <legend className="flex items-center gap-1.5 px-1 text-xs font-semibold">
+          <legend className="flex items-center gap-1.5 px-1 text-sm font-semibold">
             Tilt pivot
             <HelpTooltip label="Tilt pivot 도움말">
               Tilt 회전의 기준점입니다. Component center는 대상의 bounding
@@ -294,7 +294,7 @@ export function TransformEditorDialog({
               {(['x', 'y', 'z'] as const).map((axis) => (
                 <label
                   key={axis}
-                  className="space-y-1 text-[0.68rem] font-medium"
+                  className="space-y-1 text-sm font-medium"
                 >
                   <span className="uppercase">{axis}</span>
                   <NumberInput
@@ -331,7 +331,7 @@ export function TransformEditorDialog({
         </fieldset>
 
         <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold">
+          <div className="flex items-center gap-2 text-sm font-semibold">
             <Rotate3D className="size-3.5 text-primary" />
             Transform preview
             <HelpTooltip label="Transform preview 도움말">
@@ -340,7 +340,7 @@ export function TransformEditorDialog({
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-border bg-background/45 p-2">
-              <div className="text-[0.62rem] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 Move magnitude
               </div>
               <div className="mt-1 font-mono text-sm font-semibold">
@@ -348,7 +348,7 @@ export function TransformEditorDialog({
               </div>
             </div>
             <div className="rounded-lg border border-border bg-background/45 p-2">
-              <div className="text-[0.62rem] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 Tilt magnitude
               </div>
               <div className="mt-1 font-mono text-sm font-semibold">
@@ -379,13 +379,13 @@ function VectorEditor({
 }: VectorEditorProps) {
   return (
     <fieldset className="rounded-xl border border-border bg-background/35 p-3">
-      <legend className="flex items-center gap-1.5 px-1 text-xs font-semibold">
+      <legend className="flex items-center gap-1.5 px-1 text-sm font-semibold">
         {title} · {unit}
         <HelpTooltip label={`${title} 도움말`}>{help}</HelpTooltip>
       </legend>
       <div className="mt-1 grid grid-cols-3 gap-2">
         {(['x', 'y', 'z'] as const).map((axis) => (
-          <label key={axis} className="space-y-1 text-[0.68rem] font-medium">
+          <label key={axis} className="space-y-1 text-sm font-medium">
             <span className="uppercase">
               {title === 'Tilt' ? 'R' : ''}
               {axis}

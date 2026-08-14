@@ -123,6 +123,22 @@ export function nextSpecId(
   return `${prefix}_${String(maximum + 1).padStart(3, '0')}`
 }
 
+/**
+ * Converts internal ray-object IDs into consistent user-facing labels while
+ * preserving names explicitly entered by the user.
+ */
+export function rayObjectDisplayName(
+  kind: 'emitter' | 'receiver',
+  objectId: string,
+  displayName?: string | null,
+): string {
+  const label = displayName?.trim() || objectId.trim()
+  const match = new RegExp(`^${kind}[\\s_-]*0*(\\d+)$`, 'i').exec(label)
+  const kindLabel = kind === 'emitter' ? 'Emitter' : 'Receiver'
+  if (match) return `${kindLabel} ${Number(match[1])}`
+  return label || kindLabel
+}
+
 export function createFaceEmitter(
   emitterId: string,
   faceIds: number[],
@@ -132,7 +148,10 @@ export function createFaceEmitter(
     emitter_type: 'face',
     face_indices: [...new Set(faceIds)].sort((left, right) => left - right),
     normal_mode: 'face_normal',
-    normal_flip: false,
+    // The visible/trace direction is the direction a user looks from the
+    // Receiver front into the product. With the stored right-handed U/V
+    // frame this flip makes local +X screen-right and local +Y screen-up.
+    normal_flip: true,
     custom_normal: null,
     direction_distribution: 'lambertian',
     gaussian_sigma_deg: 12,
@@ -197,21 +216,42 @@ function crossVector(a: Vec3, b: Vec3): Vec3 {
   ]
 }
 
+function dotVector(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
 /** Canonical (u, v) basis for a given face normal, used to turn a picked
  * CAD face into a Rotation X/Y/Z the datum-plane editor can display and
  * further adjust - same "pick any stable perpendicular" approach as most
  * CAD tools use when only a normal (no in-plane reference) is available. */
-export function axesFromNormal(normal: Vec3): {
+export function axesFromNormal(
+  normal: Vec3,
+  preferredRight: Vec3 = [1, 0, 0],
+): {
   uAxis: Vec3
   vAxis: Vec3
 } {
   const n = normalizeVector(normal)
-  // Keep Receiver heatmaps aligned with the product/front-view convention:
-  // project world +X onto the picked plane for heatmap +X, then derive +Y.
-  // Side faces parallel to world X fall back to projected world +Y.
-  const preferred: Vec3 = Math.abs(n[0]) < 0.95 ? [1, 0, 0] : [0, 1, 0]
-  const projection =
-    preferred[0] * n[0] + preferred[1] * n[1] + preferred[2] * n[2]
+  // Project the current Viewer screen-right direction onto the Receiver
+  // plane. A face normal alone cannot define an in-plane X/Y orientation;
+  // this additional reference prevents arbitrary 90-degree rotations.
+  const candidates: Vec3[] = [
+    preferredRight,
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ]
+  const preferred =
+    candidates.find((candidate) => {
+      const projection = dotVector(candidate, n)
+      const projected: Vec3 = [
+        candidate[0] - n[0] * projection,
+        candidate[1] - n[1] * projection,
+        candidate[2] - n[2] * projection,
+      ]
+      return vectorLength(projected) > 1e-6
+    }) ?? [1, 0, 0]
+  const projection = dotVector(preferred, n)
   const uAxis = normalizeVector([
     preferred[0] - n[0] * projection,
     preferred[1] - n[1] * projection,
@@ -255,7 +295,7 @@ export function createDatumReceiver(
   return {
     receiver_id: receiverId,
     receiver_type: 'rectangle',
-    display_name: receiverId,
+    display_name: rayObjectDisplayName('receiver', receiverId),
     placement_mode: 'datum_plane',
     center,
     normal: axes.normal,
@@ -303,9 +343,6 @@ export function createCurrentViewReceiver(
   ]
   const viewingNormal = rotateVector(frame.normal, tiltDeg)
   const uAxis = rotateVector(frame.uAxis, tiltDeg)
-  // viewerCameraFrame.vAxis points toward screen-bottom. Receiver local +Y
-  // must point toward screen-top, while its stored right-handed normal stays
-  // opposite the viewing/acceptance direction and is flipped for tracing.
   const vAxis = rotateVector(
     [-frame.vAxis[0], -frame.vAxis[1], -frame.vAxis[2]],
     tiltDeg,

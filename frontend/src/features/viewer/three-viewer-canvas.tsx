@@ -48,6 +48,7 @@ import type {
   ScenePayload,
 } from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
+import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
   buildRayPathVisualization,
   rayPathFilterOrder,
@@ -341,6 +342,7 @@ function createPlacementPlane(
   normalFlip: boolean,
   fillOpacity: number,
   alwaysVisible = false,
+  showLocalAxes = false,
 ): Group {
   const root = new Group()
   root.name = name
@@ -420,6 +422,35 @@ function createPlacementPlane(
       directionColor,
     ),
   )
+  if (showLocalAxes) {
+    // Keep Receiver X/Y clearly readable while still slightly shorter than
+    // the cyan receiving-direction arrow. These exact local axes define the
+    // Heatmap horizontal (+X) and vertical (+Y) directions.
+    const axisLength = MathUtils.clamp(normalLength * 0.88, 1.8, 15)
+    const xArrow = createDirectionArrow(
+      `${name}-x-positive`,
+      center,
+      uAxis,
+      axisLength,
+      0xef4444,
+    )
+    const yArrow = createDirectionArrow(
+      `${name}-y-positive`,
+      center,
+      vAxis,
+      axisLength,
+      0x22c55e,
+    )
+    const xLabel = createAxisLabel('X+', '#ef4444', false)
+    const yLabel = createAxisLabel('Y+', '#22c55e', false)
+    xLabel.position.copy(center).addScaledVector(uAxis, axisLength * 0.78)
+    yLabel.position.copy(center).addScaledVector(vAxis, axisLength * 0.78)
+    xLabel.scale.multiplyScalar(0.88)
+    yLabel.scale.multiplyScalar(0.88)
+    xLabel.renderOrder = 253
+    yLabel.renderOrder = 253
+    root.add(xArrow, yArrow, xLabel, yLabel)
+  }
   return root
 }
 
@@ -483,7 +514,10 @@ function createDirectionArrow(
       toneMapped: false,
     }),
   )
-  arrow.renderOrder = 23
+  // Draw placement directions after every CAD surface. Transparent CAD
+  // meshes are sorted late by Three.js and could otherwise blend over the
+  // Emitter/Receiver arrows even though the arrows themselves are opaque.
+  arrow.renderOrder = 250
   const shaftLength = Math.max(0.2, arrowLength - arrowHeadLength)
   const shaftRadius = MathUtils.clamp(arrowHeadWidth * 0.2, 0.07, 0.3)
   const up = new Vector3(0, 1, 0)
@@ -499,7 +533,7 @@ function createDirectionArrow(
   )
   shaft.position.copy(center).addScaledVector(direction, shaftLength / 2)
   shaft.quaternion.setFromUnitVectors(up, direction)
-  shaft.renderOrder = 24
+  shaft.renderOrder = 251
   const head = new Mesh(
     new ConeGeometry(arrowHeadWidth, arrowHeadLength, 18),
     solidMaterial.clone(),
@@ -509,7 +543,7 @@ function createDirectionArrow(
     shaftLength + arrowHeadLength / 2,
   )
   head.quaternion.setFromUnitVectors(up, direction)
-  head.renderOrder = 25
+  head.renderOrder = 252
   root.add(arrow, shaft, head)
   return root
 }
@@ -1295,6 +1329,9 @@ export function ThreeViewerCanvas({
   )
   const rayPathDisplayFilters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
+  )
+  const highlightedRayPathSelection = useWorkspaceStore(
+    workspaceSelectors.highlightedRayPathSelection,
   )
   const materialAssignments = useWorkspaceStore(
     workspaceSelectors.materialAssignments,
@@ -2300,7 +2337,6 @@ export function ThreeViewerCanvas({
           faceIds: patchFaceIds,
         })
         actions.setSelectedFaceIds(patchFaceIds)
-        actions.setSelectedComponentIds([hit.componentId])
         actions.setDatumFacePickArmed(false)
         onStatusMessage('Datum face picking · surface 중심 선택됨')
         return
@@ -2521,7 +2557,7 @@ export function ThreeViewerCanvas({
           returnFocusElement: canvas,
         })
         onStatusMessage(
-          `${rayObjectHit.kind === 'emitter' ? 'Emitter' : 'Receiver'} menu · ${rayObjectHit.id}`,
+          `${rayObjectHit.kind === 'emitter' ? 'Emitter' : 'Receiver'} menu · ${rayObjectDisplayName(rayObjectHit.kind, rayObjectHit.id)}`,
         )
         event.preventDefault()
         event.stopPropagation()
@@ -2552,7 +2588,9 @@ export function ThreeViewerCanvas({
           kind: 'emitter',
           returnFocusElement: canvas,
         })
-        onStatusMessage(`Emitter menu · ${faceEmitter.emitter_id}`)
+        onStatusMessage(
+          `Emitter menu · ${rayObjectDisplayName('emitter', faceEmitter.emitter_id)}`,
+        )
         event.preventDefault()
         event.stopPropagation()
         return
@@ -3369,6 +3407,7 @@ export function ThreeViewerCanvas({
         receiver.normal_flip,
         receiver === placementPreviewReceiver ? 0.34 : 0.14,
         receiver === placementPreviewReceiver,
+        true,
       )
       receiverPlane.userData.rayObjectKind = 'receiver'
       receiverPlane.userData.rayObjectId = receiver.receiver_id
@@ -3514,10 +3553,10 @@ export function ThreeViewerCanvas({
     for (const [componentId, node] of runtime.nodes) {
       const isEditing = editingComponentId === componentId
       const isSelected =
-        isEditing ||
-        (!emitterFaceSelectionArmed &&
-          !datumFacePickArmed &&
-          selectedComponentIds.includes(componentId))
+        !datumFacePickArmed &&
+        (isEditing ||
+          (!emitterFaceSelectionArmed &&
+            selectedComponentIds.includes(componentId)))
       const isUnavailable =
         hiddenComponentIds.includes(componentId) ||
         deletedComponentIds.includes(componentId)
@@ -4039,10 +4078,44 @@ export function ThreeViewerCanvas({
       lines.renderOrder = 84
       runtime.rayPathRoot.add(lines)
     }
+    if (
+      highlightedRayPathSelection?.runId === rayTraceResult.run_id &&
+      highlightedRayPathSelection.pathIndices.length > 0
+    ) {
+      const positions: number[] = []
+      for (const pathIndex of highlightedRayPathSelection.pathIndices) {
+        const path = rayTraceResult.stored_paths[pathIndex]
+        if (!path || path.length < 2) continue
+        for (let index = 1; index < path.length; index += 1) {
+          positions.push(...path[index - 1].point, ...path[index].point)
+        }
+      }
+      if (positions.length > 0) {
+        const geometry = new BufferGeometry()
+        geometry.setAttribute(
+          'position',
+          new Float32BufferAttribute(positions, 3),
+        )
+        const lines = new LineSegments(
+          geometry,
+          new LineBasicMaterial({
+            color: 0xff7a00,
+            transparent: false,
+            opacity: 1,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        lines.name = 'ray-path-highlighted-sequence'
+        lines.renderOrder = 260
+        runtime.rayPathRoot.add(lines)
+      }
+    }
     onStatusMessage(
       `Ray paths · ${visualization.visiblePathCount}/${visualization.totalPathCount} visible`,
     )
-  }, [onStatusMessage, rayPathDisplayFilters, rayTraceResult])
+  }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayTraceResult])
 
   const showFullViewPip =
     !roiBoxSelectionArmed &&
@@ -4090,12 +4163,12 @@ export function ThreeViewerCanvas({
             height: 'min(160px, 34%)',
           }}
         >
-          <span className="absolute top-1 left-1.5 rounded bg-background/70 px-1 py-0.5 text-[0.6rem] font-medium tracking-wide text-muted-foreground">
+          <span className="absolute top-1 left-1.5 rounded bg-background/70 px-1 py-0.5 text-xs font-medium tracking-wide text-muted-foreground">
             Full View
           </span>
           <button
             type="button"
-            className={`pointer-events-auto absolute top-1 right-1 rounded border px-1.5 py-0.5 text-[0.58rem] font-semibold backdrop-blur transition-colors ${
+            className={`pointer-events-auto absolute top-1 right-1 rounded border px-1.5 py-0.5 text-xs font-semibold backdrop-blur transition-colors ${
               fullViewCameraSync
                 ? 'border-sky-400/70 bg-sky-500/85 text-white'
                 : 'border-border/80 bg-background/80 text-muted-foreground hover:bg-background'
@@ -4125,7 +4198,7 @@ export function ThreeViewerCanvas({
       ) : null}
       <div
         id="three-viewer-controls"
-        className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-[0.62rem] text-muted-foreground backdrop-blur"
+        className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur"
       >
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'

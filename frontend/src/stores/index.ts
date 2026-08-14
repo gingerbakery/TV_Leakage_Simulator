@@ -3,6 +3,7 @@ export {
   defaultRayPathDisplayFilters,
   defaultRayTraceConfig,
   maxReflectionDepth,
+  mergeRayTraceReceiverResults,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,
@@ -10,6 +11,7 @@ export {
 export type {
   ActiveCad,
   CadCase,
+  CopySetupTarget,
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,

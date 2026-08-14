@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 import math
 
@@ -8,10 +9,17 @@ from .raytracer import DirectRayTraceInput
 from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayTraceConfig, ReceiverSpec, Vec3
 
 
-def build_direct_trace_input(
+@dataclass(frozen=True)
+class PreparedTraceGeometry:
+    mesh: TriangleMesh
+    source_to_trace_face: Dict[int, int]
+    roi_is_active: bool
+
+
+def build_prepared_trace_geometry(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
-) -> DirectRayTraceInput:
+) -> PreparedTraceGeometry:
     emitter_source_faces = {
         int(face_index)
         for item in request_payload.get("emitters", [])
@@ -49,6 +57,24 @@ def build_direct_trace_input(
             int(mesh.metadata(face_index).get("source_face_index", face_index)): face_index
             for face_index in range(len(mesh.faces))
         }
+    mesh.set_intersection_backend("bvh")
+    mesh.prepare_acceleration()
+    return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active)
+
+
+def build_direct_trace_input(
+    scene_mesh: Dict[str, Any],
+    request_payload: Dict[str, Any],
+    prepared_geometry: Optional[PreparedTraceGeometry] = None,
+    geometry_cache_hit: bool = False,
+) -> DirectRayTraceInput:
+    geometry = prepared_geometry or build_prepared_trace_geometry(
+        scene_mesh,
+        request_payload,
+    )
+    mesh = geometry.mesh
+    source_to_trace_face = geometry.source_to_trace_face
+    roi_is_active = geometry.roi_is_active
     emitter_payloads = []
     for item in request_payload.get("emitters", []):
         normalized = dict(item)
@@ -87,6 +113,7 @@ def build_direct_trace_input(
         config=config,
         project_name=str(request_payload.get("project_name") or "TV-Leakage-Direct"),
         optical_assignments=optical_assignments,
+        geometry_cache_hit=geometry_cache_hit,
     )
 
 

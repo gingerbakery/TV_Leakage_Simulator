@@ -191,7 +191,7 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.contextMenu(viewer, { shiftKey: true })
     expect(
       await screen.findByRole('menu', {
-        name: 'Emitter actions for emitter_001',
+        name: 'Emitter actions for Emitter 1',
       }),
     ).not.toBeNull()
     fireEvent.click(
@@ -391,7 +391,7 @@ describe('Step 07·08 feature editors', () => {
       </AppProviders>,
     )
     expect(
-      screen.getByRole('dialog', { name: 'Transform editor' })
+      screen.getByRole('dialog', { name: 'Transform Editor' })
         .textContent,
     ).toContain('ROI')
     transformView.unmount()
@@ -407,7 +407,7 @@ describe('Step 07·08 feature editors', () => {
       </AppProviders>,
     )
     expect(
-      screen.getByRole('dialog', { name: 'Material assignment' })
+      screen.getByRole('dialog', { name: 'Material Assignment' })
         .textContent,
     ).toContain('ROI')
   })
@@ -427,14 +427,14 @@ describe('Step 07·08 feature editors', () => {
     )
     expect(
       screen
-        .getByRole('dialog', { name: 'Material assignment' })
+        .getByRole('dialog', { name: 'Material Assignment' })
         .hasAttribute('data-floating-panel'),
     ).toBe(true)
 
-    fireEvent.change(screen.getByLabelText('Base material'), {
+    fireEvent.change(screen.getByLabelText('Base Material'), {
       target: { value: 'powder_coated_secc_black' },
     })
-    const surfacePropertyField = screen.getByLabelText('Surface property')
+    const surfacePropertyField = screen.getByLabelText('Surface Property')
     fireEvent.change(surfacePropertyField, {
       target: { value: 'metal_gloss' },
     })
@@ -469,7 +469,7 @@ describe('Step 07·08 feature editors', () => {
     )
     expect(
       screen
-        .getByRole('dialog', { name: 'Transform editor' })
+        .getByRole('dialog', { name: 'Transform Editor' })
         .hasAttribute('data-floating-panel'),
     ).toBe(true)
 
@@ -633,7 +633,7 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().pivotPickArmed).toBe(false)
   })
 
-  it('creates Emitter and Current View Receiver contracts for Step 10', () => {
+  it('creates Emitter and Datum Plane Receiver contracts for Step 10', () => {
     render(
       <AppProviders>
         <RayTracingPanel
@@ -650,7 +650,7 @@ describe('Step 07·08 feature editors', () => {
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Add datum plane emitter',
+        name: 'Add Datum Plane Emitter',
       }),
     )
     expect(workspaceStore.getState().placementPreviewEmitter).toEqual(
@@ -661,7 +661,7 @@ describe('Step 07·08 feature editors', () => {
     )
     expect(
       screen
-        .getByRole('dialog', { name: 'Datum plane emitter' })
+        .getByRole('dialog', { name: 'Datum Plane Emitter' })
         .hasAttribute('data-floating-panel'),
     ).toBe(true)
     fireEvent.change(
@@ -681,30 +681,30 @@ describe('Step 07·08 feature editors', () => {
     )
     expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
     expect(
-      screen.queryByRole('dialog', { name: 'Datum plane emitter' }),
+      screen.queryByRole('dialog', { name: 'Datum Plane Emitter' }),
     ).toBeNull()
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Add current view receiver',
+        name: 'Add Datum Plane Receiver',
       }),
     )
+    expect(
+      screen.queryByRole('button', { name: 'Add Current View Receiver' }),
+    ).not.toBeNull()
     expect(workspaceStore.getState().placementPreviewReceiver).toEqual(
       expect.objectContaining({
-        placement_mode: 'current_view',
-        center: [10, 20, 60],
+        placement_mode: 'datum_plane',
+        center: [30, 30, 10],
         width_mm: 30,
         height_mm: 30,
       }),
     )
     expect(
       screen
-        .getByRole('dialog', { name: 'Current view receiver' })
+        .getByRole('dialog', { name: 'Datum Plane Receiver' })
         .hasAttribute('data-floating-panel'),
     ).toBe(true)
-    expect(
-      screen.getByRole('spinbutton', { name: 'View distance (mm)' }),
-    ).toHaveProperty('value', '30')
     expect(
       screen.getByRole('spinbutton', { name: 'Receiver width (mm)' }),
     ).toHaveProperty('value', '30')
@@ -720,7 +720,7 @@ describe('Step 07·08 feature editors', () => {
     )
     expect(workspaceStore.getState().placementPreviewReceiver).toBeNull()
     expect(
-      screen.queryByRole('dialog', { name: 'Current view receiver' }),
+      screen.queryByRole('dialog', { name: 'Datum Plane Receiver' }),
     ).toBeNull()
 
     expect(workspaceStore.getState().emitters).toEqual([
@@ -734,19 +734,18 @@ describe('Step 07·08 feature editors', () => {
       expect.objectContaining({
         receiver_id: 'receiver_001',
         display_name: 'Camera RX',
-        placement_mode: 'current_view',
-        center: [10, 20, 60],
-        view_distance_mm: 30,
+        placement_mode: 'datum_plane',
+        center: [30, 30, 10],
         width_mm: 30,
         height_mm: 30,
       }),
     ])
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Edit emitter_001' }),
+      screen.getByRole('button', { name: 'Edit Emitter 1' }),
     )
     expect(
-      screen.getByRole('dialog', { name: 'Edit emitter_001' }),
+      screen.getByRole('dialog', { name: 'Edit Emitter 1' }),
     ).not.toBeNull()
     expect(
       screen.getByRole('spinbutton', { name: 'Emitter rays' }),
@@ -765,11 +764,11 @@ describe('Step 07·08 feature editors', () => {
       { target: { value: '24' } },
     )
     fireEvent.click(
-      screen.getByRole('button', { name: 'Save emitter' }),
+      screen.getByRole('button', { name: 'Save Emitter' }),
     )
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Edit receiver_001' }),
+      screen.getByRole('button', { name: 'Edit Camera RX' }),
     )
     expect(
       screen.getByRole('dialog', { name: 'Edit Camera RX' }),
@@ -783,21 +782,25 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', {
         name: 'Receiver center X',
       }),
-    ).toHaveProperty('value', '10.0')
+    ).toHaveProperty('value', '30.0')
     expect(
       screen.getByRole('spinbutton', {
         name: 'Receiver tilt Z',
       }),
     ).toHaveProperty('value', '0.0')
+    const flipReceivingNormal = screen.getByRole('checkbox', {
+      name: 'Flip receiving normal',
+    })
+    expect(flipReceivingNormal).toHaveProperty('checked', true)
+    fireEvent.click(flipReceivingNormal)
+    expect(
+      workspaceStore.getState().placementPreviewReceiver?.normal_flip,
+    ).toBe(false)
     fireEvent.change(
       screen.getByRole('spinbutton', {
         name: 'Receiver width (mm)',
       }),
       { target: { value: '42' } },
-    )
-    fireEvent.change(
-      screen.getByRole('spinbutton', { name: 'View distance (mm)' }),
-      { target: { value: '45' } },
     )
     fireEvent.change(
       screen.getByRole('spinbutton', { name: 'Receiver center X' }),
@@ -808,7 +811,7 @@ describe('Step 07·08 feature editors', () => {
       { target: { value: '15' } },
     )
     fireEvent.click(
-      screen.getByRole('button', { name: 'Save receiver' }),
+      screen.getByRole('button', { name: 'Save Receiver' }),
     )
 
     expect(workspaceStore.getState().emitters).toEqual([
@@ -821,16 +824,60 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().receivers).toEqual([
       expect.objectContaining({
         receiver_id: 'receiver_001',
-        center: [14, 20, 75],
-        view_distance_mm: 45,
+        placement_mode: 'datum_plane',
+        center: [14, 30, 10],
+        view_distance_mm: null,
         width_mm: 42,
-        position_offset_mm: [4, 0, 0],
-        tilt_xyz_deg: [0, 0, 15],
+        position_offset_mm: [0, 0, 0],
+        normal_flip: false,
       }),
     ])
+    const savedReceiver = workspaceStore.getState().receivers[0]
+    expect(savedReceiver.tilt_xyz_deg?.[0]).toBeCloseTo(0)
+    expect(savedReceiver.tilt_xyz_deg?.[1]).toBeCloseTo(0)
+    expect(savedReceiver.tilt_xyz_deg?.[2]).toBeCloseTo(15)
+    expect(savedReceiver.u_axis?.[0]).toBeCloseTo(0.9659, 3)
+    expect(savedReceiver.u_axis?.[1]).toBeCloseTo(0.2588, 3)
     expect(
-      screen.getByRole('button', { name: 'Run ray tracing' }),
+      screen.getByRole('button', { name: 'Run Ray Tracing' }),
     ).toHaveProperty('disabled', false)
+  })
+
+  it('keeps the Current View Receiver creation action available', () => {
+    render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={{
+            target: [10, 20, 30],
+            normal: [0, 0, -1],
+            uAxis: [1, 0, 0],
+            vAxis: [0, -1, 0],
+          }}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Add Current View Receiver' }),
+    )
+    expect(
+      screen.getByRole('dialog', { name: 'Current View Receiver' }),
+    ).not.toBeNull()
+    expect(workspaceStore.getState().placementPreviewReceiver).toEqual(
+      expect.objectContaining({
+        placement_mode: 'current_view',
+        center: [10, 20, 60],
+        normal_flip: true,
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add Receiver' }))
+    expect(workspaceStore.getState().receivers).toEqual([
+      expect.objectContaining({
+        placement_mode: 'current_view',
+        center: [10, 20, 60],
+      }),
+    ])
   })
 
   it('keeps CAD surface selection interactive while configuring an emitter', () => {
@@ -848,12 +895,12 @@ describe('Step 07·08 feature editors', () => {
     })
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Add CAD surface emitter',
+        name: 'Add CAD Surface Emitter',
       }),
     )
 
     const dialog = screen.getByRole('dialog', {
-      name: 'CAD surface emitter',
+      name: 'CAD Surface Emitter',
     })
     expect(dialog.getAttribute('aria-modal')).toBeNull()
     expect(
@@ -869,7 +916,7 @@ describe('Step 07·08 feature editors', () => {
     })
     expect(screen.getByText('Selected faces · CAD 면 2개')).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add emitter' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Emitter' }))
     expect(workspaceStore.getState().emitters).toEqual([
       expect.objectContaining({
         emitter_id: 'emitter_001',
@@ -883,7 +930,7 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().selectedFaceIds).toEqual([])
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Edit emitter_001' }),
+      screen.getByRole('button', { name: 'Edit Emitter 1' }),
     )
     expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
     expect(
@@ -902,13 +949,13 @@ describe('Step 07·08 feature editors', () => {
     // the user clicks another surface or toggles this one off.
     expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
     expect(
-      screen.getByRole('button', { name: 'Save emitter' }),
+      screen.getByRole('button', { name: 'Save Emitter' }),
     ).toHaveProperty('disabled', false)
 
     act(() => {
       workspaceStore.getState().actions.setSelectedFaceIds([2])
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Save emitter' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
     expect(workspaceStore.getState().emitters).toEqual([
       expect.objectContaining({
         emitter_id: 'emitter_001',
@@ -931,8 +978,12 @@ describe('Step 07·08 feature editors', () => {
       </AppProviders>,
     )
 
-    fireEvent.click(screen.getByLabelText('Use custom optical values'))
-    fireEvent.change(screen.getByLabelText('Custom Reflectance'), {
+    fireEvent.click(screen.getByLabelText('Use Custom Optical Values'))
+    const customReflectance = screen.getByLabelText('Custom Reflectance')
+    expect(customReflectance.parentElement?.parentElement?.className).toContain(
+      'sm:grid-cols-2',
+    )
+    fireEvent.change(customReflectance, {
       target: { value: '0.2' },
     })
     fireEvent.change(screen.getByLabelText('Custom Loss'), {
@@ -995,6 +1046,12 @@ describe('Step 07·08 feature editors', () => {
         />
       </AppProviders>,
     )
+
+    const runOptionsSummary = screen.getByText('Run Options').closest('summary')
+    const runOptionsDetails = runOptionsSummary?.closest('details')
+    expect(runOptionsDetails?.open).toBe(false)
+    fireEvent.click(runOptionsSummary!)
+    expect(runOptionsDetails?.open).toBe(true)
 
     const runOptionRayCount = screen.getByRole('spinbutton', {
       name: 'Run option emitter rays',

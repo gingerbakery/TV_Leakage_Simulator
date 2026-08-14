@@ -35,11 +35,11 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
     <div className="space-y-3">
       <div className="rounded-xl border border-border bg-background/35 p-2">
         <div className="mb-2 flex items-center justify-between px-1">
-          <span className="text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">Import CAD List</span>
-          <span className="text-[0.62rem] text-muted-foreground">{cadCases.length} cases</span>
+          <span className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">Import CAD List</span>
+          <span className="text-xs text-muted-foreground">{cadCases.length} Cases</span>
         </div>
         {cadCases.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[0.68rem] text-muted-foreground">No CAD imported</div>
+          <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">No CAD Imported</div>
         ) : (
           <div className="space-y-1.5">
             {cadCases.map((item) => {
@@ -67,11 +67,11 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     onChange={(event) => actions.setCadCaseVisible(item.caseId, event.currentTarget.checked)}
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 text-xs font-semibold">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold">
                       <span>CASE {String(item.order).padStart(2, '0')}</span>
                       {active ? <Check className="size-3 text-primary" /> : null}
                     </div>
-                    <div className="truncate text-[0.62rem] text-muted-foreground">{item.cad.displayName}</div>
+                    <div className="truncate text-xs text-muted-foreground">{item.cad.displayName}</div>
                   </div>
                   {item.visible ? <Eye className="size-3.5 text-primary" /> : <EyeOff className="size-3.5 text-muted-foreground" />}
                   <Button
@@ -93,7 +93,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
             })}
           </div>
         )}
-        <div className="mt-2 px-1 text-[0.62rem] leading-4 text-muted-foreground">
+        <div className="mt-2 px-1 text-xs leading-4 text-muted-foreground">
           {activeCad ? `${sceneStatus ?? 'Loading'} · Step 03 follows the active Case.` : 'STEP (AP214/AP242) · STP · STL · OBJ'}
         </div>
       </div>
@@ -102,7 +102,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
         {uploadMutation.isPending ? <LoaderCircle className="animate-spin" /> : <FolderOpen data-icon="inline-start" />}
         {uploadMutation.isPending ? 'Uploading CAD…' : 'Import CAD'}
       </Button>
-      {uploadMutation.error ? <p className="text-[0.68rem] leading-4 text-destructive">{uploadMutation.error.message}</p> : null}
+      {uploadMutation.error ? <p className="text-xs leading-4 text-destructive">{uploadMutation.error.message}</p> : null}
     </div>
   )
 }

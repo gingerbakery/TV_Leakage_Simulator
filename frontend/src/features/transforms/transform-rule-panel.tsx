@@ -37,7 +37,7 @@ export function TransformRulePanel({
       <div className="rounded-lg border border-dashed border-border bg-background/30 p-4 text-center">
         <Move3D className="mx-auto size-5 text-muted-foreground" />
         <p className="mt-2 text-xs font-medium">No transform rules</p>
-        <p className="mt-1 text-[0.68rem] leading-4 text-muted-foreground">
+        <p className="mt-1 text-xs leading-4 text-muted-foreground">
           Components에서 Transform을 선택해 component move 또는 local face
           rule을 만드세요.
         </p>
@@ -48,7 +48,7 @@ export function TransformRulePanel({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-[0.68rem] font-semibold tracking-wide text-muted-foreground uppercase">
+        <span className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
           Transform rules
         </span>
         <Badge variant="outline">{rules.length}</Badge>
@@ -79,10 +79,10 @@ export function TransformRulePanel({
                   })
                 }
               >
-                <span className="block truncate text-xs font-semibold">
+                <span className="block truncate text-sm font-semibold">
                   {componentName}
                 </span>
-                <span className="mt-1 block font-mono text-[0.62rem] leading-4 text-muted-foreground">
+                <span className="mt-1 block font-mono text-xs leading-4 text-muted-foreground">
                   M {rule.move.x.toFixed(2)}, {rule.move.y.toFixed(2)},{' '}
                   {rule.move.z.toFixed(2)} mm
                   <br />R {rule.tilt.x.toFixed(2)}, {rule.tilt.y.toFixed(2)},{' '}

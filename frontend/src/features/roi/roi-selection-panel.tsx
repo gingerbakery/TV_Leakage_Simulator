@@ -111,7 +111,7 @@ export function RoiSelectionPanel({
         <div className="flex items-center gap-1.5">
           <label
             htmlFor="roi-scope-label"
-            className="text-[0.68rem] font-medium text-muted-foreground"
+            className="text-xs font-medium text-muted-foreground"
           >
             ROI 이름
           </label>
@@ -134,7 +134,7 @@ export function RoiSelectionPanel({
       <div className="rounded-xl border border-blue-200 bg-blue-50/65 p-3 dark:border-blue-800/65 dark:bg-blue-950/28">
         <div className="flex items-center gap-2">
           <BoxSelect className="size-4 shrink-0 text-primary" />
-          <div className="text-xs font-semibold">박스 드래그</div>
+          <div className="text-sm font-semibold">박스 드래그</div>
           <HelpTooltip label="박스 드래그 도움말">
             보이는 컴포넌트만 대상으로 현재 카메라와 가장 가까운
             ±XY·±YZ·±ZX 정면 범위를 선택합니다. 화면 깊이 방향은
@@ -163,7 +163,7 @@ export function RoiSelectionPanel({
       <div className="rounded-xl border border-blue-200 bg-blue-50/65 p-3 dark:border-blue-800/65 dark:bg-blue-950/28">
         <div className="flex items-center gap-2">
           <MapPin className="size-4 text-primary" />
-          <div className="text-xs font-semibold">좌표로 Face 찾기</div>
+          <div className="text-sm font-semibold">좌표로 Face 찾기</div>
           <HelpTooltip label="좌표로 Face 찾기 도움말">
             입력한 X/Y/Z 좌표에서 가장 가까운, 현재 보이는 컴포넌트의
             face를 찾아 ROI로 추가합니다.
@@ -173,7 +173,7 @@ export function RoiSelectionPanel({
           {(['x', 'y', 'z'] as const).map((axis) => (
             <label
               key={axis}
-              className="text-[0.62rem] font-medium text-muted-foreground uppercase"
+              className="text-sm font-medium text-muted-foreground uppercase"
             >
               {axis} (mm)
               <NumberInput
@@ -204,7 +204,7 @@ export function RoiSelectionPanel({
         {coordinateResult ? (
           <p
             role="status"
-            className="mt-2 text-[0.66rem] leading-5 text-muted-foreground"
+            className="mt-2 text-xs leading-5 text-muted-foreground"
           >
             {coordinateResult}
           </p>
@@ -216,7 +216,7 @@ export function RoiSelectionPanel({
           <div className="flex items-center gap-1">
             <div
               id="roi-list-title"
-              className="text-xs font-semibold"
+              className="text-sm font-semibold"
             >
               ROI List
             </div>
@@ -229,7 +229,7 @@ export function RoiSelectionPanel({
               type="button"
               size="sm"
               variant="ghost"
-              className="h-7 px-2 text-[0.66rem]"
+              className="h-7 px-2 text-xs"
               onClick={() => actions.clearRoiScopes()}
             >
               전체 삭제
@@ -239,7 +239,7 @@ export function RoiSelectionPanel({
 
         <div className="mt-2 space-y-2">
           {roiScopes.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[0.68rem] text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
               아직 만든 ROI가 없습니다.
             </div>
           ) : (
@@ -274,10 +274,10 @@ export function RoiSelectionPanel({
                         }
                       />
                       <span className="min-w-0">
-                        <span className="block truncate text-[0.7rem] font-semibold">
+                        <span className="block truncate text-sm font-semibold">
                           {scope.scopeId}
                         </span>
-                        <span className="mt-0.5 block text-[0.62rem] text-muted-foreground">
+                        <span className="mt-0.5 block text-xs text-muted-foreground">
                           {scope.source === 'box' ? scope.view : 'coordinate'}
                           {' · '}
                           {formatArea(areaMm2)} mm²
@@ -298,7 +298,7 @@ export function RoiSelectionPanel({
                     {scope.components.map((component) => (
                       <div
                         key={component.componentId}
-                        className="flex items-center justify-between gap-2 text-[0.61rem] text-muted-foreground"
+                        className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
                       >
                         <span className="truncate">
                           {component.componentName}
@@ -318,7 +318,7 @@ export function RoiSelectionPanel({
 
       <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs font-semibold">
+          <div className="flex items-center gap-2 text-sm font-semibold">
             <Power className="size-3.5 text-primary" />
             활성 ROI
             <HelpTooltip label="활성 ROI 도움말">
@@ -341,17 +341,17 @@ export function RoiSelectionPanel({
               key={label}
               className="rounded-md bg-background/45 px-1 py-2"
             >
-              <div className="text-[0.58rem] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 {label}
               </div>
-              <div className="mt-0.5 truncate text-[0.66rem] font-semibold">
+              <div className="mt-0.5 truncate text-base font-semibold">
                 {value}
               </div>
             </div>
           ))}
         </div>
         {summary.bboxMin && summary.bboxMax ? (
-          <p className="mt-2 text-[0.61rem] leading-5 text-muted-foreground">
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
             Bounds · X {summary.bboxMin.x.toFixed(1)}~
             {summary.bboxMax.x.toFixed(1)} · Y{' '}
             {summary.bboxMin.y.toFixed(1)}~

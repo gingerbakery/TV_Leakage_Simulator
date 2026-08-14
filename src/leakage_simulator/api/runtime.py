@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
-from leakage_simulator.raytrace_bridge import build_direct_trace_input
+from leakage_simulator.raytrace_bridge import (
+    PreparedTraceGeometry,
+    build_direct_trace_input,
+    build_prepared_trace_geometry,
+)
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 
@@ -54,6 +60,7 @@ class ApiRuntime:
         self._max_jobs = max(1, max_jobs)
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
+        self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
         self._output_file_index: dict[str, Path] = {}
@@ -216,7 +223,7 @@ class ApiRuntime:
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
         scene_mesh = self._scene_mesh_for_request(request_payload)
-        trace_input = self._trace_input_builder(
+        trace_input = self._build_trace_input_for_request(
             scene_mesh,
             request_payload,
         )
@@ -250,6 +257,65 @@ class ApiRuntime:
                 "CAD scene cache expired. Reload the CAD model and run again"
             )
         return scene_mesh
+
+    def _trace_geometry_cache_key(
+        self,
+        scene_mesh: dict[str, Any],
+        request_payload: dict[str, Any],
+    ) -> str:
+        excluded = sorted(
+            int(value)
+            for value in request_payload.get("excluded_component_ids", [])
+        )
+        excluded_set = set(excluded)
+        component_ids = scene_mesh.get("face_component_ids") or []
+        preserved_emitter_faces = sorted({
+            int(face_index)
+            for emitter in request_payload.get("emitters", [])
+            if str(emitter.get("emitter_type") or "face") == "face"
+            for face_index in emitter.get("face_indices", [])
+            if 0 <= int(face_index) < len(component_ids)
+            and component_ids[int(face_index)] is not None
+            and int(component_ids[int(face_index)]) in excluded_set
+        })
+        geometry_state = {
+            "scene_token": str(request_payload.get("scene_token") or ""),
+            "transform_rules": request_payload.get("transform_rules", []),
+            "excluded_component_ids": excluded,
+            "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),
+            "preserved_emitter_faces": preserved_emitter_faces,
+        }
+        encoded = json.dumps(
+            geometry_state,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _build_trace_input_for_request(
+        self,
+        scene_mesh: dict[str, Any],
+        request_payload: dict[str, Any],
+    ) -> Any:
+        if self._trace_input_builder is not build_direct_trace_input:
+            return self._trace_input_builder(scene_mesh, request_payload)
+        cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
+        with self._state_lock:
+            prepared = self._trace_geometry_cache.get(cache_key)
+        cache_hit = prepared is not None
+        if prepared is None:
+            prepared = build_prepared_trace_geometry(scene_mesh, request_payload)
+            with self._state_lock:
+                self._trace_geometry_cache[cache_key] = prepared
+                while len(self._trace_geometry_cache) > self._max_jobs:
+                    oldest_key = next(iter(self._trace_geometry_cache))
+                    self._trace_geometry_cache.pop(oldest_key, None)
+        return build_direct_trace_input(
+            scene_mesh,
+            request_payload,
+            prepared_geometry=prepared,
+            geometry_cache_hit=cache_hit,
+        )
 
     @staticmethod
     def _scene_cache_key(cad_path: str) -> str:
@@ -287,7 +353,7 @@ class ApiRuntime:
                 status="running",
                 phase="preparing",
             )
-            trace_input = self._trace_input_builder(
+            trace_input = self._build_trace_input_for_request(
                 scene_mesh,
                 request_payload,
             )
