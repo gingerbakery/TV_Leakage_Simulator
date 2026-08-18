@@ -469,6 +469,20 @@ function normalizeRayTraceConfig(
   }
 }
 
+function traceBackendConfigChanged(
+  previous: RayTraceConfigRequest,
+  next: RayTraceConfigRequest,
+): boolean {
+  const frontendOnlyKeys = new Set<keyof RayTraceConfigRequest>([
+    'auto_convergence',
+    'convergence_target_percent',
+    'max_convergence_multiplier',
+  ])
+  return (Object.keys(next) as Array<keyof RayTraceConfigRequest>).some(
+    (key) => !frontendOnlyKeys.has(key) && previous[key] !== next[key],
+  )
+}
+
 function normalizeComponentNameOverrides(
   overrides: Record<number, string>,
 ): Record<number, string> {
@@ -1496,10 +1510,15 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         )
       },
       setRayTraceConfig: (rayTraceConfig) => {
-        set((state) => ({
-          rayTraceConfig: normalizeRayTraceConfig(rayTraceConfig),
-          ...invalidateRayTraceState(state),
-        }))
+        set((state) => {
+          const normalized = normalizeRayTraceConfig(rayTraceConfig)
+          return {
+            rayTraceConfig: normalized,
+            ...(traceBackendConfigChanged(state.rayTraceConfig, normalized)
+              ? invalidateRayTraceState(state)
+              : {}),
+          }
+        })
       },
       setActiveRayTraceJobId: (activeRayTraceJobId) => {
         set((state) => ({

@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -218,6 +219,46 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('광영역(@5%)')).not.toBeNull()
   })
 
+  it('opens a save-location picker when saving a comparison report', async () => {
+    const result = createRayTraceResultFixture()
+    const write = vi.fn().mockResolvedValue(undefined)
+    const close = vi.fn().mockResolvedValue(undefined)
+    const showSaveFilePicker = vi.fn().mockResolvedValue({
+      createWritable: vi.fn().mockResolvedValue({ write, close }),
+    })
+    vi.stubGlobal('showSaveFilePicker', showSaveFilePicker)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save report' }))
+
+    await waitFor(() => expect(showSaveFilePicker).toHaveBeenCalledOnce())
+    expect(showSaveFilePicker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suggestedName: expect.stringMatching(
+          /^ray-analysis-\d{4}-\d{2}-\d{2}\.bitsam-report$/,
+        ),
+        types: [
+          expect.objectContaining({
+            accept: { 'application/json': ['.bitsam-report'] },
+          }),
+        ],
+      }),
+    )
+    expect(write).toHaveBeenCalledWith(expect.any(Blob))
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('opens the analysis window at the expanded default size', () => {
     vi.stubGlobal('innerWidth', 1200)
     vi.stubGlobal('innerHeight', 1000)
@@ -301,6 +342,12 @@ describe('Step 11 result UI', () => {
     const result = createRayTraceResultFixture()
     result.receivers[0].width_mm = 40
     result.receivers[0].height_mm = 20
+    const comparisonResult = structuredClone(result)
+    comparisonResult.run_id = 'run-comparison-scale'
+    comparisonResult.metrics.receiver_001 = {
+      ...(comparisonResult.metrics.receiver_001 as Record<string, unknown>),
+      peak_nit_est: 25,
+    }
     const createImageData = vi.fn(
       (width: number, height: number) =>
         ({
@@ -324,6 +371,10 @@ describe('Step 11 result UI', () => {
           result={result}
           scene={createSceneFixture()}
           componentNameOverrides={{ 1: 'Renamed chassis' }}
+          reportCases={[
+            { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+            { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparisonResult },
+          ]}
           onOpenChange={vi.fn()}
         />
       </div>,
@@ -336,6 +387,27 @@ describe('Step 11 result UI', () => {
     expect(
       screen.getByRole('button', { name: 'Receiver 광영역 5% 설명' }),
     ).not.toBeNull()
+
+    const autoScaleButton = screen.getByRole('button', { name: 'Auto' })
+    expect(autoScaleButton.getAttribute('aria-pressed')).toBe('true')
+    const scale = screen.getByTestId('receiver_001-luminance-scale')
+    expect(scale.getAttribute('data-scale-mode')).toBe('auto')
+    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
+    fireEvent.click(screen.getByRole('button', { name: 'Compare' }))
+    expect(scale.getAttribute('data-scale-mode')).toBe('compare')
+    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(25)
+    fireEvent.click(screen.getByRole('button', { name: 'Customize' }))
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Custom luminance scale minimum' }),
+      { target: { value: '1' } },
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Custom luminance scale maximum' }),
+      { target: { value: '20' } },
+    )
+    expect(scale.getAttribute('data-scale-mode')).toBe('customize')
+    expect(scale.getAttribute('data-scale-min-nit')).toBe('1')
+    expect(scale.getAttribute('data-scale-max-nit')).toBe('20')
 
     const frame = screen.getByTestId('receiver_001-heatmap-frame')
     expect(frame.style.aspectRatio).toBe('40 / 20')
@@ -375,10 +447,11 @@ describe('Step 11 result UI', () => {
       screen.getByRole('img', { name: 'Y-axis luminance profile' }),
     ).not.toBeNull()
     expect(createImageData).toHaveBeenCalledWith(2, 2)
-    expect(putImageData).toHaveBeenCalledOnce()
+    const drawCountBeforeMono = putImageData.mock.calls.length
+    expect(drawCountBeforeMono).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: 'Mono' }))
     expect(screen.getByRole('button', { name: 'Mono' }).getAttribute('aria-pressed')).toBe('true')
-    expect(putImageData).toHaveBeenCalledTimes(2)
+    expect(putImageData).toHaveBeenCalledTimes(drawCountBeforeMono + 1)
 
     const xProfile = screen.getByRole('img', {
       name: 'X-axis luminance profile',
@@ -415,7 +488,7 @@ describe('Step 11 result UI', () => {
       clientY: 180,
       pointerId: 1,
     })
-    expect(screen.getByText(/Y=.*mm · 최대/)).not.toBeNull()
+    expect(screen.getByText(/Y=.*mm · Peak/)).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Error map' }))
     expect(screen.getByRole('button', { name: 'Error map' }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Analyze area' }))
