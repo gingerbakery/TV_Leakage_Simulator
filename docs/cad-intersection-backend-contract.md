@@ -86,6 +86,50 @@ backend와 dispatch는 구분한다.
 정책을 변경하지 않는다. `gpu_cuda`는 실제 adapter, capability probe,
 whole-batch CPU fallback이 준비되는 단계에서만 공개한다.
 
+### PERF-3B-1 runtime dispatch
+
+`run_direct_ray_trace()`는 다음 조건에서 reference batch dispatch를 사용한다.
+
+- NumPy fast sampling을 지원하는 datum/reference-plane emitter
+- `max_depth <= 1`
+- runtime `intersection_dispatch`가 명시적으로 `batch`
+
+현재 CPU adapter는 `native_batch=false`이고 scalar보다 느리므로 기본 `auto`는
+scalar dispatch를 유지한다. `batch`는 정합성 테스트와 benchmark를 위한
+명시적 opt-in이다. 향후 native backend가 준비되면 capability 확인 뒤에만
+`auto`가 batch를 선택하도록 확장한다.
+
+기존 sampler는 기본 65,536-ray batch를 그대로 생성한다. 같은 seed에서도
+sampler batch 크기를 바꾸면 NumPy 난수 draw 배치가 달라지므로 이 값은
+건드리지 않는다. 생성된 origin/direction 배열만 별도의 기본 4,096-ray
+intersection chunk로 잘라 primary와 secondary query에 전달한다.
+
+처리 순서는 다음과 같다.
+
+1. ray별 direct Receiver 후보와 `max_t`를 계산한다.
+2. primary ray를 `intersect_rays()`로 계산한다.
+3. 원 row 순서대로 hit를 복원하고 reflection RNG 결정을 만든다.
+4. 실제 reflection ray만 compact해 secondary batch를 계산한다.
+5. Receiver grid, optical/reflection/contribution summary와 stored path를 원
+   primary row 순서대로 commit한다.
+
+Planning 단계는 정량 결과를 변경하지 않는다. 모든 누적과 path quota
+교체를 원 ray 순서로 commit하므로 현재 CPU reference에서는 scalar와
+동일 seed 결과가 exact하게 같아야 한다.
+
+face/polygon emitter와 `max_depth >= 2`는 reflection RNG의 depth-first 소비
+순서를 유지하기 위해 기존 scalar dispatch를 사용한다. runtime dispatch와
+chunk 크기는 테스트/benchmark용 keyword-only 인자이며 프로젝트 JSON이나
+`.bitsam`에는 저장하지 않는다.
+
+Stop은 다음 sampling batch를 만들기 전과 intersection chunk 경계에서
+확인한다. 시작한 chunk는 primary, secondary와 결과 commit까지 원자적으로
+완료하고 다음 chunk를 시작하지 않는다. 기본값에서 최악의 Stop 지연은
+4,096 primary ray 처리 시간이다.
+
+결과 JSON에는 NumPy 배열, scalar 또는 batch miss sentinel을 노출하지 않는다.
+`json.dumps(result.to_dict(), allow_nan=False)`가 성공해야 한다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -137,6 +181,15 @@ whole-batch CPU fallback이 준비되는 단계에서만 공개한다.
 - `bvh_leaf_count`
 - `bvh_build_sec`
 - `rays_per_sec`
+- `requested_intersection_dispatch`
+- `intersection_dispatch`: `scalar`, `batch`, 또는 혼합 실행의 `mixed`
+- `intersection_batch_count`
+- `intersection_batch_max_size`
+- `intersection_ray_count`: primary/secondary를 포함한 전체 CAD query 수
+- `intersection_scalar_query_count`
+- `intersection_sec`: batch dispatch 호출만 합산한 시간
+- `intersection_timing_scope`: 현재 `batch_dispatch_only`
+- `native_batch`
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.

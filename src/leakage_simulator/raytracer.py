@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from numbers import Integral
 from typing import Callable, Dict, List, Optional, Tuple
 import math
 import random
 import time
 
+import numpy as np
+
 from .geometry import (
+    HitRecord,
+    RayBatch as IntersectionRayBatch,
+    RayHitBatch,
     TriangleMesh,
     vec_add,
     vec_cross,
@@ -114,6 +120,95 @@ class ReceiverHitCandidate:
             ray_kind=self.ray_kind,
             receiver_flux_lumen=self.received_power_lumen,
         )
+
+
+@dataclass(slots=True)
+class _ReflectionDecision:
+    emission: Optional[Tuple[ReflectionSample, float]] = None
+    attempted: bool = False
+    depth_limited: bool = False
+    below_energy: bool = False
+    roulette_terminated: bool = False
+    roulette_survived: bool = False
+    disabled: bool = False
+
+
+@dataclass(slots=True)
+class _SingleBouncePlan:
+    origin: Vec3
+    direction: Vec3
+    ray_power: float
+    source_face: int
+    direct_receiver: Optional[ReceiverHitCandidate]
+    primary_surface_hit: Optional[HitRecord]
+    reflection_decision: Optional[_ReflectionDecision] = None
+    reflected_origin: Optional[Vec3] = None
+    reflected_receiver: Optional[ReceiverHitCandidate] = None
+    secondary_surface_hit: Optional[HitRecord] = None
+
+
+@dataclass(slots=True)
+class _IntersectionDispatchStats:
+    scalar_query_count: int = 0
+    batch_count: int = 0
+    batch_max_size: int = 0
+    batch_ray_count: int = 0
+    elapsed_sec: float = 0.0
+
+    def intersect_scalar(
+        self,
+        mesh: TriangleMesh,
+        origin: Vec3,
+        direction: Vec3,
+        *,
+        ignore_face: Optional[int] = None,
+        min_t: float = 1e-8,
+        max_t: Optional[float] = None,
+    ) -> Optional[HitRecord]:
+        self.scalar_query_count += 1
+        return mesh.intersect_ray(
+            origin,
+            direction,
+            ignore_face=ignore_face,
+            min_t=min_t,
+            max_t=max_t,
+        )
+
+    def intersect_batch(
+        self,
+        mesh: TriangleMesh,
+        rays: IntersectionRayBatch,
+    ) -> RayHitBatch:
+        started = time.perf_counter()
+        try:
+            return mesh.intersect_rays(rays)
+        finally:
+            ray_count = len(rays)
+            self.batch_count += 1
+            self.batch_max_size = max(self.batch_max_size, ray_count)
+            self.batch_ray_count += ray_count
+            self.elapsed_sec += time.perf_counter() - started
+
+    def to_summary(self) -> Dict[str, object]:
+        if self.batch_count and self.scalar_query_count:
+            dispatch = "mixed"
+        elif self.batch_count:
+            dispatch = "batch"
+        else:
+            dispatch = "scalar"
+        return {
+            "intersection_dispatch": dispatch,
+            "intersection_batch_count": self.batch_count,
+            "intersection_batch_max_size": self.batch_max_size,
+            "intersection_ray_count": self.batch_ray_count + self.scalar_query_count,
+            "intersection_scalar_query_count": self.scalar_query_count,
+            "intersection_sec": self.elapsed_sec,
+            "intersection_timing_scope": "batch_dispatch_only",
+            "native_batch": False,
+        }
+
+
+_DEFAULT_INTERSECTION_BATCH_SIZE = 4096
 
 
 def run_simulation(engine_input: EngineInput) -> SimulationOutput:
@@ -241,7 +336,19 @@ def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    *,
+    intersection_dispatch: str = "auto",
+    intersection_batch_size: int = _DEFAULT_INTERSECTION_BATCH_SIZE,
 ) -> RayTraceResult:
+    if intersection_dispatch not in {"auto", "scalar", "batch"}:
+        raise ValueError("intersection_dispatch must be auto, scalar, or batch")
+    if (
+        isinstance(intersection_batch_size, bool)
+        or not isinstance(intersection_batch_size, Integral)
+        or intersection_batch_size <= 0
+    ):
+        raise ValueError("intersection_batch_size must be a positive integer")
+    intersection_batch_size = int(intersection_batch_size)
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     trace_input.mesh.set_intersection_backend(
@@ -260,6 +367,7 @@ def run_direct_ray_trace(
     receiver_hit_count = 0
     surface_hit_count = 0
     terminated_ray_count = 0
+    intersection_stats = _IntersectionDispatchStats()
     optical_resolver = OpticalPropertyResolver(
         trace_input.mesh,
         trace_input.optical_profiles,
@@ -319,6 +427,65 @@ def run_direct_ray_trace(
         else:
             emitter_area_mm2 = emitter.virtual_area_mm2()
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
+        use_batch_dispatch = (
+            intersection_dispatch == "batch"
+            and trace_input.config.max_depth <= 1
+            and supports_fast_virtual_plane_sampling(emitter)
+        )
+        if use_batch_dispatch:
+            if should_stop is not None and should_stop():
+                stopped_early = True
+                break
+            ray_batches = iter_virtual_plane_ray_batches(
+                emitter,
+                trace_input.config.epsilon_mm,
+                emitter_seed,
+            )
+            while True:
+                if should_stop is not None and should_stop():
+                    stopped_early = True
+                    break
+                try:
+                    origin_batch, direction_batch = next(ray_batches)
+                except StopIteration:
+                    break
+                for start in range(0, len(origin_batch), intersection_batch_size):
+                    if should_stop is not None and should_stop():
+                        stopped_early = True
+                        break
+                    end = min(len(origin_batch), start + intersection_batch_size)
+                    batch_counts = _trace_single_bounce_batch(
+                        trace_input.mesh,
+                        origin_batch[start:end],
+                        direction_batch[start:end],
+                        ray_power,
+                        receiver_frames,
+                        receiver_grids,
+                        trace_input.config,
+                        resolved_optical_by_face,
+                        emitter_rng,
+                        optical_summary,
+                        reflection_summary,
+                        contribution_summary,
+                        face_contribution_cache,
+                        detailed_contributions,
+                        stored_paths,
+                        intersection_stats,
+                    )
+                    chunk_ray_count = end - start
+                    total_rays += chunk_ray_count
+                    receiver_hit_count += batch_counts[0]
+                    surface_hit_count += batch_counts[1]
+                    terminated_ray_count += batch_counts[2]
+                    if progress_callback is not None:
+                        if total_rays - last_progress_count >= progress_interval:
+                            progress_callback(total_rays, expected_ray_count)
+                            last_progress_count = total_rays
+                if stopped_early:
+                    break
+            if stopped_early:
+                break
+            continue
         for ray in _iter_primary_emitter_rays(
             trace_input.mesh,
             emitter,
@@ -383,6 +550,7 @@ def run_direct_ray_trace(
                     store_path,
                     path_events,
                     stored_paths,
+                    intersection_stats,
                 )
                 receiver_hit_count += fast_receiver_hits
                 surface_hit_count += fast_surface_hits
@@ -410,7 +578,8 @@ def run_direct_ray_trace(
                     if receiver_candidate is not None
                     else None
                 )
-                surface_hit = trace_input.mesh.intersect_ray(
+                surface_hit = intersection_stats.intersect_scalar(
+                    trace_input.mesh,
                     current_origin,
                     current_direction,
                     ignore_face=current_source_face if current_source_face >= 0 else None,
@@ -676,6 +845,8 @@ def run_direct_ray_trace(
         "stopped_early": stopped_early,
         "requested_ray_count": expected_ray_count,
         "rays_per_sec": total_rays / runtime_sec if runtime_sec > 0.0 else 0.0,
+        "requested_intersection_dispatch": intersection_dispatch,
+        **intersection_stats.to_summary(),
     }
     return RayTraceResult(
         run_id=fresh_run_id("rt3"),
@@ -714,6 +885,7 @@ def _trace_single_bounce_fast(
     store_path: bool,
     path_events: List[RayHit],
     stored_paths: List[List[RayHit]],
+    intersection_stats: _IntersectionDispatchStats,
 ) -> Tuple[int, int, int]:
     receiver_candidate = _find_first_receiver_hit(
         origin=origin,
@@ -731,7 +903,8 @@ def _trace_single_bounce_fast(
         if receiver_candidate is not None
         else None
     )
-    surface_hit = mesh.intersect_ray(
+    surface_hit = intersection_stats.intersect_scalar(
+        mesh,
         origin,
         direction,
         ignore_face=source_face if source_face >= 0 else None,
@@ -875,13 +1048,496 @@ def _trace_single_bounce_fast(
         if reflected_receiver is not None
         else None
     )
-    secondary_surface_hit = mesh.intersect_ray(
+    secondary_surface_hit = intersection_stats.intersect_scalar(
+        mesh,
         reflected_origin,
         reflection_sample.direction,
         ignore_face=surface_hit.face_index,
         min_t=config.epsilon_mm,
         max_t=reflected_receiver_distance,
     )
+    reflection_summary["max_observed_depth"] = 1
+
+    if secondary_surface_hit is not None:
+        reflection_summary["surface_hit_count"] += 1
+        secondary_optical = resolved_optical_by_face[secondary_surface_hit.face_index]
+        secondary_reflected_power = emitted_power * effective_surface_reflectance(
+            reflection_sample.direction,
+            secondary_surface_hit.normal,
+            secondary_optical.profile,
+        )
+        secondary_contribution = (
+            _surface_contribution_for_face(
+                contribution_summary,
+                mesh,
+                secondary_surface_hit.face_index,
+                face_contribution_cache,
+            )
+            if detailed_contributions
+            else None
+        )
+        if detailed_contributions:
+            _record_surface_hit_contribution(
+                contribution_summary,
+                secondary_contribution,
+                1,
+                emitted_power,
+                secondary_reflected_power,
+            )
+        _record_optical_summary(
+            optical_summary,
+            secondary_optical.profile,
+            secondary_optical.source,
+            emitted_power,
+            secondary_reflected_power,
+        )
+        _prepare_reflection_emission(
+            rng,
+            reflection_sample.direction,
+            secondary_surface_hit.normal,
+            secondary_reflected_power,
+            secondary_optical.profile,
+            config,
+            reflection_summary,
+            1,
+        )
+        _record_reflection_outcome(
+            reflection_summary,
+            reflection_sample.lobe,
+            "blocked",
+            1,
+        )
+        _record_surface_reflection_outcome(
+            contribution_summary,
+            surface_contribution,
+            reflection_sample.lobe,
+            "blocked",
+            emitted_power,
+            1,
+        )
+        if detailed_contributions:
+            _record_secondary_blocker_contribution(
+                contribution_summary,
+                secondary_contribution,
+                reflection_sample.lobe,
+                emitted_power,
+                1,
+            )
+        if store_path:
+            path_events.append(
+                _surface_ray_hit(
+                    mesh,
+                    secondary_surface_hit.face_index,
+                    secondary_surface_hit.point,
+                    secondary_surface_hit.normal,
+                    secondary_surface_hit.t,
+                    emitted_power,
+                    secondary_reflected_power,
+                    depth=1,
+                    optical_profile=secondary_optical.profile,
+                    optical_source=secondary_optical.source,
+                    ray_kind=reflection_sample.lobe,
+                )
+            )
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
+        return 0, 2, 1
+
+    if reflected_receiver is not None:
+        _record_receiver_hit(reflected_receiver)
+        _record_reflection_outcome(
+            reflection_summary,
+            reflection_sample.lobe,
+            "receiver",
+            1,
+            reflected_receiver.received_power_lumen,
+        )
+        _record_reflected_receiver_contribution(
+            contribution_summary,
+            reflected_receiver,
+            reflection_sample.lobe,
+            1,
+        )
+        _record_surface_reflection_outcome(
+            contribution_summary,
+            surface_contribution,
+            reflection_sample.lobe,
+            "receiver",
+            emitted_power,
+            1,
+            received_flux_lumen=reflected_receiver.received_power_lumen,
+        )
+        if store_path:
+            path_events.append(reflected_receiver.to_ray_hit())
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
+        return 1, 1, 0
+
+    _record_reflection_outcome(
+        reflection_summary,
+        reflection_sample.lobe,
+        "escaped",
+        1,
+    )
+    _record_surface_reflection_outcome(
+        contribution_summary,
+        surface_contribution,
+        reflection_sample.lobe,
+        "escaped",
+        emitted_power,
+        1,
+    )
+    if store_path:
+        _store_completed_path(
+            stored_paths, path_events, config.max_stored_paths
+        )
+    return 0, 1, 1
+
+
+def _trace_single_bounce_batch(
+    mesh: TriangleMesh,
+    origins: np.ndarray,
+    directions: np.ndarray,
+    ray_power: float,
+    receivers: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    rng: random.Random,
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    intersection_stats: _IntersectionDispatchStats,
+) -> Tuple[int, int, int]:
+    if config.max_depth > 1:
+        raise ValueError("single-bounce batch dispatch requires max_depth <= 1")
+    ray_count = len(origins)
+    if ray_count == 0:
+        return 0, 0, 0
+
+    origin_values: List[Vec3] = [
+        tuple(float(value) for value in origin)  # type: ignore[misc]
+        for origin in origins
+    ]
+    direction_values: List[Vec3] = [
+        tuple(float(value) for value in direction)  # type: ignore[misc]
+        for direction in directions
+    ]
+    direct_receivers: List[Optional[ReceiverHitCandidate]] = []
+    primary_max_t = np.full(ray_count, float("inf"), dtype=np.float64)
+    for index, (origin, direction) in enumerate(zip(origin_values, direction_values)):
+        candidate = _find_first_receiver_hit(
+            origin=origin,
+            direction=direction,
+            power_lumen=ray_power,
+            source_face=-1,
+            receivers=receivers,
+            grids=receiver_grids,
+            config=config,
+            depth=0,
+            ray_kind="direct",
+        )
+        direct_receivers.append(candidate)
+        if candidate is not None:
+            primary_max_t[index] = candidate.distance_mm
+
+    primary_rays = IntersectionRayBatch(
+        origins,
+        directions,
+        min_t=config.epsilon_mm,
+        max_t=primary_max_t,
+        ignore_faces=-1,
+    )
+    primary_hits = intersection_stats.intersect_batch(mesh, primary_rays)
+    plans: List[_SingleBouncePlan] = []
+    reflected_plan_indices: List[int] = []
+    reflected_origins: List[Vec3] = []
+    reflected_directions: List[Vec3] = []
+    reflected_max_t: List[float] = []
+    reflected_ignore_faces: List[int] = []
+
+    for index, (origin, direction) in enumerate(zip(origin_values, direction_values)):
+        primary_surface_hit = primary_hits.materialize(mesh, primary_rays, index)
+        plan = _plan_single_bounce(
+            mesh,
+            origin,
+            direction,
+            ray_power,
+            -1,
+            direct_receivers[index],
+            primary_surface_hit,
+            receivers,
+            receiver_grids,
+            config,
+            resolved_optical_by_face,
+            rng,
+        )
+        plans.append(plan)
+        if plan.reflection_decision is None or plan.reflection_decision.emission is None:
+            continue
+        assert plan.reflected_origin is not None
+        assert primary_surface_hit is not None
+        reflection_sample, _ = plan.reflection_decision.emission
+        reflected_plan_indices.append(index)
+        reflected_origins.append(plan.reflected_origin)
+        reflected_directions.append(reflection_sample.direction)
+        reflected_max_t.append(
+            plan.reflected_receiver.distance_mm
+            if plan.reflected_receiver is not None
+            else float("inf")
+        )
+        reflected_ignore_faces.append(primary_surface_hit.face_index)
+
+    if reflected_plan_indices:
+        secondary_rays = IntersectionRayBatch(
+            np.asarray(reflected_origins, dtype=np.float64),
+            np.asarray(reflected_directions, dtype=np.float64),
+            min_t=config.epsilon_mm,
+            max_t=np.asarray(reflected_max_t, dtype=np.float64),
+            ignore_faces=np.asarray(reflected_ignore_faces, dtype=np.int64),
+        )
+        secondary_hits = intersection_stats.intersect_batch(mesh, secondary_rays)
+        for secondary_index, plan_index in enumerate(reflected_plan_indices):
+            plans[plan_index].secondary_surface_hit = secondary_hits.materialize(
+                mesh,
+                secondary_rays,
+                secondary_index,
+            )
+
+    receiver_hit_count = 0
+    surface_hit_count = 0
+    terminated_ray_count = 0
+    store_path = config.store_ray_paths and config.max_stored_paths > 0
+    for plan in plans:
+        emitter_event = (
+            _emitter_ray_hit(-1, plan.origin, plan.direction, ray_power)
+            if store_path
+            else None
+        )
+        path_events = [emitter_event] if emitter_event is not None else []
+        counts = _commit_single_bounce_plan(
+            mesh,
+            plan,
+            receiver_grids,
+            config,
+            resolved_optical_by_face,
+            rng,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+            face_contribution_cache,
+            detailed_contributions,
+            store_path,
+            path_events,
+            stored_paths,
+        )
+        receiver_hit_count += counts[0]
+        surface_hit_count += counts[1]
+        terminated_ray_count += counts[2]
+    return receiver_hit_count, surface_hit_count, terminated_ray_count
+
+
+def _plan_single_bounce(
+    mesh: TriangleMesh,
+    origin: Vec3,
+    direction: Vec3,
+    ray_power: float,
+    source_face: int,
+    direct_receiver: Optional[ReceiverHitCandidate],
+    primary_surface_hit: Optional[HitRecord],
+    receivers: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    rng: random.Random,
+) -> _SingleBouncePlan:
+    plan = _SingleBouncePlan(
+        origin=origin,
+        direction=direction,
+        ray_power=ray_power,
+        source_face=source_face,
+        direct_receiver=direct_receiver,
+        primary_surface_hit=primary_surface_hit,
+    )
+    if primary_surface_hit is None:
+        return plan
+
+    resolved_optical = resolved_optical_by_face[primary_surface_hit.face_index]
+    reflected_power = ray_power * effective_surface_reflectance(
+        direction,
+        primary_surface_hit.normal,
+        resolved_optical.profile,
+    )
+    plan.reflection_decision = _decide_reflection_emission(
+        rng,
+        direction,
+        primary_surface_hit.normal,
+        reflected_power,
+        resolved_optical.profile,
+        config,
+        0,
+    )
+    if plan.reflection_decision.emission is None:
+        return plan
+
+    reflection_sample, emitted_power = plan.reflection_decision.emission
+    plan.reflected_origin = vec_add(
+        primary_surface_hit.point,
+        vec_mul(reflection_sample.direction, config.epsilon_mm),
+    )
+    plan.reflected_receiver = _find_first_receiver_hit(
+        origin=plan.reflected_origin,
+        direction=reflection_sample.direction,
+        power_lumen=emitted_power,
+        source_face=primary_surface_hit.face_index,
+        receivers=receivers,
+        grids=receiver_grids,
+        config=config,
+        depth=1,
+        ray_kind=reflection_sample.lobe,
+    )
+    return plan
+
+
+def _commit_single_bounce_plan(
+    mesh: TriangleMesh,
+    plan: _SingleBouncePlan,
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    rng: random.Random,
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    store_path: bool,
+    path_events: List[RayHit],
+    stored_paths: List[List[RayHit]],
+) -> Tuple[int, int, int]:
+    origin = plan.origin
+    direction = plan.direction
+    ray_power = plan.ray_power
+    receiver_candidate = plan.direct_receiver
+    surface_hit = plan.primary_surface_hit
+
+    if surface_hit is None:
+        if receiver_candidate is None:
+            if store_path:
+                _store_completed_path(
+                    stored_paths, path_events, config.max_stored_paths
+                )
+            return 0, 0, 1
+        _record_receiver_hit(receiver_candidate)
+        reflection_summary["direct_receiver_hit_count"] += 1
+        reflection_summary["direct_receiver_flux_lumen"] += receiver_candidate.received_power_lumen
+        _record_direct_receiver_contribution(
+            contribution_summary,
+            receiver_candidate,
+        )
+        if store_path:
+            path_events.append(receiver_candidate.to_ray_hit())
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
+        return 1, 0, 0
+
+    reflection_summary["surface_hit_count"] += 1
+    reflection_summary["primary_surface_hit_count"] += 1
+    resolved_optical = resolved_optical_by_face[surface_hit.face_index]
+    reflected_power = ray_power * effective_surface_reflectance(
+        direction,
+        surface_hit.normal,
+        resolved_optical.profile,
+    )
+    surface_contribution = (
+        _surface_contribution_for_face(
+            contribution_summary,
+            mesh,
+            surface_hit.face_index,
+            face_contribution_cache,
+        )
+        if detailed_contributions
+        else None
+    )
+    if detailed_contributions:
+        _record_surface_hit_contribution(
+            contribution_summary,
+            surface_contribution,
+            0,
+            ray_power,
+            reflected_power,
+        )
+    _record_optical_summary(
+        optical_summary,
+        resolved_optical.profile,
+        resolved_optical.source,
+        ray_power,
+        reflected_power,
+    )
+    if plan.reflection_decision is None:
+        raise RuntimeError("primary surface plan is missing a reflection decision")
+    _record_reflection_decision(reflection_summary, plan.reflection_decision)
+    reflection_emission = plan.reflection_decision.emission
+    if reflection_emission is None:
+        if store_path:
+            path_events.append(
+                _surface_ray_hit(
+                    mesh,
+                    surface_hit.face_index,
+                    surface_hit.point,
+                    surface_hit.normal,
+                    surface_hit.t,
+                    ray_power,
+                    reflected_power,
+                    depth=0,
+                    optical_profile=resolved_optical.profile,
+                    optical_source=resolved_optical.source,
+                )
+            )
+            _store_completed_path(
+                stored_paths, path_events, config.max_stored_paths
+            )
+        return 0, 1, 1
+
+    reflection_sample, emitted_power = reflection_emission
+    _record_reflection_emission(
+        reflection_summary,
+        reflection_sample,
+        emitted_power,
+        1,
+    )
+    _record_surface_reflection_emission(
+        contribution_summary,
+        surface_contribution,
+        reflection_sample.lobe,
+        emitted_power,
+        1,
+    )
+    if store_path:
+        path_events.append(
+            _surface_ray_hit(
+                mesh,
+                surface_hit.face_index,
+                surface_hit.point,
+                surface_hit.normal,
+                surface_hit.t,
+                ray_power,
+                emitted_power,
+                depth=0,
+                optical_profile=resolved_optical.profile,
+                optical_source=resolved_optical.source,
+                ray_kind=reflection_sample.lobe,
+            )
+        )
+
+    reflected_receiver = plan.reflected_receiver
+    secondary_surface_hit = plan.secondary_surface_hit
     reflection_summary["max_observed_depth"] = 1
 
     if secondary_surface_hit is not None:
@@ -1551,6 +2207,59 @@ def _prepare_reflection_emission(
         summary["reflection_disabled_count"] += 1
         return None
     return reflection_sample, emitted_power_lumen
+
+
+def _decide_reflection_emission(
+    rng: random.Random,
+    incoming: Vec3,
+    normal: Vec3,
+    reflected_power_lumen: float,
+    profile: OpticalProfile,
+    config: RayTraceConfig,
+    depth: int,
+) -> _ReflectionDecision:
+    if depth >= config.max_depth:
+        return _ReflectionDecision(depth_limited=True, disabled=True)
+    decision = _ReflectionDecision(attempted=True)
+    emitted_power_lumen = reflected_power_lumen
+    if config.min_energy > 0.0 and reflected_power_lumen < config.min_energy:
+        if config.termination_mode == "threshold":
+            decision.below_energy = True
+            return decision
+        survival_probability = max(
+            0.0,
+            min(1.0, reflected_power_lumen / config.min_energy),
+        )
+        if rng.random() >= survival_probability:
+            decision.below_energy = True
+            decision.roulette_terminated = True
+            return decision
+        decision.roulette_survived = True
+        emitted_power_lumen = config.min_energy
+    reflection_sample = sample_reflection_direction(rng, incoming, normal, profile)
+    if reflection_sample is None:
+        decision.disabled = True
+        return decision
+    decision.emission = (reflection_sample, emitted_power_lumen)
+    return decision
+
+
+def _record_reflection_decision(
+    summary: Dict,
+    decision: _ReflectionDecision,
+) -> None:
+    if decision.attempted:
+        summary["reflection_attempt_count"] += 1
+    if decision.depth_limited:
+        summary["depth_limit_count"] += 1
+    if decision.below_energy:
+        summary["reflection_below_energy_count"] += 1
+    if decision.roulette_terminated:
+        summary["roulette_terminated_count"] += 1
+    if decision.roulette_survived:
+        summary["roulette_survived_count"] += 1
+    if decision.disabled:
+        summary["reflection_disabled_count"] += 1
 
 
 def _record_reflection_emission(

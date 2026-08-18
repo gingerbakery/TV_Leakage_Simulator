@@ -121,3 +121,19 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
 5. Importance Sampling
 
 초기 구현은 1~4번에 집중하는 것이 기능 복잡도 대비 체감 성능 개선 효과가 가장 크다.
+
+## PERF-3B 구현 상태
+
+- Batch 교차 입출력 계약과 CPU reference adapter를 완료했다.
+- Virtual-plane `max_depth <= 1` 실행 경로는 명시적 runtime `batch` 요청에서
+  primary/secondary wavefront batch를 사용한다. native backend 전까지 기본
+  `auto`는 scalar를 유지한다.
+- 같은 seed에서 Receiver grid, flux, contribution, reflection summary와
+  stored path가 scalar 실행과 exact 일치한다.
+- face/polygon emitter와 multi-bounce는 reflection RNG 순서를 보존하기 위해
+  아직 scalar 실행을 사용한다.
+- 현재 reference batch는 native 가속이 아니어서 100,000-ray synthetic의
+  최선 4,096 chunk 기준 scalar 대비 처리량이 약 28.9% 낮다.
+- 다음 성능 단계는 동일 계약 뒤에 native CPU kernel을 연결해 Python BVH
+  traversal과 ray-AABB 호출 병목을 제거하는 것이다.
+- GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.

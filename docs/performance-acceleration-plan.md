@@ -89,11 +89,16 @@
 - 이 단계 자체는 속도 향상이 아니라 이후 backend의 정합성 기준이다.
 
 #### PERF-3B-1: wavefront batch 연결
-- 상태: 예정
-- NumPy primary ray가 이미 준비되는 virtual-plane fast path부터 연결한다.
-- receiver 거리를 ray별 `max_t`로 전달하고 row 순서대로 후처리한다.
-- primary와 reflection batch를 분리하고 Stop/progress를 chunk 경계에서 처리한다.
-- face emitter와 일반 multi-bounce는 난수 소비 순서 보존 방안을 확정한 뒤 연결한다.
+- 상태: 완료 (2026-08-18)
+- NumPy primary ray가 이미 준비되는 virtual-plane fast path를 연결했다.
+- receiver 거리를 ray별 `max_t`로 전달하고 primary/secondary ray를 각각 batch query한다.
+- 결과 누적과 stored path는 원 primary row 순서로 commit해 scalar 결과를 exact 보존한다.
+- 기존 65,536 sampling batch와 기본 4,096 intersection chunk를 분리했다.
+- Stop/progress는 시작한 intersection chunk를 원자적으로 완료한 뒤 경계에서 처리한다.
+- face/polygon emitter와 `max_depth >= 2`는 기존 scalar 경로를 유지한다.
+- runtime dispatch/chunk 인자는 프로젝트 파일에 저장하지 않는다.
+- 현재 교차 구현은 여전히 Python row-loop CPU reference이며 `native_batch=false`다.
+- 따라서 기본 `auto`는 scalar를 유지하고 reference batch는 테스트/benchmark에서만 명시적으로 요청한다.
 
 #### PERF-3B-2: native CPU prototype
 - 상태: 예정
@@ -186,3 +191,27 @@ tessellation에서는 full STEP이 106,352 triangle이므로 직접적인 전후
 약 10~12% 느리다. 이는 예상된 reference 비용이며 성능 개선으로 계산하지
 않는다. 이후 native/GPU 구현은 같은 계약과 mismatch `0`을 유지하면서 이
 기준을 넘어야 한다.
+
+## PERF-3B-1 wavefront 측정 (2026-08-18)
+
+장면:
+- RT-2C Gaussian 단일 반사 synthetic scene
+- 100,000 primary ray, 200,000 CAD intersection query
+- stored path OFF, summary contribution
+- 3회 실행 중앙값
+
+결과:
+- scalar dispatch: `2.7691초`, `36,112 primary ray/s`
+- batch 256: `3.9080초`, `25,588 ray/s`, `0.709x`
+- batch 4,096: `3.8938초`, `25,682 ray/s`, `0.711x`
+- batch 65,536: `3.9964초`, `25,022 ray/s`, `0.693x`
+- receiver/surface/terminated/flux 전체 exact 일치
+- semantic mismatch: `0`
+
+현재 batch dispatch는 sampler의 ray별 generator/yield를 없애고 chunk 단위
+dispatch 경계를 만들었지만 Receiver/plan/commit과 `intersect_rays()` 내부는
+여전히 Python scalar 처리를 사용하므로 end-to-end로는
+최선의 4,096 chunk도 scalar 대비 처리량이 약 28.9% 낮고 실행시간은 약
+40.6% 길다. 이는 PERF-3B-2 native kernel이 제거해야 할 dispatch overhead
+기준이다. 현재 후보 중 기본 4,096 chunk가 가장 빨랐으며 Stop 응답성과
+향후 GPU launch 비용을 함께 고려해 유지한다.
