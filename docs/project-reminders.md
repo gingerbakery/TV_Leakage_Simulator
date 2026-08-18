@@ -88,7 +88,17 @@
 - PERF-3A 단일 반사 Fast Path는 완료되었으며, Fast summary 기준 백만 ray `23.19초`를 기록했다.
 - PERF-3B 진입 기준 측정과 batch 교차 계약/CPU reference adapter는 2026-08-18 완료했다.
 - virtual-plane fast path의 primary/secondary wavefront batch 연결은 2026-08-18 완료했다.
-- native batch가 준비되기 전까지 기본 `auto` dispatch는 기존 scalar 성능을 유지한다.
-- 다음 순서는 동일 계약 뒤의 native CPU kernel 비교와 CUDA GPU backend다.
+- native provider의 실제 ROI end-to-end 성능 gate를 통과하기 전까지 기본
+  `auto` dispatch/provider는 기존 scalar/Python CPU를 유지한다.
+- PERF-3B-2 optional Numba CPU provider prototype은 2026-08-18 완료했다.
+- 실제 CAD intersection micro는 독립 실행에서 약 `48.98~50.45x`였지만
+  단일 반사 synthetic end-to-end는 `0.961~1.009x`의 baseline 수준이어서
+  기본 `auto` 승격을 보류했다.
+- 기본 `auto`는 Numba를 import/probe하지 않으며 GPU·Numba가 없는 PC의 기존
+  Python CPU 실행을 유지한다.
+- 측정된 optional Numba/llvmlite module directory는 약 149.8 MiB이며 실제
+  배포 증가는 더 클 수 있으므로 lightweight package에는 아직 포함하지 않는다.
+- 다음 순서는 `max_depth=10` 실사용을 위한 multi-bounce wavefront/후처리
+  batch이며, 그 compact active-ray 경계를 CUDA GPU backend가 재사용한다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
 - GPU backend에서도 GPU 부재·초기화 실패·실행 실패 시 batch 전체 CPU BVH fallback을 유지한다.

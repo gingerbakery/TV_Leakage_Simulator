@@ -1,0 +1,4 @@
+# Optional PERF-3B-2 native CPU prototype. The lightweight package does not
+# include this dependency set unless an accelerated distribution is built.
+numba==0.66.0
+llvmlite==0.48.0

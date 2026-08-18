@@ -134,6 +134,19 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   아직 scalar 실행을 사용한다.
 - 현재 reference batch는 native 가속이 아니어서 100,000-ray synthetic의
   최선 4,096 chunk 기준 scalar 대비 처리량이 약 28.9% 낮다.
-- 다음 성능 단계는 동일 계약 뒤에 native CPU kernel을 연결해 Python BVH
-  traversal과 ray-AABB 호출 병목을 제거하는 것이다.
+- PERF-3B-2에서 optional strict-float64 Numba BVH provider를 연결했다. 실제
+  50,944-triangle CAD 교차 micro는 독립 실행에서 약 `48.98~50.45x`,
+  face/distance mismatch `0`을 기록했다.
+- 같은 provider를 사용한 100,000-ray 단일 반사 synthetic end-to-end는
+  독립 실행에서 `0.961~1.009x`의 baseline 수준으로 자동 선택 기준을 넘지
+  못했다. 따라서 기본 `auto`는 Numba를 probe하지 않고 기존 Python scalar
+  경로를 유지한다.
+- PERF-3B-1 parent와 기본 scalar를 교대 13회 측정한 runtime 차이는
+  `+0.42%`로 3% 회귀 gate 안의 측정 잡음 수준이며 결과는 exact 일치했다.
+- 따라서 이번 단계는 아직 같은 시간에 더 많은 통계 ray를 제공하지 않는다.
+  Native provider는 성능 토대이며 실제 error/해상도 개선은 다음 wavefront와
+  GPU end-to-end 가속이 완료된 뒤에 얻는다.
+- 다음 성능 단계는 `max_depth >= 2`를 포함하는 multi-bounce wavefront와
+  Receiver/reflection/grid 후처리 batch다. 이 경계가 CPU와 CUDA GPU 양쪽의
+  compact active-ray 입력이 된다.
 - GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.

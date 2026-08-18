@@ -24,6 +24,7 @@
 
 ### 3. CAD 교차 가속 경로
 - 예정 이름: `accelerated_cpu`
+- 현재 prototype: runtime-only `numba_cpu` opt-in
 - 적용 후보:
   - 자체 BVH
   - Intel Embree
@@ -53,6 +54,11 @@
 3. CPU 교차 가속 라이브러리가 있으면 `accelerated_cpu`를 선택한다.
 4. 그 외에는 `python_numpy_cpu`를 선택한다.
 5. 실행 실패 시 한 단계 낮은 백엔드로 안전하게 대체하고 결과에 실제 사용 백엔드를 기록한다.
+
+위 항목은 최종 목표 정책이다. PERF-3B-2 prototype 시점의 실제 `auto`는
+기존 Python CPU를 유지하며 optional provider를 probe하지 않는다. Native CPU
+또는 GPU는 정합성, 실제 ROI warm 성능, cold start와 배포 크기 gate를 모두
+통과한 뒤에만 자동 선택 대상으로 승격한다.
 
 ## 단계
 
@@ -97,13 +103,35 @@
 - Stop/progress는 시작한 intersection chunk를 원자적으로 완료한 뒤 경계에서 처리한다.
 - face/polygon emitter와 `max_depth >= 2`는 기존 scalar 경로를 유지한다.
 - runtime dispatch/chunk 인자는 프로젝트 파일에 저장하지 않는다.
-- 현재 교차 구현은 여전히 Python row-loop CPU reference이며 `native_batch=false`다.
-- 따라서 기본 `auto`는 scalar를 유지하고 reference batch는 테스트/benchmark에서만 명시적으로 요청한다.
+- PERF-3B-1 완료 시점의 교차 구현은 Python row-loop CPU reference이며
+  `native_batch=false`였다.
+- 따라서 기본 `auto`는 scalar를 유지하고 reference batch는
+  테스트/benchmark에서만 명시적으로 요청했다.
 
 #### PERF-3B-2: native CPU prototype
-- 상태: 예정
-- Python scalar-loop adapter를 native/vectorized implementation으로 교체해 계약 대비 효과를 측정한다.
-- 후보는 Numba/native extension/Embree이며 배포 크기와 사내 PC 호환성도 함께 비교한다.
+- 상태: prototype 완료 (2026-08-18), 기본 자동 선택은 보류
+- strict-float64 Numba BVH provider를 runtime-only opt-in으로 연결했다.
+- provider import/JIT, immutable scene pack, capability와 whole-query fallback을
+  기존 Python CPU 경로와 분리했다.
+- 실제 50,944-triangle CAD intersection micro는 독립 실행에서 약
+  `48.98~50.45x`였지만, 100,000-ray synthetic end-to-end는
+  `0.961~1.009x`의 baseline 수준이어서 자동 선택 gate `1.20x`를 통과하지
+  못했다.
+- 기본 `auto`는 Numba를 probe/import하지 않고 기존 scalar 경로를 유지한다.
+- 기존 PERF-3B-1과 같은 scalar workload를 교대 13회 측정한 결과 runtime
+  중앙값 차이는 `+0.42%`로 3% 회귀 gate 안의 측정 잡음 수준이었다.
+- 측정된 Numba/llvmlite module directory 약 149.8 MiB와 cold JIT 비용 때문에
+  lightweight package에는 아직 포함하지 않는다.
+
+#### PERF-3B-2A: multi-bounce wavefront와 후처리 batch
+- 상태: 다음 단계
+- 사용자가 체감하는 `max_depth=10`, stored paths, 고해상도 Receiver workflow를
+  primary/secondary 한 단계에 제한되지 않는 depth wavefront로 전환한다.
+- Receiver 판정, reflection planning, grid/contribution commit의 Python row-loop
+  비중을 줄인다.
+- 동일한 wavefront와 compact active-ray buffer를 CPU native와 CUDA가 함께
+  사용하게 해 GPU backend가 교차 커널만 빠르고 전체 실행은 느린 상태를
+  방지한다.
 
 #### PERF-3B-3: CUDA GPU backend
 - 상태: 예정
@@ -208,10 +236,68 @@ tessellation에서는 full STEP이 106,352 triangle이므로 직접적인 전후
 - receiver/surface/terminated/flux 전체 exact 일치
 - semantic mismatch: `0`
 
-현재 batch dispatch는 sampler의 ray별 generator/yield를 없애고 chunk 단위
+PERF-3B-1 측정 당시 batch dispatch는 sampler의 ray별 generator/yield를
+없애고 chunk 단위
 dispatch 경계를 만들었지만 Receiver/plan/commit과 `intersect_rays()` 내부는
-여전히 Python scalar 처리를 사용하므로 end-to-end로는
+`python_cpu` reference의 Python scalar 처리를 사용했으므로 end-to-end로는
 최선의 4,096 chunk도 scalar 대비 처리량이 약 28.9% 낮고 실행시간은 약
 40.6% 길다. 이는 PERF-3B-2 native kernel이 제거해야 할 dispatch overhead
 기준이다. 현재 후보 중 기본 4,096 chunk가 가장 빨랐으며 Stop 응답성과
 향후 GPU launch 비용을 함께 고려해 유지한다.
+
+## PERF-3B-2 native CPU 측정 (2026-08-18)
+
+환경:
+- Windows 10, Python 3.13.3
+- Numba 0.66.0, llvmlite 0.48.0
+- strict `float64`, `fastmath=false`, serial native kernel
+- 동일 seed와 frozen ray 배열, 3회 warm 실행 중앙값
+
+실제 CAD intersection micro:
+- CAD: `tv_leakage_roi_right_bottom_no_gap.stp`
+- triangle: 50,944, ray: 100,000
+- Python scalar BVH: `4.4195초`, `22,627 ray/s`
+- native scalar 호출: `1.0627초`, `94,101 ray/s`, `4.16x`
+- native batch 256: `0.1173초`, `852,575 ray/s`, `37.68x`
+- native batch 4,096: `0.0907초`, `1,102,531 ray/s`, `48.73x`
+- native batch 65,536: `0.0876초`, `1,141,467 ray/s`, `50.45x`
+- face mismatch: `0`, distance bit mismatch: `0`
+
+준비 비용:
+- 기존 BVH build: `0.9063초`
+- immutable native scene pack: `0.0706초`
+- 최초 JIT compile: `1.5052초`
+- 최초 native execute: `0.0858초`
+- 최초 native cold wall: `1.9288초`
+
+100,000-ray 단일 반사 synthetic end-to-end(모든 case에서 비교를 위해
+`intersection_backend="bvh"` 강제):
+- Python scalar: `3.1828초`, `31,419 primary ray/s`
+- native scalar: `4.6694초`, `0.682x`
+- Python reference batch: `4.4098초`, `0.722x`
+- native batch 4,096: `3.1531초`, `1.009x`
+- receiver/surface/flux semantic mismatch: `0`
+
+별도 `--no-write` 독립 재실행에서는 최대 CAD micro `48.98x`, native batch
+end-to-end `0.961x`였다. 즉 wall-time 변동을 포함해도 교차 kernel은 약
+49~50배였지만 전체 파이프라인은 baseline 수준이며 `1.20x` gate와는 충분히
+떨어져 있다.
+
+교차 커널의 큰 개선이 전체 실행에서 바로 나타나지 않은 이유는 이 synthetic
+장면의 교차가 매우 싸고 Receiver 계산, reflection plan, Python 객체 복원과
+row-order commit이 실행시간 대부분을 차지하기 때문이다. 더 중요한 실제
+사용 조건인 `max_depth >= 2`는 아직 PERF-3B-1 wavefront 대상이 아니므로 이번
+단계만으로 “백만 ray 수 분” 문제를 해결했다고 판단하지 않는다.
+
+따라서 native provider는 명시적 개발/benchmark opt-in으로 유지한다. 자동
+선택 승격 조건은 실제 ROI end-to-end mismatch `0`, warm 성능 최소 `1.20x`,
+기본 Python CPU 회귀 3% 이내, cold start와 배포 크기 수용이다. 현재 optional
+module directory 크기는 Numba 약 33.2 MiB, llvmlite 약 116.6 MiB로 합계 약
+149.8 MiB다. dist-info, 추가 native library와 archive overhead를 포함한 실제
+배포 증가는 이보다 조금 클 수 있다.
+
+별도 수동 기본 CPU 회귀 검증은 동일 프로세스에서 PERF-3B-1 parent와 현재 코드를
+순서 교대해 각각 13회 확인했다. 100,000-ray scalar 중앙값은 parent
+`2.7708초`, 현재 `2.7824초`였고 runtime 차이는 `+0.42%`, paired mean 차이는
+`+0.03%`였다. 결과 payload는 exact 일치했고 Numba import/probe/JIT/native
+scene pack은 한 번도 발생하지 않았다.

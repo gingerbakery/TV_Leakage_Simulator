@@ -24,6 +24,7 @@ from .geometry import (
     vec_sub,
     clamp01,
 )
+from .native_cpu_intersection import NativeCpuProviderError, NativeCpuUnavailable
 from .types import EmitterConfig, GapRule, MaterialProfile, ReceiverMetrics, RunConfig, ReceiverPatchConfig, Vec3, fresh_run_id
 from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayHit, RayTraceConfig, RayTraceContributionSummary, RayTraceResult, ReceiverGrid, ReceiverSpec
 from .types import SimulationOutput, RunResultSummary, random_unit_vector
@@ -149,11 +150,33 @@ class _SingleBouncePlan:
 
 @dataclass(slots=True)
 class _IntersectionDispatchStats:
+    intersection_backend: str = "auto"
+    requested_provider: str = "auto"
     scalar_query_count: int = 0
+    reference_scalar_query_count: int = 0
     batch_count: int = 0
     batch_max_size: int = 0
     batch_ray_count: int = 0
     elapsed_sec: float = 0.0
+    reference_batch_count: int = 0
+    reference_batch_sec: float = 0.0
+    native_attempt_count: int = 0
+    native_attempt_ray_count: int = 0
+    native_success_count: int = 0
+    native_success_ray_count: int = 0
+    native_scalar_success_count: int = 0
+    native_batch_success_count: int = 0
+    native_execute_sec: float = 0.0
+    native_scene_build_sec: float = 0.0
+    native_jit_compile_sec: float = 0.0
+    native_provider_version: Optional[str] = None
+    native_available: Optional[bool] = None
+    native_provider_disabled: bool = False
+    fallback_count: int = 0
+    fallback_ray_count: int = 0
+    fallback_phase: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    unavailable_reason: Optional[str] = None
 
     def intersect_scalar(
         self,
@@ -166,12 +189,56 @@ class _IntersectionDispatchStats:
         max_t: Optional[float] = None,
     ) -> Optional[HitRecord]:
         self.scalar_query_count += 1
+        if self.requested_provider == "numba_cpu" and not self.native_provider_disabled:
+            self.native_attempt_count += 1
+            self.native_attempt_ray_count += 1
+            try:
+                hit, execution = mesh.intersect_ray_native_cpu(
+                    origin,
+                    direction,
+                    ignore_face=ignore_face,
+                    min_t=min_t,
+                    max_t=max_t,
+                    backend=self.intersection_backend,
+                )
+            except NativeCpuUnavailable as exc:
+                self.native_available = False
+                self.native_provider_disabled = True
+                self.unavailable_reason = exc.reason_code
+            except NativeCpuProviderError as exc:
+                self.native_available = True
+                self.native_provider_disabled = True
+                self.fallback_count += 1
+                self.fallback_ray_count += 1
+                self.fallback_phase = exc.phase
+                self.fallback_reason = exc.reason_code
+            except Exception:
+                self.native_available = True
+                self.native_provider_disabled = True
+                self.fallback_count += 1
+                self.fallback_ray_count += 1
+                self.fallback_phase = "execute"
+                self.fallback_reason = "native_unexpected_failure"
+            else:
+                self.native_available = True
+                self.native_success_count += 1
+                self.native_success_ray_count += 1
+                self.native_scalar_success_count += 1
+                self.native_scene_build_sec = max(
+                    self.native_scene_build_sec,
+                    execution.scene_build_sec,
+                )
+                self.native_jit_compile_sec += execution.jit_compile_sec
+                self.native_provider_version = execution.numba_version
+                return hit
+        self.reference_scalar_query_count += 1
         return mesh.intersect_ray(
             origin,
             direction,
             ignore_face=ignore_face,
             min_t=min_t,
             max_t=max_t,
+            backend=self.intersection_backend,
         )
 
     def intersect_batch(
@@ -180,14 +247,64 @@ class _IntersectionDispatchStats:
         rays: IntersectionRayBatch,
     ) -> RayHitBatch:
         started = time.perf_counter()
-        try:
-            return mesh.intersect_rays(rays)
-        finally:
-            ray_count = len(rays)
-            self.batch_count += 1
-            self.batch_max_size = max(self.batch_max_size, ray_count)
-            self.batch_ray_count += ray_count
-            self.elapsed_sec += time.perf_counter() - started
+        ray_count = len(rays)
+        hits: Optional[RayHitBatch] = None
+        if (
+            self.requested_provider == "numba_cpu"
+            and not self.native_provider_disabled
+        ):
+            self.native_attempt_count += 1
+            self.native_attempt_ray_count += ray_count
+            try:
+                hits, execution = mesh.intersect_rays_native_cpu(
+                    rays,
+                    backend=self.intersection_backend,
+                )
+            except NativeCpuUnavailable as exc:
+                self.native_available = False
+                self.native_provider_disabled = True
+                self.unavailable_reason = exc.reason_code
+            except NativeCpuProviderError as exc:
+                self.native_available = True
+                self.native_provider_disabled = True
+                self.fallback_count += 1
+                self.fallback_ray_count += ray_count
+                self.fallback_phase = exc.phase
+                self.fallback_reason = exc.reason_code
+            except Exception:
+                self.native_available = True
+                self.native_provider_disabled = True
+                self.fallback_count += 1
+                self.fallback_ray_count += ray_count
+                self.fallback_phase = "execute"
+                self.fallback_reason = "native_unexpected_failure"
+            else:
+                self.native_available = True
+                self.native_success_count += 1
+                self.native_success_ray_count += ray_count
+                self.native_batch_success_count += 1
+                self.native_execute_sec += execution.execute_sec
+                self.native_scene_build_sec = max(
+                    self.native_scene_build_sec,
+                    execution.scene_build_sec,
+                )
+                self.native_jit_compile_sec += execution.jit_compile_sec
+                self.native_provider_version = execution.numba_version
+
+        if hits is None:
+            reference_started = time.perf_counter()
+            hits = mesh.intersect_rays(
+                rays,
+                backend=self.intersection_backend,
+            )
+            self.reference_batch_count += 1
+            self.reference_batch_sec += time.perf_counter() - reference_started
+
+        self.batch_count += 1
+        self.batch_max_size = max(self.batch_max_size, ray_count)
+        self.batch_ray_count += ray_count
+        self.elapsed_sec += time.perf_counter() - started
+        return hits
 
     def to_summary(self) -> Dict[str, object]:
         if self.batch_count and self.scalar_query_count:
@@ -196,6 +313,17 @@ class _IntersectionDispatchStats:
             dispatch = "batch"
         else:
             dispatch = "scalar"
+        reference_used = bool(
+            self.reference_scalar_query_count or self.reference_batch_count
+        )
+        if self.native_success_count and reference_used:
+            effective_provider = "mixed"
+        elif self.native_success_count:
+            effective_provider = "numba_cpu"
+        elif reference_used:
+            effective_provider = "python_cpu"
+        else:
+            effective_provider = "not_used"
         return {
             "intersection_dispatch": dispatch,
             "intersection_batch_count": self.batch_count,
@@ -204,7 +332,30 @@ class _IntersectionDispatchStats:
             "intersection_scalar_query_count": self.scalar_query_count,
             "intersection_sec": self.elapsed_sec,
             "intersection_timing_scope": "batch_dispatch_only",
-            "native_batch": False,
+            "requested_intersection_provider": self.requested_provider,
+            "intersection_provider": effective_provider,
+            "reference_scalar_query_count": self.reference_scalar_query_count,
+            "reference_batch_count": self.reference_batch_count,
+            "reference_batch_sec": self.reference_batch_sec,
+            "native_available": self.native_available,
+            "native_used": self.native_success_count > 0,
+            "native_batch": self.native_batch_success_count > 0,
+            "native_provider_version": self.native_provider_version,
+            "native_provider_disabled": self.native_provider_disabled,
+            "native_attempt_count": self.native_attempt_count,
+            "native_attempt_ray_count": self.native_attempt_ray_count,
+            "native_success_count": self.native_success_count,
+            "native_success_ray_count": self.native_success_ray_count,
+            "native_scalar_success_count": self.native_scalar_success_count,
+            "native_batch_success_count": self.native_batch_success_count,
+            "native_scene_build_sec": self.native_scene_build_sec,
+            "native_jit_compile_sec": self.native_jit_compile_sec,
+            "native_execute_sec": self.native_execute_sec,
+            "intersection_fallback_count": self.fallback_count,
+            "intersection_fallback_ray_count": self.fallback_ray_count,
+            "intersection_fallback_phase": self.fallback_phase,
+            "intersection_fallback_reason": self.fallback_reason,
+            "intersection_provider_unavailable_reason": self.unavailable_reason,
         }
 
 
@@ -339,9 +490,14 @@ def run_direct_ray_trace(
     *,
     intersection_dispatch: str = "auto",
     intersection_batch_size: int = _DEFAULT_INTERSECTION_BATCH_SIZE,
+    intersection_provider: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
+    if intersection_provider not in {"auto", "python_cpu", "numba_cpu"}:
+        raise ValueError(
+            "intersection_provider must be auto, python_cpu, or numba_cpu"
+        )
     if (
         isinstance(intersection_batch_size, bool)
         or not isinstance(intersection_batch_size, Integral)
@@ -351,8 +507,9 @@ def run_direct_ray_trace(
     intersection_batch_size = int(intersection_batch_size)
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
-    trace_input.mesh.set_intersection_backend(
-        trace_input.config.intersection_backend
+    intersection_stats = _IntersectionDispatchStats(
+        intersection_backend=trace_input.config.intersection_backend,
+        requested_provider=intersection_provider,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
     receiver_grids = {
@@ -367,7 +524,6 @@ def run_direct_ray_trace(
     receiver_hit_count = 0
     surface_hit_count = 0
     terminated_ray_count = 0
-    intersection_stats = _IntersectionDispatchStats()
     optical_resolver = OpticalPropertyResolver(
         trace_input.mesh,
         trace_input.optical_profiles,
@@ -822,13 +978,15 @@ def run_direct_ray_trace(
     metrics["_reflection_summary"] = reflection_summary
     metrics["_contribution_summary"] = contribution_summary.to_dict()
     runtime_sec = time.time() - start_time
-    acceleration_info = trace_input.mesh.acceleration_info()
+    acceleration_info = trace_input.mesh.acceleration_info(
+        backend=trace_input.config.intersection_backend
+    )
     metrics["_performance_summary"] = {
         "backend": "python_numpy_cpu",
         "execution_path": execution_path,
         "contribution_mode": trace_input.config.contribution_mode,
         "intersection_backend": acceleration_info["selected_backend"],
-        "configured_intersection_backend": acceleration_info["configured_backend"],
+        "configured_intersection_backend": trace_input.config.intersection_backend,
         "bvh_node_count": acceleration_info["bvh_node_count"],
         "bvh_leaf_count": acceleration_info["bvh_leaf_count"],
         "bvh_build_sec": (

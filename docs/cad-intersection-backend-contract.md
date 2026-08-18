@@ -70,17 +70,20 @@ hits = mesh.intersect_rays(rays, backend="bvh")
 동일해야 한다. Stop/progress를 나중에 연결할 때도 batch 경계는 결과
 정합성에 영향을 주지 않아야 한다.
 
-### 최초 CPU adapter
+### PERF-3B-0 최초 CPU adapter
 
-PERF-3B 계약 단계의 `intersect_rays()`는 각 row를 기존 scalar
-`intersect_ray()`에 위임한다. 따라서 현재는 `native_batch=false`이며
-속도 향상 구현이 아니다. 이 reference adapter로 scalar/batch 정합성을
-고정한 뒤 동일한 입출력 경계 뒤에 native CPU 또는 GPU 구현을 연결한다.
+PERF-3B-0에서 추가한 `intersect_rays()` reference 구현은 각 row를 기존
+scalar `intersect_ray()`에 위임한다. 이 경로를 사용할 때는
+`native_batch=false`이며 속도 향상 구현이 아니다. 이 adapter로
+scalar/batch 정합성을 고정한 뒤 PERF-3B-2에서 같은 입출력 경계 뒤에
+optional native CPU provider를 추가했다.
 
 backend와 dispatch는 구분한다.
 
 - backend: `auto`, `brute_force`, `bvh`처럼 교차를 계산하는 구현
 - dispatch: 한 ray를 호출하는 `scalar`, 여러 ray를 전달하는 `batch`
+- provider: 같은 backend/dispatch 계약을 실행하는 `python_cpu`, `numba_cpu`,
+  향후 `gpu_cuda` 구현
 
 이번 단계에서는 `RayTraceConfig.intersection_backend` 허용값과 자동 선택
 정책을 변경하지 않는다. `gpu_cuda`는 실제 adapter, capability probe,
@@ -94,10 +97,11 @@ whole-batch CPU fallback이 준비되는 단계에서만 공개한다.
 - `max_depth <= 1`
 - runtime `intersection_dispatch`가 명시적으로 `batch`
 
-현재 CPU adapter는 `native_batch=false`이고 scalar보다 느리므로 기본 `auto`는
-scalar dispatch를 유지한다. `batch`는 정합성 테스트와 benchmark를 위한
-명시적 opt-in이다. 향후 native backend가 준비되면 capability 확인 뒤에만
-`auto`가 batch를 선택하도록 확장한다.
+PERF-3B-1의 `python_cpu` reference adapter는 `native_batch=false`이고
+scalar보다 느렸으므로 기본 `auto`는 scalar dispatch를 유지했다. `batch`는
+정합성 테스트와 benchmark를 위한 명시적 opt-in이었다. PERF-3B-2에 native
+provider가 추가된 뒤에도 end-to-end 자동 선택 gate를 통과하지 못했으므로
+현재 `auto` 정책은 그대로다.
 
 기존 sampler는 기본 65,536-ray batch를 그대로 생성한다. 같은 seed에서도
 sampler batch 크기를 바꾸면 NumPy 난수 draw 배치가 달라지므로 이 값은
@@ -114,7 +118,7 @@ intersection chunk로 잘라 primary와 secondary query에 전달한다.
    primary row 순서대로 commit한다.
 
 Planning 단계는 정량 결과를 변경하지 않는다. 모든 누적과 path quota
-교체를 원 ray 순서로 commit하므로 현재 CPU reference에서는 scalar와
+교체를 원 ray 순서로 commit하므로 `python_cpu` reference에서는 scalar와
 동일 seed 결과가 exact하게 같아야 한다.
 
 face/polygon emitter와 `max_depth >= 2`는 reflection RNG의 depth-first 소비
@@ -129,6 +133,49 @@ Stop은 다음 sampling batch를 만들기 전과 intersection chunk 경계에�
 
 결과 JSON에는 NumPy 배열, scalar 또는 batch miss sentinel을 노출하지 않는다.
 `json.dumps(result.to_dict(), allow_nan=False)`가 성공해야 한다.
+
+### PERF-3B-2 optional native CPU provider
+
+`run_direct_ray_trace()`에 프로젝트에 저장하지 않는 runtime 전용
+`intersection_provider` 경계를 추가했다.
+
+- `auto`: 현재는 기존 `python_cpu`를 그대로 사용하며 Numba를 import하거나
+  capability probe하지 않는다.
+- `python_cpu`: 기존 Python scalar/BVH 또는 reference batch adapter를 사용한다.
+- `numba_cpu`: 명시적으로 요청한 benchmark/test에서만 strict-float64 Numba
+  BVH kernel을 사용한다.
+
+`numba_cpu`는 `bvh` backend에서만 동작한다. prepared triangle과 flat BVH를
+provider용 연속 NumPy 배열로 한 번 pack하고, 배열을 read-only로 만들어
+동일 geometry 실행에서 재사용한다. vertex/face가 추가되어 acceleration이
+무효화되면 native scene cache도 함께 폐기한다. Numba import와 JIT는 명시적
+provider를 실제 호출할 때까지 지연한다.
+
+커널은 다음 수치 계약을 그대로 유지한다.
+
+- `float64`, `fastmath=false`
+- `t > min_t`, `t <= max_t`
+- miss는 `(+inf, -1)`
+- `ignore_face`와 `trace_excluded` 적용
+- determinant epsilon `1e-8`, AABB parallel threshold `1e-12`
+- 동거리 허용 오차 `1e-10` 안에서 작은 원본 `face_index` 선택
+
+provider가 없다는 probe 결과는 정상적인 CPU 선택이며 failure로 기록하지
+않는다. 초기화, 실행 또는 결과 검증이 실패하면 시작한 logical query 전체를
+Python CPU로 다시 계산한다. 일부 native 결과와 fallback 결과를 한 query
+안에서 섞지 않는다. 첫 hard failure 뒤에는 해당 run의 circuit breaker를
+열어 남은 query가 provider를 반복 호출하지 않게 한다. logical batch/ray
+통계는 재시도를 중복 계산하지 않는다.
+
+결과 검증은 shape/dtype와 miss sentinel뿐 아니라 각 row의 `min_t`, `max_t`,
+`ignore_face`, `trace_excluded`도 다시 확인한다. 이 계약을 위반한 native
+출력은 `result_validation` 실패로 처리하고 같은 logical query 전체를 Python
+CPU로 재실행한다.
+
+이번 prototype은 lightweight desktop package에 Numba/llvmlite를 포함하지
+않으며 UI, `RayTraceConfig`, `.bitsam` schema를 변경하지 않는다. 실제 ROI
+end-to-end 성능과 배포 크기 기준을 통과하기 전까지 `auto`는 계속 기존
+Python CPU 경로를 유지한다.
 
 ## 백엔드 종류
 
@@ -190,6 +237,19 @@ Stop은 다음 sampling batch를 만들기 전과 intersection chunk 경계에�
 - `intersection_sec`: batch dispatch 호출만 합산한 시간
 - `intersection_timing_scope`: 현재 `batch_dispatch_only`
 - `native_batch`
+- `requested_intersection_provider`
+- `intersection_provider`: `python_cpu`, `numba_cpu`, `mixed`, `not_used`
+- `reference_scalar_query_count`, `reference_batch_count`,
+  `reference_batch_sec`
+- `native_available`, `native_used`, `native_provider_version`,
+  `native_provider_disabled`
+- `native_attempt_count`, `native_attempt_ray_count`
+- `native_success_count`, `native_success_ray_count`
+- `native_scalar_success_count`, `native_batch_success_count`
+- `native_scene_build_sec`, `native_jit_compile_sec`, `native_execute_sec`
+- `intersection_fallback_count`, `intersection_fallback_ray_count`,
+  `intersection_fallback_phase`, `intersection_fallback_reason`
+- `intersection_provider_unavailable_reason`
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.
