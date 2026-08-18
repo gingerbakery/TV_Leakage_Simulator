@@ -86,4 +86,7 @@
 - 다음 재검토 대상은 main 병합, 사내 PC 배포 검증과 코드 서명이다.
 - 다회 반사는 RT-3에서 구현됐으며 V1 허용 범위는 `max_depth=0~20`이다. 권장값은 빠른 검사 1회, 일반 비교 3회, 갇힌 고반사 구조 10회, 수렴 확인 20회다.
 - PERF-3A 단일 반사 Fast Path는 완료되었으며, Fast summary 기준 백만 ray `23.19초`를 기록했다.
-- PERF-3B batch/vectorization과 native/GPU backend는 실제 TV ROI CAD 성능 측정 후 재검토한다.
+- PERF-3B 진입 기준 측정과 batch 교차 계약/CPU reference adapter는 2026-08-18 완료했다.
+- 다음 순서는 virtual-plane fast path의 wavefront batch 연결, native CPU 비교, CUDA GPU backend다.
+- 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
+- GPU backend에서도 GPU 부재·초기화 실패·실행 실패 시 batch 전체 CPU BVH fallback을 유지한다.

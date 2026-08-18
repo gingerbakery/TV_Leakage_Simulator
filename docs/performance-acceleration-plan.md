@@ -74,12 +74,38 @@
   4. 실제 회사 TV ROI 도면의 end-to-end 측정 필요
   5. 필요 시 Embree/Open3D adapter를 후속 비교
 
-### PERF-3: 병렬화와 GPU 검토
-- 상태: 보류
-- 진입 조건:
-  - PERF-2 후에도 목표 시간에 미달
-  - 실제 사용 ray 수가 반복적으로 100만 이상
-  - 회사 PC의 GPU/드라이버 배포 조건 확인
+### PERF-3: batch 병렬화와 GPU
+
+#### PERF-3A: 단일 반사 fast path
+- 상태: 완료
+- 가상 평면 emitter의 NumPy sampling과 depth 0~1 전용 경로를 적용했다.
+
+#### PERF-3B-0: 기준 측정과 batch 계약
+- 상태: 완료 (2026-08-18)
+- 최신 main `86eaa4b`에서 scalar BVH micro/end-to-end 기준을 측정했다.
+- `RayBatch`, `RayHitBatch`, `TriangleMesh.intersect_rays()` 계약을 추가했다.
+- 최초 구현은 기존 scalar 교차를 row별 호출하는 CPU reference adapter다.
+- `RayTraceConfig`와 실제 ray tracing 실행 경로는 아직 변경하지 않았다.
+- 이 단계 자체는 속도 향상이 아니라 이후 backend의 정합성 기준이다.
+
+#### PERF-3B-1: wavefront batch 연결
+- 상태: 예정
+- NumPy primary ray가 이미 준비되는 virtual-plane fast path부터 연결한다.
+- receiver 거리를 ray별 `max_t`로 전달하고 row 순서대로 후처리한다.
+- primary와 reflection batch를 분리하고 Stop/progress를 chunk 경계에서 처리한다.
+- face emitter와 일반 multi-bounce는 난수 소비 순서 보존 방안을 확정한 뒤 연결한다.
+
+#### PERF-3B-2: native CPU prototype
+- 상태: 예정
+- Python scalar-loop adapter를 native/vectorized implementation으로 교체해 계약 대비 효과를 측정한다.
+- 후보는 Numba/native extension/Embree이며 배포 크기와 사내 PC 호환성도 함께 비교한다.
+
+#### PERF-3B-3: CUDA GPU backend
+- 상태: 예정
+- prepared mesh/device buffer를 여러 batch가 재사용하는 adapter를 구현한다.
+- 지원 여부, 정밀도, upload/kernel/download 시간을 각각 기록한다.
+- GPU가 없거나 초기화/실행에 실패하면 batch 전체를 CPU BVH로 다시 실행한다.
+- GPU primitive id와 최종 mesh face index의 remap을 보존한다.
 
 ## 정합성 기준
 - 동일 seed와 동일 백엔드에서는 결과가 재현되어야 한다.
@@ -111,3 +137,52 @@
   - flat BVH: 약 `19,099 ray/s`
   - 기존 BVH 대비 약 `3.84배`
 - reference mismatch: `0`
+
+위 PERF-2 TV 수치는 과거 116 triangle tessellation 기준이다. 최신 adaptive
+tessellation에서는 full STEP이 106,352 triangle이므로 직접적인 전후 비교
+기준으로 사용하지 않는다.
+
+## PERF-3B 진입 기준 측정 (2026-08-18)
+
+측정 환경:
+- CPU: Intel Core i7-10700, 8 core / 16 thread
+- Python: 3.13.3
+- 기준 commit: `86eaa4b`
+- seed: `20260717`
+
+교차 micro baseline:
+- CAD: `tv_leakage_roi_right_bottom_no_gap.stp`
+- triangle: 50,944
+- warm scalar flat BVH, 50,000 ray, 5회 중앙값
+- 실행 시간: `2.3079초`
+- 처리량: `21,664.6 ray/s`
+- cold import: `0.9828초`
+- BVH build: `0.9147초`
+- brute-force reference mismatch: `0`
+
+실제 저장 프로젝트 smoke baseline:
+- 활성 ROI triangle: 45,167 / 50,944
+- datum-plane Lambertian emitter, depth 10, 10,000 ray, 3회 중앙값
+- 실행 시간: `2.5735초`
+- 처리량: `3,885.8 primary ray/s`
+- receiver hit: 1,276
+- surface hit: 22,291
+- 세 실행의 결과가 동일했다.
+
+프로파일링에서는 Python BVH traversal, 특히 ray-AABB 판정이 교차 시간의
+대부분을 차지했다. 따라서 batch 경계를 고정한 뒤 native/GPU traversal로
+교체하는 개발 순서가 타당하다.
+
+계약 구현 후 동일 조건 재현 benchmark:
+- scalar BVH: `22,864.8 ray/s`
+- CPU reference batch, size 256: `20,079.1 ray/s` (`0.878x`)
+- CPU reference batch, size 4,096: `20,451.3 ray/s` (`0.894x`)
+- CPU reference batch, size 50,000: `20,271.0 ray/s` (`0.887x`)
+- scalar/batch face mismatch: `0`
+- scalar/batch distance mismatch: `0`
+- brute-force/BVH mismatch 50-ray sample: `0`
+
+현재 adapter는 Python row loop와 배열 변환/결과 할당 비용 때문에 scalar보다
+약 10~12% 느리다. 이는 예상된 reference 비용이며 성능 개선으로 계산하지
+않는다. 이후 native/GPU 구현은 같은 계약과 mismatch `0`을 유지하면서 이
+기준을 넘어야 한다.

@@ -32,6 +32,60 @@
 
 교차하지 않으면 `None`을 반환한다.
 
+## PERF-3B batch 호출 계약
+
+Batch는 새로운 backend 종류가 아니라 여러 ray를 전달하는 호출 방식이다.
+프로젝트 파일에는 저장하지 않으며 runtime 내부에서만 사용한다. 기존
+`intersect_ray()`는 그대로 유지하고 다음 API를 추가한다.
+
+```python
+hits = mesh.intersect_rays(rays, backend="bvh")
+```
+
+### `RayBatch` 입력
+
+- `origins`: `float64`, shape `(N, 3)`, CAD 좌표계, 단위 `mm`
+- `directions`: `float64`, shape `(N, 3)`, 정규화된 방향 벡터
+- `min_t`: `float64`, shape `(N,)`; scalar 입력은 모든 row로 확장
+- `max_t`: `float64`, shape `(N,)`; `None`은 모든 row에서 `+inf`
+- `ignore_faces`: `int64`, shape `(N,)`; `-1`은 제외할 face가 없다는 뜻
+
+각 row는 독립적인 `min_t`, `max_t`, `ignore_face`를 가진다. `min_t`에는
+최소 `1e-8`을 적용한다. 유효 hit 경계는 `t > min_t`, `t <= max_t`이다.
+따라서 `max_t <= min_t`인 row는 즉시 miss가 된다.
+
+### `RayHitBatch` 출력
+
+- `t`: `float64`, shape `(N,)`
+- `face_indices`: `int64`, shape `(N,)`
+- miss sentinel: `t=+inf`, `face_index=-1`
+
+출력 row는 입력 row와 일대일로 대응하며 순서를 바꾸지 않는다. GPU에서
+불필요한 전송과 Python 객체 생성을 줄이기 위해 point, normal,
+`TriangleFace`는 batch 결과에 넣지 않는다. 필요한 hit만
+`RayHitBatch.materialize(mesh, rays, index)`로 기존 `HitRecord` 형태로
+복원한다.
+
+전체 batch 한 번과 동일한 row를 여러 chunk로 나누어 실행한 결과는
+동일해야 한다. Stop/progress를 나중에 연결할 때도 batch 경계는 결과
+정합성에 영향을 주지 않아야 한다.
+
+### 최초 CPU adapter
+
+PERF-3B 계약 단계의 `intersect_rays()`는 각 row를 기존 scalar
+`intersect_ray()`에 위임한다. 따라서 현재는 `native_batch=false`이며
+속도 향상 구현이 아니다. 이 reference adapter로 scalar/batch 정합성을
+고정한 뒤 동일한 입출력 경계 뒤에 native CPU 또는 GPU 구현을 연결한다.
+
+backend와 dispatch는 구분한다.
+
+- backend: `auto`, `brute_force`, `bvh`처럼 교차를 계산하는 구현
+- dispatch: 한 ray를 호출하는 `scalar`, 여러 ray를 전달하는 `batch`
+
+이번 단계에서는 `RayTraceConfig.intersection_backend` 허용값과 자동 선택
+정책을 변경하지 않는다. `gpu_cuda`는 실제 adapter, capability probe,
+whole-batch CPU fallback이 준비되는 단계에서만 공개한다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -86,6 +140,9 @@
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.
+- batch adapter는 동일 `RayBatch`/`RayHitBatch` 계약과 row 순서를 만족해야 한다.
 - Embree/Open3D/GPU 결과를 `brute_force`와 자동 비교하는 테스트가 필요하다.
 - 외부 라이브러리가 없거나 초기화에 실패하면 `bvh`로 대체한다.
+- GPU 실행 도중 실패하면 일부 GPU 결과와 CPU 결과를 섞지 않고 batch 전체를 CPU로 다시 실행한다.
+- GPU primitive id는 최종 `mesh.faces` index로 remap하고 `ignore_faces`도 traversal 중 적용한다.
 - GPU가 없는 PC에서도 프로젝트 실행과 CPU ray tracing이 가능해야 한다.

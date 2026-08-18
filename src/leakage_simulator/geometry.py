@@ -5,6 +5,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import math
 import time
 
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
 from .types import Vec3, clamp
 
 
@@ -92,6 +95,185 @@ class HitRecord:
     normal: Vec3
     face_index: int
     triangle: TriangleFace
+
+
+def _ray_vector_array(value: ArrayLike, field_name: str) -> NDArray[np.float64]:
+    array = np.asarray(value, dtype=np.float64)
+    if array.size == 0 and array.shape == (0,):
+        array = array.reshape((0, 3))
+    if array.ndim != 2 or array.shape[1] != 3:
+        raise ValueError(f"{field_name} must have shape (N, 3)")
+    array = np.ascontiguousarray(array, dtype=np.float64)
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{field_name} must contain only finite values")
+    return array
+
+
+def _per_ray_float_array(
+    value: ArrayLike | float | None,
+    ray_count: int,
+    field_name: str,
+    default: float,
+) -> NDArray[np.float64]:
+    if value is None:
+        return np.full(ray_count, default, dtype=np.float64)
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim == 0:
+        array = np.full(ray_count, float(array), dtype=np.float64)
+    elif array.shape == (ray_count,):
+        array = np.ascontiguousarray(array, dtype=np.float64)
+    else:
+        raise ValueError(f"{field_name} must be a scalar or have shape (N,)")
+    if np.any(np.isnan(array)):
+        raise ValueError(f"{field_name} must not contain NaN")
+    return array
+
+
+def _per_ray_face_array(
+    value: ArrayLike | int | None,
+    ray_count: int,
+    field_name: str,
+) -> NDArray[np.int64]:
+    if value is None:
+        return np.full(ray_count, -1, dtype=np.int64)
+    raw = np.asarray(value)
+    if raw.ndim == 0:
+        raw = np.full(ray_count, raw)
+    elif raw.shape != (ray_count,):
+        raise ValueError(f"{field_name} must be a scalar or have shape (N,)")
+    if not np.issubdtype(raw.dtype, np.integer):
+        numeric = np.asarray(raw, dtype=np.float64)
+        if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
+            raise ValueError(f"{field_name} must contain integers")
+    array = np.ascontiguousarray(raw, dtype=np.int64)
+    if np.any(array < -1):
+        raise ValueError(f"{field_name} values must be -1 or a face index")
+    return array
+
+
+@dataclass(slots=True)
+class RayBatch:
+    """GPU-friendly, row-preserving batch of normalized CAD-space rays.
+
+    Per-ray distance limits and ignored faces are always materialized as
+    contiguous arrays. ``-1`` means that no face is ignored.
+    """
+
+    origins: NDArray[np.float64] | ArrayLike
+    directions: NDArray[np.float64] | ArrayLike
+    min_t: NDArray[np.float64] | ArrayLike | float = 1e-8
+    max_t: NDArray[np.float64] | ArrayLike | float | None = None
+    ignore_faces: NDArray[np.int64] | ArrayLike | int | None = None
+
+    def __post_init__(self) -> None:
+        self.origins = _ray_vector_array(self.origins, "origins")
+        self.directions = _ray_vector_array(self.directions, "directions")
+        ray_count = len(self.origins)
+        if len(self.directions) != ray_count:
+            raise ValueError("origins and directions must contain the same number of rows")
+        if ray_count:
+            direction_lengths_squared = np.einsum(
+                "ij,ij->i",
+                self.directions,
+                self.directions,
+            )
+            if not np.allclose(
+                direction_lengths_squared,
+                1.0,
+                rtol=1e-7,
+                atol=1e-9,
+            ):
+                raise ValueError("directions must contain normalized vectors")
+        self.min_t = np.maximum(
+            _per_ray_float_array(self.min_t, ray_count, "min_t", 1e-8),
+            1e-8,
+        )
+        self.max_t = _per_ray_float_array(
+            self.max_t,
+            ray_count,
+            "max_t",
+            float("inf"),
+        )
+        self.ignore_faces = _per_ray_face_array(
+            self.ignore_faces,
+            ray_count,
+            "ignore_faces",
+        )
+
+    def __len__(self) -> int:
+        return int(self.origins.shape[0])
+
+
+@dataclass(slots=True)
+class RayHitBatch:
+    """Compact closest-hit result aligned one-to-one with a :class:`RayBatch`.
+
+    Misses use the unambiguous pair ``(t=+inf, face_index=-1)``. Hit points,
+    normals and TriangleFace objects are materialized only when requested.
+    """
+
+    t: NDArray[np.float64] | ArrayLike
+    face_indices: NDArray[np.int64] | ArrayLike
+
+    def __post_init__(self) -> None:
+        self.t = np.ascontiguousarray(np.asarray(self.t, dtype=np.float64))
+        self.face_indices = np.ascontiguousarray(
+            np.asarray(self.face_indices, dtype=np.int64)
+        )
+        if self.t.ndim != 1 or self.face_indices.ndim != 1:
+            raise ValueError("batch hit arrays must have shape (N,)")
+        if self.t.shape != self.face_indices.shape:
+            raise ValueError("t and face_indices must contain the same number of rows")
+        if np.any(np.isnan(self.t)):
+            raise ValueError("t must not contain NaN")
+        if np.any(self.face_indices < -1):
+            raise ValueError("face_indices values must be -1 or a face index")
+        miss_mask = self.face_indices == -1
+        if np.any(miss_mask & ~np.isposinf(self.t)):
+            raise ValueError("miss rows must use t=+inf and face_index=-1")
+        hit_mask = ~miss_mask
+        if np.any(hit_mask & (~np.isfinite(self.t) | (self.t <= 0.0))):
+            raise ValueError("hit rows must contain a finite positive t")
+
+    def __len__(self) -> int:
+        return int(self.t.shape[0])
+
+    @classmethod
+    def empty(cls) -> "RayHitBatch":
+        return cls(
+            t=np.empty(0, dtype=np.float64),
+            face_indices=np.empty(0, dtype=np.int64),
+        )
+
+    @property
+    def hit_mask(self) -> NDArray[np.bool_]:
+        return self.face_indices >= 0
+
+    def materialize(
+        self,
+        mesh: "TriangleMesh",
+        rays: RayBatch,
+        index: int,
+    ) -> Optional[HitRecord]:
+        """Build the legacy scalar hit object for one row when it is needed."""
+        if len(rays) != len(self):
+            raise ValueError("ray and hit batches must contain the same number of rows")
+        if index < 0 or index >= len(self):
+            raise IndexError("batch hit index is out of range")
+        face_index = int(self.face_indices[index])
+        if face_index < 0:
+            return None
+        if face_index >= len(mesh.faces):
+            raise ValueError("batch hit face index is outside the mesh")
+        mesh._ensure_prepared_triangles()
+        origin = tuple(float(value) for value in rays.origins[index])
+        direction = tuple(float(value) for value in rays.directions[index])
+        return mesh._make_hit_record(
+            face_index,
+            float(self.t[index]),
+            origin,  # type: ignore[arg-type]
+            direction,  # type: ignore[arg-type]
+        )
 
 
 @dataclass(slots=True)
@@ -214,6 +396,47 @@ class TriangleMesh:
             minimum_t,
             maximum_t,
         )
+
+    def intersect_rays(
+        self,
+        rays: RayBatch,
+        backend: Optional[str] = None,
+    ) -> RayHitBatch:
+        """Intersect a row-preserving ray batch using the scalar CPU reference.
+
+        This adapter intentionally delegates every non-empty row to
+        :meth:`intersect_ray`. It freezes batch I/O and closest-hit semantics
+        before a native CPU or GPU implementation is introduced.
+        """
+        if not isinstance(rays, RayBatch):
+            raise TypeError("rays must be a RayBatch")
+        selected_backend = self._resolve_intersection_backend(backend)
+        if len(rays) == 0:
+            return RayHitBatch.empty()
+
+        distances = np.full(len(rays), float("inf"), dtype=np.float64)
+        face_indices = np.full(len(rays), -1, dtype=np.int64)
+        for index in range(len(rays)):
+            minimum_t = float(rays.min_t[index])
+            maximum_t = float(rays.max_t[index])
+            if maximum_t <= minimum_t:
+                continue
+            origin = tuple(float(value) for value in rays.origins[index])
+            direction = tuple(float(value) for value in rays.directions[index])
+            ignored_face = int(rays.ignore_faces[index])
+            hit = self.intersect_ray(
+                origin,  # type: ignore[arg-type]
+                direction,  # type: ignore[arg-type]
+                ignore_face=ignored_face if ignored_face >= 0 else None,
+                min_t=minimum_t,
+                max_t=maximum_t,
+                backend=selected_backend,
+            )
+            if hit is None:
+                continue
+            distances[index] = hit.t
+            face_indices[index] = hit.face_index
+        return RayHitBatch(t=distances, face_indices=face_indices)
 
     def set_intersection_backend(self, backend: str) -> None:
         if backend not in {"auto", "brute_force", "bvh"}:
