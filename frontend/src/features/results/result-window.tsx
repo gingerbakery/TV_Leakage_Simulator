@@ -109,7 +109,7 @@ interface AnalysisReportSaveFileHandle {
 type AnalysisReportSaveFilePickerWindow = Window & {
   showSaveFilePicker?: (options: {
     suggestedName: string
-    types: Array<{
+    types?: Array<{
       description: string
       accept: Record<string, string[]>
     }>
@@ -1710,14 +1710,6 @@ export function RayTraceResultWindow({
       try {
         const handle = await picker({
           suggestedName: fileName,
-          types: [
-            {
-              description: 'BITSAM analysis report',
-              accept: {
-                'application/json': ['.bitsam-report'],
-              },
-            },
-          ],
         })
         const writable = await handle.createWritable()
         await writable.write(blob)

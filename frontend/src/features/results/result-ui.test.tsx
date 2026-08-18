@@ -248,11 +248,6 @@ describe('Step 11 result UI', () => {
         suggestedName: expect.stringMatching(
           /^ray-analysis-\d{4}-\d{2}-\d{2}\.bitsam-report$/,
         ),
-        types: [
-          expect.objectContaining({
-            accept: { 'application/json': ['.bitsam-report'] },
-          }),
-        ],
       }),
     )
     expect(write).toHaveBeenCalledWith(expect.any(Blob))
