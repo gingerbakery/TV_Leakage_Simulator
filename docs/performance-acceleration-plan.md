@@ -21,6 +21,8 @@
   - receiver 좌표계와 판정 상수 사전 계산
   - face별 optical property 사전 캐시
   - 반사·산란 벡터 계산의 Python 호출과 중복 정규화 감소
+  - batch surface point/normal materialization
+  - Receiver 우선 stored-path quota의 O(1) 판정
 
 ### 3. CAD 교차 가속 경로
 - 예정 이름: `accelerated_cpu`
@@ -140,12 +142,41 @@
 - 실제 45,167-triangle, depth 10, stored-path 500 workload에서 권장 1,024
   chunk는 중앙값 `7.0649초`, p95 `7.3970초`로 Python scalar 대비 `3.71x`,
   native scalar 대비 `1.59~1.62x`다. 4,096보다 처리량이 `3.48%` 높아 명시적
-  batch runtime 기본 chunk를 1,024로 조정했다.
+  batch runtime 기본 chunk를 1,024로 조정했다. PERF-3B-2B stable-source 실제
+  ROI 교대 재측정에서도 1,024/4,096 p50 차이는 약 `0.51%`로 동률 범위였고
+  1,024가 근소하게 빨라 현재 기본을 1,024로 유지한다.
 - 세 seed stochastic 비교의 hit/flux 평균 차이는 약 `-0.9%`였고 95% CI가
   0을 포함했지만 표본이 작다. Bias 부재 확정과 자동 선택 승격은 더 많은 seed
   또는 1M 통계 gate 뒤로 보류한다.
 - 교차 외 plan/ordered commit이 다음 병목이며, PERF-3B-2A만으로 백만 ray
   목표를 달성했다고 판단하지 않는다.
+
+#### PERF-3B-2B: surface/path compaction과 compiled reflection planner
+
+- 상태: 구현 및 canonical benchmark 완료 (2026-08-19), 기본 자동 선택은 보류
+- `RayHitBatch`가 point/normal을 row-aligned NumPy batch로 materialize해 surface
+  hit마다 scalar `HitRecord`와 tuple을 만들지 않게 했다.
+- Stored-path quota는 오래된 dead-end index queue로 기존 Receiver 우선 교체
+  순서를 O(1)에 보존한다.
+- Runtime-only `wavefront_planner`에 `auto`, `python_cpu`, `numba_cpu`를 추가했다.
+  기본 `auto`는 Python planner이며 Numba를 import/probe하지 않는다.
+- Native planner는 strict-float64 `deterministic_reflection_v1` 계약으로
+  `threshold`의 `none`/`specular` row만 처리한다. Stochastic/Russian-roulette
+  row는 기존 `per_primary_seeded_v1` Python sidecar를 사용한다.
+- `input_prepare`, `initialize`, `execute`, `result_validation` hard failure는 같은
+  depth의 deterministic candidate 전체를 Python으로 replay하고 circuit breaker를
+  연다. Fallback row count는 stochastic sidecar가 아니라 실패한 native candidate
+  수다.
+- 실제 mixed ROI final canonical `5.2553초`는 planner `auto`라 native attempt가
+  `0`이다. 복원
+  profile도 전부 mixed라 explicit native에서도 Python sidecar 대상이다.
+  `5.2553초` 개선은 compiled planner에 귀속하지 않으며, 개선 원인은 surface
+  geometry batch와 O(1) path quota다.
+- Deterministic 10,000-ray synthetic 네 scenario에서는 Python planner 대비
+  Numba planner가 `1.078~1.241x`, semantic mismatch `0`을 기록했다.
+- Surface/path/planner fallback을 포함한 전체 Python suite `160`개가 통과했다.
+- 실제 ROI의 1,000,000-ray 선형 환산은 약 `52.6초`라 최종 목표 달성을
+  주장하지 않는다. 다음은 SoA state, event tape와 compiled ordered reducer다.
 
 #### PERF-3B-3: CUDA GPU backend
 - 상태: 예정
@@ -363,3 +394,69 @@ chunk/provider exact를 확인했다. Legacy depth-first scalar와 seed 3개씩 
 Wavefront timing을 보면 교차 커널 외 reflection planning과 ordered commit이
 다음 최적화 대상이다. 이 구간의 배열화/compiled commit을 먼저 진행한 뒤 같은
 active-ray buffer를 CUDA backend에 재사용한다.
+
+## PERF-3B-2B compiled wavefront 측정 (2026-08-19)
+
+실제 ROI canonical은 2A 역사적 표와 별개의 동일 조건 parent 재측정으로
+비교했다.
+
+조건:
+
+- 원본/활성 ROI triangle: `50,944 / 45,167`
+- primary ray `100,000`, `max_depth=10`, seed `42`
+- contribution `summary`, stored path quota `500`
+- runtime 기본 chunk `1,024` (batch-size 인자 생략)
+- explicit Numba intersection, 기본 `auto` reflection planner
+- warm wall-time 중앙값
+
+| 비교 경로 | Wall 중앙값 | PERF-3B-2B speedup |
+| --- | ---: | ---: |
+| Legacy Python scalar | `26.193초` | `4.984x` |
+| 역사적 Numba intersection scalar | 약 `11.42초` | 약 `2.173x` |
+| PERF-3B-2A parent 동일 1,024 조건 | `7.0649초` | `1.344x` |
+| PERF-3B-2B final default 1,024 | `5.2553초` | `1.000x` |
+
+최종 2B canonical과 2A parent 모두 1,024 chunk이므로 `7.0649초`를 direct
+speedup 분모로 사용한다. Final-source 5회 sweep의 1,024 p50 `5.1601초`와
+final-default 3회 p50 `5.2553초`의 차이 `1.84%`는 실행 변동 범위다.
+
+PERF-3B-2B 결과는 Receiver hit `12,652`, surface hit `225,482`, terminated
+`87,348`, Receiver flux `0.040176617410112817`, stored path `500`, intersection
+logical query row `309,119`이다. 현재 2B wavefront의 반복 실행과
+`auto`/`python_cpu` planner 사이 ordered payload는 exact 일치했다. Path는
+`931`개를 materialize하고 quota에 들어갈 수 없는 `99,069`개를 생략했다.
+Mixed stochastic 장면의 legacy/Numba scalar 값은 timing reference이며 기존
+statistical parity 계약상 이 exact 비교 범위에 포함하지 않는다.
+
+Canonical planner가 `auto`라 native planner attempt는 `0`이다. 실제 모델의
+모든 surface도 mixed scatter라 explicit native에서 Python sidecar 대상이다.
+따라서 parent 대비 `1.344x`는 batch surface geometry materialization과 O(1)
+stored-path quota의 효과이며 compiled planner의 실제 ROI speedup으로 해석하지
+않는다.
+
+Stable-source paths-on 교대 재측정에서 p50은 1,024 `5.1601초`, 4,096
+`5.1863초`로 차이가 약 `0.51%`뿐이었다. 처리량은 동률로 판단하고,
+별도 synthetic depth-10 `tracemalloc`의 Python allocation peak는 약
+`9.65 MiB`에서 `37.64 MiB`로 늘고 Stop 원자 단위가 4배 커진다. 이 값은 실제
+ROI process RSS가 아니라 scratch scaling 참고값이다. 따라서 runtime 기본은
+memory와 Stop 응답성이 유리한 1,024를 유지한다.
+
+Deterministic specular depth-10 synthetic는 10,000 primary ray, chunk 4,096,
+warm p50로 Python/Numba planner를 비교했다.
+
+| Scenario | Python planner | Numba planner | Speedup |
+| --- | ---: | ---: | ---: |
+| Summary, paths off | `1.304850초` | `1.113563초` | `1.172x` |
+| Summary, paths on | `1.476219초` | `1.189662초` | `1.241x` |
+| Detailed, paths off | `1.316303초` | `1.205550초` | `1.092x` |
+| Detailed, paths on | `1.390839초` | `1.290724초` | `1.078x` |
+
+네 scenario 모두 semantic mismatch `0`이다. 지원 범위에서는 compiled planner가
+이득이지만 실제 mixed ROI, optional Numba/JIT와 배포 크기 gate를 함께 만족하지
+않았으므로 기본 `auto`는 Python planner/scalar CPU를 유지한다.
+
+현재 100,000-ray `5.2553초`의 1,000,000-ray 단순 선형 환산은 약
+`52.6초`다. 목표 달성을 주장하지 않으며 다음 단계는 Python ray-state object를
+SoA로 옮기고 compact event tape와 exact ordered reducer를 compile하는 것이다.
+그 다음 `counter_rng_v2`로 stochastic planner 범위를 넓힌 뒤 같은 buffer와
+whole-depth fallback 계약을 CUDA에 재사용한다.

@@ -206,6 +206,19 @@ class RayBatch:
 
 
 @dataclass(slots=True)
+class SurfaceGeometryBatch:
+    """Materialized hit points and oriented normals aligned to ray rows.
+
+    Miss rows contain zeros. The owning :class:`RayHitBatch` remains the
+    source of truth for the hit mask, distance and face index.
+    """
+
+    points: NDArray[np.float64]
+    normals: NDArray[np.float64]
+    hit_count: int
+
+
+@dataclass(slots=True)
 class RayHitBatch:
     """Compact closest-hit result aligned one-to-one with a :class:`RayBatch`.
 
@@ -276,6 +289,57 @@ class RayHitBatch:
             direction,  # type: ignore[arg-type]
         )
 
+    def materialize_surface_geometry(
+        self,
+        mesh: "TriangleMesh",
+        rays: RayBatch,
+    ) -> SurfaceGeometryBatch:
+        """Materialize all hit points/normals with one row-preserving batch.
+
+        This is the compact wavefront boundary used before reflection
+        planning. It avoids rebuilding the same validation, tuple and
+        ``HitRecord`` objects once per ray while preserving the scalar point
+        formula and the rule that the normal opposes the incoming direction.
+        """
+        if len(rays) != len(self):
+            raise ValueError("ray and hit batches must contain the same number of rows")
+        ray_count = len(self)
+        points = np.zeros((ray_count, 3), dtype=np.float64)
+        normals = np.zeros((ray_count, 3), dtype=np.float64)
+        hit_rows = np.flatnonzero(self.face_indices >= 0)
+        if not len(hit_rows):
+            return SurfaceGeometryBatch(points=points, normals=normals, hit_count=0)
+        hit_faces = self.face_indices[hit_rows]
+        if np.any(hit_faces >= len(mesh.faces)):
+            raise ValueError("batch hit face index is outside the mesh")
+        distances = self.t[hit_rows]
+        points[hit_rows, 0] = (
+            rays.origins[hit_rows, 0]
+            + rays.directions[hit_rows, 0] * distances
+        )
+        points[hit_rows, 1] = (
+            rays.origins[hit_rows, 1]
+            + rays.directions[hit_rows, 1] * distances
+        )
+        points[hit_rows, 2] = (
+            rays.origins[hit_rows, 2]
+            + rays.directions[hit_rows, 2] * distances
+        )
+        prepared_normals = mesh.prepared_triangle_normals()
+        normals[hit_rows] = prepared_normals[hit_faces]
+        orientation = (
+            normals[hit_rows, 0] * rays.directions[hit_rows, 0]
+            + normals[hit_rows, 1] * rays.directions[hit_rows, 1]
+            + normals[hit_rows, 2] * rays.directions[hit_rows, 2]
+        )
+        flip_rows = hit_rows[orientation > 0.0]
+        normals[flip_rows] = -normals[flip_rows]
+        return SurfaceGeometryBatch(
+            points=points,
+            normals=normals,
+            hit_count=int(len(hit_rows)),
+        )
+
 
 @dataclass(slots=True)
 class _PreparedTriangle:
@@ -310,6 +374,7 @@ class TriangleMesh:
         self.face_metadata: Dict[int, Dict] = {}
         self.intersection_backend = "auto"
         self._prepared_triangles: Optional[List[_PreparedTriangle]] = None
+        self._prepared_triangle_normals: Optional[NDArray[np.float64]] = None
         self._bvh_nodes: Optional[List[_FlatBvhNode]] = None
         self._bvh_face_indices: Optional[List[int]] = None
         self._bvh_build_sec = 0.0
@@ -358,6 +423,20 @@ class TriangleMesh:
     def normal(self, index: int) -> Vec3:
         a, b, c = self.face_vertices(index)
         return face_normal(a, b, c)
+
+    def prepared_triangle_normals(self) -> NDArray[np.float64]:
+        """Return immutable face-aligned normals for batch hit planning."""
+        self._ensure_prepared_triangles()
+        if self._prepared_triangle_normals is None:
+            values = np.ascontiguousarray(
+                [triangle.normal for triangle in (self._prepared_triangles or [])],
+                dtype=np.float64,
+            )
+            if not len(values):
+                values = np.empty((0, 3), dtype=np.float64)
+            values.setflags(write=False)
+            self._prepared_triangle_normals = values
+        return self._prepared_triangle_normals
 
     def material_id(self, index: int) -> str:
         return self.face_material.get(index, "")
@@ -1094,6 +1173,7 @@ class TriangleMesh:
 
     def _invalidate_acceleration(self) -> None:
         self._prepared_triangles = None
+        self._prepared_triangle_normals = None
         self._bvh_nodes = None
         self._bvh_face_indices = None
         self._bvh_build_sec = 0.0

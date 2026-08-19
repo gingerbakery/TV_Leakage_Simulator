@@ -113,11 +113,46 @@
   `8.8017초`에서 `7.4763초`로 줄였다. materialized `931`, skipped `99,069`다.
 - 세 seed stochastic legacy 비교는 hit/flux 평균 약 `-0.9%`이고 95% CI가
   0을 포함했지만 표본이 작다. `auto` 승격 전 더 큰 통계 gate를 수행한다.
-- PERF-3B-2A의 백만 ray 선형 환산은 약 `70.7초`로 최종 목표를 달성하지
-  못했다. 다음 순서는 reflection
-  plan과 ordered grid/contribution/path commit 병목을 줄이는 것이며, 이후
-  compact active-ray 경계를 CUDA GPU backend가 재사용한다.
+- PERF-3B-2A의 백만 ray 선형 환산은 약 `70.7초`였으며 최종 목표를 달성하지
+  못했다. PERF-3B-2B에서 surface geometry와 path quota 병목 일부를 후속
+  최적화했다.
+- PERF-3B-2B는 batch surface point/normal materialization, O(1) ordered
+  stored-path quota와 optional compiled reflection planner를 2026-08-19 구현했다.
+- 기본 `auto`와 scalar는 Numba runtime을 import하거나 native provider를
+  probe하지 않는다. Native planner opt-in은 threshold의 `none`/`specular`만
+  지원하고 mixed/stochastic와 Russian roulette는 `per_primary_seeded_v1`
+  Python sidecar를 사용한다.
+- Planner hard failure phase는 `input_prepare`, `initialize`, `execute`,
+  `result_validation`이다. 같은 depth의 deterministic native candidate 전체를
+  Python으로 replay하고 circuit breaker를 연다. Fallback row count에는
+  stochastic sidecar를 포함하지 않는다.
+- 실제 `50,944 -> 45,167` triangle ROI, 100,000 ray, depth 10, seed 42,
+  summary, paths 500, runtime 기본 chunk 1,024 canonical 중앙값은
+  `5.2553초`다. 같은 1,024 조건 2A parent `7.0649초` 대비 `1.344x`, Python
+  scalar `26.193초` 대비 `4.984x`, 역사적 Numba scalar 약 `11.42초` 대비 약
+  `2.173x`다.
+- Canonical planner가 `auto`라 native attempt는 `0`이다. 실제 모델도 전부
+  mixed라 explicit native에서 Python sidecar 대상이다. 위 개선은 batch surface
+  geometry와 O(1) quota의 효과이며 compiled planner speedup으로 기록하지
+  않는다.
+- 실제 canonical 결과는 Receiver `12,652`, surface `225,482`, terminated
+  `87,348`, flux `0.040176617410112817`, query row `309,119`, path `500`으로
+  현재 wavefront 반복과 `auto`/`python_cpu` planner 사이 exact다. Legacy/Numba
+  scalar는 mixed stochastic 계약상 timing reference다. Path
+  materialized/skipped는 `931/99,069`다.
+- Deterministic synthetic 네 scenario의 compiled planner speedup은
+  `1.078~1.241x`, mismatch `0`이지만 실제 mixed ROI 및 배포 gate가 남아
+  기본 `auto` 승격을 보류한다.
+- PERF-3B-2B 완료 시점 전체 Python suite는 `160`개가 통과했다.
+- Stable-source compact paths-on 교대 재측정은 1,024 `5.1601초`, 4,096
+  `5.1863초`로 약 `0.51%` 차이의 동률 범위였다. Buffer scaling은 별도
+  synthetic depth-10 `tracemalloc` 기준 약
+  `9.65 -> 37.64 MiB`, Stop 원자 단위는 4배다. 이는 실제 ROI process RSS가
+  아니다. 현재 runtime 기본은 메모리/응답성이 유리한 1,024다.
+- PERF-3B-2B의 백만 ray 선형 환산도 약 `52.6초`라 목표 달성을 주장하지
+  않는다. 다음 순서는 SoA state, compact event tape, compiled ordered reducer,
+  `counter_rng_v2`, CUDA다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
-- Multi-bounce native provider 실패는 현재 depth logical batch 전체를 Python
-  CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화 실패·실행 실패 시
-  같은 whole-depth-batch CPU BVH fallback을 유지한다.
+- Multi-bounce native intersection provider 실패는 현재 depth logical batch
+  전체를 Python CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화
+  실패·실행 실패 시 같은 whole-depth-batch CPU BVH fallback을 유지한다.

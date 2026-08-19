@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from numbers import Integral
 from typing import Callable, Dict, List, Optional, Tuple
@@ -25,6 +26,25 @@ from .geometry import (
     clamp01,
 )
 from .native_cpu_intersection import NativeCpuProviderError, NativeCpuUnavailable
+from .native_cpu_wavefront import (
+    LOBE_SPECULAR as NATIVE_WAVEFRONT_LOBE_SPECULAR,
+    SCATTER_NONE as NATIVE_WAVEFRONT_SCATTER_NONE,
+    SCATTER_SPECULAR as NATIVE_WAVEFRONT_SCATTER_SPECULAR,
+    STATUS_ATTEMPTED as NATIVE_WAVEFRONT_STATUS_ATTEMPTED,
+    STATUS_BELOW_ENERGY as NATIVE_WAVEFRONT_STATUS_BELOW_ENERGY,
+    STATUS_DEPTH_LIMITED as NATIVE_WAVEFRONT_STATUS_DEPTH_LIMITED,
+    STATUS_DISABLED as NATIVE_WAVEFRONT_STATUS_DISABLED,
+    STATUS_EMITTED as NATIVE_WAVEFRONT_STATUS_EMITTED,
+    STATUS_ROULETTE_SURVIVED as NATIVE_WAVEFRONT_STATUS_ROULETTE_SURVIVED,
+    STATUS_ROULETTE_TERMINATED as NATIVE_WAVEFRONT_STATUS_ROULETTE_TERMINATED,
+    TERMINATION_THRESHOLD as NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
+    NativeCpuWavefrontProviderError,
+    NativeCpuWavefrontUnavailable,
+    WavefrontPlanInput,
+    WavefrontPlanResult,
+    plan_deterministic_native_cpu,
+    scatter_codes_from_names,
+)
 from .types import EmitterConfig, GapRule, MaterialProfile, ReceiverMetrics, RunConfig, ReceiverPatchConfig, Vec3, fresh_run_id
 from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayHit, RayTraceConfig, RayTraceContributionSummary, RayTraceResult, ReceiverGrid, ReceiverSpec
 from .types import SimulationOutput, RunResultSummary, random_unit_vector
@@ -150,14 +170,15 @@ class _SingleBouncePlan:
 
 @dataclass(slots=True)
 class _MultiBounceSurfaceStep:
-    surface_hit: HitRecord
+    face_index: int
+    point: Vec3
+    normal: Vec3
+    distance_mm: float
     incoming_direction: Vec3
     incoming_power_lumen: float
     reflected_power_lumen: float
     depth: int
     ray_kind: str
-    optical_profile: OpticalProfile
-    optical_source: str
     reflection_decision: _ReflectionDecision
 
 
@@ -392,6 +413,206 @@ class _IntersectionDispatchStats:
         }
 
 
+@dataclass(slots=True)
+class _WavefrontPlannerStats:
+    """Run-local capability, fallback and timing state for reflection planning."""
+
+    requested_provider: str = "auto"
+    logical_row_count: int = 0
+    python_sidecar_row_count: int = 0
+    native_attempt_count: int = 0
+    native_attempt_row_count: int = 0
+    native_success_count: int = 0
+    native_success_row_count: int = 0
+    native_face_table_prepare_sec: float = 0.0
+    native_input_prepare_sec: float = 0.0
+    native_dispatch_sec: float = 0.0
+    native_execute_sec: float = 0.0
+    native_jit_compile_sec: float = 0.0
+    native_provider_version: Optional[str] = None
+    native_available: Optional[bool] = None
+    native_provider_disabled: bool = False
+    fallback_count: int = 0
+    fallback_row_count: int = 0
+    fallback_phase: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    unavailable_reason: Optional[str] = None
+    face_tables_prepared: bool = False
+    face_reflectance: Optional[np.ndarray] = None
+    face_roughness: Optional[np.ndarray] = None
+    face_scatter: Optional[np.ndarray] = None
+
+    @property
+    def native_requested(self) -> bool:
+        return self.requested_provider == "numba_cpu"
+
+    def prepare_face_tables(
+        self,
+        resolved_optical_by_face: List,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        if not self.native_requested or self.native_provider_disabled:
+            return None
+        if self.face_tables_prepared:
+            assert self.face_reflectance is not None
+            assert self.face_roughness is not None
+            assert self.face_scatter is not None
+            return (
+                self.face_reflectance,
+                self.face_roughness,
+                self.face_scatter,
+            )
+
+        started = time.perf_counter()
+        try:
+            reflectance = np.asarray(
+                [
+                    resolved.profile.reflectance
+                    for resolved in resolved_optical_by_face
+                ],
+                dtype=np.float64,
+            )
+            roughness = np.asarray(
+                [resolved.profile.roughness for resolved in resolved_optical_by_face],
+                dtype=np.float64,
+            )
+            scatter = scatter_codes_from_names(
+                resolved.profile.scatter_model
+                for resolved in resolved_optical_by_face
+            )
+            reflectance.setflags(write=False)
+            roughness.setflags(write=False)
+        except Exception:
+            self.record_input_prepare_failure(0)
+            return None
+        finally:
+            self.native_face_table_prepare_sec += time.perf_counter() - started
+
+        self.face_tables_prepared = True
+        self.face_reflectance = reflectance
+        self.face_roughness = roughness
+        self.face_scatter = scatter
+        return reflectance, roughness, scatter
+
+    def plan_native(
+        self,
+        batch: WavefrontPlanInput,
+    ) -> Optional[WavefrontPlanResult]:
+        row_count = len(batch)
+        if row_count == 0:
+            return None
+        self.native_attempt_count += 1
+        self.native_attempt_row_count += row_count
+        started = time.perf_counter()
+        try:
+            execution = plan_deterministic_native_cpu(batch)
+            try:
+                result = execution.result
+                valid_result = (
+                    len(result) == row_count
+                    and bool(np.all(result.supported_mask))
+                )
+            except Exception as exc:
+                raise NativeCpuWavefrontProviderError(
+                    "result_validation",
+                    "native_wavefront_invalid_output",
+                ) from exc
+            if not valid_result:
+                raise NativeCpuWavefrontProviderError(
+                    "result_validation",
+                    "native_wavefront_unsupported_output",
+                )
+        except NativeCpuWavefrontUnavailable as exc:
+            self.native_available = False
+            self.native_provider_disabled = True
+            self.unavailable_reason = exc.reason_code
+        except NativeCpuWavefrontProviderError as exc:
+            self.native_available = True
+            self.native_provider_disabled = True
+            self.fallback_count += 1
+            self.fallback_row_count += row_count
+            self.fallback_phase = exc.phase
+            self.fallback_reason = exc.reason_code
+        except Exception:
+            self.native_available = True
+            self.native_provider_disabled = True
+            self.fallback_count += 1
+            self.fallback_row_count += row_count
+            self.fallback_phase = "execute"
+            self.fallback_reason = "native_wavefront_unexpected_failure"
+        else:
+            self.native_available = True
+            self.native_success_count += 1
+            self.native_success_row_count += row_count
+            self.native_execute_sec += execution.execute_sec
+            self.native_jit_compile_sec += execution.jit_compile_sec
+            self.native_provider_version = execution.numba_version
+            self.native_dispatch_sec += time.perf_counter() - started
+            return result
+        self.native_dispatch_sec += time.perf_counter() - started
+        return None
+
+    def record_python_rows(self, row_count: int) -> None:
+        self.python_sidecar_row_count += row_count
+
+    def record_input_prepare_failure(self, row_count: int) -> None:
+        self.native_provider_disabled = True
+        self.fallback_count += 1
+        self.fallback_row_count += row_count
+        self.fallback_phase = "input_prepare"
+        self.fallback_reason = "native_wavefront_input_prepare_failed"
+
+    def to_summary(self) -> Dict[str, object]:
+        if self.native_success_row_count and self.python_sidecar_row_count:
+            effective_provider = "mixed"
+        elif self.native_success_row_count:
+            effective_provider = "numba_cpu"
+        elif self.python_sidecar_row_count:
+            effective_provider = "python_cpu"
+        else:
+            effective_provider = "not_used"
+        return {
+            "requested_wavefront_planner": self.requested_provider,
+            "wavefront_planner": effective_provider,
+            "wavefront_planner_contract": "deterministic_reflection_v1",
+            "wavefront_planner_logical_row_count": self.logical_row_count,
+            "wavefront_planner_python_sidecar_row_count": (
+                self.python_sidecar_row_count
+            ),
+            "wavefront_planner_native_available": self.native_available,
+            "wavefront_planner_native_used": self.native_success_count > 0,
+            "wavefront_planner_native_provider_version": (
+                self.native_provider_version
+            ),
+            "wavefront_planner_native_provider_disabled": (
+                self.native_provider_disabled
+            ),
+            "wavefront_planner_native_attempt_count": self.native_attempt_count,
+            "wavefront_planner_native_attempt_row_count": (
+                self.native_attempt_row_count
+            ),
+            "wavefront_planner_native_success_count": self.native_success_count,
+            "wavefront_planner_native_success_row_count": (
+                self.native_success_row_count
+            ),
+            "wavefront_planner_native_face_table_prepare_sec": (
+                self.native_face_table_prepare_sec
+            ),
+            "wavefront_planner_native_input_prepare_sec": (
+                self.native_input_prepare_sec
+            ),
+            "wavefront_planner_native_dispatch_sec": self.native_dispatch_sec,
+            "wavefront_planner_native_execute_sec": self.native_execute_sec,
+            "wavefront_planner_native_jit_compile_sec": (
+                self.native_jit_compile_sec
+            ),
+            "wavefront_planner_fallback_count": self.fallback_count,
+            "wavefront_planner_fallback_row_count": self.fallback_row_count,
+            "wavefront_planner_fallback_phase": self.fallback_phase,
+            "wavefront_planner_fallback_reason": self.fallback_reason,
+            "wavefront_planner_unavailable_reason": self.unavailable_reason,
+        }
+
+
 _DEFAULT_INTERSECTION_BATCH_SIZE = 1024
 
 
@@ -516,25 +737,58 @@ def _store_completed_path(
             return
 
 
-def _should_materialize_completed_path(
-    stored_paths: List[List[RayHit]],
-    terminal_kind: Optional[str],
-    max_stored_paths: int,
-) -> bool:
-    """Return whether a completed path can still enter the bounded store.
+@dataclass(slots=True)
+class _WavefrontStoredPathQuota:
+    """O(1) view of the bounded Receiver-priority path store.
 
-    Once the quota is full, dead-end paths can never be inserted. A Receiver
-    path is still useful only while at least one stored path is a dead end that
-    it can replace. This check avoids building visualization-only ``RayHit``
-    objects for paths that ``_store_completed_path`` would immediately drop.
+    The legacy helper scans for the oldest dead-end path only when an actual
+    Receiver replacement occurs. Wavefront planning must additionally decide
+    whether a candidate is worth materializing; caching the ordered dead-end
+    indices avoids rescanning up to ``max_stored_paths`` for every Receiver.
     """
-    if max_stored_paths <= 0:
-        return False
-    if len(stored_paths) < max_stored_paths:
-        return True
-    if terminal_kind != "receiver":
-        return False
-    return any(not _path_reaches_receiver(path) for path in stored_paths)
+
+    paths: List[List[RayHit]]
+    max_paths: int
+    dead_end_indices: deque[int]
+
+    @classmethod
+    def from_paths(
+        cls,
+        paths: List[List[RayHit]],
+        max_paths: int,
+    ) -> "_WavefrontStoredPathQuota":
+        return cls(
+            paths=paths,
+            max_paths=max_paths,
+            dead_end_indices=deque(
+                index
+                for index, path in enumerate(paths)
+                if not _path_reaches_receiver(path)
+            ),
+        )
+
+    def can_store(self, terminal_kind: Optional[str]) -> bool:
+        if self.max_paths <= 0:
+            return False
+        if len(self.paths) < self.max_paths:
+            return True
+        return terminal_kind == "receiver" and bool(self.dead_end_indices)
+
+    def store(self, path: List[RayHit], _terminal_kind: Optional[str]) -> None:
+        if self.max_paths <= 0 or not path:
+            return
+        completed_path = list(path)
+        reaches_receiver = _path_reaches_receiver(completed_path)
+        if len(self.paths) < self.max_paths:
+            path_index = len(self.paths)
+            self.paths.append(completed_path)
+            if not reaches_receiver:
+                self.dead_end_indices.append(path_index)
+            return
+        if not reaches_receiver or not self.dead_end_indices:
+            return
+        replace_index = self.dead_end_indices.popleft()
+        self.paths[replace_index] = completed_path
 
 
 def run_direct_ray_trace(
@@ -545,12 +799,17 @@ def run_direct_ray_trace(
     intersection_dispatch: str = "auto",
     intersection_batch_size: int = _DEFAULT_INTERSECTION_BATCH_SIZE,
     intersection_provider: str = "auto",
+    wavefront_planner: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
     if intersection_provider not in {"auto", "python_cpu", "numba_cpu"}:
         raise ValueError(
             "intersection_provider must be auto, python_cpu, or numba_cpu"
+        )
+    if wavefront_planner not in {"auto", "python_cpu", "numba_cpu"}:
+        raise ValueError(
+            "wavefront_planner must be auto, python_cpu, or numba_cpu"
         )
     if (
         isinstance(intersection_batch_size, bool)
@@ -564,6 +823,9 @@ def run_direct_ray_trace(
     intersection_stats = _IntersectionDispatchStats(
         intersection_backend=trace_input.config.intersection_backend,
         requested_provider=intersection_provider,
+    )
+    wavefront_planner_stats = _WavefrontPlannerStats(
+        requested_provider=wavefront_planner,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
     receiver_grids = {
@@ -621,11 +883,16 @@ def run_direct_ray_trace(
         "active_ray_count_by_depth": {},
         "batch_count_by_depth": {},
         "receiver_dispatch": "numpy_batch",
+        "surface_geometry_dispatch": "numpy_batch_v1",
+        "path_quota_dispatch": "ordered_dead_end_queue_v1",
         "reflection_rng": "per_primary_seeded_v1",
         "rng_scalar_parity": "exact_no_draw_statistical_stochastic",
         "stochastic_primary_ray_count": 0,
         "state_build_sec": 0.0,
         "receiver_sec": 0.0,
+        "geometry_sec": 0.0,
+        "geometry_ray_count": 0,
+        "geometry_hit_count": 0,
         "plan_sec": 0.0,
         "commit_sec": 0.0,
         "total_sec": 0.0,
@@ -725,6 +992,7 @@ def run_direct_ray_trace(
                             detailed_contributions,
                             stored_paths,
                             intersection_stats,
+                            wavefront_planner_stats,
                             wavefront_summary,
                         )
                     chunk_ray_count = end - start
@@ -1128,6 +1396,12 @@ def run_direct_ray_trace(
         "wavefront_receiver_dispatch": wavefront_summary[
             "receiver_dispatch"
         ],
+        "wavefront_surface_geometry_dispatch": wavefront_summary[
+            "surface_geometry_dispatch"
+        ],
+        "wavefront_path_quota_dispatch": wavefront_summary[
+            "path_quota_dispatch"
+        ],
         "wavefront_reflection_rng": wavefront_summary["reflection_rng"],
         "wavefront_rng_scalar_parity": wavefront_summary[
             "rng_scalar_parity"
@@ -1137,6 +1411,13 @@ def run_direct_ray_trace(
         ],
         "wavefront_state_build_sec": wavefront_summary["state_build_sec"],
         "wavefront_receiver_sec": wavefront_summary["receiver_sec"],
+        "wavefront_geometry_sec": wavefront_summary["geometry_sec"],
+        "wavefront_geometry_ray_count": wavefront_summary[
+            "geometry_ray_count"
+        ],
+        "wavefront_geometry_hit_count": wavefront_summary[
+            "geometry_hit_count"
+        ],
         "wavefront_plan_sec": wavefront_summary["plan_sec"],
         "wavefront_commit_sec": wavefront_summary["commit_sec"],
         "wavefront_total_sec": wavefront_summary["total_sec"],
@@ -1149,6 +1430,7 @@ def run_direct_ray_trace(
         "wavefront_path_materialization_skipped_count": wavefront_summary[
             "path_materialization_skipped_count"
         ],
+        **wavefront_planner_stats.to_summary(),
         **intersection_stats.to_summary(),
     }
     return RayTraceResult(
@@ -1547,6 +1829,38 @@ def _wavefront_reflection_rng(
     return state.reflection_rng
 
 
+def _native_wavefront_reflection_decision(
+    result: WavefrontPlanResult,
+    row_index: int,
+) -> _ReflectionDecision:
+    flags = int(result.status_flags[row_index])
+    decision = _ReflectionDecision(
+        attempted=bool(flags & NATIVE_WAVEFRONT_STATUS_ATTEMPTED),
+        depth_limited=bool(flags & NATIVE_WAVEFRONT_STATUS_DEPTH_LIMITED),
+        below_energy=bool(flags & NATIVE_WAVEFRONT_STATUS_BELOW_ENERGY),
+        roulette_terminated=bool(
+            flags & NATIVE_WAVEFRONT_STATUS_ROULETTE_TERMINATED
+        ),
+        roulette_survived=bool(
+            flags & NATIVE_WAVEFRONT_STATUS_ROULETTE_SURVIVED
+        ),
+        disabled=bool(flags & NATIVE_WAVEFRONT_STATUS_DISABLED),
+    )
+    if flags & NATIVE_WAVEFRONT_STATUS_EMITTED:
+        if int(result.lobe_codes[row_index]) != NATIVE_WAVEFRONT_LOBE_SPECULAR:
+            raise RuntimeError("deterministic native planner returned a non-specular lobe")
+        direction = (
+            float(result.emitted_directions[row_index, 0]),
+            float(result.emitted_directions[row_index, 1]),
+            float(result.emitted_directions[row_index, 2]),
+        )
+        decision.emission = (
+            ReflectionSample(direction=direction, lobe="specular"),
+            float(result.emitted_power_lumen[row_index]),
+        )
+    return decision
+
+
 def _find_first_receiver_hits_batch(
     origins: np.ndarray,
     directions: np.ndarray,
@@ -1689,17 +2003,16 @@ def _commit_multi_bounce_wavefront_ray(
     reflection_summary: Dict,
     contribution_summary: RayTraceContributionSummary,
     face_contribution_cache: List[Optional[Dict]],
+    resolved_optical_by_face: List,
     detailed_contributions: bool,
-    stored_paths: List[List[RayHit]],
+    path_quota: _WavefrontStoredPathQuota,
     wavefront_summary: Dict,
 ) -> Tuple[int, int, int]:
     path_storage_enabled = (
         config.store_ray_paths and config.max_stored_paths > 0
     )
-    store_path = path_storage_enabled and _should_materialize_completed_path(
-        stored_paths,
-        state.terminal_kind,
-        config.max_stored_paths,
+    store_path = path_storage_enabled and path_quota.can_store(
+        state.terminal_kind
     )
     if path_storage_enabled:
         summary_key = (
@@ -1728,12 +2041,12 @@ def _commit_multi_bounce_wavefront_ray(
     )
 
     for step in state.steps:
-        surface_hit = step.surface_hit
+        resolved_optical = resolved_optical_by_face[step.face_index]
         surface_contribution = (
             _surface_contribution_for_face(
                 contribution_summary,
                 mesh,
-                surface_hit.face_index,
+                step.face_index,
                 face_contribution_cache,
             )
             if detailed_contributions
@@ -1753,8 +2066,8 @@ def _commit_multi_bounce_wavefront_ray(
             )
         _record_optical_summary(
             optical_summary,
-            step.optical_profile,
-            step.optical_source,
+            resolved_optical.profile,
+            resolved_optical.source,
             step.incoming_power_lumen,
             step.reflected_power_lumen,
         )
@@ -1793,15 +2106,15 @@ def _commit_multi_bounce_wavefront_ray(
                 path_events.append(
                     _surface_ray_hit(
                         mesh,
-                        surface_hit.face_index,
-                        surface_hit.point,
-                        surface_hit.normal,
-                        surface_hit.t,
+                        step.face_index,
+                        step.point,
+                        step.normal,
+                        step.distance_mm,
                         step.incoming_power_lumen,
                         step.reflected_power_lumen,
                         depth=step.depth,
-                        optical_profile=step.optical_profile,
-                        optical_source=step.optical_source,
+                        optical_profile=resolved_optical.profile,
+                        optical_source=resolved_optical.source,
                         ray_kind=step.ray_kind if step.depth > 0 else None,
                     )
                 )
@@ -1842,15 +2155,15 @@ def _commit_multi_bounce_wavefront_ray(
             path_events.append(
                 _surface_ray_hit(
                     mesh,
-                    surface_hit.face_index,
-                    surface_hit.point,
-                    surface_hit.normal,
-                    surface_hit.t,
+                    step.face_index,
+                    step.point,
+                    step.normal,
+                    step.distance_mm,
                     step.incoming_power_lumen,
                     emitted_power,
                     depth=step.depth,
-                    optical_profile=step.optical_profile,
-                    optical_source=step.optical_source,
+                    optical_profile=resolved_optical.profile,
+                    optical_source=resolved_optical.source,
                     ray_kind=reflection_sample.lobe,
                 )
             )
@@ -1922,7 +2235,7 @@ def _commit_multi_bounce_wavefront_ray(
         terminated_ray_count = 1
 
     if store_path:
-        _store_completed_path(stored_paths, path_events, config.max_stored_paths)
+        path_quota.store(path_events, state.terminal_kind)
     return receiver_hit_count, len(state.steps), terminated_ray_count
 
 
@@ -1944,6 +2257,7 @@ def _trace_multi_bounce_wavefront_batch(
     detailed_contributions: bool,
     stored_paths: List[List[RayHit]],
     intersection_stats: _IntersectionDispatchStats,
+    planner_stats: _WavefrontPlannerStats,
     wavefront_summary: Dict,
 ) -> Tuple[int, int, int]:
     if config.max_depth <= 1:
@@ -2041,50 +2355,168 @@ def _trace_multi_bounce_wavefront_batch(
             ),
         )
         hit_batch = intersection_stats.intersect_batch(mesh, ray_batch)
+        geometry_started = time.perf_counter()
+        surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
+        wavefront_summary["geometry_sec"] += (
+            time.perf_counter() - geometry_started
+        )
+        wavefront_summary["geometry_ray_count"] += active_count
+        wavefront_summary["geometry_hit_count"] += surface_geometry.hit_count
         plan_started = time.perf_counter()
+        native_plan: Optional[WavefrontPlanResult] = None
+        native_plan_positions: Optional[np.ndarray] = None
+        planner_stats.logical_row_count += surface_geometry.hit_count
+        face_tables = (
+            planner_stats.prepare_face_tables(resolved_optical_by_face)
+            if (
+                planner_stats.native_requested
+                and not planner_stats.native_provider_disabled
+                and config.termination_mode == "threshold"
+                and surface_geometry.hit_count > 0
+            )
+            else None
+        )
+        if face_tables is None:
+            face_reflectance = None
+            face_roughness = None
+            face_scatter = None
+        else:
+            face_reflectance, face_roughness, face_scatter = face_tables
+        if (
+            planner_stats.native_requested
+            and not planner_stats.native_provider_disabled
+            and config.termination_mode == "threshold"
+            and face_reflectance is not None
+            and face_roughness is not None
+            and face_scatter is not None
+            and surface_geometry.hit_count > 0
+        ):
+            planner_prepare_started = time.perf_counter()
+            native_candidate_row_count = 0
+            try:
+                hit_rows = np.flatnonzero(hit_batch.face_indices >= 0)
+                hit_faces = hit_batch.face_indices[hit_rows]
+                hit_scatter = face_scatter[hit_faces]
+                deterministic_mask = (
+                    (hit_scatter == NATIVE_WAVEFRONT_SCATTER_NONE)
+                    | (hit_scatter == NATIVE_WAVEFRONT_SCATTER_SPECULAR)
+                )
+                native_rows = hit_rows[deterministic_mask]
+                native_candidate_row_count = len(native_rows)
+                native_faces = hit_batch.face_indices[native_rows]
+                native_batch = (
+                    WavefrontPlanInput(
+                        active_directions[native_rows],
+                        surface_geometry.normals[native_rows],
+                        active_powers[native_rows],
+                        face_reflectance[native_faces],
+                        face_roughness[native_faces],
+                        face_scatter[native_faces],
+                        depth=depth,
+                        max_depth=config.max_depth,
+                        min_energy=config.min_energy,
+                        termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
+                    )
+                    if len(native_rows)
+                    else None
+                )
+            except Exception:
+                planner_stats.record_input_prepare_failure(
+                    native_candidate_row_count
+                )
+                native_rows = np.empty(0, dtype=np.int64)
+                native_batch = None
+            finally:
+                planner_stats.native_input_prepare_sec += (
+                    time.perf_counter() - planner_prepare_started
+                )
+            if native_batch is not None:
+                native_plan = planner_stats.plan_native(native_batch)
+                if native_plan is not None:
+                    native_plan_positions = np.full(
+                        active_count,
+                        -1,
+                        dtype=np.int64,
+                    )
+                    native_plan_positions[native_rows] = np.arange(
+                        len(native_rows),
+                        dtype=np.int64,
+                    )
+        planner_stats.record_python_rows(
+            surface_geometry.hit_count
+            - (len(native_plan) if native_plan is not None else 0)
+        )
         next_active: List[_MultiBounceWavefrontRay] = []
         for index, state in enumerate(active):
-            surface_hit = hit_batch.materialize(mesh, ray_batch, index)
-            if surface_hit is None:
+            face_index = int(hit_batch.face_indices[index])
+            if face_index < 0:
                 candidate = receiver_candidates[index]
                 state.terminal_receiver = candidate
                 state.terminal_kind = "receiver" if candidate is not None else "escaped"
                 state.terminal_depth = depth
                 continue
 
-            resolved_optical = resolved_optical_by_face[surface_hit.face_index]
-            reflected_power = state.current_power_lumen * effective_surface_reflectance(
-                state.current_direction,
-                surface_hit.normal,
-                resolved_optical.profile,
+            point = (
+                float(surface_geometry.points[index, 0]),
+                float(surface_geometry.points[index, 1]),
+                float(surface_geometry.points[index, 2]),
             )
-            reflection_rng_was_unset = state.reflection_rng is None
-            decision = _decide_reflection_emission(
-                _wavefront_reflection_rng(
-                    state,
+            normal = (
+                float(surface_geometry.normals[index, 0]),
+                float(surface_geometry.normals[index, 1]),
+                float(surface_geometry.normals[index, 2]),
+            )
+            resolved_optical = resolved_optical_by_face[face_index]
+            native_position = (
+                int(native_plan_positions[index])
+                if native_plan_positions is not None
+                else -1
+            )
+            if native_plan is not None and native_position >= 0:
+                reflected_power = float(
+                    native_plan.reflected_power_lumen[native_position]
+                )
+                decision = _native_wavefront_reflection_decision(
+                    native_plan,
+                    native_position,
+                )
+            else:
+                reflected_power = (
+                    state.current_power_lumen
+                    * effective_surface_reflectance(
+                        state.current_direction,
+                        normal,
+                        resolved_optical.profile,
+                    )
+                )
+                reflection_rng_was_unset = state.reflection_rng is None
+                decision = _decide_reflection_emission(
+                    _wavefront_reflection_rng(
+                        state,
+                        resolved_optical.profile,
+                        config,
+                        reflected_power,
+                    ),
+                    state.current_direction,
+                    normal,
+                    reflected_power,
                     resolved_optical.profile,
                     config,
-                    reflected_power,
-                ),
-                state.current_direction,
-                surface_hit.normal,
-                reflected_power,
-                resolved_optical.profile,
-                config,
-                depth,
-            )
-            if reflection_rng_was_unset and state.reflection_rng is not None:
-                wavefront_summary["stochastic_primary_ray_count"] += 1
+                    depth,
+                )
+                if reflection_rng_was_unset and state.reflection_rng is not None:
+                    wavefront_summary["stochastic_primary_ray_count"] += 1
             state.steps.append(
                 _MultiBounceSurfaceStep(
-                    surface_hit=surface_hit,
+                    face_index=face_index,
+                    point=point,
+                    normal=normal,
+                    distance_mm=float(hit_batch.t[index]),
                     incoming_direction=state.current_direction,
                     incoming_power_lumen=state.current_power_lumen,
                     reflected_power_lumen=reflected_power,
                     depth=depth,
                     ray_kind=state.current_ray_kind,
-                    optical_profile=resolved_optical.profile,
-                    optical_source=resolved_optical.source,
                     reflection_decision=decision,
                 )
             )
@@ -2095,12 +2527,12 @@ def _trace_multi_bounce_wavefront_batch(
 
             reflection_sample, emitted_power = decision.emission
             state.current_origin = vec_add(
-                surface_hit.point,
+                point,
                 vec_mul(reflection_sample.direction, config.epsilon_mm),
             )
             state.current_direction = reflection_sample.direction
             state.current_power_lumen = emitted_power
-            state.current_source_face = surface_hit.face_index
+            state.current_source_face = face_index
             state.current_depth = depth + 1
             state.current_ray_kind = reflection_sample.lobe
             next_active.append(state)
@@ -2109,6 +2541,10 @@ def _trace_multi_bounce_wavefront_batch(
         active = next_active
 
     commit_started = time.perf_counter()
+    path_quota = _WavefrontStoredPathQuota.from_paths(
+        stored_paths,
+        config.max_stored_paths,
+    )
     receiver_hit_count = 0
     surface_hit_count = 0
     terminated_ray_count = 0
@@ -2122,8 +2558,9 @@ def _trace_multi_bounce_wavefront_batch(
             reflection_summary,
             contribution_summary,
             face_contribution_cache,
+            resolved_optical_by_face,
             detailed_contributions,
-            stored_paths,
+            path_quota,
             wavefront_summary,
         )
         receiver_hit_count += counts[0]

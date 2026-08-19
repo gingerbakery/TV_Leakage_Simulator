@@ -106,8 +106,15 @@ provider가 추가된 뒤에도 end-to-end 자동 선택 gate를 통과하지 �
 기존 sampler는 기본 65,536-ray batch를 그대로 생성한다. 같은 seed에서도
 sampler batch 크기를 바꾸면 NumPy 난수 draw 배치가 달라지므로 이 값은
 건드리지 않는다. 생성된 origin/direction 배열만 별도의 intersection chunk로
-잘라 query에 전달한다. PERF-3B-1 당시 기본은 4,096이었고, PERF-3B-2A 실제
-depth-10 sweep에서 1,024가 더 빨라 현재 runtime 기본을 1,024로 조정했다.
+잘라 query에 전달한다. PERF-3B-1 당시 기본은 4,096이었고 PERF-3B-2A
+depth-10 sweep에서는 1,024가 더 빨랐다. PERF-3B-2B stable-source 실제 ROI
+교대 재측정에서는 1,024와 4,096의 p50 차이가 약 0.51%로 측정 잡음 범위였고
+1,024가 근소하게 빨랐다. 처리량 이점이 없는 4,096 대신 memory와 Stop 단위가
+작은 1,024를 runtime 기본으로 유지한다.
+별도 synthetic depth-10 `tracemalloc`에서 1,024/4,096의 Python allocation
+peak는 약 `9.65/37.64 MiB`였고 Stop 원자 단위도 4배 차이 난다. 이는 실제 ROI
+process RSS가 아니라 scratch scaling 참고값이다. 메모리나 Stop 응답성이
+우선이면 runtime에서 1,024를 명시한다.
 
 처리 순서는 다음과 같다.
 
@@ -131,7 +138,7 @@ dispatch를 사용했다. PERF-3B-2A에서 fast virtual-plane emitter의 다회 
 Stop은 다음 sampling batch를 만들기 전과 intersection chunk 경계에서
 확인한다. 시작한 chunk는 primary, secondary와 결과 commit까지 원자적으로
 완료하고 다음 chunk를 시작하지 않는다. 기본값에서 최악의 Stop 지연은
-1,024 primary ray 처리 시간이다.
+1,024 primary ray의 남은 multi-bounce 처리 시간이다.
 
 결과 JSON에는 NumPy 배열, scalar 또는 batch miss sentinel을 노출하지 않는다.
 `json.dumps(result.to_dict(), allow_nan=False)`가 성공해야 한다.
@@ -249,6 +256,78 @@ provider는 `mixed`가 될 수 있지만, 한 depth batch 안에서 native row�
 row를 섞지 않는다. Circuit breaker와 logical query count 비중복 규칙은 기존
 PERF-3B-2 계약을 그대로 적용한다.
 
+### PERF-3B-2B surface geometry와 compiled reflection planner
+
+PERF-3B-2B는 intersection 결과와 ordered commit 사이에 두 runtime 경계를
+추가했다. 프로젝트 JSON, `.bitsam`, UI schema는 변경하지 않는다.
+
+#### Surface geometry batch
+
+`RayHitBatch.materialize_surface_geometry(mesh, rays)`는 row-aligned point/normal
+배열과 hit count를 반환한다.
+
+- point는 scalar와 같은 `origin + direction * t` 계산 순서를 사용한다.
+- normal은 face-aligned prepared normal을 gather하고 incoming direction과
+  마주보도록 뒤집는다.
+- miss row의 point/normal은 `0`이며 hit mask는 계속 `face_indices >= 0`이다.
+- prepared normal은 read-only이며 mesh vertex/face mutation 때 acceleration
+  cache와 함께 무효화한다.
+
+이 경계는 surface hit마다 `HitRecord`와 tuple을 만들지 않지만 기존 scalar
+materialize와 point/normal/face 의미를 exact 보존한다.
+
+#### Stored-path quota
+
+Wavefront path quota는 오래된 dead-end index를 ordered queue로 유지한다. Quota가
+남아 있으면 primary 순서대로 저장하고, quota가 찬 뒤에는 Receiver path만 가장
+오래된 dead-end를 교체한다. 이는 기존 `_store_completed_path()`와 같은 의미와
+저장 순서를 O(1) 판정으로 보존한다. Quantitative grid/flux/contribution과 path
+materialization 여부는 계속 독립적이다.
+
+#### Runtime planner 선택
+
+`run_direct_ray_trace()`의 runtime-only `wavefront_planner` 허용값은 다음과 같다.
+
+- `auto`: 기존 Python planner를 사용하고 Numba를 import/probe하지 않는다.
+- `python_cpu`: Python reflection planner를 명시한다.
+- `numba_cpu`: 지원되는 deterministic row만 Numba planner에 전달한다.
+
+Native planner 계약은 `deterministic_reflection_v1`, strict `float64`,
+`fastmath=false`다. `threshold` termination의 `none`/`specular`만 지원한다.
+Lambertian, Gaussian, mixed와 Russian roulette는 Python sidecar를 사용하며 원
+row 위치로 합친 뒤 ordered commit한다. Planner input/result는 read-only copy고
+호출자 배열과 alias하지 않는다.
+
+Face profile table은 explicit native planner가 실제 multi-bounce surface hit을
+처음 만났을 때 한 번만 준비한다. 기본 `auto`, scalar dispatch,
+`max_depth <= 1`, face/polygon legacy 경로에서는 table 준비와 Numba probe가
+발생하지 않는다.
+
+#### Planner fallback과 count
+
+Unavailable capability는 정상적인 CPU 선택이다. Hard failure phase는
+`input_prepare`, `initialize`, `execute`, `result_validation`이다. Malformed/shape
+mismatch/unsupported native output은 `result_validation`으로 통일한다.
+
+Hard failure가 나면 같은 depth의 deterministic native candidate 전체를 Python
+planner로 다시 계산하고 run-local circuit breaker를 연다. 같은 depth의
+stochastic sidecar와 합친 logical plan은 기존 Python 의미를 보존하며 이후
+depth에서 native planner를 다시 호출하지 않는다.
+
+- `wavefront_planner_logical_row_count`: 전체 surface planning row
+- `wavefront_planner_python_sidecar_row_count`: unsupported row와 fallback replay를
+  포함해 Python이 계획한 row
+- native attempt/success row count: 실제 native candidate 시도/사용 row
+- `wavefront_planner_fallback_row_count`: 실패한 deterministic native candidate
+  row만 집계하며 stochastic sidecar를 포함하지 않음
+
+Input 준비가 provider 호출 전에 실패하면 native attempt count는 `0`이다.
+Depth candidate를 식별한 뒤 input 생성에 실패하면 fallback row count는 그
+candidate 수이고, face table 준비처럼 candidate 식별 전 실패하면 `0`이다.
+Logical row count에는 native retry를 중복 반영하지 않는다. Native와 Python
+planner를 같은 run에서 사용할 수 있지만 원 row 순서와 ordered commit 순서는
+바뀌지 않는다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -332,10 +411,33 @@ PERF-3B-2 계약을 그대로 적용한다.
   `wavefront_compacted_ray_count`
 - `wavefront_receiver_dispatch`, `wavefront_reflection_rng`,
   `wavefront_rng_scalar_parity`, `wavefront_stochastic_primary_ray_count`
-- `wavefront_state_build_sec`, `wavefront_receiver_sec`, `wavefront_plan_sec`,
+- `wavefront_surface_geometry_dispatch`, `wavefront_path_quota_dispatch`
+- `wavefront_state_build_sec`, `wavefront_receiver_sec`,
+  `wavefront_geometry_sec`, `wavefront_geometry_ray_count`,
+  `wavefront_geometry_hit_count`, `wavefront_plan_sec`,
   `wavefront_commit_sec`, `wavefront_total_sec`
 - `wavefront_path_materialized_count`,
   `wavefront_path_materialization_skipped_count`
+- `requested_wavefront_planner`, `wavefront_planner`,
+  `wavefront_planner_contract`
+- `wavefront_planner_logical_row_count`,
+  `wavefront_planner_python_sidecar_row_count`
+- `wavefront_planner_native_available`, `wavefront_planner_native_used`,
+  `wavefront_planner_native_provider_version`,
+  `wavefront_planner_native_provider_disabled`
+- `wavefront_planner_native_attempt_count`,
+  `wavefront_planner_native_attempt_row_count`,
+  `wavefront_planner_native_success_count`,
+  `wavefront_planner_native_success_row_count`
+- `wavefront_planner_native_face_table_prepare_sec`,
+  `wavefront_planner_native_input_prepare_sec`,
+  `wavefront_planner_native_dispatch_sec`,
+  `wavefront_planner_native_execute_sec`,
+  `wavefront_planner_native_jit_compile_sec`
+- `wavefront_planner_fallback_count`,
+  `wavefront_planner_fallback_row_count`,
+  `wavefront_planner_fallback_phase`, `wavefront_planner_fallback_reason`,
+  `wavefront_planner_unavailable_reason`
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.
