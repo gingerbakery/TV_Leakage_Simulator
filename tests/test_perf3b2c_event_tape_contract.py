@@ -84,15 +84,9 @@ def _append_segment(
         points=base,
         normals=base + 0.125,
         distances_mm=np.asarray(faces, dtype=np.float64) + 0.25,
-        incoming_directions=base + 0.375,
         incoming_power_lumen=incoming_power_values,
         reflected_power_lumen=reflected_power_values,
         emitted_power_lumen=emitted_power_values,
-        emitted_directions=np.where(
-            emitted_values[:, None],
-            base + 0.875,
-            0.0,
-        ),
         status_flags=status,
         lobe_codes=np.asarray(lobes, dtype=np.int8),
         incoming_ray_kind_codes=np.full(

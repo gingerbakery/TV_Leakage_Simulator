@@ -65,6 +65,7 @@ from .wavefront_event_tape import (
     LOBE_LAMBERTIAN as TAPE_LOBE_LAMBERTIAN,
     LOBE_NONE as TAPE_LOBE_NONE,
     LOBE_SPECULAR as TAPE_LOBE_SPECULAR,
+    PATH_PAYLOAD_FULL as TAPE_PATH_PAYLOAD_FULL,
     PrimaryMajorEventTape,
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT as TAPE_RAY_KIND_DIRECT,
@@ -937,9 +938,16 @@ def run_direct_ray_trace(
         "event_tape_contract": "not_used",
         "event_tape_append_sec": 0.0,
         "event_tape_seal_sec": 0.0,
+        "event_tape_validation_mode": "not_used",
+        "event_tape_validation_sec": 0.0,
+        "event_tape_copy_bytes": 0,
+        "event_tape_copy_contract": "not_used",
+        "event_tape_path_payload": "not_used",
+        "event_tape_peak_scope": "not_used",
         "event_count": 0,
         "event_tape_peak_bytes": 0,
         "reducer_contract": "not_used",
+        "reducer_preflight_sec": 0.0,
         "reducer_replay_sec": 0.0,
         "reducer_hydrate_sec": 0.0,
         "reducer_logical_event_count": 0,
@@ -1522,12 +1530,33 @@ def run_direct_ray_trace(
         "wavefront_event_tape_seal_sec": wavefront_summary[
             "event_tape_seal_sec"
         ],
+        "wavefront_event_tape_validation_mode": wavefront_summary[
+            "event_tape_validation_mode"
+        ],
+        "wavefront_event_tape_validation_sec": wavefront_summary[
+            "event_tape_validation_sec"
+        ],
+        "wavefront_event_tape_copy_bytes": wavefront_summary[
+            "event_tape_copy_bytes"
+        ],
+        "wavefront_event_tape_copy_contract": wavefront_summary[
+            "event_tape_copy_contract"
+        ],
+        "wavefront_event_tape_path_payload": wavefront_summary[
+            "event_tape_path_payload"
+        ],
+        "wavefront_event_tape_peak_scope": wavefront_summary[
+            "event_tape_peak_scope"
+        ],
         "wavefront_event_count": wavefront_summary["event_count"],
         "wavefront_event_tape_peak_bytes": wavefront_summary[
             "event_tape_peak_bytes"
         ],
         "wavefront_reducer_contract": wavefront_summary[
             "reducer_contract"
+        ],
+        "wavefront_reducer_preflight_sec": wavefront_summary[
+            "reducer_preflight_sec"
         ],
         "wavefront_reducer_replay_sec": wavefront_summary[
             "reducer_replay_sec"
@@ -2476,6 +2505,8 @@ def _materialize_stored_path_from_tape(
     resolved_optical_by_face: List,
     terminal_receiver: Optional[ReceiverHitCandidate],
 ) -> List[RayHit]:
+    if tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+        raise ValueError("stored path materialization requires full path payload")
     initial_origin = (
         float(tape.initial_origins[primary_slot, 0]),
         float(tape.initial_origins[primary_slot, 1]),
@@ -2557,11 +2588,37 @@ def _reduce_wavefront_event_tape_python_ordered(
     stored_paths: List[List[RayHit]],
     wavefront_summary: Dict,
 ) -> Tuple[int, int, int]:
+    preflight_started = time.perf_counter()
+    if np.any(tape.face_indices >= len(mesh.faces)):
+        raise ValueError("event tape face index is outside the mesh")
+    receiver_terminals = tape.terminal_kind_codes == TAPE_TERMINAL_RECEIVER
+    receiver_indices = tape.terminal_receiver_indices[receiver_terminals]
+    if np.any(receiver_indices >= len(receiver_frames)):
+        raise ValueError("event tape receiver index is outside the frame table")
+    receiver_primary_slots = np.flatnonzero(receiver_terminals)
+    for receiver_index, frame in enumerate(receiver_frames):
+        receiver_slots = receiver_primary_slots[
+            receiver_indices == receiver_index
+        ]
+        if len(receiver_slots) and (
+            np.any(tape.terminal_rows[receiver_slots] >= frame.rows)
+            or np.any(
+                tape.terminal_columns[receiver_slots] >= frame.columns
+            )
+        ):
+            raise ValueError("event tape receiver cell is outside the grid")
+        if frame.receiver.receiver_id not in receiver_grids:
+            raise ValueError("event tape receiver grid is unavailable")
+    wavefront_summary["reducer_preflight_sec"] += (
+        time.perf_counter() - preflight_started
+    )
     path_quota = _WavefrontStoredPathQuota.from_paths(
         stored_paths,
         config.max_stored_paths,
     )
     path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
+    if path_storage_enabled and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+        raise ValueError("path-enabled reduction requires full path payload")
     receiver_hit_count = 0
     surface_hit_count = 0
     terminated_ray_count = 0
@@ -2702,6 +2759,24 @@ def _reduce_wavefront_event_tape_python_ordered(
                 raise ValueError("event tape receiver index is outside the frame table")
             receiver_frame = receiver_frames[receiver_index]
             receiver_id = receiver_frame.receiver.receiver_id
+            if tape.path_payload == TAPE_PATH_PAYLOAD_FULL:
+                terminal_point = (
+                    float(tape.terminal_points[primary_slot, 0]),
+                    float(tape.terminal_points[primary_slot, 1]),
+                    float(tape.terminal_points[primary_slot, 2]),
+                )
+                terminal_normal = (
+                    float(tape.terminal_normals[primary_slot, 0]),
+                    float(tape.terminal_normals[primary_slot, 1]),
+                    float(tape.terminal_normals[primary_slot, 2]),
+                )
+                terminal_distance = float(
+                    tape.terminal_distances_mm[primary_slot]
+                )
+            else:
+                terminal_point = (0.0, 0.0, 0.0)
+                terminal_normal = receiver_frame.normal
+                terminal_distance = 0.0
             terminal_receiver = ReceiverHitCandidate(
                 grid=receiver_grids[receiver_id],
                 row=int(tape.terminal_rows[primary_slot]),
@@ -2709,17 +2784,9 @@ def _reduce_wavefront_event_tape_python_ordered(
                 received_power_lumen=float(
                     tape.terminal_received_power_lumen[primary_slot]
                 ),
-                point=(
-                    float(tape.terminal_points[primary_slot, 0]),
-                    float(tape.terminal_points[primary_slot, 1]),
-                    float(tape.terminal_points[primary_slot, 2]),
-                ),
-                normal=(
-                    float(tape.terminal_normals[primary_slot, 0]),
-                    float(tape.terminal_normals[primary_slot, 1]),
-                    float(tape.terminal_normals[primary_slot, 2]),
-                ),
-                distance_mm=float(tape.terminal_distances_mm[primary_slot]),
+                point=terminal_point,
+                normal=terminal_normal,
+                distance_mm=terminal_distance,
                 incoming_power_lumen=float(
                     tape.terminal_incoming_power_lumen[primary_slot]
                 ),
@@ -3182,19 +3249,16 @@ def _trace_multi_bounce_wavefront_soa_batch(
         primary_start_index,
         reflection_seeds,
     )
-    initial_origins = np.array(origins, dtype=np.float64, order="C", copy=True)
-    initial_directions = np.array(
-        directions,
-        dtype=np.float64,
-        order="C",
-        copy=True,
+    path_payload_enabled = (
+        config.store_ray_paths and config.max_stored_paths > 0
     )
     tape_builder = PrimaryMajorEventTapeBuilder(
-        initial_origins,
-        initial_directions,
+        origins if path_payload_enabled else None,
+        directions if path_payload_enabled else None,
         np.full(ray_count, ray_power, dtype=np.float64),
         reflection_seeds,
         config.max_depth,
+        include_path_payload=path_payload_enabled,
     )
     reflection_rngs: List[Optional[random.Random]] = [None] * ray_count
     state_init_elapsed = time.perf_counter() - state_init_started
@@ -3466,15 +3530,28 @@ def _trace_multi_bounce_wavefront_soa_batch(
                 depth=depth,
                 primary_slots=active.primary_slots[surface_rows],
                 face_indices=hit_batch.face_indices[surface_rows],
-                points=surface_geometry.points[surface_rows],
-                normals=surface_geometry.normals[surface_rows],
-                distances_mm=hit_batch.t[surface_rows],
+                points=(
+                    surface_geometry.points[surface_rows]
+                    if path_payload_enabled
+                    else None
+                ),
+                normals=(
+                    surface_geometry.normals[surface_rows]
+                    if path_payload_enabled
+                    else None
+                ),
+                distances_mm=(
+                    hit_batch.t[surface_rows]
+                    if path_payload_enabled
+                    else None
+                ),
                 incoming_power_lumen=active.powers_lumen[surface_rows],
                 reflected_power_lumen=event_reflected_power,
                 emitted_power_lumen=event_emitted_power,
                 status_flags=event_status,
                 lobe_codes=event_lobes,
                 incoming_ray_kind_codes=active.ray_kind_codes[surface_rows],
+                _take_ownership=True,
             )
 
         missed_rows = np.flatnonzero(hit_batch.face_indices < 0)
@@ -3523,17 +3600,29 @@ def _trace_multi_bounce_wavefront_soa_batch(
                     ],
                     dtype=np.float64,
                 ),
-                points=np.asarray(
-                    [candidate.point for candidate in typed_candidates],
-                    dtype=np.float64,
+                points=(
+                    np.asarray(
+                        [candidate.point for candidate in typed_candidates],
+                        dtype=np.float64,
+                    )
+                    if path_payload_enabled
+                    else None
                 ),
-                normals=np.asarray(
-                    [candidate.normal for candidate in typed_candidates],
-                    dtype=np.float64,
+                normals=(
+                    np.asarray(
+                        [candidate.normal for candidate in typed_candidates],
+                        dtype=np.float64,
+                    )
+                    if path_payload_enabled
+                    else None
                 ),
-                distances_mm=np.asarray(
-                    [candidate.distance_mm for candidate in typed_candidates],
-                    dtype=np.float64,
+                distances_mm=(
+                    np.asarray(
+                        [candidate.distance_mm for candidate in typed_candidates],
+                        dtype=np.float64,
+                    )
+                    if path_payload_enabled
+                    else None
                 ),
                 incoming_power_lumen=np.asarray(
                     [
@@ -3589,6 +3678,20 @@ def _trace_multi_bounce_wavefront_soa_batch(
     tape = tape_builder.seal()
     tape_seal_elapsed = time.perf_counter() - tape_seal_started
     wavefront_summary["event_tape_seal_sec"] += tape_seal_elapsed
+    wavefront_summary["event_tape_validation_mode"] = (
+        tape_builder.validation_mode
+    )
+    wavefront_summary["event_tape_validation_sec"] += (
+        tape_builder.validation_sec
+    )
+    wavefront_summary["event_tape_copy_bytes"] += tape_builder.copy_bytes
+    wavefront_summary["event_tape_copy_contract"] = (
+        "builder_owned_materialization_v1"
+    )
+    wavefront_summary["event_tape_path_payload"] = tape.path_payload
+    wavefront_summary["event_tape_peak_scope"] = (
+        "tape_owned_ndarray_estimate_v2"
+    )
     wavefront_summary["plan_sec"] += tape_seal_elapsed
     wavefront_summary["event_count"] += tape.event_count
     wavefront_summary["event_tape_peak_bytes"] = max(

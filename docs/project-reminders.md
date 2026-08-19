@@ -152,31 +152,49 @@
 - PERF-3B-2B의 백만 ray 선형 환산도 약 `52.6초`라 목표 달성을 주장하지
   않는다. SoA state와 compact event tape는 2C에서 구현했으며 후속 순서는
   compiled ordered reducer, `counter_rng_v2`, CUDA다.
-- PERF-3B-2C는 `stable_active_soa_v1` active state와 실제 surface event 비례
-  `ordered_primary_event_tape_v1` CSR을 2026-08-19 구현했다. Runtime-only
+- PERF-3B-2C/2C-1은 `stable_active_soa_v1` active state와 실제 surface event 비례
+  `ordered_primary_event_tape_v2` CSR을 2026-08-19 구현했다. Runtime-only
   `wavefront_pipeline="soa_event_tape"`를 명시할 때만 사용하는 experimental
   경로다.
+- Tape v2 core는 정량 field를 항상 유지하고 path geometry는
+  `store_ray_paths && max_stored_paths > 0`일 때만 `full_path_v1`, 아니면
+  `omitted_v1`이다. Public runtime `seal()`은 vectorized `strict_v1`이다. Private
+  `_seal_trusted()`의 `trusted_structural_v1`은 future compiled producer/benchmark
+  전용이며 external data나 일반 runtime에서 선택하지 않는다.
 - `python_ordered_v1`은 primary 순서로 Receiver/contribution/reflection/path를
   replay하며 object-reference 대비 deterministic/stochastic float bit와 dict
-  order, chunk/provider exact를 보존한다. 전체 Python suite는 `172`개가
-  통과했다.
-- 현재 Python reducer까지 포함한 SoA 경로는 object-reference보다 느리므로
-  `wavefront_pipeline="auto"`는 `object_reference`를 유지한다. 기본 scalar와
-  GPU·Numba가 없는 PC의 no-probe CPU 경로에는 변화가 없다.
+  order, chunk/provider exact를 보존한다.
+- PERF-3B-2C-1 완료 시점 전체 Python suite는
+  `184 passed, 154 subtests passed`다. 성능 threshold는 unit test가 아니라
+  canonical benchmark에서만 판정한다.
+- SoA v2 actual p50이 object-reference보다 빨랐지만 자동 승격 gate `>= 1.05x`를
+  통과하지 못했으므로 `wavefront_pipeline="auto"`는 `object_reference`를
+  유지한다. 기본 scalar와 GPU·Numba가 없는 PC의 no-probe CPU 경로에는 변화가
+  없다.
 - 실제 ROI 100,000-ray, depth-10 counterbalanced 측정 p50은 object-reference
-  `5.216227초`, SoA `6.397611초`로 SoA가 `22.65%` 느렸다. Semantic/grid/
-  contribution/path hash는 exact했고 event/reducer count는 `225,482`, tape peak는
-  `682,614 bytes`였다. 이 exact는 같은 stochastic wavefront stream의 pipeline
-  비교이며 legacy scalar에는 statistical parity를 적용한다.
+  `5.232795초`, SoA `5.121246초`로 `1.021782x`, wall `2.132%` 개선됐다. P95는
+  `5.288968 / 5.130226초`다. Semantic/grid/contribution/path hash는 여섯 run에서
+  exact했고 event/reducer count는 `225,482`, paths-on tape peak는
+  `680,048 bytes`, copy 회계는 `29,407,112 bytes`였다. 이 exact는 같은
+  stochastic wavefront stream의 pipeline 비교이며 legacy scalar에는 statistical
+  parity를 적용한다.
+- 별도 10k paths-off/on A/B의 tape peak는 `271,080 / 643,800 bytes`, copy 회계는
+  `1,131,996 / 2,952,580 bytes`였다. 이는 tape-owned byte 회계이며 process RSS가
+  아니다.
 - 여섯 measured run 모두 effective `numba_cpu`, `native_used=true`, intersection
-  fallback `0`이었다. Planner `auto`는 effective `python_cpu`, native
-  attempt/fallback `0`이었다.
-- SoA의 1M 단순 선형 환산은 `63.98초`로 object-reference `52.16초`보다
-  나쁘므로 이번 단계도 백만 ray/LightTools 이상 목표 달성을 주장하지 않는다.
+  attempt/success `1,078/1,078`, success row `309,119`, fallback `0`이었다.
+  Planner `auto`는 effective `python_cpu`, logical/Python-sidecar
+  `225,482/225,482`, native attempt/fallback `0`이었다.
+- SoA의 1M 단순 선형 환산은 `51.21초`, object-reference는 `52.33초`다. 둘 다
+  이번 단계에서 백만 ray/LightTools 이상 목표 달성을 주장할 근거가 아니다.
 - Actual-event CSR의 구조적 memory 개선과 read-only validation은 후속 compiled
-  ordered reducer/CUDA용 데이터 경계다. PERF-3B-2C 자체를 end-to-end speedup
-  또는 백만 ray 목표 달성으로 기록하지 않는다.
-- 다음 성능 단계는 `ordered_primary_event_tape_v1`을 직접 소비하는 compiled
+  ordered reducer/CUDA용 데이터 경계다. Strict/trusted/payload 회귀에 wall-time
+  threshold를 넣지 않고 canonical benchmark에서만 성능 gate를 판정한다.
+- Canonical artifact SHA256은
+  `ef2ad80346d7e1ea44c00fc9cd19be0cfb75c9da00362231920782c486c9ad5e`,
+  benchmark script SHA256은
+  `89b223a2c128f83d1cfc76c5f9dee1e9aa8aee7cf5f1fb41f2ad5859c10cb783`다.
+- 다음 성능 단계는 `ordered_primary_event_tape_v2`를 직접 소비하는 compiled
   reducer이며, 이후 `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를
   검토한다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.

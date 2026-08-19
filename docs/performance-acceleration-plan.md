@@ -179,7 +179,7 @@
   주장하지 않는다. SoA state와 event tape는 PERF-3B-2C에서 이어서 구현하며
   compiled ordered reducer는 그 다음 경계다.
 
-#### PERF-3B-2C: SoA state와 ordered event tape
+#### PERF-3B-2C/2C-1: SoA state와 ordered event tape v2
 
 - 상태: experimental 구현 및 exact regression 완료 (2026-08-19), 자동 선택 보류
 - Runtime-only `wavefront_pipeline`에 `auto`, `object_reference`,
@@ -187,21 +187,32 @@
 - `stable_active_soa_v1`은 active ray의 primary slot/index, origin/direction,
   power, source face, ray kind와 reflection seed를 owned 배열로 유지하고 stable
   row 순서로 compact한다.
-- `ordered_primary_event_tape_v1`은 depth-major 계산 결과를 실제 surface event
-  비례 primary-major CSR로 seal한다. Terminal은 primary-aligned 별도 배열이며
-  sealed data는 read-only/strict dtype/shape/status/power-chain validation을 거친다.
+- `ordered_primary_event_tape_v2`는 depth-major 계산 결과를 실제 surface event
+  비례 primary-major CSR로 seal한다. Core 정량 column과 optional path geometry를
+  분리해 paths-off와 quota 0은 `omitted_v1`, path 저장이 필요하면
+  `full_path_v1`을 사용한다.
+- Public `seal()`은 vectorized `strict_v1` validation을 유지한다. Private
+  `_seal_trusted()`의 `trusted_structural_v1`은 future compiled producer/benchmark
+  전용이며 일반 runtime은 선택하지 않는다. 정상 strict/trusted 결과는 byte
+  exact다.
+- Sealed 배열은 owned/C-contiguous/read-only다. Validation/copy/payload/peak scope를
+  별도 metric으로 기록하며 byte 계측을 process RSS나 GPU memory로 해석하지 않는다.
 - `python_ordered_v1` reducer는 primary 순서로 grid, flux, summary/detailed
   contribution, reflection과 stored-path quota를 replay한다. 저장 가능한 path만
   materialize한다.
 - Deterministic depth 2/10과 stochastic mixed/Gaussian/Russian-roulette에서
   object-reference 대비 float bit와 dict key 순서, chunk/provider/repeat 정합성을
   exact 검증했다.
-- 기본 `auto`는 `object_reference`다. 현재 Python reducer까지 포함한 explicit
-  SoA 경로가 end-to-end 성능 gate를 통과하지 못했으므로 구조적 buffer 개선을
-  속도 향상으로 주장하지 않는다.
-- 실제 ROI 100,000-ray counterbalanced p50은 object-reference `5.216227초`, SoA
-  `6.397611초`로 SoA가 `22.65%` 느렸다. 두 경로의 semantic/grid/contribution/
-  path hash는 exact했고 tape peak는 primary chunk당 최대 `682,614 bytes`였다.
+- 기본 `auto`는 `object_reference`다. v2 actual ROI p50은 object-reference
+  `5.232795초`, SoA `5.121246초`로 `1.021782x`, wall `2.132%` 개선됐지만 자동
+  승격 gate `>= 1.05x`에는 못 미쳤다.
+- 두 경로의 semantic/grid/contribution/path hash는 여섯 measured run에서
+  exact했다. 100k paths-on tape peak는 primary chunk당 최대 `680,048 bytes`였다.
+  별도 10k A/B의 paths-off/on peak는 `271,080 / 643,800 bytes`, copy 회계는
+  `1,131,996 / 2,952,580 bytes`였다. 이는 process RSS가 아니다.
+- Strict/trusted/payload/fallback/no-probe 회귀를 포함한 전체 Python suite는
+  `184 passed, 154 subtests passed`다. Unit test에는 wall-time threshold를 두지
+  않는다.
 - 다음 단계는 tape를 직접 소비하는 compiled ordered reducer다. 그 뒤
   `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를 진행한다.
 
@@ -489,7 +500,7 @@ exact ordered reducer를 compile하고, `counter_rng_v2`로 stochastic planner
 범위를 넓힌 뒤 같은 buffer와 whole-depth fallback 계약을 CUDA에 재사용하는
 것이다.
 
-## PERF-3B-2C SoA/event-tape 측정 (2026-08-19)
+## PERF-3B-2C-1 Event-tape v2 측정 (2026-08-19)
 
 이번 단계는 같은 depth-major reflection plan을 `object_reference`와
 `soa_event_tape` pipeline으로 counterbalanced 측정한다. 비교 시 seed, chunk,
@@ -507,36 +518,43 @@ semantic mismatch와 event/tape peak bytes를 함께 기록한다.
 
 | Pipeline | Wall p50 | Wall p95 | Primary ray/s p50 | 1M 선형 환산 |
 | --- | ---: | ---: | ---: | ---: |
-| `object_reference` | `5.216227초` | `5.224492초` | `19,170.94` | `52.16초` |
-| `soa_event_tape` | `6.397611초` | `6.399492초` | `15,630.83` | `63.98초` |
+| `object_reference` | `5.232795초` | `5.288968초` | `19,110.25` | `52.33초` |
+| `soa_event_tape` | `5.121246초` | `5.130226초` | `19,526.50` | `51.21초` |
 
-SoA는 object-reference 대비 `0.8153x`, 즉 `22.65%` 느렸다. State init
-`0.082218초`와 advance `0.021038초`는 object state build `0.477921초`보다
-작았지만, tape append `0.201680초`, seal `1.423436초`, Python reducer replay
-`1.065727초`와 stored-path hydrate `0.022554초`가 추가됐다. Plan 전체는
-`2.590310 -> 4.264059초`, commit은 `0.872476 -> 1.102477초`였다. SoA state
-init은 state build와 같은 구간이고, state advance/append/seal은 plan에,
-replay/hydrate는 commit에 포함되는 nested metric이므로 합산하지 않는다.
-Intersection/native execute도 `0.469579/0.378520초`와
-`0.464707/0.375294초`로 같은 범위였다.
+SoA v2는 object-reference 대비 `1.021782x`, wall `2.132%` 개선됐다. State init
+`0.084956초`와 advance `0.024213초`는 object state build `0.493646초`보다
+작았다. Tape append `0.209180초`, seal `0.102317초`, 그 안의 public strict
+validation `0.060045초`, Python reducer replay `1.052167초`와 stored-path hydrate
+`0.024338초`가 추가됐다. Plan 전체는 `2.588661 -> 2.960907초`, commit은
+`0.859558 -> 1.094071초`였다. State init은 state build와 같은 구간이고,
+state advance/append/seal은 plan에, validation은 seal에, replay/hydrate는
+commit에 포함되는 nested metric이므로 합산하지 않는다. Intersection/native
+execute도 `0.476005/0.382826초`와 `0.482072/0.388773초`로 같은 범위였다.
 
 두 pipeline은 Receiver `12,652`, surface `225,482`, terminated `87,348`, flux
 `0.040176617410112817`, query `309,119`, path `500`, materialized/skipped
 `931/99,069`와 semantic/grid/contribution/path hash가 exact했다. SoA
-event/reducer count는 각각 `225,482`, primary-chunk tape peak 최대값은
-`682,614 bytes`다. 이 tape bytes를 process RSS나 object graph 전체 memory와
-직접 비교하지 않는다. 실제 ROI는 mixed stochastic이므로 exact 범위는 같은
+event/reducer count는 각각 `225,482`, primary-chunk paths-on tape peak 최대값은
+`680,048 bytes`, run copy 회계는 `29,407,112 bytes`다. 별도 source-stable 10k
+one-run A/B에서 paths-off/on peak는 `271,080 / 643,800 bytes`, copy 회계는
+`1,131,996 / 2,952,580 bytes`였다. 이 tape-owned byte를 process RSS나 object
+graph 전체 memory와 직접 비교하지 않는다. 실제 ROI는 mixed stochastic이므로 exact 범위는 같은
 `per_primary_seeded_v1`의 두 wavefront pipeline 사이이며 legacy scalar에는
 기존 statistical parity를 적용한다.
 
 Provider는 여섯 measured run 모두 effective `numba_cpu`, `native_used=true`,
-intersection fallback `0`이었다. Planner `auto`는 effective `python_cpu`, native
-attempt `0`, fallback `0`이었다. 따라서 교차 성능은 실제 native 실행이지만
-compiled reflection planner의 speedup은 포함하지 않는다.
+attempt/success `1,078/1,078`, native success row `309,119`, intersection fallback
+`0`이었다. Planner `auto`는 effective `python_cpu`, logical/Python-sidecar row
+`225,482/225,482`, native attempt `0`, fallback `0`이었다. 따라서 교차 성능은
+실제 native intersection 실행이지만 compiled reflection planner의 speedup은
+포함하지 않는다.
 
-따라서 `wavefront_pipeline="auto"`는 `object_reference`를 유지한다.
-Actual-event CSR은 다음 compiled reducer/CUDA의 메모리·데이터 경계이지, 이번
-단계 자체의 end-to-end speedup 근거가 아니다. 1M 선형 환산도 SoA
-`63.98초`이므로 목표 달성을 주장하지 않는다. 재현 결과는 git-ignored
+측정된 `1.021782x`는 자동 승격 gate `>= 1.05x`에 못 미치므로
+`wavefront_pipeline="auto"`는 `object_reference`를 유지한다. Actual-event CSR은
+다음 compiled reducer/CUDA의 메모리·데이터 경계이며, 1M 선형 환산
+`51.21초`로 목표 달성을 주장하지 않는다. 재현 결과는 git-ignored
 `outputs/perf3b2c_soa_event_tape/actual_roi_summary.json`에
-`perf3b2c_actual_roi_comparison_v1`로 기록했다.
+`perf3b2c_actual_roi_comparison_v1`로 기록했다. Artifact SHA256은
+`ef2ad80346d7e1ea44c00fc9cd19be0cfb75c9da00362231920782c486c9ad5e`,
+benchmark script SHA256은
+`89b223a2c128f83d1cfc76c5f9dee1e9aa8aee7cf5f1fb41f2ad5859c10cb783`다.

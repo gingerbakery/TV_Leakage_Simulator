@@ -337,7 +337,7 @@ commit 입력 표현을 분리한다. Runtime-only `wavefront_pipeline` 허용�
 - `auto`: 성능 gate를 통과한 기존 `object_reference`를 사용한다.
 - `object_reference`: PERF-3B-2B Python ray-state/ordered commit을 명시한다.
 - `soa_event_tape`: `stable_active_soa_v1` state,
-  `ordered_primary_event_tape_v1` tape와 `python_ordered_v1` reducer를 사용한다.
+  `ordered_primary_event_tape_v2` tape와 `python_ordered_v1` reducer를 사용한다.
 
 이 값은 UI, `RayTraceConfig`, 프로젝트 JSON과 `.bitsam`에 저장하지 않는다.
 Pipeline은 explicit batch, fast virtual-plane emitter와 `max_depth >= 2`인 기존
@@ -351,17 +351,28 @@ ray kind와 reflection seed를 owned contiguous NumPy 배열로 보관한다. �
 continuation은 현재 active row의 strictly increasing 순서로 compact해 primary
 상대 순서를 유지한다. Caller input과 alias하지 않는다.
 
-#### `ordered_primary_event_tape_v1`
+#### `ordered_primary_event_tape_v2`
 
 Builder는 depth-major surface segment와 primary terminal을 수집하고 seal할 때
 primary-major CSR로 전치한다. CSR event 배열은 실제 surface hit만 포함한다.
 Receiver, escaped, blocked terminal은 primary-aligned 별도 배열이다. 따라서
 storage는 `primary_count * max_depth`가 아니라 실제 surface event 수에 비례한다.
 
-Sealed 배열은 owned, C-contiguous, read-only다. Validation은 dtype/shape/offset,
-finite/nonnegative power와 distance, reflection status whitelist, lobe와 ray-kind,
-terminal 유일성, depth 연속성, surface power의 `float64` bit chain을 확인한다.
-Unsupported/partial planner 결과는 seal할 수 없다.
+Core는 initial power/seed, surface face/power/status/lobe/ray-kind와 정량 terminal
+필드를 항상 포함한다. Initial ray와 surface/receiver의 point/normal/distance는
+저장 경로에만 필요한 optional payload다. `store_ray_paths && max_stored_paths > 0`
+이면 `full_path_v1`, 아니면 `omitted_v1`이며 omitted geometry column은 shape가
+고정된 read-only empty array다. Receiver grid/flux와 contribution에 필요한
+power/cell은 생략하지 않는다.
+
+Sealed 배열은 owned, C-contiguous, read-only이며 nonempty storage range가 서로
+겹치지 않는다. Empty array도 view가 아니라 `OWNDATA`여야 한다. Public `seal()`은
+항상 `strict_v1`이며 ownership/alias, dtype/shape/offset, finite/nonnegative power와
+distance, reflection status whitelist, lobe와 ray-kind, terminal 유일성, depth
+연속성, surface power의 `float64` bit chain을 vectorized 검증한다. Unsupported/partial planner 결과는
+seal할 수 없다. Private `_seal_trusted()`의 `trusted_structural_v1`은 future
+compiled producer/benchmark 전용이다. 구조 검증은 유지하되 producer가 보장한
+semantic scan은 반복하지 않으며 일반 runtime이나 external data가 선택할 수 없다.
 
 `wavefront_event_count`는 terminal을 제외한 surface event 수다. Tape의 terminal
 depth에 따라 Receiver/escaped는 surface event 수가 depth와 같고, blocked는
@@ -372,22 +383,27 @@ depth에 따라 Receiver/escaped는 surface event 수가 depth와 같고, blocke
 `python_ordered_v1` reducer는 chunk 안에서 primary slot 오름차순으로 tape를
 재생한다. Receiver grid/flux, optical/reflection/contribution과 dict key 생성,
 stored-path quota/교체 순서는 `object_reference`와 동일하다. 저장 가능한 path만
-`RayHit`로 materialize한다.
+`RayHit`로 materialize한다. Payload가 `omitted_v1`이면 reducer는 geometry column을
+읽지 않는다.
 
 Stop은 기존 primary chunk 원자성을 유지한다. Provider/planner 실패는 tape seal
 전에 기존 whole-depth Python fallback과 circuit breaker로 처리하며 event 일부만
 fallback 결과와 섞지 않는다. Compiled reducer나 event-level native fallback은
 PERF-3B-2C 범위가 아니다.
 
-현재 Python ordered reducer까지 포함한 explicit SoA 경로는 성능 gate를 통과하지
-못했으므로 기본 `auto`는 `object_reference`다. GPU·Numba가 없는 PC의 기본
-scalar/Python CPU 경로도 변경하지 않는다. 실제 ROI counterbalanced p50은
-object-reference `5.216227초`, SoA `6.397611초`로 SoA가 `22.65%` 느렸으며,
-semantic/grid/contribution/path hash는 exact 일치했다. 엄격한 교대가 아닌
-`O,S,S,O,O,S` counterbalanced 순서의 여섯 measured run은 모두 effective
-Numba intersection,
-`native_used=true`, fallback `0`이었다. Planner `auto`는 effective Python,
-즉 `python_cpu`였고 native attempt와 fallback은 `0`이었다.
+Explicit SoA v2 경로가 실제 ROI p50을 object-reference `5.232795초`에서
+`5.121246초`로 `1.021782x`, wall `2.132%` 개선했지만 자동 승격 gate
+`>= 1.05x`에는 못 미쳤으므로 기본 `auto`는 `object_reference`다. GPU·Numba가
+없는 PC의 기본 scalar/Python CPU 경로도 변경하지 않는다. 엄격한 교대가 아닌
+`O,S,S,O,O,S` counterbalanced 순서의 여섯 measured run에서
+semantic/grid/contribution/path hash는 exact했다. Intersection은 모두 effective
+`numba_cpu`, `native_used=true`, attempt/success `1,078/1,078`, success row
+`309,119`, fallback `0`이었다. Planner `auto`는 effective `python_cpu`,
+logical/Python-sidecar `225,482/225,482`, native attempt/fallback `0`이었다.
+100k paths-on tape peak는 `680,048 bytes`, run copy 회계는
+`29,407,112 bytes`였다. 별도 10k paths-off/on A/B의 peak는
+`271,080 / 643,800 bytes`, copy는 `1,131,996 / 2,952,580 bytes`였으며 이 값은
+process RSS가 아니다.
 
 ## 백엔드 종류
 
@@ -483,8 +499,11 @@ Numba intersection,
 - `wavefront_state_layout`, `wavefront_state_init_sec`,
   `wavefront_state_advance_sec`
 - `wavefront_event_tape_contract`, `wavefront_event_tape_append_sec`,
-  `wavefront_event_tape_seal_sec`, `wavefront_event_count`,
-  `wavefront_event_tape_peak_bytes`
+  `wavefront_event_tape_seal_sec`, `wavefront_event_tape_validation_mode`,
+  `wavefront_event_tape_validation_sec`
+- `wavefront_event_tape_copy_bytes`, `wavefront_event_tape_copy_contract`,
+  `wavefront_event_tape_path_payload`, `wavefront_event_tape_peak_scope`,
+  `wavefront_event_count`, `wavefront_event_tape_peak_bytes`
 - `wavefront_reducer_contract`, `wavefront_reducer_replay_sec`,
   `wavefront_reducer_hydrate_sec`,
   `wavefront_reducer_logical_event_count`
@@ -508,6 +527,14 @@ Numba intersection,
   `wavefront_planner_fallback_row_count`,
   `wavefront_planner_fallback_phase`, `wavefront_planner_fallback_reason`,
   `wavefront_planner_unavailable_reason`
+
+`wavefront_event_tape_validation_sec`은 seal과 plan에 포함되는 nested timing이다.
+`builder_owned_materialization_v1` copy bytes와
+`tape_owned_ndarray_estimate_v2` peak bytes는 tape-owned 배열 회계이며 process RSS,
+allocator peak, GPU memory 또는 run 누적 memory를 의미하지 않는다. Copy bytes는
+producer-side advanced-index gather를, peak bytes는 strict validator 임시 배열을
+포함하지 않는다. Tape를 만들지 않는 경로에서는 validation/copy/payload/peak
+scope가 `not_used`이고 관련 timing/byte/count는 `0`이다.
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.

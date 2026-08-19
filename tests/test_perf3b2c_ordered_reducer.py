@@ -72,7 +72,13 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
             json.dumps(expected_payload, allow_nan=False, separators=(",", ":")),
         )
 
-    def assertSoAMetrics(self, result, *, event_count: int) -> None:
+    def assertSoAMetrics(
+        self,
+        result,
+        *,
+        event_count: int,
+        path_payload: str = "full_path_v1",
+    ) -> None:
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
         self.assertEqual(
@@ -81,7 +87,23 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         )
         self.assertEqual(
             performance["wavefront_event_tape_contract"],
-            "ordered_primary_event_tape_v1",
+            "ordered_primary_event_tape_v2",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_validation_mode"],
+            "strict_v1",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_copy_contract"],
+            "builder_owned_materialization_v1",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_path_payload"],
+            path_payload,
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_peak_scope"],
+            "tape_owned_ndarray_estimate_v2",
         )
         self.assertEqual(
             performance["wavefront_reducer_contract"],
@@ -98,11 +120,14 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
             int,
         )
         self.assertGreater(performance["wavefront_event_tape_peak_bytes"], 0)
+        self.assertIs(type(performance["wavefront_event_tape_copy_bytes"]), int)
+        self.assertGreater(performance["wavefront_event_tape_copy_bytes"], 0)
         timing_fields = (
             "wavefront_state_init_sec",
             "wavefront_state_advance_sec",
             "wavefront_event_tape_append_sec",
             "wavefront_event_tape_seal_sec",
+            "wavefront_event_tape_validation_sec",
             "wavefront_reducer_replay_sec",
             "wavefront_reducer_hydrate_sec",
         )
@@ -170,7 +195,11 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
                 )
 
                 self.assertSemanticBitsAndOrderEqual(actual, reference)
-                self.assertSoAMetrics(actual, event_count=1000)
+                self.assertSoAMetrics(
+                    actual,
+                    event_count=1000,
+                    path_payload="omitted_v1",
+                )
                 contribution = actual.contribution_summary.to_dict()
                 if contribution_mode == "summary":
                     self.assertEqual(list(contribution["faces"]), [])
@@ -421,6 +450,24 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         self.assertEqual(performance["wavefront_pipeline"], "not_used")
         self.assertEqual(performance["wavefront_state_layout"], "not_used")
         self.assertEqual(performance["wavefront_event_tape_contract"], "not_used")
+        self.assertEqual(
+            performance["wavefront_event_tape_validation_mode"],
+            "not_used",
+        )
+        self.assertEqual(performance["wavefront_event_tape_validation_sec"], 0.0)
+        self.assertEqual(performance["wavefront_event_tape_copy_bytes"], 0)
+        self.assertEqual(
+            performance["wavefront_event_tape_copy_contract"],
+            "not_used",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_path_payload"],
+            "not_used",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_peak_scope"],
+            "not_used",
+        )
         self.assertEqual(performance["wavefront_event_count"], 0)
         self.assertEqual(performance["wavefront_event_tape_peak_bytes"], 0)
         self.assertEqual(performance["wavefront_reducer_contract"], "not_used")
@@ -446,6 +493,15 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         )
         self.assertEqual(
             performance["wavefront_event_tape_contract"],
+            "not_used",
+        )
+        self.assertEqual(
+            performance["wavefront_event_tape_validation_mode"],
+            "not_used",
+        )
+        self.assertEqual(performance["wavefront_event_tape_copy_bytes"], 0)
+        self.assertEqual(
+            performance["wavefront_event_tape_path_payload"],
             "not_used",
         )
         self.assertEqual(performance["wavefront_event_count"], 0)

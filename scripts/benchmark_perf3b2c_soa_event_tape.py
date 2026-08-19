@@ -44,6 +44,8 @@ TIMING_FIELDS = (
     "wavefront_commit_sec",
     "wavefront_event_tape_append_sec",
     "wavefront_event_tape_seal_sec",
+    "wavefront_event_tape_validation_sec",
+    "wavefront_reducer_preflight_sec",
     "wavefront_reducer_replay_sec",
     "wavefront_reducer_hydrate_sec",
 )
@@ -63,6 +65,7 @@ COUNTER_FIELDS = (
     "wavefront_path_materialization_skipped_count",
     "wavefront_event_count",
     "wavefront_event_tape_peak_bytes",
+    "wavefront_event_tape_copy_bytes",
     "wavefront_reducer_logical_event_count",
     "wavefront_stochastic_primary_ray_count",
 )
@@ -70,6 +73,10 @@ CONTRACT_FIELDS = (
     "wavefront_pipeline",
     "wavefront_state_layout",
     "wavefront_event_tape_contract",
+    "wavefront_event_tape_validation_mode",
+    "wavefront_event_tape_path_payload",
+    "wavefront_event_tape_copy_contract",
+    "wavefront_event_tape_peak_scope",
     "wavefront_reducer_contract",
     "wavefront_reflection_rng",
     "wavefront_rng_scalar_parity",
@@ -506,6 +513,10 @@ def _summarize_pipeline(
             ),
             "event_tape_peak_bytes_max": max(
                 record["memory"]["event_tape_peak_bytes"]
+                for record in records
+            ),
+            "event_tape_copy_bytes_max": max(
+                record["counters"]["wavefront_event_tape_copy_bytes"]
                 for record in records
             ),
         },

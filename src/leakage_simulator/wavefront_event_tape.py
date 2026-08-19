@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import List
 
 import numpy as np
 
 
-EVENT_TAPE_CONTRACT = "ordered_primary_event_tape_v1"
+EVENT_TAPE_CONTRACT = "ordered_primary_event_tape_v2"
 STATE_LAYOUT = "stable_active_soa_v1"
+VALIDATION_STRICT = "strict_v1"
+VALIDATION_TRUSTED = "trusted_structural_v1"
+PATH_PAYLOAD_FULL = "full_path_v1"
+PATH_PAYLOAD_OMITTED = "omitted_v1"
 
 LOBE_NONE = -1
 LOBE_SPECULAR = 0
@@ -32,16 +37,6 @@ STATUS_ROULETTE_SURVIVED = 1 << 4
 STATUS_DISABLED = 1 << 5
 STATUS_EMITTED = 1 << 6
 STATUS_UNSUPPORTED = 1 << 7
-_KNOWN_STATUS_MASK = (
-    STATUS_ATTEMPTED
-    | STATUS_DEPTH_LIMITED
-    | STATUS_BELOW_ENERGY
-    | STATUS_ROULETTE_TERMINATED
-    | STATUS_ROULETTE_SURVIVED
-    | STATUS_DISABLED
-    | STATUS_EMITTED
-    | STATUS_UNSUPPORTED
-)
 _VALID_STATUS_FLAGS = np.asarray(
     (
         STATUS_DEPTH_LIMITED | STATUS_DISABLED,
@@ -54,6 +49,9 @@ _VALID_STATUS_FLAGS = np.asarray(
     ),
     dtype=np.uint16,
 )
+_VALID_STATUS_LOOKUP = np.zeros(1 << 16, dtype=np.bool_)
+_VALID_STATUS_LOOKUP[_VALID_STATUS_FLAGS] = True
+_VALID_STATUS_LOOKUP.setflags(write=False)
 
 
 def _owned_vector(values: np.ndarray, dtype: np.dtype, name: str) -> np.ndarray:
@@ -68,6 +66,46 @@ def _owned_xyz(values: np.ndarray, name: str) -> np.ndarray:
     if result.ndim != 2 or result.shape[1:] != (3,):
         raise ValueError(f"{name} must have shape (N, 3)")
     return result
+
+
+def _view_vector(values: np.ndarray, dtype: np.dtype, name: str) -> np.ndarray:
+    result = np.asarray(values, dtype=dtype, order="C")
+    if result.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional array")
+    return result
+
+
+def _view_xyz(values: np.ndarray, name: str) -> np.ndarray:
+    result = np.asarray(values, dtype=np.float64, order="C")
+    if result.ndim != 2 or result.shape[1:] != (3,):
+        raise ValueError(f"{name} must have shape (N, 3)")
+    return result
+
+
+def _adopt_vector(values: np.ndarray, dtype: np.dtype, name: str) -> np.ndarray:
+    if not isinstance(values, np.ndarray):
+        raise ValueError(f"{name} must be a NumPy array")
+    if values.dtype != np.dtype(dtype):
+        raise ValueError(f"{name} must have dtype {np.dtype(dtype)}")
+    if values.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional array")
+    if not values.flags.c_contiguous or not values.flags.owndata:
+        raise ValueError(f"{name} must be an owned C-contiguous array")
+    values.setflags(write=False)
+    return values
+
+
+def _adopt_xyz(values: np.ndarray, name: str) -> np.ndarray:
+    if not isinstance(values, np.ndarray):
+        raise ValueError(f"{name} must be a NumPy array")
+    if values.dtype != np.dtype(np.float64):
+        raise ValueError(f"{name} must have dtype float64")
+    if values.ndim != 2 or values.shape[1:] != (3,):
+        raise ValueError(f"{name} must have shape (N, 3)")
+    if not values.flags.c_contiguous or not values.flags.owndata:
+        raise ValueError(f"{name} must be an owned C-contiguous array")
+    values.setflags(write=False)
+    return values
 
 
 def _readonly(array: np.ndarray) -> np.ndarray:
@@ -90,18 +128,14 @@ def _validate_sealed_array(
         raise ValueError(f"{name} must have shape {shape}")
     if not array.flags.c_contiguous:
         raise ValueError(f"{name} must be C-contiguous")
+    if not array.flags.owndata:
+        raise ValueError(f"{name} must own its storage")
     if array.flags.writeable:
         raise ValueError(f"{name} must be read-only")
 
 
 def _array_bytes(*arrays: np.ndarray) -> int:
     return sum(int(array.nbytes) for array in arrays)
-
-
-def _same_float64_bits(left: float, right: float) -> bool:
-    return bool(
-        np.float64(left).view(np.uint64) == np.float64(right).view(np.uint64)
-    )
 
 
 @dataclass(slots=True)
@@ -244,6 +278,7 @@ class _SurfaceEventSegment:
 @dataclass(frozen=True, slots=True)
 class PrimaryMajorEventTape:
     contract: str
+    path_payload: str
     primary_count: int
     offsets: np.ndarray
     initial_origins: np.ndarray
@@ -318,22 +353,30 @@ class PrimaryMajorEventTape:
             raise IndexError("primary_slot is outside the event tape")
         return int(self.offsets[primary_slot]), int(self.offsets[primary_slot + 1])
 
-    def validate(self) -> None:
+    def _validate(self, *, strict: bool) -> None:
         if self.contract != EVENT_TAPE_CONTRACT:
             raise ValueError("unsupported event tape contract")
+        if self.path_payload not in {PATH_PAYLOAD_FULL, PATH_PAYLOAD_OMITTED}:
+            raise ValueError("unsupported event tape path payload")
         if self.primary_count < 0:
             raise ValueError("primary_count must be non-negative")
         event_count = len(self.face_indices)
+        path_primary_count = (
+            self.primary_count if self.path_payload == PATH_PAYLOAD_FULL else 0
+        )
+        path_event_count = (
+            event_count if self.path_payload == PATH_PAYLOAD_FULL else 0
+        )
         sealed_arrays = (
             (self.offsets, "offsets", np.int64, (self.primary_count + 1,)),
-            (self.initial_origins, "initial_origins", np.float64, (self.primary_count, 3)),
-            (self.initial_directions, "initial_directions", np.float64, (self.primary_count, 3)),
+            (self.initial_origins, "initial_origins", np.float64, (path_primary_count, 3)),
+            (self.initial_directions, "initial_directions", np.float64, (path_primary_count, 3)),
             (self.initial_power_lumen, "initial_power_lumen", np.float64, (self.primary_count,)),
             (self.reflection_seeds, "reflection_seeds", np.uint64, (self.primary_count,)),
             (self.face_indices, "face_indices", np.int64, (event_count,)),
-            (self.points, "points", np.float64, (event_count, 3)),
-            (self.normals, "normals", np.float64, (event_count, 3)),
-            (self.distances_mm, "distances_mm", np.float64, (event_count,)),
+            (self.points, "points", np.float64, (path_event_count, 3)),
+            (self.normals, "normals", np.float64, (path_event_count, 3)),
+            (self.distances_mm, "distances_mm", np.float64, (path_event_count,)),
             (self.incoming_power_lumen, "incoming_power_lumen", np.float64, (event_count,)),
             (self.reflected_power_lumen, "reflected_power_lumen", np.float64, (event_count,)),
             (self.emitted_power_lumen, "emitted_power_lumen", np.float64, (event_count,)),
@@ -348,9 +391,9 @@ class PrimaryMajorEventTape:
             (self.terminal_rows, "terminal_rows", np.int32, (self.primary_count,)),
             (self.terminal_columns, "terminal_columns", np.int32, (self.primary_count,)),
             (self.terminal_received_power_lumen, "terminal_received_power_lumen", np.float64, (self.primary_count,)),
-            (self.terminal_points, "terminal_points", np.float64, (self.primary_count, 3)),
-            (self.terminal_normals, "terminal_normals", np.float64, (self.primary_count, 3)),
-            (self.terminal_distances_mm, "terminal_distances_mm", np.float64, (self.primary_count,)),
+            (self.terminal_points, "terminal_points", np.float64, (path_primary_count, 3)),
+            (self.terminal_normals, "terminal_normals", np.float64, (path_primary_count, 3)),
+            (self.terminal_distances_mm, "terminal_distances_mm", np.float64, (path_primary_count,)),
             (self.terminal_incoming_power_lumen, "terminal_incoming_power_lumen", np.float64, (self.primary_count,)),
         )
         for array, name, dtype, shape in sealed_arrays:
@@ -360,12 +403,28 @@ class PrimaryMajorEventTape:
                 dtype=np.dtype(dtype),
                 shape=shape,
             )
+        storage_ranges = sorted(
+            (
+                int(array.__array_interface__["data"][0]),
+                int(array.__array_interface__["data"][0]) + int(array.nbytes),
+                name,
+            )
+            for array, name, _, _ in sealed_arrays
+            if array.nbytes
+        )
+        for previous, current in zip(storage_ranges, storage_ranges[1:]):
+            if current[0] < previous[1]:
+                raise ValueError(
+                    f"{previous[2]} and {current[2]} must not share storage"
+                )
         if int(self.offsets[0]) != 0 or np.any(self.offsets[1:] < self.offsets[:-1]):
             raise ValueError("offsets must be monotonic and start at zero")
         if int(self.offsets[-1]) != event_count:
             raise ValueError("offsets do not cover the event arrays")
         if self.peak_bytes < self.nbytes:
             raise ValueError("peak_bytes must cover the sealed tape storage")
+        if not strict:
+            return
         finite_arrays = (
             self.initial_origins,
             self.initial_directions,
@@ -400,143 +459,144 @@ class PrimaryMajorEventTape:
             raise ValueError("event tape powers and distances must be non-negative")
         if np.any(self.face_indices < 0):
             raise ValueError("surface events require non-negative face indices")
-        unknown_status_mask = np.uint16((~_KNOWN_STATUS_MASK) & 0xFFFF)
-        if np.any(self.status_flags.astype(np.uint16) & unknown_status_mask):
-            raise ValueError("surface event status contains unknown bits")
-        if np.any(self.status_flags.astype(np.uint16) & STATUS_UNSUPPORTED):
-            raise ValueError("unsupported planner rows cannot be sealed")
-        if not np.all(np.isin(self.status_flags, _VALID_STATUS_FLAGS)):
+        if not np.all(_VALID_STATUS_LOOKUP[self.status_flags]):
             raise ValueError("surface event status is not a valid planner outcome")
         emitted = (self.status_flags & STATUS_EMITTED) != 0
-        attempted = (self.status_flags & STATUS_ATTEMPTED) != 0
-        depth_limited = (self.status_flags & STATUS_DEPTH_LIMITED) != 0
-        below_energy = (self.status_flags & STATUS_BELOW_ENERGY) != 0
-        roulette_terminated = (
-            self.status_flags & STATUS_ROULETTE_TERMINATED
-        ) != 0
-        roulette_survived = (
-            self.status_flags & STATUS_ROULETTE_SURVIVED
-        ) != 0
-        disabled = (self.status_flags & STATUS_DISABLED) != 0
-        if np.any(depth_limited & (attempted | emitted | below_energy)):
-            raise ValueError("depth-limited events cannot be attempted or emitted")
-        if np.any(depth_limited & ~disabled):
-            raise ValueError("depth-limited events must be disabled")
-        if np.any((below_energy | roulette_terminated | roulette_survived | emitted) & ~attempted):
-            raise ValueError("reflection outcomes require an attempted event")
-        if np.any(roulette_terminated & (~below_energy | emitted | roulette_survived)):
-            raise ValueError("roulette termination status is inconsistent")
-        if np.any(roulette_survived & roulette_terminated):
-            raise ValueError("roulette survival status is inconsistent")
-        if np.any(disabled & emitted):
-            raise ValueError("disabled events cannot emit")
         if np.any(emitted & ((self.lobe_codes < LOBE_SPECULAR) | (self.lobe_codes > LOBE_GAUSSIAN))):
             raise ValueError("emitted events require a known lobe")
         if np.any((~emitted) & (self.lobe_codes != LOBE_NONE)):
             raise ValueError("non-emitted events must use LOBE_NONE")
         if np.any((~emitted) & (self.emitted_power_lumen != 0.0)):
             raise ValueError("non-emitted events must have zero emitted power")
-        valid_terminals = np.isin(
-            self.terminal_kind_codes,
-            (TERMINAL_RECEIVER, TERMINAL_ESCAPED, TERMINAL_BLOCKED),
+        valid_terminals = (
+            (self.terminal_kind_codes >= TERMINAL_RECEIVER)
+            & (self.terminal_kind_codes <= TERMINAL_BLOCKED)
         )
         if not np.all(valid_terminals):
             raise ValueError("every primary ray must have one terminal kind")
-        valid_ray_kinds = np.isin(
-            self.incoming_ray_kind_codes,
-            (RAY_KIND_DIRECT, RAY_KIND_SPECULAR, RAY_KIND_LAMBERTIAN, RAY_KIND_GAUSSIAN),
+        valid_ray_kinds = (
+            (self.incoming_ray_kind_codes >= RAY_KIND_DIRECT)
+            & (self.incoming_ray_kind_codes <= RAY_KIND_GAUSSIAN)
         )
         if not np.all(valid_ray_kinds):
             raise ValueError("surface events contain an unknown incoming ray kind")
         if not np.all(
-            np.isin(
-                self.terminal_ray_kind_codes,
-                (RAY_KIND_DIRECT, RAY_KIND_SPECULAR, RAY_KIND_LAMBERTIAN, RAY_KIND_GAUSSIAN),
-            )
+            (self.terminal_ray_kind_codes >= RAY_KIND_DIRECT)
+            & (self.terminal_ray_kind_codes <= RAY_KIND_GAUSSIAN)
         ):
             raise ValueError("terminals contain an unknown ray kind")
         if np.any(self.terminal_depths < 0):
             raise ValueError("terminal depths must be non-negative")
-        for primary_slot in range(self.primary_count):
-            start, end = self.primary_event_bounds(primary_slot)
-            count = end - start
-            terminal_depth = int(self.terminal_depths[primary_slot])
-            terminal_kind = int(self.terminal_kind_codes[primary_slot])
-            expected_count = (
-                terminal_depth + 1
-                if terminal_kind == TERMINAL_BLOCKED
-                else terminal_depth
+        counts = self.offsets[1:] - self.offsets[:-1]
+        blocked_terminals = self.terminal_kind_codes == TERMINAL_BLOCKED
+        expected_counts = self.terminal_depths.astype(np.int64) + (
+            blocked_terminals.astype(np.int64)
+        )
+        if not np.array_equal(counts, expected_counts):
+            raise ValueError("event count and terminal depth are inconsistent")
+
+        nonempty_primaries = np.flatnonzero(counts > 0)
+        starts = self.offsets[:-1][nonempty_primaries]
+        ends = self.offsets[1:][nonempty_primaries]
+        lasts = ends - 1
+        incoming_power_bits = self.incoming_power_lumen.view(np.uint64)
+        emitted_power_bits = self.emitted_power_lumen.view(np.uint64)
+        initial_power_bits = self.initial_power_lumen.view(np.uint64)
+        if len(starts) and np.any(
+            incoming_power_bits[starts] != initial_power_bits[nonempty_primaries]
+        ):
+            raise ValueError("first event power must match initial power")
+
+        if len(starts) and np.any(
+            self.incoming_ray_kind_codes[starts] != RAY_KIND_DIRECT
+        ):
+            raise ValueError("the first surface event must be a direct ray")
+        if event_count > 1:
+            boundary_starts = self.offsets[1:-1]
+            valid_boundaries = boundary_starts[
+                (boundary_starts > 0) & (boundary_starts < event_count)
+            ]
+            boundary_pairs = np.unique(valid_boundaries) - 1
+            power_mismatch = incoming_power_bits[1:] != emitted_power_bits[:-1]
+            power_mismatch[boundary_pairs] = False
+            if np.any(power_mismatch):
+                raise ValueError("surface event powers must form one chain")
+            ray_kind_mismatch = (
+                self.incoming_ray_kind_codes[1:]
+                != self.lobe_codes[:-1] + np.int8(1)
             )
-            if count != expected_count:
-                raise ValueError("event count and terminal depth are inconsistent")
-            if count:
-                primary_emitted = emitted[start:end]
-                primary_incoming_kinds = self.incoming_ray_kind_codes[start:end]
-                if not _same_float64_bits(
-                    self.incoming_power_lumen[start],
-                    self.initial_power_lumen[primary_slot],
-                ):
-                    raise ValueError("first event power must match initial power")
-                for event_index in range(start + 1, end):
-                    if not _same_float64_bits(
-                        self.incoming_power_lumen[event_index],
-                        self.emitted_power_lumen[event_index - 1],
-                    ):
-                        raise ValueError("surface event powers must form one chain")
-                if int(primary_incoming_kinds[0]) != RAY_KIND_DIRECT:
-                    raise ValueError("the first surface event must be a direct ray")
-                if count > 1 and not np.array_equal(
-                    primary_incoming_kinds[1:],
-                    self.lobe_codes[start : end - 1] + np.int8(1),
-                ):
-                    raise ValueError("surface event ray kinds must follow prior lobes")
-                if terminal_kind == TERMINAL_BLOCKED:
-                    if np.any(~primary_emitted[:-1]) or bool(primary_emitted[-1]):
-                        raise ValueError("blocked paths must end with one non-emitted event")
-                elif np.any(~primary_emitted):
-                    raise ValueError("receiver and escaped paths require emitted surface events")
-            expected_terminal_ray_kind = RAY_KIND_DIRECT
-            if terminal_depth > 0:
-                expected_terminal_ray_kind = (
-                    int(self.incoming_ray_kind_codes[end - 1])
-                    if terminal_kind == TERMINAL_BLOCKED
-                    else int(self.lobe_codes[end - 1]) + 1
-                )
-            if int(self.terminal_ray_kind_codes[primary_slot]) != expected_terminal_ray_kind:
-                raise ValueError("terminal ray kind is inconsistent with the event path")
-            expected_terminal_power = (
-                self.incoming_power_lumen[end - 1]
-                if terminal_kind == TERMINAL_BLOCKED
-                else (
-                    self.initial_power_lumen[primary_slot]
-                    if terminal_depth == 0
-                    else self.emitted_power_lumen[end - 1]
-                )
+            ray_kind_mismatch[boundary_pairs] = False
+            if np.any(ray_kind_mismatch):
+                raise ValueError("surface event ray kinds must follow prior lobes")
+
+        blocked_nonempty = blocked_terminals[nonempty_primaries]
+        blocked_lasts = lasts[blocked_nonempty]
+        if (
+            event_count - int(np.count_nonzero(emitted)) != len(blocked_lasts)
+            or (len(blocked_lasts) and np.any(emitted[blocked_lasts]))
+        ):
+            raise ValueError("surface event emission order is inconsistent")
+
+        positive_depth = self.terminal_depths > 0
+        positive_primaries = np.flatnonzero(positive_depth)
+        positive_lasts = self.offsets[1:][positive_primaries] - 1
+        expected_terminal_kinds = np.full(
+            self.primary_count,
+            RAY_KIND_DIRECT,
+            dtype=np.int8,
+        )
+        if len(positive_primaries):
+            positive_blocked = blocked_terminals[positive_primaries]
+            expected_terminal_kinds[positive_primaries] = np.where(
+                positive_blocked,
+                self.incoming_ray_kind_codes[positive_lasts],
+                self.lobe_codes[positive_lasts] + np.int8(1),
             )
-            if not _same_float64_bits(
-                self.terminal_current_power_lumen[primary_slot],
-                expected_terminal_power,
-            ):
-                raise ValueError("terminal power is inconsistent with the event path")
-            if terminal_kind == TERMINAL_RECEIVER:
-                if int(self.terminal_receiver_indices[primary_slot]) < 0:
-                    raise ValueError("receiver terminal requires a receiver index")
-                if int(self.terminal_rows[primary_slot]) < 0 or int(
-                    self.terminal_columns[primary_slot]
-                ) < 0:
-                    raise ValueError("receiver terminal requires a grid cell")
-                if not _same_float64_bits(
-                    self.terminal_incoming_power_lumen[primary_slot],
-                    self.terminal_current_power_lumen[primary_slot],
-                ):
-                    raise ValueError("receiver incoming power must match terminal power")
-            else:
-                if int(self.terminal_receiver_indices[primary_slot]) != -1:
-                    raise ValueError("non-receiver terminal must not name a receiver")
-                if int(self.terminal_rows[primary_slot]) != -1 or int(
-                    self.terminal_columns[primary_slot]
-                ) != -1:
-                    raise ValueError("non-receiver terminal must not name a grid cell")
+        if not np.array_equal(
+            self.terminal_ray_kind_codes,
+            expected_terminal_kinds,
+        ):
+            raise ValueError("terminal ray kind is inconsistent with the event path")
+
+        expected_terminal_power = self.initial_power_lumen.copy()
+        if len(nonempty_primaries):
+            nonempty_blocked = blocked_terminals[nonempty_primaries]
+            expected_terminal_power[nonempty_primaries] = np.where(
+                nonempty_blocked,
+                self.incoming_power_lumen[lasts],
+                self.emitted_power_lumen[lasts],
+            )
+        if not np.array_equal(
+            self.terminal_current_power_lumen.view(np.uint64),
+            expected_terminal_power.view(np.uint64),
+        ):
+            raise ValueError("terminal power is inconsistent with the event path")
+
+        receiver_terminals = self.terminal_kind_codes == TERMINAL_RECEIVER
+        nonreceiver_terminals = ~receiver_terminals
+        if np.any(self.terminal_receiver_indices[receiver_terminals] < 0):
+            raise ValueError("receiver terminal requires a receiver index")
+        if np.any(self.terminal_rows[receiver_terminals] < 0) or np.any(
+            self.terminal_columns[receiver_terminals] < 0
+        ):
+            raise ValueError("receiver terminal requires a grid cell")
+        if np.any(self.terminal_receiver_indices[nonreceiver_terminals] != -1):
+            raise ValueError("non-receiver terminal must not name a receiver")
+        if np.any(self.terminal_rows[nonreceiver_terminals] != -1) or np.any(
+            self.terminal_columns[nonreceiver_terminals] != -1
+        ):
+            raise ValueError("non-receiver terminal must not name a grid cell")
+        if not np.array_equal(
+            self.terminal_incoming_power_lumen[receiver_terminals].view(np.uint64),
+            self.terminal_current_power_lumen[receiver_terminals].view(np.uint64),
+        ):
+            raise ValueError("receiver incoming power must match terminal power")
+
+    def validate(self) -> None:
+        self._validate(strict=True)
+
+    def _validate_trusted_structure(self) -> None:
+        self._validate(strict=False)
 
 
 class PrimaryMajorEventTapeBuilder:
@@ -544,14 +604,14 @@ class PrimaryMajorEventTapeBuilder:
 
     def __init__(
         self,
-        initial_origins: np.ndarray,
-        initial_directions: np.ndarray,
+        initial_origins: np.ndarray | None,
+        initial_directions: np.ndarray | None,
         initial_power_lumen: np.ndarray,
         reflection_seeds: np.ndarray,
         max_depth: int,
+        *,
+        include_path_payload: bool = True,
     ) -> None:
-        self.initial_origins = _owned_xyz(initial_origins, "initial_origins")
-        self.initial_directions = _owned_xyz(initial_directions, "initial_directions")
         self.initial_power_lumen = _owned_vector(
             initial_power_lumen,
             np.float64,
@@ -562,14 +622,29 @@ class PrimaryMajorEventTapeBuilder:
             np.uint64,
             "reflection_seeds",
         )
-        self.primary_count = len(self.initial_origins)
+        self.primary_count = len(self.initial_power_lumen)
+        self.include_path_payload = bool(include_path_payload)
+        if self.include_path_payload:
+            if initial_origins is None or initial_directions is None:
+                raise ValueError("full path payload requires initial ray geometry")
+            self.initial_origins = _owned_xyz(initial_origins, "initial_origins")
+            self.initial_directions = _owned_xyz(
+                initial_directions,
+                "initial_directions",
+            )
+        else:
+            self.initial_origins = np.empty((0, 3), dtype=np.float64)
+            self.initial_directions = np.empty((0, 3), dtype=np.float64)
         if any(
             len(values) != self.primary_count
             for values in (
-                self.initial_directions,
-                self.initial_power_lumen,
                 self.reflection_seeds,
             )
+        ):
+            raise ValueError("initial arrays must have the same row count")
+        if self.include_path_payload and any(
+            len(values) != self.primary_count
+            for values in (self.initial_origins, self.initial_directions)
         ):
             raise ValueError("initial arrays must have the same row count")
         self.max_depth = int(max_depth)
@@ -578,6 +653,9 @@ class PrimaryMajorEventTapeBuilder:
         self._segments: List[_SurfaceEventSegment] = []
         self._last_segment_depth = -1
         self._sealed = False
+        self.validation_mode = "not_used"
+        self.validation_sec = 0.0
+        self.copy_bytes = self._base_input_nbytes()
         self.terminal_kind_codes = np.full(
             self.primary_count,
             TERMINAL_NONE,
@@ -604,9 +682,10 @@ class PrimaryMajorEventTapeBuilder:
             self.primary_count,
             dtype=np.float64,
         )
-        self.terminal_points = np.zeros((self.primary_count, 3), dtype=np.float64)
-        self.terminal_normals = np.zeros((self.primary_count, 3), dtype=np.float64)
-        self.terminal_distances_mm = np.zeros(self.primary_count, dtype=np.float64)
+        path_primary_count = self.primary_count if self.include_path_payload else 0
+        self.terminal_points = np.zeros((path_primary_count, 3), dtype=np.float64)
+        self.terminal_normals = np.zeros((path_primary_count, 3), dtype=np.float64)
+        self.terminal_distances_mm = np.zeros(path_primary_count, dtype=np.float64)
         self.terminal_incoming_power_lumen = np.zeros(
             self.primary_count,
             dtype=np.float64,
@@ -615,6 +694,14 @@ class PrimaryMajorEventTapeBuilder:
     @property
     def event_count(self) -> int:
         return sum(len(segment.primary_slots) for segment in self._segments)
+
+    def _base_input_nbytes(self) -> int:
+        return _array_bytes(
+            self.initial_origins,
+            self.initial_directions,
+            self.initial_power_lumen,
+            self.reflection_seeds,
+        )
 
     @property
     def nbytes(self) -> int:
@@ -646,17 +733,16 @@ class PrimaryMajorEventTapeBuilder:
         depth: int,
         primary_slots: np.ndarray,
         face_indices: np.ndarray,
-        points: np.ndarray,
-        normals: np.ndarray,
-        distances_mm: np.ndarray,
-        incoming_directions: np.ndarray | None = None,
+        points: np.ndarray | None = None,
+        normals: np.ndarray | None = None,
+        distances_mm: np.ndarray | None = None,
         incoming_power_lumen: np.ndarray,
         reflected_power_lumen: np.ndarray,
         emitted_power_lumen: np.ndarray,
-        emitted_directions: np.ndarray | None = None,
         status_flags: np.ndarray,
         lobe_codes: np.ndarray,
         incoming_ray_kind_codes: np.ndarray,
+        _take_ownership: bool = False,
     ) -> None:
         if self._sealed:
             raise RuntimeError("event tape builder is already sealed")
@@ -665,37 +751,53 @@ class PrimaryMajorEventTapeBuilder:
             raise ValueError("surface event depth is outside the configured range")
         if depth <= self._last_segment_depth:
             raise ValueError("surface event segments must be appended by increasing depth")
-        slots = _owned_vector(primary_slots, np.int64, "primary_slots")
+        vector = _adopt_vector if _take_ownership else _owned_vector
+        xyz = _adopt_xyz if _take_ownership else _owned_xyz
+        slots = vector(primary_slots, np.int64, "primary_slots")
         if len(slots):
             if slots[0] < 0 or slots[-1] >= self.primary_count:
                 raise ValueError("primary_slots are outside the tape")
             if np.any(slots[1:] <= slots[:-1]):
                 raise ValueError("primary_slots must be strictly increasing")
+        if self.include_path_payload:
+            if points is None or normals is None or distances_mm is None:
+                raise ValueError("full path payload requires surface geometry")
+            owned_points = xyz(points, "points")
+            owned_normals = xyz(normals, "normals")
+            owned_distances = vector(
+                distances_mm,
+                np.float64,
+                "distances_mm",
+            )
+        else:
+            owned_points = np.empty((0, 3), dtype=np.float64)
+            owned_normals = np.empty((0, 3), dtype=np.float64)
+            owned_distances = np.empty(0, dtype=np.float64)
         segment = _SurfaceEventSegment(
             depth=depth,
             primary_slots=slots,
-            face_indices=_owned_vector(face_indices, np.int64, "face_indices"),
-            points=_owned_xyz(points, "points"),
-            normals=_owned_xyz(normals, "normals"),
-            distances_mm=_owned_vector(distances_mm, np.float64, "distances_mm"),
-            incoming_power_lumen=_owned_vector(
+            face_indices=vector(face_indices, np.int64, "face_indices"),
+            points=owned_points,
+            normals=owned_normals,
+            distances_mm=owned_distances,
+            incoming_power_lumen=vector(
                 incoming_power_lumen,
                 np.float64,
                 "incoming_power_lumen",
             ),
-            reflected_power_lumen=_owned_vector(
+            reflected_power_lumen=vector(
                 reflected_power_lumen,
                 np.float64,
                 "reflected_power_lumen",
             ),
-            emitted_power_lumen=_owned_vector(
+            emitted_power_lumen=vector(
                 emitted_power_lumen,
                 np.float64,
                 "emitted_power_lumen",
             ),
-            status_flags=_owned_vector(status_flags, np.uint16, "status_flags"),
-            lobe_codes=_owned_vector(lobe_codes, np.int8, "lobe_codes"),
-            incoming_ray_kind_codes=_owned_vector(
+            status_flags=vector(status_flags, np.uint16, "status_flags"),
+            lobe_codes=vector(lobe_codes, np.int8, "lobe_codes"),
+            incoming_ray_kind_codes=vector(
                 incoming_ray_kind_codes,
                 np.int8,
                 "incoming_ray_kind_codes",
@@ -706,9 +808,6 @@ class PrimaryMajorEventTapeBuilder:
             len(values) != expected
             for values in (
                 segment.face_indices,
-                segment.points,
-                segment.normals,
-                segment.distances_mm,
                 segment.incoming_power_lumen,
                 segment.reflected_power_lumen,
                 segment.emitted_power_lumen,
@@ -718,17 +817,20 @@ class PrimaryMajorEventTapeBuilder:
             )
         ):
             raise ValueError("surface event arrays must have equal row counts")
-        if incoming_directions is not None and len(
-            _owned_xyz(incoming_directions, "incoming_directions")
-        ) != expected:
-            raise ValueError("surface event arrays must have equal row counts")
-        if emitted_directions is not None and len(
-            _owned_xyz(emitted_directions, "emitted_directions")
-        ) != expected:
+        if self.include_path_payload and any(
+            len(values) != expected
+            for values in (
+                segment.points,
+                segment.normals,
+                segment.distances_mm,
+            )
+        ):
             raise ValueError("surface event arrays must have equal row counts")
         if not expected:
             return
         self._segments.append(segment)
+        if not _take_ownership:
+            self.copy_bytes += segment.nbytes
         self._last_segment_depth = depth
 
     def set_nonreceiver_terminals(
@@ -743,18 +845,24 @@ class PrimaryMajorEventTapeBuilder:
         if terminal_kind not in (TERMINAL_ESCAPED, TERMINAL_BLOCKED):
             raise ValueError("terminal_kind must be escaped or blocked")
         slots = self._prepare_terminal_slots(primary_slots, depth)
-        powers = _owned_vector(
+        powers = _view_vector(
             current_power_lumen,
             np.float64,
             "current_power_lumen",
         )
-        kinds = _owned_vector(ray_kind_codes, np.int8, "ray_kind_codes")
+        kinds = _view_vector(ray_kind_codes, np.int8, "ray_kind_codes")
         if len(powers) != len(slots) or len(kinds) != len(slots):
             raise ValueError("terminal arrays must have equal row counts")
         self.terminal_kind_codes[slots] = terminal_kind
         self.terminal_depths[slots] = depth
         self.terminal_current_power_lumen[slots] = powers
         self.terminal_ray_kind_codes[slots] = kinds
+        self.copy_bytes += len(slots) * (
+            np.dtype(np.int8).itemsize
+            + np.dtype(np.int16).itemsize
+            + np.dtype(np.float64).itemsize
+            + np.dtype(np.int8).itemsize
+        )
 
     def set_receiver_terminals(
         self,
@@ -767,33 +875,30 @@ class PrimaryMajorEventTapeBuilder:
         rows: np.ndarray,
         columns: np.ndarray,
         received_power_lumen: np.ndarray,
-        points: np.ndarray,
-        normals: np.ndarray,
-        distances_mm: np.ndarray,
+        points: np.ndarray | None = None,
+        normals: np.ndarray | None = None,
+        distances_mm: np.ndarray | None = None,
         incoming_power_lumen: np.ndarray,
     ) -> None:
         slots = self._prepare_terminal_slots(primary_slots, depth)
-        values = (
-            _owned_vector(current_power_lumen, np.float64, "current_power_lumen"),
-            _owned_vector(ray_kind_codes, np.int8, "ray_kind_codes"),
-            _owned_vector(receiver_indices, np.int32, "receiver_indices"),
-            _owned_vector(rows, np.int32, "rows"),
-            _owned_vector(columns, np.int32, "columns"),
-            _owned_vector(
+        core_values = (
+            _view_vector(current_power_lumen, np.float64, "current_power_lumen"),
+            _view_vector(ray_kind_codes, np.int8, "ray_kind_codes"),
+            _view_vector(receiver_indices, np.int32, "receiver_indices"),
+            _view_vector(rows, np.int32, "rows"),
+            _view_vector(columns, np.int32, "columns"),
+            _view_vector(
                 received_power_lumen,
                 np.float64,
                 "received_power_lumen",
             ),
-            _owned_xyz(points, "points"),
-            _owned_xyz(normals, "normals"),
-            _owned_vector(distances_mm, np.float64, "distances_mm"),
-            _owned_vector(
+            _view_vector(
                 incoming_power_lumen,
                 np.float64,
                 "incoming_power_lumen",
             ),
         )
-        if any(len(value) != len(slots) for value in values):
+        if any(len(value) != len(slots) for value in core_values):
             raise ValueError("receiver terminal arrays must have equal row counts")
         (
             powers,
@@ -802,11 +907,27 @@ class PrimaryMajorEventTapeBuilder:
             rows_owned,
             columns_owned,
             received,
-            points_owned,
-            normals_owned,
-            distances,
             incoming,
-        ) = values
+        ) = core_values
+        if self.include_path_payload:
+            if points is None or normals is None or distances_mm is None:
+                raise ValueError("full path payload requires receiver geometry")
+            points_owned = _view_xyz(points, "points")
+            normals_owned = _view_xyz(normals, "normals")
+            distances = _view_vector(
+                distances_mm,
+                np.float64,
+                "distances_mm",
+            )
+            if any(
+                len(value) != len(slots)
+                for value in (points_owned, normals_owned, distances)
+            ):
+                raise ValueError("receiver terminal arrays must have equal row counts")
+        else:
+            points_owned = None
+            normals_owned = None
+            distances = None
         if np.any(receivers < 0) or np.any(rows_owned < 0) or np.any(columns_owned < 0):
             raise ValueError("receiver terminal indices must be non-negative")
         self.terminal_kind_codes[slots] = TERMINAL_RECEIVER
@@ -817,10 +938,28 @@ class PrimaryMajorEventTapeBuilder:
         self.terminal_rows[slots] = rows_owned
         self.terminal_columns[slots] = columns_owned
         self.terminal_received_power_lumen[slots] = received
-        self.terminal_points[slots] = points_owned
-        self.terminal_normals[slots] = normals_owned
-        self.terminal_distances_mm[slots] = distances
+        if self.include_path_payload:
+            assert points_owned is not None
+            assert normals_owned is not None
+            assert distances is not None
+            self.terminal_points[slots] = points_owned
+            self.terminal_normals[slots] = normals_owned
+            self.terminal_distances_mm[slots] = distances
         self.terminal_incoming_power_lumen[slots] = incoming
+        self.copy_bytes += len(slots) * (
+            np.dtype(np.int8).itemsize
+            + np.dtype(np.int16).itemsize
+            + np.dtype(np.float64).itemsize
+            + np.dtype(np.int8).itemsize
+            + 3 * np.dtype(np.int32).itemsize
+            + np.dtype(np.float64).itemsize
+            + np.dtype(np.float64).itemsize
+            + (
+                7 * np.dtype(np.float64).itemsize
+                if self.include_path_payload
+                else 0
+            )
+        )
 
     def _prepare_terminal_slots(self, primary_slots: np.ndarray, depth: int) -> np.ndarray:
         if self._sealed:
@@ -828,7 +967,7 @@ class PrimaryMajorEventTapeBuilder:
         depth = int(depth)
         if depth < 0 or depth > self.max_depth:
             raise ValueError("terminal depth is outside the configured range")
-        slots = _owned_vector(primary_slots, np.int64, "primary_slots")
+        slots = _view_vector(primary_slots, np.int64, "primary_slots")
         if len(slots):
             if slots[0] < 0 or slots[-1] >= self.primary_count:
                 raise ValueError("terminal primary_slots are outside the tape")
@@ -839,8 +978,20 @@ class PrimaryMajorEventTapeBuilder:
         return slots
 
     def seal(self) -> PrimaryMajorEventTape:
+        return self._seal(validation_mode=VALIDATION_STRICT)
+
+    def _seal_trusted(self) -> PrimaryMajorEventTape:
+        return self._seal(validation_mode=VALIDATION_TRUSTED)
+
+    def _seal(
+        self,
+        *,
+        validation_mode: str,
+    ) -> PrimaryMajorEventTape:
         if self._sealed:
             raise RuntimeError("event tape builder is already sealed")
+        if validation_mode not in {VALIDATION_STRICT, VALIDATION_TRUSTED}:
+            raise ValueError("unsupported event tape validation mode")
         self._sealed = True
         counts = np.zeros(self.primary_count, dtype=np.int64)
         for segment in self._segments:
@@ -848,40 +999,52 @@ class PrimaryMajorEventTapeBuilder:
             if np.any(counts[slots] != segment.depth):
                 raise ValueError("surface events for each primary must be depth-contiguous")
             counts[slots] += 1
+        valid_terminal_kinds = np.isin(
+            self.terminal_kind_codes,
+            (TERMINAL_RECEIVER, TERMINAL_ESCAPED, TERMINAL_BLOCKED),
+        )
+        if not np.all(valid_terminal_kinds):
+            raise ValueError("every primary ray must have one terminal kind")
+        expected_counts = self.terminal_depths.astype(np.int64) + (
+            (self.terminal_kind_codes == TERMINAL_BLOCKED).astype(np.int64)
+        )
+        if not np.array_equal(counts, expected_counts):
+            raise ValueError("event count and terminal depth are inconsistent")
         offsets = np.empty(self.primary_count + 1, dtype=np.int64)
         offsets[0] = 0
         np.cumsum(counts, out=offsets[1:])
         event_count = int(offsets[-1])
         face_indices = np.empty(event_count, dtype=np.int64)
-        points = np.empty((event_count, 3), dtype=np.float64)
-        normals = np.empty((event_count, 3), dtype=np.float64)
-        distances = np.empty(event_count, dtype=np.float64)
+        path_event_count = event_count if self.include_path_payload else 0
+        points = np.empty((path_event_count, 3), dtype=np.float64)
+        normals = np.empty((path_event_count, 3), dtype=np.float64)
+        distances = np.empty(path_event_count, dtype=np.float64)
         incoming_power = np.empty(event_count, dtype=np.float64)
         reflected_power = np.empty(event_count, dtype=np.float64)
         emitted_power = np.empty(event_count, dtype=np.float64)
         status_flags = np.empty(event_count, dtype=np.uint16)
         lobe_codes = np.empty(event_count, dtype=np.int8)
         incoming_kinds = np.empty(event_count, dtype=np.int8)
-        assigned = np.zeros(event_count, dtype=np.bool_)
+        max_segment_rows = max(
+            (len(segment.primary_slots) for segment in self._segments),
+            default=0,
+        )
+        destination_scratch = np.empty(max_segment_rows, dtype=np.int64)
         for segment in self._segments:
-            destinations = np.empty_like(segment.primary_slots)
+            destinations = destination_scratch[: len(segment.primary_slots)]
             np.take(offsets, segment.primary_slots, out=destinations)
             destinations += segment.depth
-            if np.any(assigned[destinations]):
-                raise ValueError("surface event destinations must be unique")
-            assigned[destinations] = True
             face_indices[destinations] = segment.face_indices
-            points[destinations] = segment.points
-            normals[destinations] = segment.normals
-            distances[destinations] = segment.distances_mm
+            if self.include_path_payload:
+                points[destinations] = segment.points
+                normals[destinations] = segment.normals
+                distances[destinations] = segment.distances_mm
             incoming_power[destinations] = segment.incoming_power_lumen
             reflected_power[destinations] = segment.reflected_power_lumen
             emitted_power[destinations] = segment.emitted_power_lumen
             status_flags[destinations] = segment.status_flags
             lobe_codes[destinations] = segment.lobe_codes
             incoming_kinds[destinations] = segment.incoming_ray_kind_codes
-        if event_count and not np.all(assigned):
-            raise ValueError("surface event tape contains an unassigned destination")
         builder_bytes = self.nbytes
         destination_peak_bytes = max(
             (
@@ -902,11 +1065,15 @@ class PrimaryMajorEventTapeBuilder:
             status_flags,
             lobe_codes,
             incoming_kinds,
-            assigned,
             counts,
         )
         tape = PrimaryMajorEventTape(
             contract=EVENT_TAPE_CONTRACT,
+            path_payload=(
+                PATH_PAYLOAD_FULL
+                if self.include_path_payload
+                else PATH_PAYLOAD_OMITTED
+            ),
             primary_count=self.primary_count,
             offsets=_readonly(offsets),
             initial_origins=_readonly(self.initial_origins),
@@ -945,6 +1112,24 @@ class PrimaryMajorEventTapeBuilder:
                 builder_bytes + new_event_bytes + destination_peak_bytes
             ),
         )
-        tape.validate()
+        validation_started = time.perf_counter()
+        if validation_mode == VALIDATION_STRICT:
+            tape.validate()
+        else:
+            tape._validate_trusted_structure()
+        self.validation_mode = validation_mode
+        self.validation_sec = time.perf_counter() - validation_started
+        self.copy_bytes += _array_bytes(
+            face_indices,
+            points,
+            normals,
+            distances,
+            incoming_power,
+            reflected_power,
+            emitted_power,
+            status_flags,
+            lobe_codes,
+            incoming_kinds,
+        )
         self._segments.clear()
         return tape
