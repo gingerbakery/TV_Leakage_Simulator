@@ -98,7 +98,26 @@
   Python CPU 실행을 유지한다.
 - 측정된 optional Numba/llvmlite module directory는 약 149.8 MiB이며 실제
   배포 증가는 더 클 수 있으므로 lightweight package에는 아직 포함하지 않는다.
-- 다음 순서는 `max_depth=10` 실사용을 위한 multi-bounce wavefront/후처리
-  batch이며, 그 compact active-ray 경계를 CUDA GPU backend가 재사용한다.
+- PERF-3B-2A multi-bounce depth wavefront는 2026-08-19 구현했다. 명시적
+  `batch`, fast virtual-plane emitter와 `max_depth >= 2`에서만 사용한다.
+- 기본 `auto`와 face/polygon emitter는 legacy scalar/Python CPU를 유지하며
+  Numba를 probe하지 않는다.
+- Random draw가 없는 specular wavefront는 legacy scalar와 exact하다.
+  Stochastic/Russian-roulette wavefront는 `per_primary_seeded_v1`로
+  chunk/provider/repeat exact지만 legacy scalar와는 statistical parity로
+  검증한다. 구조 후보를 비교할 때 dispatch를 혼용하지 않는다.
+- 실제 45,167-triangle, 100,000-ray, depth 10, stored-path 500 workload에서
+  권장 1,024 wavefront는 중앙값 `7.0649초`, p95 `7.3970초`다. Python scalar
+  대비 `3.71x`, native scalar 대비 `1.59~1.62x`다.
+- Stored-path quota 밖 경로의 materialization을 생략해 같은 4,096 측정을
+  `8.8017초`에서 `7.4763초`로 줄였다. materialized `931`, skipped `99,069`다.
+- 세 seed stochastic legacy 비교는 hit/flux 평균 약 `-0.9%`이고 95% CI가
+  0을 포함했지만 표본이 작다. `auto` 승격 전 더 큰 통계 gate를 수행한다.
+- PERF-3B-2A의 백만 ray 선형 환산은 약 `70.7초`로 최종 목표를 달성하지
+  못했다. 다음 순서는 reflection
+  plan과 ordered grid/contribution/path commit 병목을 줄이는 것이며, 이후
+  compact active-ray 경계를 CUDA GPU backend가 재사용한다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
-- GPU backend에서도 GPU 부재·초기화 실패·실행 실패 시 batch 전체 CPU BVH fallback을 유지한다.
+- Multi-bounce native provider 실패는 현재 depth logical batch 전체를 Python
+  CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화 실패·실행 실패 시
+  같은 whole-depth-batch CPU BVH fallback을 유지한다.

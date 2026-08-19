@@ -105,8 +105,9 @@ provider가 추가된 뒤에도 end-to-end 자동 선택 gate를 통과하지 �
 
 기존 sampler는 기본 65,536-ray batch를 그대로 생성한다. 같은 seed에서도
 sampler batch 크기를 바꾸면 NumPy 난수 draw 배치가 달라지므로 이 값은
-건드리지 않는다. 생성된 origin/direction 배열만 별도의 기본 4,096-ray
-intersection chunk로 잘라 primary와 secondary query에 전달한다.
+건드리지 않는다. 생성된 origin/direction 배열만 별도의 intersection chunk로
+잘라 query에 전달한다. PERF-3B-1 당시 기본은 4,096이었고, PERF-3B-2A 실제
+depth-10 sweep에서 1,024가 더 빨라 현재 runtime 기본을 1,024로 조정했다.
 
 처리 순서는 다음과 같다.
 
@@ -121,15 +122,16 @@ Planning 단계는 정량 결과를 변경하지 않는다. 모든 누적과 pat
 교체를 원 ray 순서로 commit하므로 `python_cpu` reference에서는 scalar와
 동일 seed 결과가 exact하게 같아야 한다.
 
-face/polygon emitter와 `max_depth >= 2`는 reflection RNG의 depth-first 소비
-순서를 유지하기 위해 기존 scalar dispatch를 사용한다. runtime dispatch와
-chunk 크기는 테스트/benchmark용 keyword-only 인자이며 프로젝트 JSON이나
-`.bitsam`에는 저장하지 않는다.
+PERF-3B-1 시점에는 face/polygon emitter와 `max_depth >= 2`가 기존 scalar
+dispatch를 사용했다. PERF-3B-2A에서 fast virtual-plane emitter의 다회 반사만
+별도 wavefront 계약으로 확장했다. runtime dispatch와 chunk 크기는 계속
+테스트/benchmark용 keyword-only 인자이며 프로젝트 JSON이나 `.bitsam`에는
+저장하지 않는다.
 
 Stop은 다음 sampling batch를 만들기 전과 intersection chunk 경계에서
 확인한다. 시작한 chunk는 primary, secondary와 결과 commit까지 원자적으로
 완료하고 다음 chunk를 시작하지 않는다. 기본값에서 최악의 Stop 지연은
-4,096 primary ray 처리 시간이다.
+1,024 primary ray 처리 시간이다.
 
 결과 JSON에는 NumPy 배열, scalar 또는 batch miss sentinel을 노출하지 않는다.
 `json.dumps(result.to_dict(), allow_nan=False)`가 성공해야 한다.
@@ -176,6 +178,76 @@ CPU로 재실행한다.
 않으며 UI, `RayTraceConfig`, `.bitsam` schema를 변경하지 않는다. 실제 ROI
 end-to-end 성능과 배포 크기 기준을 통과하기 전까지 `auto`는 계속 기존
 Python CPU 경로를 유지한다.
+
+### PERF-3B-2A multi-bounce depth wavefront
+
+다회 반사 wavefront는 다음 조건을 모두 만족할 때만 사용한다.
+
+- runtime `intersection_dispatch="batch"`를 명시적으로 요청한다.
+- emitter가 NumPy fast virtual-plane sampling을 지원한다.
+- `max_depth >= 2`다.
+
+기본 `intersection_dispatch="auto"`는 다회 반사에서도 legacy scalar를
+유지한다. `intersection_provider="auto"`도 기존 `python_cpu`를 사용하고
+Numba를 import하거나 probe하지 않는다. Face emitter와 polygon-auto emitter는
+primary sampling과 reflection이 하나의 legacy RNG stream을 공유하므로 명시적
+batch 요청에서도 scalar로 남는다. Fast emitter와 face/polygon emitter가
+혼합된 run은 각각 batch와 scalar를 사용하고 effective dispatch를 `mixed`로
+기록할 수 있다.
+
+한 primary chunk의 실행 순서는 다음과 같다.
+
+1. primary index 순서대로 active state를 만든다.
+2. 같은 depth의 active ray에 대해 Receiver 후보와 row별 `max_t`를 NumPy로
+   계산한다.
+3. active origin, direction, energy, 이전 face를 compact `RayBatch`로 만들어
+   한 번에 교차한다.
+4. miss/Receiver/blocked ray를 제거하고 살아남은 ray만 다음 depth state로
+   compact한다.
+5. chunk의 모든 ray가 종료되면 원 primary index 순서로 Receiver grid,
+   optical/reflection/contribution summary와 stored path를 commit한다.
+
+Depth별 planning 결과를 즉시 전역 집계하지 않는 이유는 부동소수점 누적 순서와
+stored-path quota 교체 순서를 안정적으로 유지하기 위해서다. Stored path는 기존
+정책대로 bounded collection이며, quota가 이미 찼고 새 경로가 저장소에 들어갈 수
+없는 경우 시각화용 `RayHit` 객체 materialization을 생략한다. 이 생략은 Receiver
+flux, hit count, contribution 또는 reflection summary에 영향을 주지 않는다.
+
+#### Reflection RNG 계약
+
+Legacy scalar 다회 반사는 한 emitter RNG를 primary별 depth-first 순서로
+소비한다. Depth wavefront는 depth별 breadth-first 실행이므로 stochastic draw를
+같은 순서로 소비할 수 없다. PERF-3B-2A는 stochastic scatter 또는 roulette
+draw 조건을 처음 만난 primary에 대해 emitter seed와 emitter 내부 primary
+index에서 독립 stream을 만드는 `per_primary_seeded_v1`을 사용한다.
+
+- `specular`/`none`과 threshold 종료처럼 reflection random draw가 전혀 없는
+  경로는 legacy scalar와 Receiver grid, flux, contribution, reflection summary,
+  stored path가 exact하게 같다.
+- Lambertian, Gaussian, mixed scatter 또는 실제 roulette draw가 있는 경로는
+  같은 wavefront seed에서 chunk 크기, 반복 실행, `python_cpu`/`numba_cpu`
+  provider가 달라도 exact하게 재현된다.
+- stochastic wavefront와 legacy scalar는 서로 다른 Monte Carlo stream이므로
+  개별 ray와 grid가 exact 같다는 계약이 아니다. 이 비교는 여러 seed의 flux,
+  hit ratio와 오차 추정치를 이용한 statistical parity 계약이다.
+
+성능 metric의 `wavefront_reflection_rng="per_primary_seeded_v1"`과
+`wavefront_rng_scalar_parity="exact_no_draw_statistical_stochastic"`이 이 경계를
+명시한다.
+
+#### Stop과 provider fallback 원자성
+
+Stop은 primary chunk 경계에서 반영한다. 이미 시작한 chunk에서 Stop이
+요청되면 active depth wavefront와 ordered commit을 모두 완료한 뒤 다음 chunk를
+시작하지 않는다. 따라서 최악 Stop 지연은 한 intersection query가 아니라 해당
+primary chunk의 남은 전체 bounce 처리 시간이다.
+
+각 depth의 compact batch가 하나의 logical intersection query다. Native provider가
+초기화, 실행 또는 결과 검증 중 실패하면 그 depth batch 전체를 동일한 Python CPU
+query로 다시 실행한다. 이전 depth의 성공 결과는 유지할 수 있으므로 run의 effective
+provider는 `mixed`가 될 수 있지만, 한 depth batch 안에서 native row와 fallback
+row를 섞지 않는다. Circuit breaker와 logical query count 비중복 규칙은 기존
+PERF-3B-2 계약을 그대로 적용한다.
 
 ## 백엔드 종류
 
@@ -229,10 +301,12 @@ Python CPU 경로를 유지한다.
 - `bvh_build_sec`
 - `rays_per_sec`
 - `requested_intersection_dispatch`
+- `intersection_batch_size`: 이번 run에 적용한 runtime chunk 크기
 - `intersection_dispatch`: `scalar`, `batch`, 또는 혼합 실행의 `mixed`
 - `intersection_batch_count`
 - `intersection_batch_max_size`
-- `intersection_ray_count`: primary/secondary를 포함한 전체 CAD query 수
+- `intersection_ray_count`: 모든 active depth row를 포함한 전체 logical CAD
+  query 수
 - `intersection_scalar_query_count`
 - `intersection_sec`: batch dispatch 호출만 합산한 시간
 - `intersection_timing_scope`: 현재 `batch_dispatch_only`
@@ -250,6 +324,18 @@ Python CPU 경로를 유지한다.
 - `intersection_fallback_count`, `intersection_fallback_ray_count`,
   `intersection_fallback_phase`, `intersection_fallback_reason`
 - `intersection_provider_unavailable_reason`
+- `multi_bounce_wavefront_used`
+- `wavefront_chunk_count`, `wavefront_primary_ray_count`
+- `wavefront_depth_batch_count`, `wavefront_max_active_ray_count`,
+  `wavefront_max_observed_depth`
+- `wavefront_active_ray_count_by_depth`, `wavefront_batch_count_by_depth`,
+  `wavefront_compacted_ray_count`
+- `wavefront_receiver_dispatch`, `wavefront_reflection_rng`,
+  `wavefront_rng_scalar_parity`, `wavefront_stochastic_primary_ray_count`
+- `wavefront_state_build_sec`, `wavefront_receiver_sec`, `wavefront_plan_sec`,
+  `wavefront_commit_sec`, `wavefront_total_sec`
+- `wavefront_path_materialized_count`,
+  `wavefront_path_materialization_skipped_count`
 
 ## 향후 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.

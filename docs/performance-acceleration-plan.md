@@ -99,7 +99,7 @@
 - NumPy primary ray가 이미 준비되는 virtual-plane fast path를 연결했다.
 - receiver 거리를 ray별 `max_t`로 전달하고 primary/secondary ray를 각각 batch query한다.
 - 결과 누적과 stored path는 원 primary row 순서로 commit해 scalar 결과를 exact 보존한다.
-- 기존 65,536 sampling batch와 기본 4,096 intersection chunk를 분리했다.
+- 기존 65,536 sampling batch와 당시 기본 4,096 intersection chunk를 분리했다.
 - Stop/progress는 시작한 intersection chunk를 원자적으로 완료한 뒤 경계에서 처리한다.
 - face/polygon emitter와 `max_depth >= 2`는 기존 scalar 경로를 유지한다.
 - runtime dispatch/chunk 인자는 프로젝트 파일에 저장하지 않는다.
@@ -124,14 +124,28 @@
   lightweight package에는 아직 포함하지 않는다.
 
 #### PERF-3B-2A: multi-bounce wavefront와 후처리 batch
-- 상태: 다음 단계
-- 사용자가 체감하는 `max_depth=10`, stored paths, 고해상도 Receiver workflow를
-  primary/secondary 한 단계에 제한되지 않는 depth wavefront로 전환한다.
-- Receiver 판정, reflection planning, grid/contribution commit의 Python row-loop
-  비중을 줄인다.
-- 동일한 wavefront와 compact active-ray buffer를 CPU native와 CUDA가 함께
-  사용하게 해 GPU backend가 교차 커널만 빠르고 전체 실행은 느린 상태를
-  방지한다.
+- 상태: 구현 및 canonical 반복 benchmark 완료 (2026-08-19), 명시적 opt-in
+- 명시적 `batch`와 fast virtual-plane emitter의 `max_depth >= 2` 실행을
+  depth별 compact wavefront로 전환했다.
+- Receiver 후보는 NumPy batch로 계산하고 active origin/direction/energy/이전
+  face만 다음 depth로 compact한다.
+- 결과는 원 primary 순서로 commit해 contribution 누적과 stored-path quota
+  정책을 보존한다. 저장될 수 없는 시각화 path의 `RayHit` materialization도
+  생략한다.
+- random draw가 없는 specular 경로는 legacy scalar와 exact하다. Stochastic
+  scatter/Russian roulette는 `per_primary_seeded_v1`로 chunk/provider/repeat
+  exact를 보장하며 legacy scalar와는 statistical parity로 비교한다.
+- 기본 `auto`, face/polygon emitter는 legacy scalar/Python CPU를 유지하고
+  Numba를 probe하지 않는다.
+- 실제 45,167-triangle, depth 10, stored-path 500 workload에서 권장 1,024
+  chunk는 중앙값 `7.0649초`, p95 `7.3970초`로 Python scalar 대비 `3.71x`,
+  native scalar 대비 `1.59~1.62x`다. 4,096보다 처리량이 `3.48%` 높아 명시적
+  batch runtime 기본 chunk를 1,024로 조정했다.
+- 세 seed stochastic 비교의 hit/flux 평균 차이는 약 `-0.9%`였고 95% CI가
+  0을 포함했지만 표본이 작다. Bias 부재 확정과 자동 선택 승격은 더 많은 seed
+  또는 1M 통계 gate 뒤로 보류한다.
+- 교차 외 plan/ordered commit이 다음 병목이며, PERF-3B-2A만으로 백만 ray
+  목표를 달성했다고 판단하지 않는다.
 
 #### PERF-3B-3: CUDA GPU backend
 - 상태: 예정
@@ -141,8 +155,12 @@
 - GPU primitive id와 최종 mesh face index의 remap을 보존한다.
 
 ## 정합성 기준
-- 동일 seed와 동일 백엔드에서는 결과가 재현되어야 한다.
-- 백엔드가 달라 난수열이 달라지는 경우 receiver flux와 hit ratio를 통계 허용 오차로 비교한다.
+- Random draw가 없는 같은-seed wavefront는 legacy scalar와 exact해야 한다.
+- Stochastic wavefront는 같은 seed에서 chunk 크기, 반복 실행과 provider가
+  달라도 exact해야 한다.
+- Stochastic wavefront와 legacy scalar는 Monte Carlo stream이 다르므로
+  receiver flux, hit ratio와 error estimate를 여러 seed의 통계 허용 오차로
+  비교한다.
 - 에너지 증가가 발생해서는 안 된다.
 - face/component/material id 연결이 가속 전후 동일해야 한다.
 - 성능 개선 때문에 optical assignment 우선순위가 달라져서는 안 된다.
@@ -242,7 +260,7 @@ dispatch 경계를 만들었지만 Receiver/plan/commit과 `intersect_rays()` �
 `python_cpu` reference의 Python scalar 처리를 사용했으므로 end-to-end로는
 최선의 4,096 chunk도 scalar 대비 처리량이 약 28.9% 낮고 실행시간은 약
 40.6% 길다. 이는 PERF-3B-2 native kernel이 제거해야 할 dispatch overhead
-기준이다. 현재 후보 중 기본 4,096 chunk가 가장 빨랐으며 Stop 응답성과
+기준이다. PERF-3B-1 후보 중 4,096 chunk가 가장 빨랐으며 Stop 응답성과
 향후 GPU launch 비용을 함께 고려해 유지한다.
 
 ## PERF-3B-2 native CPU 측정 (2026-08-18)
@@ -286,8 +304,9 @@ end-to-end `0.961x`였다. 즉 wall-time 변동을 포함해도 교차 kernel은
 교차 커널의 큰 개선이 전체 실행에서 바로 나타나지 않은 이유는 이 synthetic
 장면의 교차가 매우 싸고 Receiver 계산, reflection plan, Python 객체 복원과
 row-order commit이 실행시간 대부분을 차지하기 때문이다. 더 중요한 실제
-사용 조건인 `max_depth >= 2`는 아직 PERF-3B-1 wavefront 대상이 아니므로 이번
-단계만으로 “백만 ray 수 분” 문제를 해결했다고 판단하지 않는다.
+PERF-3B-2 측정 당시 사용 조건인 `max_depth >= 2`는 PERF-3B-1 wavefront
+대상이 아니었으므로, 그 단계만으로 “백만 ray 수 분” 문제를 해결했다고
+판단하지 않았다. 이 범위는 후속 PERF-3B-2A에서 별도로 연결했다.
 
 따라서 native provider는 명시적 개발/benchmark opt-in으로 유지한다. 자동
 선택 승격 조건은 실제 ROI end-to-end mismatch `0`, warm 성능 최소 `1.20x`,
@@ -301,3 +320,46 @@ module directory 크기는 Numba 약 33.2 MiB, llvmlite 약 116.6 MiB로 합계 
 `2.7708초`, 현재 `2.7824초`였고 runtime 차이는 `+0.42%`, paired mean 차이는
 `+0.03%`였다. 결과 payload는 exact 일치했고 Numba import/probe/JIT/native
 scene pack은 한 번도 발생하지 않았다.
+
+## PERF-3B-2A multi-bounce wavefront 측정 (2026-08-19)
+
+아래 값은 실제 프로젝트를 같은 seed/geometry로 복원한 warm 반복 측정이다.
+기본 `auto` 승격 근거가 아니라 명시적 multi-bounce batch 후보의 성능 gate다.
+
+조건:
+
+- 활성 ROI triangle: `45,167`
+- primary ray: `100,000`
+- `max_depth=10`
+- stored path quota: `500`
+- 같은 프로젝트, seed와 geometry
+
+| 실행 | 시간 | Python scalar 대비 | Native scalar 대비 |
+| --- | ---: | ---: | ---: |
+| Legacy Python scalar 재측정 | `26.1930초` | `1.00x` | `0.43~0.44x` |
+| Explicit Numba native scalar | `11.2558~11.4236초` | `2.29~2.33x` | `1.00x` |
+| Numba wavefront batch 4,096 | `7.3109초` | `3.58x` | `1.54~1.56x` |
+| Numba wavefront batch 1,024 | `7.0649초` | `3.71x` | `1.59~1.62x` |
+
+Stored-path 객체 생성 최적화 전 같은 4,096 wavefront는 `8.8017초`, 최적화
+후는 `7.4763초`였다. 실행시간은 약 `15.1%` 줄었고, 100,000개 완료 경로 중
+`931`개만 실제 materialize했으며 저장소에 들어갈 수 없는 `99,069`개는
+생략했다. 정량 Receiver/contribution 결과와 bounded stored-path 정책은 이
+최적화의 영향을 받지 않는다.
+
+현재 wavefront 결과는 같은 seed에서 chunk 크기와 반복 실행에 대해 exact하게
+재현됐다. Random draw가 없는 specular 합성 장면은 legacy scalar와 Receiver
+grid, flux, contribution, reflection summary와 stored path가 exact 일치했다.
+Stochastic/Russian-roulette 장면은 `per_primary_seeded_v1` wavefront 내부에서
+chunk/provider exact를 확인했다. Legacy depth-first scalar와 seed 3개씩 비교한
+평균 차이는 Receiver hit `-0.92%`, surface hit `+0.33%`, flux `-0.93%`였고
+95% CI가 모두 0을 포함했다. 유의한 bias 증거는 없지만 표본이 작아 더 큰
+통계 검증 전까지 `auto`는 승격하지 않는다.
+
+최종 결과는 실제 multi-bounce workload에서 native intersection을 wavefront로
+연결하는 방향이 유효함을 보여준다. 그러나 1,000,000-ray 선형 환산은 약
+`70.7초`다. 따라서 사용자가 요구한 백만 ray와 LightTools 이상 속도를
+달성했다고 주장하지 않는다.
+Wavefront timing을 보면 교차 커널 외 reflection planning과 ordered commit이
+다음 최적화 대상이다. 이 구간의 배열화/compiled commit을 먼저 진행한 뒤 같은
+active-ray buffer를 CUDA backend에 재사용한다.

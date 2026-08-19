@@ -149,6 +149,39 @@ class _SingleBouncePlan:
 
 
 @dataclass(slots=True)
+class _MultiBounceSurfaceStep:
+    surface_hit: HitRecord
+    incoming_direction: Vec3
+    incoming_power_lumen: float
+    reflected_power_lumen: float
+    depth: int
+    ray_kind: str
+    optical_profile: OpticalProfile
+    optical_source: str
+    reflection_decision: _ReflectionDecision
+
+
+@dataclass(slots=True)
+class _MultiBounceWavefrontRay:
+    primary_index: int
+    initial_origin: Vec3
+    initial_direction: Vec3
+    initial_power_lumen: float
+    reflection_seed: int
+    reflection_rng: Optional[random.Random]
+    current_origin: Vec3
+    current_direction: Vec3
+    current_power_lumen: float
+    current_source_face: int = -1
+    current_depth: int = 0
+    current_ray_kind: str = "direct"
+    steps: List[_MultiBounceSurfaceStep] = field(default_factory=list)
+    terminal_kind: Optional[str] = None
+    terminal_receiver: Optional[ReceiverHitCandidate] = None
+    terminal_depth: int = 0
+
+
+@dataclass(slots=True)
 class _IntersectionDispatchStats:
     intersection_backend: str = "auto"
     requested_provider: str = "auto"
@@ -359,7 +392,7 @@ class _IntersectionDispatchStats:
         }
 
 
-_DEFAULT_INTERSECTION_BATCH_SIZE = 4096
+_DEFAULT_INTERSECTION_BATCH_SIZE = 1024
 
 
 def run_simulation(engine_input: EngineInput) -> SimulationOutput:
@@ -483,6 +516,27 @@ def _store_completed_path(
             return
 
 
+def _should_materialize_completed_path(
+    stored_paths: List[List[RayHit]],
+    terminal_kind: Optional[str],
+    max_stored_paths: int,
+) -> bool:
+    """Return whether a completed path can still enter the bounded store.
+
+    Once the quota is full, dead-end paths can never be inserted. A Receiver
+    path is still useful only while at least one stored path is a dead end that
+    it can replace. This check avoids building visualization-only ``RayHit``
+    objects for paths that ``_store_completed_path`` would immediately drop.
+    """
+    if max_stored_paths <= 0:
+        return False
+    if len(stored_paths) < max_stored_paths:
+        return True
+    if terminal_kind != "receiver":
+        return False
+    return any(not _path_reaches_receiver(path) for path in stored_paths)
+
+
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -557,6 +611,28 @@ def run_direct_ray_trace(
     progress_interval = max(1, expected_ray_count // 400)
     last_progress_count = -1
     stopped_early = False
+    multi_bounce_wavefront_used = False
+    wavefront_summary = {
+        "chunk_count": 0,
+        "primary_ray_count": 0,
+        "depth_batch_count": 0,
+        "max_active_ray_count": 0,
+        "max_observed_depth": 0,
+        "active_ray_count_by_depth": {},
+        "batch_count_by_depth": {},
+        "receiver_dispatch": "numpy_batch",
+        "reflection_rng": "per_primary_seeded_v1",
+        "rng_scalar_parity": "exact_no_draw_statistical_stochastic",
+        "stochastic_primary_ray_count": 0,
+        "state_build_sec": 0.0,
+        "receiver_sec": 0.0,
+        "plan_sec": 0.0,
+        "commit_sec": 0.0,
+        "total_sec": 0.0,
+        "compacted_ray_count": 0,
+        "path_materialized_count": 0,
+        "path_materialization_skipped_count": 0,
+    }
     if progress_callback is not None:
         progress_callback(0, expected_ray_count)
 
@@ -585,7 +661,6 @@ def run_direct_ray_trace(
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
         use_batch_dispatch = (
             intersection_dispatch == "batch"
-            and trace_input.config.max_depth <= 1
             and supports_fast_virtual_plane_sampling(emitter)
         )
         if use_batch_dispatch:
@@ -597,6 +672,7 @@ def run_direct_ray_trace(
                 trace_input.config.epsilon_mm,
                 emitter_seed,
             )
+            emitter_ray_offset = 0
             while True:
                 if should_stop is not None and should_stop():
                     stopped_early = True
@@ -610,24 +686,47 @@ def run_direct_ray_trace(
                         stopped_early = True
                         break
                     end = min(len(origin_batch), start + intersection_batch_size)
-                    batch_counts = _trace_single_bounce_batch(
-                        trace_input.mesh,
-                        origin_batch[start:end],
-                        direction_batch[start:end],
-                        ray_power,
-                        receiver_frames,
-                        receiver_grids,
-                        trace_input.config,
-                        resolved_optical_by_face,
-                        emitter_rng,
-                        optical_summary,
-                        reflection_summary,
-                        contribution_summary,
-                        face_contribution_cache,
-                        detailed_contributions,
-                        stored_paths,
-                        intersection_stats,
-                    )
+                    if trace_input.config.max_depth <= 1:
+                        batch_counts = _trace_single_bounce_batch(
+                            trace_input.mesh,
+                            origin_batch[start:end],
+                            direction_batch[start:end],
+                            ray_power,
+                            receiver_frames,
+                            receiver_grids,
+                            trace_input.config,
+                            resolved_optical_by_face,
+                            emitter_rng,
+                            optical_summary,
+                            reflection_summary,
+                            contribution_summary,
+                            face_contribution_cache,
+                            detailed_contributions,
+                            stored_paths,
+                            intersection_stats,
+                        )
+                    else:
+                        multi_bounce_wavefront_used = True
+                        batch_counts = _trace_multi_bounce_wavefront_batch(
+                            trace_input.mesh,
+                            origin_batch[start:end],
+                            direction_batch[start:end],
+                            ray_power,
+                            emitter_seed,
+                            emitter_ray_offset + start,
+                            receiver_frames,
+                            receiver_grids,
+                            trace_input.config,
+                            resolved_optical_by_face,
+                            optical_summary,
+                            reflection_summary,
+                            contribution_summary,
+                            face_contribution_cache,
+                            detailed_contributions,
+                            stored_paths,
+                            intersection_stats,
+                            wavefront_summary,
+                        )
                     chunk_ray_count = end - start
                     total_rays += chunk_ray_count
                     receiver_hit_count += batch_counts[0]
@@ -639,6 +738,7 @@ def run_direct_ray_trace(
                             last_progress_count = total_rays
                 if stopped_early:
                     break
+                emitter_ray_offset += len(origin_batch)
             if stopped_early:
                 break
             continue
@@ -983,7 +1083,11 @@ def run_direct_ray_trace(
     )
     metrics["_performance_summary"] = {
         "backend": "python_numpy_cpu",
-        "execution_path": execution_path,
+        "execution_path": (
+            "multi_bounce_wavefront"
+            if multi_bounce_wavefront_used
+            else execution_path
+        ),
         "contribution_mode": trace_input.config.contribution_mode,
         "intersection_backend": acceleration_info["selected_backend"],
         "configured_intersection_backend": trace_input.config.intersection_backend,
@@ -1004,6 +1108,47 @@ def run_direct_ray_trace(
         "requested_ray_count": expected_ray_count,
         "rays_per_sec": total_rays / runtime_sec if runtime_sec > 0.0 else 0.0,
         "requested_intersection_dispatch": intersection_dispatch,
+        "intersection_batch_size": intersection_batch_size,
+        "multi_bounce_wavefront_used": multi_bounce_wavefront_used,
+        "wavefront_chunk_count": wavefront_summary["chunk_count"],
+        "wavefront_primary_ray_count": wavefront_summary["primary_ray_count"],
+        "wavefront_depth_batch_count": wavefront_summary["depth_batch_count"],
+        "wavefront_max_active_ray_count": wavefront_summary[
+            "max_active_ray_count"
+        ],
+        "wavefront_max_observed_depth": wavefront_summary[
+            "max_observed_depth"
+        ],
+        "wavefront_active_ray_count_by_depth": wavefront_summary[
+            "active_ray_count_by_depth"
+        ],
+        "wavefront_batch_count_by_depth": wavefront_summary[
+            "batch_count_by_depth"
+        ],
+        "wavefront_receiver_dispatch": wavefront_summary[
+            "receiver_dispatch"
+        ],
+        "wavefront_reflection_rng": wavefront_summary["reflection_rng"],
+        "wavefront_rng_scalar_parity": wavefront_summary[
+            "rng_scalar_parity"
+        ],
+        "wavefront_stochastic_primary_ray_count": wavefront_summary[
+            "stochastic_primary_ray_count"
+        ],
+        "wavefront_state_build_sec": wavefront_summary["state_build_sec"],
+        "wavefront_receiver_sec": wavefront_summary["receiver_sec"],
+        "wavefront_plan_sec": wavefront_summary["plan_sec"],
+        "wavefront_commit_sec": wavefront_summary["commit_sec"],
+        "wavefront_total_sec": wavefront_summary["total_sec"],
+        "wavefront_compacted_ray_count": wavefront_summary[
+            "compacted_ray_count"
+        ],
+        "wavefront_path_materialized_count": wavefront_summary[
+            "path_materialized_count"
+        ],
+        "wavefront_path_materialization_skipped_count": wavefront_summary[
+            "path_materialization_skipped_count"
+        ],
         **intersection_stats.to_summary(),
     }
     return RayTraceResult(
@@ -1352,6 +1497,641 @@ def _trace_single_bounce_fast(
             stored_paths, path_events, config.max_stored_paths
         )
     return 0, 1, 1
+
+
+def _wavefront_reflection_seed(emitter_seed: int, primary_index: int) -> int:
+    """Return a stable per-primary reflection stream seed.
+
+    Legacy multi-bounce tracing consumes one emitter RNG depth-first. A true
+    breadth-first wavefront cannot preserve that draw order. Isolating the
+    reflection stream per primary ray makes the explicit wavefront path
+    deterministic across chunk sizes and CPU/native intersection providers.
+    """
+    mask = (1 << 64) - 1
+    value = (
+        (int(emitter_seed) & mask)
+        ^ (((int(primary_index) + 1) * 0x9E3779B97F4A7C15) & mask)
+    )
+    value = (value + 0x9E3779B97F4A7C15) & mask
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
+    return value ^ (value >> 31)
+
+
+class _WavefrontNoDrawRng:
+    def random(self) -> float:
+        raise RuntimeError("deterministic wavefront path unexpectedly requested RNG")
+
+
+_WAVEFRONT_NO_DRAW_RNG = _WavefrontNoDrawRng()
+
+
+def _wavefront_reflection_rng(
+    state: _MultiBounceWavefrontRay,
+    profile: OpticalProfile,
+    config: RayTraceConfig,
+    reflected_power_lumen: float,
+) -> random.Random:
+    if state.current_depth >= config.max_depth:
+        return _WAVEFRONT_NO_DRAW_RNG  # type: ignore[return-value]
+    roulette_draw_required = (
+        config.termination_mode == "russian_roulette"
+        and config.min_energy > 0.0
+        and reflected_power_lumen < config.min_energy
+    )
+    direction_draw_required = profile.scatter_model not in {"none", "specular"}
+    if not roulette_draw_required and not direction_draw_required:
+        return _WAVEFRONT_NO_DRAW_RNG  # type: ignore[return-value]
+    if state.reflection_rng is None:
+        state.reflection_rng = random.Random(state.reflection_seed)
+    return state.reflection_rng
+
+
+def _find_first_receiver_hits_batch(
+    origins: np.ndarray,
+    directions: np.ndarray,
+    powers_lumen: np.ndarray,
+    receivers: List[ReceiverFrame],
+    grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    depth: int,
+    ray_kinds: List[str],
+) -> Tuple[List[Optional[ReceiverHitCandidate]], np.ndarray]:
+    ray_count = len(origins)
+    best_distance = np.full(ray_count, float("inf"), dtype=np.float64)
+    best_receiver = np.full(ray_count, -1, dtype=np.int64)
+    best_row = np.zeros(ray_count, dtype=np.int64)
+    best_column = np.zeros(ray_count, dtype=np.int64)
+    best_received_power = np.zeros(ray_count, dtype=np.float64)
+    best_points = np.zeros((ray_count, 3), dtype=np.float64)
+
+    origin_x = origins[:, 0]
+    origin_y = origins[:, 1]
+    origin_z = origins[:, 2]
+    direction_x = directions[:, 0]
+    direction_y = directions[:, 1]
+    direction_z = directions[:, 2]
+    for receiver_index, frame in enumerate(receivers):
+        normal_x, normal_y, normal_z = frame.normal
+        denominator = (
+            direction_x * normal_x
+            + direction_y * normal_y
+            + direction_z * normal_z
+        )
+        candidate_indices = np.flatnonzero(np.abs(denominator) >= 1e-12)
+        if not len(candidate_indices):
+            continue
+        center_x, center_y, center_z = frame.receiver.center
+        candidate_t = (
+            (center_x - origin_x[candidate_indices]) * normal_x
+            + (center_y - origin_y[candidate_indices]) * normal_y
+            + (center_z - origin_z[candidate_indices]) * normal_z
+        ) / denominator[candidate_indices]
+        valid = (
+            (candidate_t > config.epsilon_mm)
+            & (candidate_t < best_distance[candidate_indices])
+        )
+        if not np.any(valid):
+            continue
+        candidate_indices = candidate_indices[valid]
+        candidate_t = candidate_t[valid]
+        point_x = origin_x[candidate_indices] + direction_x[candidate_indices] * candidate_t
+        point_y = origin_y[candidate_indices] + direction_y[candidate_indices] * candidate_t
+        point_z = origin_z[candidate_indices] + direction_z[candidate_indices] * candidate_t
+        local_x = point_x - center_x
+        local_y = point_y - center_y
+        local_z = point_z - center_z
+        u_axis_x, u_axis_y, u_axis_z = frame.u_axis
+        v_axis_x, v_axis_y, v_axis_z = frame.v_axis
+        u_values = (
+            local_x * u_axis_x + local_y * u_axis_y + local_z * u_axis_z
+        )
+        v_values = (
+            local_x * v_axis_x + local_y * v_axis_y + local_z * v_axis_z
+        )
+        acceptance_cosine = np.maximum(0.0, -denominator[candidate_indices])
+        valid = (
+            (u_values >= -frame.half_width)
+            & (u_values <= frame.half_width)
+            & (v_values >= -frame.half_height)
+            & (v_values <= frame.half_height)
+            & (acceptance_cosine >= frame.minimum_acceptance_cosine)
+        )
+        if not np.any(valid):
+            continue
+        candidate_indices = candidate_indices[valid]
+        candidate_t = candidate_t[valid]
+        point_x = point_x[valid]
+        point_y = point_y[valid]
+        point_z = point_z[valid]
+        u_values = u_values[valid]
+        v_values = v_values[valid]
+        acceptance_cosine = acceptance_cosine[valid]
+        columns = np.clip(
+            (
+                (u_values + frame.half_width)
+                * frame.inverse_width
+                * frame.columns
+            ).astype(np.int64),
+            0,
+            frame.columns - 1,
+        )
+        rows = np.clip(
+            (
+                (v_values + frame.half_height)
+                * frame.inverse_height
+                * frame.rows
+            ).astype(np.int64),
+            0,
+            frame.rows - 1,
+        )
+        best_distance[candidate_indices] = candidate_t
+        best_receiver[candidate_indices] = receiver_index
+        best_row[candidate_indices] = rows
+        best_column[candidate_indices] = columns
+        best_received_power[candidate_indices] = (
+            powers_lumen[candidate_indices] * acceptance_cosine
+        )
+        best_points[candidate_indices, 0] = point_x
+        best_points[candidate_indices, 1] = point_y
+        best_points[candidate_indices, 2] = point_z
+
+    candidates: List[Optional[ReceiverHitCandidate]] = [None] * ray_count
+    for index in np.flatnonzero(best_receiver >= 0):
+        receiver_frame = receivers[int(best_receiver[index])]
+        receiver = receiver_frame.receiver
+        candidates[int(index)] = ReceiverHitCandidate(
+            grid=grids[receiver.receiver_id],
+            row=int(best_row[index]),
+            column=int(best_column[index]),
+            received_power_lumen=float(best_received_power[index]),
+            point=(
+                float(best_points[index, 0]),
+                float(best_points[index, 1]),
+                float(best_points[index, 2]),
+            ),
+            normal=receiver_frame.normal,
+            distance_mm=float(best_distance[index]),
+            incoming_power_lumen=float(powers_lumen[index]),
+            receiver_id=receiver.receiver_id,
+            depth=depth,
+            ray_kind=ray_kinds[int(index)],
+        )
+    return candidates, best_distance
+
+
+def _commit_multi_bounce_wavefront_ray(
+    mesh: TriangleMesh,
+    state: _MultiBounceWavefrontRay,
+    config: RayTraceConfig,
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    wavefront_summary: Dict,
+) -> Tuple[int, int, int]:
+    path_storage_enabled = (
+        config.store_ray_paths and config.max_stored_paths > 0
+    )
+    store_path = path_storage_enabled and _should_materialize_completed_path(
+        stored_paths,
+        state.terminal_kind,
+        config.max_stored_paths,
+    )
+    if path_storage_enabled:
+        summary_key = (
+            "path_materialized_count"
+            if store_path
+            else "path_materialization_skipped_count"
+        )
+        wavefront_summary[summary_key] += 1
+    path_events: List[RayHit] = (
+        [
+            _emitter_ray_hit(
+                -1,
+                state.initial_origin,
+                state.initial_direction,
+                state.initial_power_lumen,
+            )
+        ]
+        if store_path
+        else []
+    )
+    previous_surface_contribution: Optional[Dict] = None
+    previous_lobe: Optional[str] = None
+    reflection_summary["max_observed_depth"] = max(
+        reflection_summary["max_observed_depth"],
+        state.terminal_depth,
+    )
+
+    for step in state.steps:
+        surface_hit = step.surface_hit
+        surface_contribution = (
+            _surface_contribution_for_face(
+                contribution_summary,
+                mesh,
+                surface_hit.face_index,
+                face_contribution_cache,
+            )
+            if detailed_contributions
+            else None
+        )
+        if step.depth == 0:
+            reflection_summary["primary_surface_hit_count"] += 1
+        reflection_summary["surface_hit_count"] += 1
+        if detailed_contributions:
+            assert surface_contribution is not None
+            _record_surface_hit_contribution(
+                contribution_summary,
+                surface_contribution,
+                step.depth,
+                step.incoming_power_lumen,
+                step.reflected_power_lumen,
+            )
+        _record_optical_summary(
+            optical_summary,
+            step.optical_profile,
+            step.optical_source,
+            step.incoming_power_lumen,
+            step.reflected_power_lumen,
+        )
+        _record_reflection_decision(
+            reflection_summary,
+            step.reflection_decision,
+        )
+
+        if step.reflection_decision.emission is None:
+            if step.depth > 0:
+                assert previous_lobe is not None
+                _record_reflection_outcome(
+                    reflection_summary,
+                    previous_lobe,
+                    "blocked",
+                    step.depth,
+                )
+                _record_surface_reflection_outcome(
+                    contribution_summary,
+                    previous_surface_contribution,
+                    previous_lobe,
+                    "blocked",
+                    step.incoming_power_lumen,
+                    step.depth,
+                )
+                if detailed_contributions:
+                    assert surface_contribution is not None
+                    _record_secondary_blocker_contribution(
+                        contribution_summary,
+                        surface_contribution,
+                        previous_lobe,
+                        step.incoming_power_lumen,
+                        step.depth,
+                    )
+            if store_path:
+                path_events.append(
+                    _surface_ray_hit(
+                        mesh,
+                        surface_hit.face_index,
+                        surface_hit.point,
+                        surface_hit.normal,
+                        surface_hit.t,
+                        step.incoming_power_lumen,
+                        step.reflected_power_lumen,
+                        depth=step.depth,
+                        optical_profile=step.optical_profile,
+                        optical_source=step.optical_source,
+                        ray_kind=step.ray_kind if step.depth > 0 else None,
+                    )
+                )
+            break
+
+        reflection_sample, emitted_power = step.reflection_decision.emission
+        next_depth = step.depth + 1
+        if step.depth > 0:
+            assert previous_lobe is not None
+            _record_reflection_outcome(
+                reflection_summary,
+                previous_lobe,
+                "continued",
+                step.depth,
+            )
+            _record_surface_reflection_outcome(
+                contribution_summary,
+                previous_surface_contribution,
+                previous_lobe,
+                "continued",
+                step.incoming_power_lumen,
+                step.depth,
+            )
+        _record_reflection_emission(
+            reflection_summary,
+            reflection_sample,
+            emitted_power,
+            next_depth,
+        )
+        _record_surface_reflection_emission(
+            contribution_summary,
+            surface_contribution,
+            reflection_sample.lobe,
+            emitted_power,
+            next_depth,
+        )
+        if store_path:
+            path_events.append(
+                _surface_ray_hit(
+                    mesh,
+                    surface_hit.face_index,
+                    surface_hit.point,
+                    surface_hit.normal,
+                    surface_hit.t,
+                    step.incoming_power_lumen,
+                    emitted_power,
+                    depth=step.depth,
+                    optical_profile=step.optical_profile,
+                    optical_source=step.optical_source,
+                    ray_kind=reflection_sample.lobe,
+                )
+            )
+        previous_surface_contribution = surface_contribution
+        previous_lobe = reflection_sample.lobe
+
+    receiver_hit_count = 0
+    terminated_ray_count = 0
+    if state.terminal_kind == "receiver":
+        candidate = state.terminal_receiver
+        assert candidate is not None
+        _record_receiver_hit(candidate)
+        receiver_hit_count = 1
+        if state.terminal_depth == 0:
+            reflection_summary["direct_receiver_hit_count"] += 1
+            reflection_summary["direct_receiver_flux_lumen"] += (
+                candidate.received_power_lumen
+            )
+            _record_direct_receiver_contribution(
+                contribution_summary,
+                candidate,
+            )
+        else:
+            assert previous_lobe is not None
+            _record_reflection_outcome(
+                reflection_summary,
+                previous_lobe,
+                "receiver",
+                state.terminal_depth,
+                candidate.received_power_lumen,
+            )
+            _record_reflected_receiver_contribution(
+                contribution_summary,
+                candidate,
+                previous_lobe,
+                state.terminal_depth,
+            )
+            _record_surface_reflection_outcome(
+                contribution_summary,
+                previous_surface_contribution,
+                previous_lobe,
+                "receiver",
+                state.current_power_lumen,
+                state.terminal_depth,
+                received_flux_lumen=candidate.received_power_lumen,
+            )
+        if store_path:
+            path_events.append(candidate.to_ray_hit())
+    elif state.terminal_kind == "escaped":
+        terminated_ray_count = 1
+        if state.terminal_depth > 0:
+            assert previous_lobe is not None
+            _record_reflection_outcome(
+                reflection_summary,
+                previous_lobe,
+                "escaped",
+                state.terminal_depth,
+            )
+            _record_surface_reflection_outcome(
+                contribution_summary,
+                previous_surface_contribution,
+                previous_lobe,
+                "escaped",
+                state.current_power_lumen,
+                state.terminal_depth,
+            )
+    else:
+        assert state.terminal_kind == "blocked"
+        terminated_ray_count = 1
+
+    if store_path:
+        _store_completed_path(stored_paths, path_events, config.max_stored_paths)
+    return receiver_hit_count, len(state.steps), terminated_ray_count
+
+
+def _trace_multi_bounce_wavefront_batch(
+    mesh: TriangleMesh,
+    origins: np.ndarray,
+    directions: np.ndarray,
+    ray_power: float,
+    emitter_seed: int,
+    primary_start_index: int,
+    receivers: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    intersection_stats: _IntersectionDispatchStats,
+    wavefront_summary: Dict,
+) -> Tuple[int, int, int]:
+    if config.max_depth <= 1:
+        raise ValueError("multi-bounce wavefront requires max_depth >= 2")
+    ray_count = len(origins)
+    if ray_count == 0:
+        return 0, 0, 0
+
+    wavefront_started = time.perf_counter()
+    state_build_started = time.perf_counter()
+    states: List[_MultiBounceWavefrontRay] = []
+    for index in range(ray_count):
+        origin = tuple(float(value) for value in origins[index])
+        direction = tuple(float(value) for value in directions[index])
+        states.append(
+            _MultiBounceWavefrontRay(
+                primary_index=primary_start_index + index,
+                initial_origin=origin,  # type: ignore[arg-type]
+                initial_direction=direction,  # type: ignore[arg-type]
+                initial_power_lumen=ray_power,
+                reflection_seed=_wavefront_reflection_seed(
+                    emitter_seed,
+                    primary_start_index + index,
+                ),
+                reflection_rng=None,
+                current_origin=origin,  # type: ignore[arg-type]
+                current_direction=direction,  # type: ignore[arg-type]
+                current_power_lumen=ray_power,
+            )
+        )
+    wavefront_summary["state_build_sec"] += (
+        time.perf_counter() - state_build_started
+    )
+
+    wavefront_summary["chunk_count"] += 1
+    wavefront_summary["primary_ray_count"] += ray_count
+    wavefront_summary["max_active_ray_count"] = max(
+        wavefront_summary["max_active_ray_count"],
+        ray_count,
+    )
+    active = states
+    while active:
+        depth = active[0].current_depth
+        if any(state.current_depth != depth for state in active):
+            raise RuntimeError("wavefront active rays must share one depth")
+        active_count = len(active)
+        depth_key = str(depth)
+        wavefront_summary["depth_batch_count"] += 1
+        wavefront_summary["max_observed_depth"] = max(
+            wavefront_summary["max_observed_depth"],
+            depth,
+        )
+        wavefront_summary["active_ray_count_by_depth"][depth_key] = (
+            wavefront_summary["active_ray_count_by_depth"].get(depth_key, 0)
+            + active_count
+        )
+        wavefront_summary["batch_count_by_depth"][depth_key] = (
+            wavefront_summary["batch_count_by_depth"].get(depth_key, 0) + 1
+        )
+
+        active_origins = np.asarray(
+            [state.current_origin for state in active],
+            dtype=np.float64,
+        )
+        active_directions = np.asarray(
+            [state.current_direction for state in active],
+            dtype=np.float64,
+        )
+        active_powers = np.asarray(
+            [state.current_power_lumen for state in active],
+            dtype=np.float64,
+        )
+        receiver_started = time.perf_counter()
+        receiver_candidates, maximum_t = _find_first_receiver_hits_batch(
+            active_origins,
+            active_directions,
+            active_powers,
+            receivers,
+            receiver_grids,
+            config,
+            depth,
+            [state.current_ray_kind for state in active],
+        )
+        wavefront_summary["receiver_sec"] += (
+            time.perf_counter() - receiver_started
+        )
+        ray_batch = IntersectionRayBatch(
+            active_origins,
+            active_directions,
+            min_t=config.epsilon_mm,
+            max_t=maximum_t,
+            ignore_faces=np.asarray(
+                [state.current_source_face for state in active],
+                dtype=np.int64,
+            ),
+        )
+        hit_batch = intersection_stats.intersect_batch(mesh, ray_batch)
+        plan_started = time.perf_counter()
+        next_active: List[_MultiBounceWavefrontRay] = []
+        for index, state in enumerate(active):
+            surface_hit = hit_batch.materialize(mesh, ray_batch, index)
+            if surface_hit is None:
+                candidate = receiver_candidates[index]
+                state.terminal_receiver = candidate
+                state.terminal_kind = "receiver" if candidate is not None else "escaped"
+                state.terminal_depth = depth
+                continue
+
+            resolved_optical = resolved_optical_by_face[surface_hit.face_index]
+            reflected_power = state.current_power_lumen * effective_surface_reflectance(
+                state.current_direction,
+                surface_hit.normal,
+                resolved_optical.profile,
+            )
+            reflection_rng_was_unset = state.reflection_rng is None
+            decision = _decide_reflection_emission(
+                _wavefront_reflection_rng(
+                    state,
+                    resolved_optical.profile,
+                    config,
+                    reflected_power,
+                ),
+                state.current_direction,
+                surface_hit.normal,
+                reflected_power,
+                resolved_optical.profile,
+                config,
+                depth,
+            )
+            if reflection_rng_was_unset and state.reflection_rng is not None:
+                wavefront_summary["stochastic_primary_ray_count"] += 1
+            state.steps.append(
+                _MultiBounceSurfaceStep(
+                    surface_hit=surface_hit,
+                    incoming_direction=state.current_direction,
+                    incoming_power_lumen=state.current_power_lumen,
+                    reflected_power_lumen=reflected_power,
+                    depth=depth,
+                    ray_kind=state.current_ray_kind,
+                    optical_profile=resolved_optical.profile,
+                    optical_source=resolved_optical.source,
+                    reflection_decision=decision,
+                )
+            )
+            if decision.emission is None:
+                state.terminal_kind = "blocked"
+                state.terminal_depth = depth
+                continue
+
+            reflection_sample, emitted_power = decision.emission
+            state.current_origin = vec_add(
+                surface_hit.point,
+                vec_mul(reflection_sample.direction, config.epsilon_mm),
+            )
+            state.current_direction = reflection_sample.direction
+            state.current_power_lumen = emitted_power
+            state.current_source_face = surface_hit.face_index
+            state.current_depth = depth + 1
+            state.current_ray_kind = reflection_sample.lobe
+            next_active.append(state)
+        wavefront_summary["plan_sec"] += time.perf_counter() - plan_started
+        wavefront_summary["compacted_ray_count"] += active_count - len(next_active)
+        active = next_active
+
+    commit_started = time.perf_counter()
+    receiver_hit_count = 0
+    surface_hit_count = 0
+    terminated_ray_count = 0
+    for state in states:
+        counts = _commit_multi_bounce_wavefront_ray(
+            mesh,
+            state,
+            config,
+            receiver_grids,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+            face_contribution_cache,
+            detailed_contributions,
+            stored_paths,
+            wavefront_summary,
+        )
+        receiver_hit_count += counts[0]
+        surface_hit_count += counts[1]
+        terminated_ray_count += counts[2]
+    wavefront_summary["commit_sec"] += time.perf_counter() - commit_started
+    wavefront_summary["total_sec"] += time.perf_counter() - wavefront_started
+    return receiver_hit_count, surface_hit_count, terminated_ray_count
 
 
 def _trace_single_bounce_batch(

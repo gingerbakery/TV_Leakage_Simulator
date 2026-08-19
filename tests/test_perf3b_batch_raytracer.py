@@ -180,7 +180,7 @@ class Perf3B1BatchRayTracerTests(unittest.TestCase):
         self.assertGreater(summary["roulette_survived_count"], 0)
         self.assertGreater(summary["roulette_terminated_count"], 0)
 
-    def test_unsupported_emitters_and_multibounce_stay_scalar(self) -> None:
+    def test_unsupported_emitters_stay_scalar_and_multibounce_uses_batch(self) -> None:
         face_scalar = run_direct_ray_trace(
             face_emitter_case(),
             intersection_dispatch="scalar",
@@ -206,7 +206,12 @@ class Perf3B1BatchRayTracerTests(unittest.TestCase):
         )
         self.assertEqual(
             multibounce.metrics["_performance_summary"]["intersection_dispatch"],
-            "scalar",
+            "batch",
+        )
+        self.assertTrue(
+            multibounce.metrics["_performance_summary"][
+                "multi_bounce_wavefront_used"
+            ]
         )
         self.assertEqual(multibounce.receiver_hit_count, 73)
 

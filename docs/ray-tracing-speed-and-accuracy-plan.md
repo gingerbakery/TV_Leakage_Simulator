@@ -126,12 +126,25 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
 
 - Batch 교차 입출력 계약과 CPU reference adapter를 완료했다.
 - Virtual-plane `max_depth <= 1` 실행 경로는 명시적 runtime `batch` 요청에서
-  primary/secondary wavefront batch를 사용한다. native backend 전까지 기본
-  `auto`는 scalar를 유지한다.
+  primary/secondary wavefront batch를 사용한다.
 - 같은 seed에서 Receiver grid, flux, contribution, reflection summary와
   stored path가 scalar 실행과 exact 일치한다.
-- face/polygon emitter와 multi-bounce는 reflection RNG 순서를 보존하기 위해
-  아직 scalar 실행을 사용한다.
+- PERF-3B-2A에서 명시적 runtime `batch`, fast virtual-plane emitter와
+  `max_depth >= 2` 조합을 compact depth wavefront로 확장했다. Face/polygon
+  emitter는 계속 legacy scalar를 사용한다.
+- 기본 `auto`는 depth와 관계없이 scalar/Python CPU를 유지하며 Numba를
+  import하거나 probe하지 않는다. 따라서 GPU·Numba가 없는 PC의 기존 실행과
+  Receiver/contribution/path 정량 결과는 바뀌지 않는다.
+- Specular/threshold처럼 reflection random draw가 없는 multi-bounce는 legacy
+  scalar와 Receiver grid, flux, contribution, reflection summary, stored path가
+  exact 일치한다.
+- Lambertian, Gaussian, mixed 또는 실제 Russian-roulette draw가 있는
+  wavefront는 `per_primary_seeded_v1`을 사용한다. 같은 wavefront seed에서는
+  chunk 크기, 반복 실행과 Python/native provider가 달라도 exact하지만 legacy
+  depth-first scalar와 개별 ray/grid가 exact 같다는 계약은 아니다.
+- Stochastic 결과를 비교할 때는 후보 간 dispatch를 섞지 말고 같은 seed와
+  dispatch를 사용한다. Legacy scalar와 wavefront의 타당성 비교는 여러 seed의
+  Receiver flux, hit ratio, error estimate와 에너지 보존으로 판단한다.
 - 현재 reference batch는 native 가속이 아니어서 100,000-ray synthetic의
   최선 4,096 chunk 기준 scalar 대비 처리량이 약 28.9% 낮다.
 - PERF-3B-2에서 optional strict-float64 Numba BVH provider를 연결했다. 실제
@@ -143,10 +156,16 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   경로를 유지한다.
 - PERF-3B-1 parent와 기본 scalar를 교대 13회 측정한 runtime 차이는
   `+0.42%`로 3% 회귀 gate 안의 측정 잡음 수준이며 결과는 exact 일치했다.
-- 따라서 이번 단계는 아직 같은 시간에 더 많은 통계 ray를 제공하지 않는다.
-  Native provider는 성능 토대이며 실제 error/해상도 개선은 다음 wavefront와
-  GPU end-to-end 가속이 완료된 뒤에 얻는다.
-- 다음 성능 단계는 `max_depth >= 2`를 포함하는 multi-bounce wavefront와
-  Receiver/reflection/grid 후처리 batch다. 이 경계가 CPU와 CUDA GPU 양쪽의
-  compact active-ray 입력이 된다.
+- 실제 45,167-triangle, 100,000-ray, depth 10, stored-path 500 workload의
+  canonical 1,024 wavefront 중앙값은 `7.0649초`, p95 `7.3970초`다. Python
+  scalar `26.1930초` 대비 `3.71x`, native scalar 대비 `1.59~1.62x`다.
+- Stored-path quota 밖 경로의 객체 생성을 생략해 같은 4,096 workload를
+  `8.8017초`에서 `7.4763초`로 줄였다. `931`개를 materialize하고 `99,069`개를
+  생략했으며 정량 결과와 path quota는 보존했다.
+- 세 seed stochastic 비교에서 legacy 대비 hit/flux 평균 차이는 약 `-0.9%`였고
+  95% CI가 0을 포함했다. Bias 증거는 없지만 표본이 작아 기본 `auto`는 더 큰
+  통계 검증 전까지 scalar로 유지한다.
+- PERF-3B-2A는 아직 백만 ray 목표를 달성하지 않았다. 다음 병목은 reflection
+  planning과 ordered grid/contribution/path commit이며, 이를 줄인 뒤 CUDA가
+  같은 compact active-ray 경계를 사용한다.
 - GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.
