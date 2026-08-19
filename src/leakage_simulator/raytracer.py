@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import copy
 from dataclasses import dataclass, field
 from numbers import Integral
 from typing import Callable, Dict, List, Optional, Tuple
@@ -10,6 +11,7 @@ import time
 
 import numpy as np
 
+from . import native_cpu_ordered_reducer as native_ordered_reducer
 from .geometry import (
     HitRecord,
     RayBatch as IntersectionRayBatch,
@@ -639,6 +641,221 @@ class _WavefrontPlannerStats:
         }
 
 
+@dataclass(slots=True)
+class _OrderedReducerBindings:
+    """Validated run-local numeric bindings shared by reducer tape calls."""
+
+    face_profile_slots: np.ndarray
+    profile_unassigned: np.ndarray
+    profile_resolved_by_slot: List
+    profile_slot_by_id: Dict[str, int]
+    receiver_columns: np.ndarray
+    grid_offsets: np.ndarray
+
+
+@dataclass(slots=True)
+class _WavefrontReducerStats:
+    """Run-local selection, circuit-breaker, and accounting for tape reduction."""
+
+    requested_provider: str = "auto"
+    selection_reason: str = "no_eligible_soa_tape"
+    logical_tape_count: int = 0
+    logical_primary_count: int = 0
+    logical_event_count: int = 0
+    python_tape_count: int = 0
+    python_primary_count: int = 0
+    python_event_count: int = 0
+    native_attempt_count: int = 0
+    native_attempt_primary_count: int = 0
+    native_attempt_event_count: int = 0
+    native_success_count: int = 0
+    native_success_primary_count: int = 0
+    native_success_event_count: int = 0
+    native_available: Optional[bool] = None
+    native_provider_version: Optional[str] = None
+    native_provider_disabled: bool = False
+    fallback_count: int = 0
+    fallback_primary_count: int = 0
+    fallback_event_count: int = 0
+    fallback_phase: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    unavailable_reason: Optional[str] = None
+    native_prepare_sec: float = 0.0
+    native_dispatch_sec: float = 0.0
+    native_jit_compile_sec: float = 0.0
+    native_execute_sec: float = 0.0
+    native_result_validation_sec: float = 0.0
+    native_apply_sec: float = 0.0
+    native_path_sec: float = 0.0
+    bindings: Optional[_OrderedReducerBindings] = None
+
+    @property
+    def native_requested(self) -> bool:
+        return self.requested_provider == "numba_cpu"
+
+    def configure_selection(
+        self,
+        *,
+        pipeline: str,
+        detailed_contributions: bool,
+        max_depth: int,
+    ) -> None:
+        if max_depth <= 1:
+            self.selection_reason = "no_eligible_soa_tape"
+        elif pipeline != "soa_event_tape":
+            self.selection_reason = "not_soa_event_tape"
+        elif self.requested_provider == "auto":
+            self.selection_reason = "auto_python_no_probe"
+        elif self.requested_provider == "python_cpu":
+            self.selection_reason = "explicit_python"
+        elif detailed_contributions:
+            self.selection_reason = "detailed_contributions_unsupported"
+        else:
+            self.selection_reason = "eligible_explicit_numba"
+
+    def record_logical(self, primary_count: int, event_count: int) -> None:
+        self.logical_tape_count += 1
+        self.logical_primary_count += primary_count
+        self.logical_event_count += event_count
+
+    def record_python(self, primary_count: int, event_count: int) -> None:
+        self.python_tape_count += 1
+        self.python_primary_count += primary_count
+        self.python_event_count += event_count
+
+    def record_attempt(self, primary_count: int, event_count: int) -> None:
+        self.native_attempt_count += 1
+        self.native_attempt_primary_count += primary_count
+        self.native_attempt_event_count += event_count
+
+    def record_success(
+        self,
+        primary_count: int,
+        event_count: int,
+    ) -> None:
+        self.native_success_count += 1
+        self.native_success_primary_count += primary_count
+        self.native_success_event_count += event_count
+
+    def record_execution(
+        self,
+        execution: native_ordered_reducer.NativeCpuOrderedReducerExecution,
+    ) -> None:
+        self.native_available = True
+        self.native_provider_version = execution.numba_version
+        self.native_jit_compile_sec += execution.jit_compile_sec
+        self.native_execute_sec += execution.execute_sec
+        self.native_result_validation_sec += execution.result_validation_sec
+
+    def record_failed_execution(
+        self,
+        error: native_ordered_reducer.NativeCpuOrderedReducerProviderError,
+    ) -> None:
+        self.native_jit_compile_sec += error.jit_compile_sec
+        self.native_execute_sec += error.execute_sec
+        self.native_result_validation_sec += error.result_validation_sec
+        if error.numba_version is not None:
+            self.native_provider_version = error.numba_version
+
+    def record_unavailable(
+        self,
+        reason: str,
+    ) -> None:
+        self.native_available = False
+        self.native_provider_disabled = True
+        self.selection_reason = "numba_unavailable"
+        self.unavailable_reason = reason
+
+    def record_fallback(
+        self,
+        primary_count: int,
+        event_count: int,
+        phase: str,
+        reason: str,
+    ) -> None:
+        if phase != "input_prepare":
+            self.native_available = True
+        self.native_provider_disabled = True
+        self.selection_reason = "native_circuit_open"
+        self.fallback_count += 1
+        self.fallback_primary_count += primary_count
+        self.fallback_event_count += event_count
+        self.fallback_phase = phase
+        self.fallback_reason = reason
+
+    def to_summary(self) -> Dict[str, object]:
+        if self.native_success_count and self.python_tape_count:
+            effective_provider = "mixed"
+        elif self.native_success_count:
+            effective_provider = "numba_cpu"
+        elif self.python_tape_count:
+            effective_provider = "python_cpu"
+        else:
+            effective_provider = "not_used"
+        selection_reason = self.selection_reason
+        if (
+            self.logical_tape_count == 0
+            and selection_reason
+            not in {"not_soa_event_tape", "no_eligible_soa_tape"}
+        ):
+            selection_reason = "no_eligible_soa_tape"
+        return {
+            "requested_wavefront_reducer": self.requested_provider,
+            "wavefront_reducer": effective_provider,
+            "wavefront_reducer_selection_reason": selection_reason,
+            "wavefront_reducer_native_available": self.native_available,
+            "wavefront_reducer_native_used": self.native_success_count > 0,
+            "wavefront_reducer_native_provider_version": (
+                self.native_provider_version
+            ),
+            "wavefront_reducer_native_provider_disabled": (
+                self.native_provider_disabled
+            ),
+            "wavefront_reducer_native_attempt_count": self.native_attempt_count,
+            "wavefront_reducer_native_attempt_primary_count": (
+                self.native_attempt_primary_count
+            ),
+            "wavefront_reducer_native_attempt_event_count": (
+                self.native_attempt_event_count
+            ),
+            "wavefront_reducer_native_success_count": self.native_success_count,
+            "wavefront_reducer_native_success_primary_count": (
+                self.native_success_primary_count
+            ),
+            "wavefront_reducer_native_success_event_count": (
+                self.native_success_event_count
+            ),
+            "wavefront_reducer_python_tape_count": self.python_tape_count,
+            "wavefront_reducer_python_primary_count": self.python_primary_count,
+            "wavefront_reducer_python_event_count": self.python_event_count,
+            "wavefront_reducer_logical_tape_count": self.logical_tape_count,
+            "wavefront_reducer_logical_primary_count": self.logical_primary_count,
+            "wavefront_reducer_logical_event_count": self.logical_event_count,
+            "wavefront_reducer_fallback_count": self.fallback_count,
+            "wavefront_reducer_fallback_primary_count": (
+                self.fallback_primary_count
+            ),
+            "wavefront_reducer_fallback_event_count": self.fallback_event_count,
+            "wavefront_reducer_fallback_phase": self.fallback_phase,
+            "wavefront_reducer_fallback_reason": self.fallback_reason,
+            "wavefront_reducer_unavailable_reason": self.unavailable_reason,
+            "wavefront_reducer_native_prepare_sec": self.native_prepare_sec,
+            "wavefront_reducer_native_dispatch_sec": self.native_dispatch_sec,
+            "wavefront_reducer_native_jit_compile_sec": (
+                self.native_jit_compile_sec
+            ),
+            "wavefront_reducer_native_execute_sec": self.native_execute_sec,
+            "wavefront_reducer_native_result_validation_sec": (
+                self.native_result_validation_sec
+            ),
+            "wavefront_reducer_native_apply_sec": self.native_apply_sec,
+            "wavefront_reducer_native_path_sec": self.native_path_sec,
+            "wavefront_reducer_native_timing_scope": (
+                "prepare_external_plus_dispatch_including_jit_wait_and_validation"
+            ),
+        }
+
+
 _DEFAULT_INTERSECTION_BATCH_SIZE = 1024
 
 
@@ -827,6 +1044,7 @@ def run_direct_ray_trace(
     intersection_provider: str = "auto",
     wavefront_planner: str = "auto",
     wavefront_pipeline: str = "auto",
+    wavefront_reducer: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
@@ -841,6 +1059,10 @@ def run_direct_ray_trace(
     if wavefront_pipeline not in {"auto", "object_reference", "soa_event_tape"}:
         raise ValueError(
             "wavefront_pipeline must be auto, object_reference, or soa_event_tape"
+        )
+    if wavefront_reducer not in {"auto", "python_cpu", "numba_cpu"}:
+        raise ValueError(
+            "wavefront_reducer must be auto, python_cpu, or numba_cpu"
         )
     if (
         isinstance(intersection_batch_size, bool)
@@ -857,6 +1079,9 @@ def run_direct_ray_trace(
     )
     wavefront_planner_stats = _WavefrontPlannerStats(
         requested_provider=wavefront_planner,
+    )
+    wavefront_reducer_stats = _WavefrontReducerStats(
+        requested_provider=wavefront_reducer,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
     receiver_grids = {
@@ -957,6 +1182,11 @@ def run_direct_ray_trace(
         if wavefront_pipeline == "auto"
         else wavefront_pipeline
     )
+    wavefront_reducer_stats.configure_selection(
+        pipeline=selected_wavefront_pipeline,
+        detailed_contributions=detailed_contributions,
+        max_depth=trace_input.config.max_depth,
+    )
     if progress_callback is not None:
         progress_callback(0, expected_ray_count)
 
@@ -1039,9 +1269,6 @@ def run_direct_ray_trace(
                             wavefront_summary["event_tape_contract"] = (
                                 WAVEFRONT_EVENT_TAPE_CONTRACT
                             )
-                            wavefront_summary["reducer_contract"] = (
-                                "python_ordered_v1"
-                            )
                             trace_wavefront_batch = (
                                 _trace_multi_bounce_wavefront_soa_batch
                             )
@@ -1075,6 +1302,7 @@ def run_direct_ray_trace(
                             stored_paths,
                             intersection_stats,
                             wavefront_planner_stats,
+                            wavefront_reducer_stats,
                             wavefront_summary,
                         )
                     chunk_ray_count = end - start
@@ -1568,6 +1796,7 @@ def run_direct_ray_trace(
             "reducer_logical_event_count"
         ],
         **wavefront_planner_stats.to_summary(),
+        **wavefront_reducer_stats.to_summary(),
         **intersection_stats.to_summary(),
     }
     return RayTraceResult(
@@ -2870,6 +3099,1106 @@ def _reduce_wavefront_event_tape_python_ordered(
     return receiver_hit_count, surface_hit_count, terminated_ray_count
 
 
+_ORDERED_REDUCER_LOBES = ("specular", "lambertian", "gaussian")
+_ORDERED_REFLECTION_COUNT_FIELDS = (
+    "max_observed_depth",
+    "surface_hit_count",
+    "primary_surface_hit_count",
+    "reflection_attempt_count",
+    "reflection_emitted_count",
+    "reflection_receiver_hit_count",
+    "reflection_blocked_count",
+    "reflection_continued_count",
+    "reflection_escaped_count",
+    "reflection_below_energy_count",
+    "reflection_disabled_count",
+    "depth_limit_count",
+    "roulette_terminated_count",
+    "roulette_survived_count",
+    "direct_receiver_hit_count",
+)
+_ORDERED_REFLECTION_DEPTH_COUNT_FIELDS = (
+    "emitted_count",
+    "receiver_hit_count",
+    "blocked_count",
+    "continued_count",
+    "escaped_count",
+)
+_ORDERED_CONTRIBUTION_DEPTH_COUNT_FIELDS = (
+    "surface_hit_count",
+    "reflection_emitted_count",
+    "receiver_hit_count",
+    "blocked_count",
+    "continued_count",
+    "escaped_count",
+    "secondary_block_count",
+)
+_ORDERED_CONTRIBUTION_DEPTH_FLUX_FIELDS = (
+    "surface_incident_flux_lumen",
+    "reflection_emitted_flux_lumen",
+    "receiver_flux_lumen",
+    "blocked_flux_lumen",
+    "continued_flux_lumen",
+    "escaped_flux_lumen",
+    "secondary_blocked_flux_lumen",
+)
+
+
+def _readonly_native_array(values: np.ndarray) -> np.ndarray:
+    values.setflags(write=False)
+    return values
+
+
+def _prepare_ordered_reducer_bindings(
+    resolved_optical_by_face: List,
+    receiver_frames: List[ReceiverFrame],
+    reducer_stats: _WavefrontReducerStats,
+) -> _OrderedReducerBindings:
+    if reducer_stats.bindings is not None:
+        return reducer_stats.bindings
+
+    face_profile_slots = np.empty(
+        len(resolved_optical_by_face),
+        dtype=np.int32,
+    )
+    profile_resolved_by_slot: List = []
+    profile_slot_by_id: Dict[str, int] = {}
+    for face_index, resolved in enumerate(resolved_optical_by_face):
+        profile_id = resolved.profile.profile_id
+        profile_slot = profile_slot_by_id.get(profile_id)
+        if profile_slot is None:
+            profile_slot = len(profile_resolved_by_slot)
+            profile_slot_by_id[profile_id] = profile_slot
+            profile_resolved_by_slot.append(resolved)
+        face_profile_slots[face_index] = profile_slot
+    profile_unassigned = np.asarray(
+        [
+            resolved.profile.profile_id == UNASSIGNED_PROFILE_ID
+            for resolved in profile_resolved_by_slot
+        ],
+        dtype=np.bool_,
+    )
+
+    receiver_columns = np.asarray(
+        [frame.columns for frame in receiver_frames],
+        dtype=np.int32,
+    )
+    grid_offsets = np.empty(len(receiver_frames) + 1, dtype=np.int64)
+    grid_offsets[0] = 0
+    for receiver_index, frame in enumerate(receiver_frames):
+        grid_offsets[receiver_index + 1] = (
+            grid_offsets[receiver_index]
+            + int(frame.rows) * int(frame.columns)
+        )
+
+    bindings = _OrderedReducerBindings(
+        face_profile_slots=_readonly_native_array(face_profile_slots),
+        profile_unassigned=_readonly_native_array(profile_unassigned),
+        profile_resolved_by_slot=profile_resolved_by_slot,
+        profile_slot_by_id=profile_slot_by_id,
+        receiver_columns=_readonly_native_array(receiver_columns),
+        grid_offsets=_readonly_native_array(grid_offsets),
+    )
+    reducer_stats.bindings = bindings
+    return bindings
+
+
+def _prepare_ordered_summary_batch(
+    tape: PrimaryMajorEventTape,
+    config: RayTraceConfig,
+    bindings: _OrderedReducerBindings,
+) -> native_ordered_reducer.OrderedSummaryBatch:
+    received_power_squared = np.zeros(len(tape), dtype=np.float64)
+    receiver_slots = np.flatnonzero(
+        tape.terminal_kind_codes == TAPE_TERMINAL_RECEIVER
+    )
+    for primary_slot_value in receiver_slots:
+        primary_slot = int(primary_slot_value)
+        received_power = float(
+            tape.terminal_received_power_lumen[primary_slot]
+        )
+        # CPython's scalar power operation is part of the exact legacy grid
+        # contract. Numba x*x/x**2 can differ by one ULP on some operands.
+        received_power_squared[primary_slot] = received_power ** 2
+    received_power_squared.setflags(write=False)
+    return native_ordered_reducer.OrderedSummaryBatch(
+        offsets=tape.offsets,
+        face_indices=tape.face_indices,
+        incoming_power_lumen=tape.incoming_power_lumen,
+        reflected_power_lumen=tape.reflected_power_lumen,
+        emitted_power_lumen=tape.emitted_power_lumen,
+        status_flags=tape.status_flags,
+        lobe_codes=tape.lobe_codes,
+        terminal_kind_codes=tape.terminal_kind_codes,
+        terminal_depths=tape.terminal_depths,
+        terminal_current_power_lumen=tape.terminal_current_power_lumen,
+        terminal_receiver_indices=tape.terminal_receiver_indices,
+        terminal_rows=tape.terminal_rows,
+        terminal_columns=tape.terminal_columns,
+        terminal_received_power_lumen=tape.terminal_received_power_lumen,
+        terminal_received_power_squared_lumen2=received_power_squared,
+        face_profile_slots=bindings.face_profile_slots,
+        profile_unassigned=bindings.profile_unassigned,
+        receiver_columns=bindings.receiver_columns,
+        grid_offsets=bindings.grid_offsets,
+        max_depth=config.max_depth,
+    )
+
+
+def _prepare_ordered_summary_accumulator(
+    batch: native_ordered_reducer.OrderedSummaryBatch,
+    bindings: _OrderedReducerBindings,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+) -> native_ordered_reducer.OrderedSummaryAccumulator:
+    profile_count = batch.profile_count
+    receiver_count = batch.receiver_count
+    depth_count = batch.depth_count
+
+    optical_counts = np.asarray(
+        [
+            optical_summary["surface_hit_count"],
+            optical_summary["unassigned_surface_hit_count"],
+        ],
+        dtype=np.int64,
+    )
+    profile_hit_counts = np.zeros(profile_count, dtype=np.int64)
+    profile_incoming_flux = np.zeros(profile_count, dtype=np.float64)
+    profile_reflected_flux = np.zeros(profile_count, dtype=np.float64)
+    profile_seen = np.zeros(profile_count, dtype=np.bool_)
+    for profile_id, entry in optical_summary["profile_hits"].items():
+        profile_slot = bindings.profile_slot_by_id.get(profile_id)
+        if profile_slot is None:
+            raise ValueError("optical summary contains an unknown profile")
+        profile_seen[profile_slot] = True
+        profile_hit_counts[profile_slot] = entry["hit_count"]
+        profile_incoming_flux[profile_slot] = entry["incoming_flux_lumen"]
+        profile_reflected_flux[profile_slot] = entry[
+            "potential_reflected_flux_lumen"
+        ]
+
+    reflection_counts = np.asarray(
+        [reflection_summary[field_name] for field_name in _ORDERED_REFLECTION_COUNT_FIELDS],
+        dtype=np.int64,
+    )
+    reflection_flux = np.asarray(
+        [
+            reflection_summary["direct_receiver_flux_lumen"],
+            reflection_summary["reflected_receiver_flux_lumen"],
+        ],
+        dtype=np.float64,
+    )
+    reflection_lobe_counts = np.zeros(
+        (native_ordered_reducer.LOBE_COUNT, native_ordered_reducer.OUTCOME_SIZE),
+        dtype=np.int64,
+    )
+    reflection_lobe_flux = np.zeros(
+        (native_ordered_reducer.LOBE_COUNT, 2),
+        dtype=np.float64,
+    )
+    for lobe_index, lobe in enumerate(_ORDERED_REDUCER_LOBES):
+        entry = reflection_summary["lobes"][lobe]
+        reflection_lobe_counts[lobe_index] = (
+            entry["emitted_count"],
+            entry["receiver_hit_count"],
+            entry["blocked_count"],
+            entry["continued_count"],
+            entry["escaped_count"],
+        )
+        reflection_lobe_flux[lobe_index] = (
+            entry["emitted_flux_lumen"],
+            entry["receiver_flux_lumen"],
+        )
+    reflection_depth_counts = np.zeros(
+        (depth_count, native_ordered_reducer.REF_DEPTH_SIZE),
+        dtype=np.int64,
+    )
+    reflection_depth_flux = np.zeros((depth_count, 2), dtype=np.float64)
+    reflection_depth_seen = np.zeros(depth_count, dtype=np.bool_)
+    for depth_key, entry in reflection_summary["depths"].items():
+        depth = int(depth_key)
+        if depth < 0 or depth >= depth_count:
+            raise ValueError("reflection summary depth is outside the reducer table")
+        reflection_depth_seen[depth] = True
+        reflection_depth_counts[depth] = tuple(
+            entry[field_name]
+            for field_name in _ORDERED_REFLECTION_DEPTH_COUNT_FIELDS
+        )
+        reflection_depth_flux[depth] = (
+            entry["emitted_flux_lumen"],
+            entry["receiver_flux_lumen"],
+        )
+
+    contribution_receiver_counts = np.asarray(
+        [
+            contribution_summary.direct_receiver_hit_count,
+            contribution_summary.reflected_receiver_hit_count,
+        ],
+        dtype=np.int64,
+    )
+    contribution_receiver_flux = np.asarray(
+        [
+            contribution_summary.direct_receiver_flux_lumen,
+            contribution_summary.reflected_receiver_flux_lumen,
+        ],
+        dtype=np.float64,
+    )
+    contribution_lobe_counts = np.zeros(
+        (native_ordered_reducer.LOBE_COUNT, native_ordered_reducer.OUTCOME_SIZE),
+        dtype=np.int64,
+    )
+    contribution_lobe_flux = np.zeros(
+        (native_ordered_reducer.LOBE_COUNT, native_ordered_reducer.OUTCOME_SIZE),
+        dtype=np.float64,
+    )
+    for lobe_index, lobe in enumerate(_ORDERED_REDUCER_LOBES):
+        entry = contribution_summary.lobes[lobe]
+        contribution_lobe_counts[lobe_index] = (
+            entry["emitted_count"],
+            entry["receiver_hit_count"],
+            entry["blocked_count"],
+            entry["continued_count"],
+            entry["escaped_count"],
+        )
+        contribution_lobe_flux[lobe_index] = (
+            entry["emitted_flux_lumen"],
+            entry["receiver_flux_lumen"],
+            entry["blocked_flux_lumen"],
+            entry["continued_flux_lumen"],
+            entry["escaped_flux_lumen"],
+        )
+    contribution_depth_counts = np.zeros(
+        (depth_count, native_ordered_reducer.CONTRIBUTION_DEPTH_SIZE),
+        dtype=np.int64,
+    )
+    contribution_depth_flux = np.zeros(
+        (depth_count, native_ordered_reducer.CONTRIBUTION_DEPTH_SIZE),
+        dtype=np.float64,
+    )
+    contribution_depth_seen = np.zeros(depth_count, dtype=np.bool_)
+    for depth_key, entry in contribution_summary.depths.items():
+        depth = int(depth_key)
+        if depth < 0 or depth >= depth_count:
+            raise ValueError("contribution depth is outside the reducer table")
+        contribution_depth_seen[depth] = True
+        contribution_depth_counts[depth] = tuple(
+            entry[field_name]
+            for field_name in _ORDERED_CONTRIBUTION_DEPTH_COUNT_FIELDS
+        )
+        contribution_depth_flux[depth] = tuple(
+            entry[field_name]
+            for field_name in _ORDERED_CONTRIBUTION_DEPTH_FLUX_FIELDS
+        )
+
+    receiver_counts = np.zeros(
+        (receiver_count, native_ordered_reducer.RECEIVER_FIELD_SIZE),
+        dtype=np.int64,
+    )
+    receiver_flux = np.zeros(
+        (receiver_count, native_ordered_reducer.RECEIVER_FIELD_SIZE),
+        dtype=np.float64,
+    )
+    receiver_depth_counts = np.zeros(
+        (receiver_count, depth_count),
+        dtype=np.int64,
+    )
+    receiver_depth_flux = np.zeros(
+        (receiver_count, depth_count),
+        dtype=np.float64,
+    )
+    receiver_depth_seen = np.zeros(
+        (receiver_count, depth_count),
+        dtype=np.bool_,
+    )
+    grid_flux = np.zeros(batch.grid_cell_count, dtype=np.float64)
+    grid_flux_squared = np.zeros(batch.grid_cell_count, dtype=np.float64)
+    grid_hit_counts = np.zeros(receiver_count, dtype=np.int64)
+    grid_flux_squared_totals = np.zeros(receiver_count, dtype=np.float64)
+    for receiver_index, frame in enumerate(receiver_frames):
+        receiver_id = frame.receiver.receiver_id
+        receiver_entry = contribution_summary.receivers.get(receiver_id)
+        if receiver_entry is None:
+            raise ValueError("contribution summary receiver is unavailable")
+        receiver_counts[receiver_index] = (
+            receiver_entry["direct"]["hit_count"],
+            receiver_entry["reflected"]["hit_count"],
+            receiver_entry["total"]["hit_count"],
+            receiver_entry["lobes"]["specular"]["hit_count"],
+            receiver_entry["lobes"]["lambertian"]["hit_count"],
+            receiver_entry["lobes"]["gaussian"]["hit_count"],
+        )
+        receiver_flux[receiver_index] = (
+            receiver_entry["direct"]["flux_lumen"],
+            receiver_entry["reflected"]["flux_lumen"],
+            receiver_entry["total"]["flux_lumen"],
+            receiver_entry["lobes"]["specular"]["flux_lumen"],
+            receiver_entry["lobes"]["lambertian"]["flux_lumen"],
+            receiver_entry["lobes"]["gaussian"]["flux_lumen"],
+        )
+        for depth_key, depth_entry in receiver_entry["depths"].items():
+            depth = int(depth_key)
+            if depth < 0 or depth >= depth_count:
+                raise ValueError("receiver depth is outside the reducer table")
+            receiver_depth_seen[receiver_index, depth] = True
+            receiver_depth_counts[receiver_index, depth] = depth_entry[
+                "hit_count"
+            ]
+            receiver_depth_flux[receiver_index, depth] = depth_entry[
+                "flux_lumen"
+            ]
+
+        grid = receiver_grids.get(receiver_id)
+        if grid is None or grid.resolution != (frame.columns, frame.rows):
+            raise ValueError("receiver grid does not match the reducer binding")
+        grid_start = int(bindings.grid_offsets[receiver_index])
+        grid_end = int(bindings.grid_offsets[receiver_index + 1])
+        grid_flux[grid_start:grid_end] = np.asarray(
+            grid.flux_lumen,
+            dtype=np.float64,
+        ).reshape(-1)
+        grid_flux_squared[grid_start:grid_end] = np.asarray(
+            grid.flux_squared_lumen2_grid,
+            dtype=np.float64,
+        ).reshape(-1)
+        grid_hit_counts[receiver_index] = grid.hit_count
+        grid_flux_squared_totals[receiver_index] = grid.flux_squared_lumen2
+
+    return native_ordered_reducer.OrderedSummaryAccumulator(
+        optical_counts=optical_counts,
+        profile_hit_counts=profile_hit_counts,
+        profile_incoming_flux_lumen=profile_incoming_flux,
+        profile_reflected_flux_lumen=profile_reflected_flux,
+        profile_seen=profile_seen,
+        reflection_counts=reflection_counts,
+        reflection_flux_lumen=reflection_flux,
+        reflection_lobe_counts=reflection_lobe_counts,
+        reflection_lobe_flux_lumen=reflection_lobe_flux,
+        reflection_depth_counts=reflection_depth_counts,
+        reflection_depth_flux_lumen=reflection_depth_flux,
+        reflection_depth_seen=reflection_depth_seen,
+        contribution_receiver_counts=contribution_receiver_counts,
+        contribution_receiver_flux_lumen=contribution_receiver_flux,
+        contribution_lobe_counts=contribution_lobe_counts,
+        contribution_lobe_flux_lumen=contribution_lobe_flux,
+        contribution_depth_counts=contribution_depth_counts,
+        contribution_depth_flux_lumen=contribution_depth_flux,
+        contribution_depth_seen=contribution_depth_seen,
+        receiver_counts=receiver_counts,
+        receiver_flux_lumen=receiver_flux,
+        receiver_depth_counts=receiver_depth_counts,
+        receiver_depth_flux_lumen=receiver_depth_flux,
+        receiver_depth_seen=receiver_depth_seen,
+        grid_flux_lumen=grid_flux,
+        grid_flux_squared_lumen2=grid_flux_squared,
+        grid_hit_counts=grid_hit_counts,
+        grid_flux_squared_totals_lumen2=grid_flux_squared_totals,
+    )
+
+
+@dataclass(slots=True)
+class _NativeOrderedReducerCommit:
+    optical_summary: Dict
+    reflection_summary: Dict
+    contribution_summary: RayTraceContributionSummary
+    receiver_grids: Dict[str, ReceiverGrid]
+    stored_paths: List[List[RayHit]]
+    receiver_hit_count: int
+    surface_hit_count: int
+    terminated_ray_count: int
+    path_materialized_count: int
+    path_materialization_skipped_count: int
+    path_sec: float
+
+
+def _stage_ordered_summary_result(
+    result: native_ordered_reducer.OrderedSummaryResult,
+    tape: PrimaryMajorEventTape,
+    mesh: TriangleMesh,
+    config: RayTraceConfig,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    resolved_optical_by_face: List,
+    bindings: _OrderedReducerBindings,
+    stored_paths: List[List[RayHit]],
+) -> _NativeOrderedReducerCommit:
+    state = result.state
+    if result.surface_hit_count != tape.event_count:
+        raise ValueError("native reducer surface count does not match the tape")
+    if (
+        result.receiver_hit_count < 0
+        or result.terminated_ray_count < 0
+        or result.receiver_hit_count + result.terminated_ray_count != len(tape)
+    ):
+        raise ValueError("native reducer terminal counts do not match the tape")
+
+    staged_profile_hits = {
+        profile_id: dict(entry)
+        for profile_id, entry in optical_summary["profile_hits"].items()
+    }
+    for profile_slot_value, face_index_value in zip(
+        result.profile_first_touch_slots,
+        result.profile_first_touch_faces,
+    ):
+        profile_slot = int(profile_slot_value)
+        face_index = int(face_index_value)
+        resolved = resolved_optical_by_face[face_index]
+        profile = resolved.profile
+        if bindings.profile_slot_by_id.get(profile.profile_id) != profile_slot:
+            raise ValueError("native reducer profile touch violates bindings")
+        if profile.profile_id in staged_profile_hits:
+            raise ValueError("native reducer repeated an existing profile touch")
+        staged_profile_hits[profile.profile_id] = {
+            "profile_id": profile.profile_id,
+            "source": resolved.source,
+            "hit_count": 0,
+            "reflectance": profile.reflectance,
+            "specular_ratio": profile.specular_ratio,
+            "diffuse_ratio": profile.diffuse_ratio,
+            "scatter_model": profile.scatter_model,
+            "incoming_flux_lumen": 0.0,
+            "potential_reflected_flux_lumen": 0.0,
+        }
+    for profile_slot, resolved in enumerate(bindings.profile_resolved_by_slot):
+        if not bool(state.profile_seen[profile_slot]):
+            continue
+        profile_id = resolved.profile.profile_id
+        entry = staged_profile_hits.get(profile_id)
+        if entry is None:
+            raise ValueError("native reducer omitted a touched optical profile")
+        entry["hit_count"] = int(state.profile_hit_counts[profile_slot])
+        entry["incoming_flux_lumen"] = float(
+            state.profile_incoming_flux_lumen[profile_slot]
+        )
+        entry["potential_reflected_flux_lumen"] = float(
+            state.profile_reflected_flux_lumen[profile_slot]
+        )
+    staged_optical_summary = {
+        "surface_hit_count": int(
+            state.optical_counts[
+                native_ordered_reducer.OPTICAL_SURFACE_HIT_COUNT
+            ]
+        ),
+        "unassigned_surface_hit_count": int(
+            state.optical_counts[
+                native_ordered_reducer.OPTICAL_UNASSIGNED_SURFACE_HIT_COUNT
+            ]
+        ),
+        "profile_hits": staged_profile_hits,
+    }
+
+    staged_reflection_summary = copy.deepcopy(reflection_summary)
+    for depth_value in result.reflection_depth_first_touch:
+        _reflection_depth_summary(staged_reflection_summary, int(depth_value))
+    for index, field_name in enumerate(_ORDERED_REFLECTION_COUNT_FIELDS):
+        staged_reflection_summary[field_name] = int(state.reflection_counts[index])
+    staged_reflection_summary["direct_receiver_flux_lumen"] = float(
+        state.reflection_flux_lumen[
+            native_ordered_reducer.REF_DIRECT_RECEIVER_FLUX
+        ]
+    )
+    staged_reflection_summary["reflected_receiver_flux_lumen"] = float(
+        state.reflection_flux_lumen[
+            native_ordered_reducer.REF_REFLECTED_RECEIVER_FLUX
+        ]
+    )
+    for lobe_index, lobe in enumerate(_ORDERED_REDUCER_LOBES):
+        entry = staged_reflection_summary["lobes"][lobe]
+        entry["emitted_count"] = int(
+            state.reflection_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_EMITTED
+            ]
+        )
+        entry["receiver_hit_count"] = int(
+            state.reflection_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_RECEIVER
+            ]
+        )
+        entry["blocked_count"] = int(
+            state.reflection_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_BLOCKED
+            ]
+        )
+        entry["continued_count"] = int(
+            state.reflection_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_CONTINUED
+            ]
+        )
+        entry["escaped_count"] = int(
+            state.reflection_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_ESCAPED
+            ]
+        )
+        entry["emitted_flux_lumen"] = float(
+            state.reflection_lobe_flux_lumen[lobe_index, 0]
+        )
+        entry["receiver_flux_lumen"] = float(
+            state.reflection_lobe_flux_lumen[lobe_index, 1]
+        )
+    for depth, seen in enumerate(state.reflection_depth_seen):
+        if not bool(seen):
+            continue
+        entry = staged_reflection_summary["depths"].get(str(depth))
+        if entry is None:
+            raise ValueError("native reducer omitted a reflection depth touch")
+        for index, field_name in enumerate(
+            _ORDERED_REFLECTION_DEPTH_COUNT_FIELDS
+        ):
+            entry[field_name] = int(state.reflection_depth_counts[depth, index])
+        entry["emitted_flux_lumen"] = float(
+            state.reflection_depth_flux_lumen[depth, 0]
+        )
+        entry["receiver_flux_lumen"] = float(
+            state.reflection_depth_flux_lumen[depth, 1]
+        )
+
+    staged_contribution_summary = copy.deepcopy(contribution_summary)
+    for depth_value in result.contribution_depth_first_touch:
+        _depth_contribution(
+            staged_contribution_summary.depths,
+            int(depth_value),
+        )
+    for receiver_index_value, depth_value in zip(
+        result.receiver_depth_first_touch_receivers,
+        result.receiver_depth_first_touch_depths,
+    ):
+        receiver_index = int(receiver_index_value)
+        depth = int(depth_value)
+        receiver_id = receiver_frames[receiver_index].receiver.receiver_id
+        _receiver_depth_contribution(
+            staged_contribution_summary.receivers[receiver_id]["depths"],
+            depth,
+        )
+    staged_contribution_summary.direct_receiver_hit_count = int(
+        state.contribution_receiver_counts[
+            native_ordered_reducer.CONTRIBUTION_DIRECT_RECEIVER
+        ]
+    )
+    staged_contribution_summary.direct_receiver_flux_lumen = float(
+        state.contribution_receiver_flux_lumen[
+            native_ordered_reducer.CONTRIBUTION_DIRECT_RECEIVER
+        ]
+    )
+    staged_contribution_summary.reflected_receiver_hit_count = int(
+        state.contribution_receiver_counts[
+            native_ordered_reducer.CONTRIBUTION_REFLECTED_RECEIVER
+        ]
+    )
+    staged_contribution_summary.reflected_receiver_flux_lumen = float(
+        state.contribution_receiver_flux_lumen[
+            native_ordered_reducer.CONTRIBUTION_REFLECTED_RECEIVER
+        ]
+    )
+    for lobe_index, lobe in enumerate(_ORDERED_REDUCER_LOBES):
+        entry = staged_contribution_summary.lobes[lobe]
+        entry["emitted_count"] = int(
+            state.contribution_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_EMITTED
+            ]
+        )
+        entry["receiver_hit_count"] = int(
+            state.contribution_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_RECEIVER
+            ]
+        )
+        entry["blocked_count"] = int(
+            state.contribution_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_BLOCKED
+            ]
+        )
+        entry["continued_count"] = int(
+            state.contribution_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_CONTINUED
+            ]
+        )
+        entry["escaped_count"] = int(
+            state.contribution_lobe_counts[
+                lobe_index, native_ordered_reducer.OUTCOME_ESCAPED
+            ]
+        )
+        entry["emitted_flux_lumen"] = float(
+            state.contribution_lobe_flux_lumen[
+                lobe_index, native_ordered_reducer.OUTCOME_EMITTED
+            ]
+        )
+        entry["receiver_flux_lumen"] = float(
+            state.contribution_lobe_flux_lumen[
+                lobe_index, native_ordered_reducer.OUTCOME_RECEIVER
+            ]
+        )
+        entry["blocked_flux_lumen"] = float(
+            state.contribution_lobe_flux_lumen[
+                lobe_index, native_ordered_reducer.OUTCOME_BLOCKED
+            ]
+        )
+        entry["continued_flux_lumen"] = float(
+            state.contribution_lobe_flux_lumen[
+                lobe_index, native_ordered_reducer.OUTCOME_CONTINUED
+            ]
+        )
+        entry["escaped_flux_lumen"] = float(
+            state.contribution_lobe_flux_lumen[
+                lobe_index, native_ordered_reducer.OUTCOME_ESCAPED
+            ]
+        )
+    for depth, seen in enumerate(state.contribution_depth_seen):
+        if not bool(seen):
+            continue
+        entry = staged_contribution_summary.depths.get(str(depth))
+        if entry is None:
+            raise ValueError("native reducer omitted a contribution depth touch")
+        for index, field_name in enumerate(
+            _ORDERED_CONTRIBUTION_DEPTH_COUNT_FIELDS
+        ):
+            entry[field_name] = int(
+                state.contribution_depth_counts[depth, index]
+            )
+        for index, field_name in enumerate(
+            _ORDERED_CONTRIBUTION_DEPTH_FLUX_FIELDS
+        ):
+            entry[field_name] = float(
+                state.contribution_depth_flux_lumen[depth, index]
+            )
+
+    staged_receiver_grids: Dict[str, ReceiverGrid] = {}
+    for receiver_index, frame in enumerate(receiver_frames):
+        receiver_id = frame.receiver.receiver_id
+        receiver_entry = staged_contribution_summary.receivers[receiver_id]
+        receiver_fields = (
+            receiver_entry["direct"],
+            receiver_entry["reflected"],
+            receiver_entry["total"],
+            receiver_entry["lobes"]["specular"],
+            receiver_entry["lobes"]["lambertian"],
+            receiver_entry["lobes"]["gaussian"],
+        )
+        for field_index, entry in enumerate(receiver_fields):
+            entry["hit_count"] = int(
+                state.receiver_counts[receiver_index, field_index]
+            )
+            entry["flux_lumen"] = float(
+                state.receiver_flux_lumen[receiver_index, field_index]
+            )
+        for depth, seen in enumerate(state.receiver_depth_seen[receiver_index]):
+            if not bool(seen):
+                continue
+            depth_entry = receiver_entry["depths"].get(str(depth))
+            if depth_entry is None:
+                raise ValueError("native reducer omitted a receiver depth touch")
+            depth_entry["hit_count"] = int(
+                state.receiver_depth_counts[receiver_index, depth]
+            )
+            depth_entry["flux_lumen"] = float(
+                state.receiver_depth_flux_lumen[receiver_index, depth]
+            )
+
+        old_grid = receiver_grids[receiver_id]
+        grid_start = int(bindings.grid_offsets[receiver_index])
+        grid_end = int(bindings.grid_offsets[receiver_index + 1])
+        staged_receiver_grids[receiver_id] = ReceiverGrid(
+            receiver_id=receiver_id,
+            resolution=old_grid.resolution,
+            bin_area_mm2=old_grid.bin_area_mm2,
+            flux_lumen=state.grid_flux_lumen[grid_start:grid_end]
+            .reshape(frame.rows, frame.columns)
+            .tolist(),
+            hit_count=int(state.grid_hit_counts[receiver_index]),
+            flux_squared_lumen2=float(
+                state.grid_flux_squared_totals_lumen2[receiver_index]
+            ),
+            flux_squared_lumen2_grid=state.grid_flux_squared_lumen2[
+                grid_start:grid_end
+            ]
+            .reshape(frame.rows, frame.columns)
+            .tolist(),
+        )
+
+    staged_paths = list(stored_paths)
+    path_quota = _WavefrontStoredPathQuota.from_paths(
+        staged_paths,
+        config.max_stored_paths,
+    )
+    path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
+    if path_storage_enabled and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+        raise ValueError("path-enabled native reduction requires full path payload")
+    path_materialized_count = 0
+    path_skipped_count = 0
+    path_sec = 0.0
+    for primary_slot in range(len(tape)):
+        terminal_code = int(tape.terminal_kind_codes[primary_slot])
+        terminal_kind = (
+            "receiver"
+            if terminal_code == TAPE_TERMINAL_RECEIVER
+            else "escaped"
+            if terminal_code == TAPE_TERMINAL_ESCAPED
+            else "blocked"
+        )
+        store_path = path_storage_enabled and path_quota.can_store(terminal_kind)
+        if path_storage_enabled:
+            if store_path:
+                path_materialized_count += 1
+            else:
+                path_skipped_count += 1
+        if not store_path:
+            continue
+
+        path_started = time.perf_counter()
+        terminal_receiver: Optional[ReceiverHitCandidate] = None
+        if terminal_code == TAPE_TERMINAL_RECEIVER:
+            receiver_index = int(tape.terminal_receiver_indices[primary_slot])
+            receiver_frame = receiver_frames[receiver_index]
+            receiver_id = receiver_frame.receiver.receiver_id
+            terminal_receiver = ReceiverHitCandidate(
+                grid=staged_receiver_grids[receiver_id],
+                row=int(tape.terminal_rows[primary_slot]),
+                column=int(tape.terminal_columns[primary_slot]),
+                received_power_lumen=float(
+                    tape.terminal_received_power_lumen[primary_slot]
+                ),
+                point=(
+                    float(tape.terminal_points[primary_slot, 0]),
+                    float(tape.terminal_points[primary_slot, 1]),
+                    float(tape.terminal_points[primary_slot, 2]),
+                ),
+                normal=(
+                    float(tape.terminal_normals[primary_slot, 0]),
+                    float(tape.terminal_normals[primary_slot, 1]),
+                    float(tape.terminal_normals[primary_slot, 2]),
+                ),
+                distance_mm=float(tape.terminal_distances_mm[primary_slot]),
+                incoming_power_lumen=float(
+                    tape.terminal_incoming_power_lumen[primary_slot]
+                ),
+                receiver_id=receiver_id,
+                depth=int(tape.terminal_depths[primary_slot]),
+                ray_kind=_tape_ray_kind_name(
+                    int(tape.terminal_ray_kind_codes[primary_slot])
+                ),
+            )
+        path_events = _materialize_stored_path_from_tape(
+            tape,
+            primary_slot,
+            mesh,
+            resolved_optical_by_face,
+            terminal_receiver,
+        )
+        path_quota.store(path_events, terminal_kind)
+        path_sec += time.perf_counter() - path_started
+
+    return _NativeOrderedReducerCommit(
+        optical_summary=staged_optical_summary,
+        reflection_summary=staged_reflection_summary,
+        contribution_summary=staged_contribution_summary,
+        receiver_grids=staged_receiver_grids,
+        stored_paths=staged_paths,
+        receiver_hit_count=result.receiver_hit_count,
+        surface_hit_count=result.surface_hit_count,
+        terminated_ray_count=result.terminated_ray_count,
+        path_materialized_count=path_materialized_count,
+        path_materialization_skipped_count=path_skipped_count,
+        path_sec=path_sec,
+    )
+
+
+def _publish_ordered_summary_commit(
+    commit: _NativeOrderedReducerCommit,
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    stored_paths: List[List[RayHit]],
+) -> None:
+    optical_summary.clear()
+    optical_summary.update(commit.optical_summary)
+    reflection_summary.clear()
+    reflection_summary.update(commit.reflection_summary)
+    for field_name in (
+        "schema_version",
+        "direct_receiver_hit_count",
+        "direct_receiver_flux_lumen",
+        "reflected_receiver_hit_count",
+        "reflected_receiver_flux_lumen",
+        "receivers",
+        "components",
+        "faces",
+        "materials",
+        "lobes",
+        "depths",
+    ):
+        setattr(
+            contribution_summary,
+            field_name,
+            getattr(commit.contribution_summary, field_name),
+        )
+    receiver_grids.clear()
+    receiver_grids.update(commit.receiver_grids)
+    stored_paths[:] = commit.stored_paths
+
+
+def _set_wavefront_reducer_contract(
+    wavefront_summary: Dict,
+    contract: str,
+) -> None:
+    current = wavefront_summary["reducer_contract"]
+    if current == "not_used":
+        wavefront_summary["reducer_contract"] = contract
+    elif current != contract and current != "mixed_ordered_reducer_v1":
+        wavefront_summary["reducer_contract"] = "mixed_ordered_reducer_v1"
+
+
+def _safe_native_execution_timing(execution: object, name: str) -> float:
+    try:
+        value = float(getattr(execution, name))
+    except Exception:
+        return 0.0
+    return value if math.isfinite(value) and value >= 0.0 else 0.0
+
+
+def _safe_native_execution_version(execution: object) -> Optional[str]:
+    try:
+        value = getattr(execution, "numba_version")
+    except Exception:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _reduce_wavefront_event_tape_ordered(
+    tape: PrimaryMajorEventTape,
+    mesh: TriangleMesh,
+    config: RayTraceConfig,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    resolved_optical_by_face: List,
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    reducer_stats: _WavefrontReducerStats,
+    wavefront_summary: Dict,
+) -> Tuple[int, int, int]:
+    primary_count = len(tape)
+    event_count = tape.event_count
+    reducer_stats.record_logical(primary_count, event_count)
+
+    native_eligible = (
+        reducer_stats.native_requested
+        and not detailed_contributions
+        and not reducer_stats.native_provider_disabled
+    )
+    if not native_eligible:
+        if (
+            reducer_stats.native_requested
+            and reducer_stats.native_provider_disabled
+            and reducer_stats.unavailable_reason is None
+        ):
+            reducer_stats.selection_reason = "native_circuit_open"
+        reducer_stats.record_python(primary_count, event_count)
+        _set_wavefront_reducer_contract(wavefront_summary, "python_ordered_v1")
+        return _reduce_wavefront_event_tape_python_ordered(
+            tape,
+            mesh,
+            config,
+            receiver_frames,
+            receiver_grids,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+            face_contribution_cache,
+            resolved_optical_by_face,
+            detailed_contributions,
+            stored_paths,
+            wavefront_summary,
+        )
+
+    prepare_started = time.perf_counter()
+    try:
+        bindings = _prepare_ordered_reducer_bindings(
+            resolved_optical_by_face,
+            receiver_frames,
+            reducer_stats,
+        )
+        batch = _prepare_ordered_summary_batch(tape, config, bindings)
+        accumulator = _prepare_ordered_summary_accumulator(
+            batch,
+            bindings,
+            receiver_frames,
+            receiver_grids,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+        )
+    except Exception:
+        prepare_elapsed = time.perf_counter() - prepare_started
+        reducer_stats.native_prepare_sec += prepare_elapsed
+        wavefront_summary["reducer_preflight_sec"] += prepare_elapsed
+        reducer_stats.record_fallback(
+            primary_count,
+            event_count,
+            "input_prepare",
+            "native_ordered_reducer_input_prepare_failed",
+        )
+    else:
+        prepare_elapsed = time.perf_counter() - prepare_started
+        reducer_stats.native_prepare_sec += prepare_elapsed
+        wavefront_summary["reducer_preflight_sec"] += prepare_elapsed
+        reducer_stats.record_attempt(primary_count, event_count)
+        native_dispatch_started = time.perf_counter()
+        try:
+            execution = native_ordered_reducer.reduce_ordered_summary_native_cpu(
+                batch,
+                accumulator,
+            )
+            consumer_validation_started = time.perf_counter()
+            try:
+                native_ordered_reducer.validate_ordered_summary_execution(
+                    batch,
+                    execution,
+                )
+            except Exception as exc:
+                raise native_ordered_reducer.NativeCpuOrderedReducerProviderError(
+                    "result_validation",
+                    "native_ordered_reducer_consumer_validation_failed",
+                    jit_compile_sec=_safe_native_execution_timing(
+                        execution,
+                        "jit_compile_sec",
+                    ),
+                    execute_sec=_safe_native_execution_timing(
+                        execution,
+                        "execute_sec",
+                    ),
+                    result_validation_sec=_safe_native_execution_timing(
+                        execution,
+                        "result_validation_sec",
+                    )
+                    + time.perf_counter()
+                    - consumer_validation_started,
+                    numba_version=_safe_native_execution_version(execution),
+                ) from exc
+            consumer_validation_sec = (
+                time.perf_counter() - consumer_validation_started
+            )
+        except native_ordered_reducer.NativeCpuOrderedReducerUnavailable as exc:
+            native_dispatch_elapsed = time.perf_counter() - native_dispatch_started
+            reducer_stats.native_dispatch_sec += native_dispatch_elapsed
+            wavefront_summary["reducer_replay_sec"] += native_dispatch_elapsed
+            reducer_stats.record_unavailable(exc.reason_code)
+        except native_ordered_reducer.NativeCpuOrderedReducerProviderError as exc:
+            native_dispatch_elapsed = time.perf_counter() - native_dispatch_started
+            reducer_stats.native_dispatch_sec += native_dispatch_elapsed
+            wavefront_summary["reducer_replay_sec"] += native_dispatch_elapsed
+            reducer_stats.record_failed_execution(exc)
+            reducer_stats.record_fallback(
+                primary_count,
+                event_count,
+                exc.phase,
+                exc.reason_code,
+            )
+        except Exception:
+            native_dispatch_elapsed = time.perf_counter() - native_dispatch_started
+            reducer_stats.native_dispatch_sec += native_dispatch_elapsed
+            wavefront_summary["reducer_replay_sec"] += native_dispatch_elapsed
+            reducer_stats.record_fallback(
+                primary_count,
+                event_count,
+                "execute",
+                "native_ordered_reducer_unexpected_failure",
+            )
+        else:
+            native_dispatch_elapsed = time.perf_counter() - native_dispatch_started
+            reducer_stats.native_dispatch_sec += native_dispatch_elapsed
+            wavefront_summary["reducer_replay_sec"] += native_dispatch_elapsed
+            reducer_stats.record_execution(execution)
+            reducer_stats.native_result_validation_sec += (
+                consumer_validation_sec
+            )
+            apply_started = time.perf_counter()
+            try:
+                commit = _stage_ordered_summary_result(
+                    execution.result,
+                    tape,
+                    mesh,
+                    config,
+                    receiver_frames,
+                    receiver_grids,
+                    optical_summary,
+                    reflection_summary,
+                    contribution_summary,
+                    resolved_optical_by_face,
+                    bindings,
+                    stored_paths,
+                )
+            except Exception:
+                failed_apply_elapsed = time.perf_counter() - apply_started
+                reducer_stats.native_apply_sec += failed_apply_elapsed
+                wavefront_summary["reducer_replay_sec"] += failed_apply_elapsed
+                reducer_stats.record_fallback(
+                    primary_count,
+                    event_count,
+                    "apply_prepare",
+                    "native_ordered_reducer_apply_prepare_failed",
+                )
+            else:
+                _publish_ordered_summary_commit(
+                    commit,
+                    receiver_grids,
+                    optical_summary,
+                    reflection_summary,
+                    contribution_summary,
+                    stored_paths,
+                )
+                apply_elapsed = time.perf_counter() - apply_started
+                reducer_stats.native_path_sec += commit.path_sec
+                apply_without_path = max(
+                    0.0,
+                    apply_elapsed - commit.path_sec,
+                )
+                reducer_stats.native_apply_sec += apply_without_path
+                wavefront_summary["reducer_replay_sec"] += apply_without_path
+                reducer_stats.record_success(primary_count, event_count)
+                wavefront_summary["path_materialized_count"] += (
+                    commit.path_materialized_count
+                )
+                wavefront_summary["path_materialization_skipped_count"] += (
+                    commit.path_materialization_skipped_count
+                )
+                wavefront_summary["reducer_hydrate_sec"] += commit.path_sec
+                wavefront_summary["reducer_logical_event_count"] += event_count
+                _set_wavefront_reducer_contract(
+                    wavefront_summary,
+                    native_ordered_reducer.CONTRACT_VERSION,
+                )
+                return (
+                    commit.receiver_hit_count,
+                    commit.surface_hit_count,
+                    commit.terminated_ray_count,
+                )
+
+    reducer_stats.record_python(primary_count, event_count)
+    _set_wavefront_reducer_contract(wavefront_summary, "python_ordered_v1")
+    return _reduce_wavefront_event_tape_python_ordered(
+        tape,
+        mesh,
+        config,
+        receiver_frames,
+        receiver_grids,
+        optical_summary,
+        reflection_summary,
+        contribution_summary,
+        face_contribution_cache,
+        resolved_optical_by_face,
+        detailed_contributions,
+        stored_paths,
+        wavefront_summary,
+    )
+
+
 def _trace_multi_bounce_wavefront_batch(
     mesh: TriangleMesh,
     origins: np.ndarray,
@@ -2889,6 +4218,7 @@ def _trace_multi_bounce_wavefront_batch(
     stored_paths: List[List[RayHit]],
     intersection_stats: _IntersectionDispatchStats,
     planner_stats: _WavefrontPlannerStats,
+    _reducer_stats: _WavefrontReducerStats,
     wavefront_summary: Dict,
 ) -> Tuple[int, int, int]:
     if config.max_depth <= 1:
@@ -3221,6 +4551,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     stored_paths: List[List[RayHit]],
     intersection_stats: _IntersectionDispatchStats,
     planner_stats: _WavefrontPlannerStats,
+    reducer_stats: _WavefrontReducerStats,
     wavefront_summary: Dict,
 ) -> Tuple[int, int, int]:
     if config.max_depth <= 1:
@@ -3700,7 +5031,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     )
 
     commit_started = time.perf_counter()
-    counts = _reduce_wavefront_event_tape_python_ordered(
+    counts = _reduce_wavefront_event_tape_ordered(
         tape,
         mesh,
         config,
@@ -3713,6 +5044,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
         resolved_optical_by_face,
         detailed_contributions,
         stored_paths,
+        reducer_stats,
         wavefront_summary,
     )
     wavefront_summary["commit_sec"] += time.perf_counter() - commit_started

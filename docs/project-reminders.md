@@ -187,16 +187,35 @@
   `225,482/225,482`, native attempt/fallback `0`이었다.
 - SoA의 1M 단순 선형 환산은 `51.21초`, object-reference는 `52.33초`다. 둘 다
   이번 단계에서 백만 ray/LightTools 이상 목표 달성을 주장할 근거가 아니다.
-- Actual-event CSR의 구조적 memory 개선과 read-only validation은 후속 compiled
-  ordered reducer/CUDA용 데이터 경계다. Strict/trusted/payload 회귀에 wall-time
+- Actual-event CSR의 구조적 memory 개선과 read-only validation은 2C-2 compiled
+  reducer와 후속 CUDA용 데이터 경계다. Strict/trusted/payload 회귀에 wall-time
   threshold를 넣지 않고 canonical benchmark에서만 성능 gate를 판정한다.
 - Canonical artifact SHA256은
   `ef2ad80346d7e1ea44c00fc9cd19be0cfb75c9da00362231920782c486c9ad5e`,
   benchmark script SHA256은
   `89b223a2c128f83d1cfc76c5f9dee1e9aa8aee7cf5f1fb41f2ad5859c10cb783`다.
-- 다음 성능 단계는 `ordered_primary_event_tape_v2`를 직접 소비하는 compiled
-  reducer이며, 이후 `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를
-  검토한다.
+- PERF-3B-2C-1에서 예고한 compiled ordered reducer는 2C-2에서 완료했다.
+- Runtime-only `wavefront_reducer=auto|python_cpu|numba_cpu`를 추가했다. Explicit
+  native는 SoA summary만 지원하고 detailed는 정상 Python 선택이다. 기본
+  `auto`는 Python/no-probe라 GPU·Numba가 없는 PC의 CPU 경로를 바꾸지 않는다.
+- `ordered_summary_reducer_v1`은 serial strict `float64` 순서를 보존한다. Result는
+  owned/read-only/no-alias이고 검증과 staged commit 뒤에만 publish한다. Native
+  실패는 whole-tape Python replay 한 번과 run-local circuit breaker로 처리한다.
+- Actual ROI warm p50은 Python/native reducer `5.094436 / 4.643004초`, p95
+  `5.128807 / 4.697531초`다. P50 `1.097228x`, wall `8.861%` 개선이고 reducer
+  replay는 `2.3968x`, commit은 `1.7126x` 빨라졌다.
+- Native attempt/success `98/98`, fallback `0`이며 seven semantic/hash family,
+  count와 ordered float bits가 exact하다. 최종 suite는
+  `193 passed, 180 subtests passed`다.
+- Cold reducer JIT `2.382357초`와 optional package/단발 손익 때문에 warm gate를
+  통과했어도 기본 `auto`는 Python/no-probe를 유지한다. Native는 opt-in이다.
+- PERF-3B-2C-2 artifact SHA256은
+  `04bb4514a3a5909a5f8afbc551cecd4de3c84b70c11cada6d9335f7ec5dcf648`, final
+  audit SHA256은
+  `feacdb1acbb7e757d4690147bea8bf0e9a6b75439cc81b4573faa43e1877846a`다.
+- 다음 성능 단계는 native prepare/result-validation/apply overhead 축소,
+  `counter_rng_v2`, 같은 SoA/tape와 whole-batch fallback을 공유하는 CUDA
+  backend 순서다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
 - Multi-bounce native intersection provider 실패는 현재 depth logical batch
   전체를 Python CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화

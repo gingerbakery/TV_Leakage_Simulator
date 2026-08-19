@@ -202,7 +202,8 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   RSS가 아니다. 현재 기본은 메모리/Stop 응답성이 유리한 1,024다.
 - PERF-3B-2B도 아직 백만 ray 목표를 달성하지 않았다. `5.2553초`의 선형
   환산은 약 `52.6초`다. SoA ray state와 compact event tape는 2C에서
-  구현했으며 후속은 compiled ordered reducer, `counter_rng_v2`, CUDA 순서다.
+  구현했고 compiled ordered reducer는 2C-2에서 완료했다. 후속은
+  `counter_rng_v2`, CUDA 순서다.
 - PERF-3B-2C/2C-1은 explicit experimental `soa_event_tape` pipeline과 v2
   validation/payload 경계를 추가했다.
   Active ray는 `stable_active_soa_v1` owned 배열로 stable compact하고, 실제
@@ -242,5 +243,33 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   benchmark script SHA256은
   `89b223a2c128f83d1cfc76c5f9dee1e9aa8aee7cf5f1fb41f2ad5859c10cb783`다.
 - PERF-3B-2C-1은 속도 목표 완료가 아니라 compiled ordered reducer/CUDA가 공유할
-  buffer 경계 확정 단계다. 다음은 compiled reducer, `counter_rng_v2`, CUDA다.
+  buffer 경계 확정 단계였고 compiled reducer는 이어진 2C-2에서 완료했다.
+  후속은 `counter_rng_v2`, CUDA다.
+- PERF-3B-2C-2는 runtime-only `wavefront_reducer=auto|python_cpu|numba_cpu`와
+  summary용 `ordered_summary_reducer_v1`을 추가했다. Native kernel은 serial
+  strict `float64`, `fastmath=False`로 primary/event 순서를 보존한다.
+- Native output은 owned/read-only/no-alias이며 provider/consumer validation과
+  staged commit 뒤에만 publish한다. Unavailable/initialize/execute/
+  result-validation/apply 실패는 같은 tape 전체를 Python으로 한 번 replay하고
+  run-local circuit breaker를 연다. Logical count는 중복 집계하지 않는다.
+- Detailed contribution은 explicit native 요청에서도 정상 Python 선택이고
+  attempt/fallback `0`이다. 기본 `auto`도 Python이며 Numba를 import/probe하지
+  않아 GPU·Numba가 없는 PC의 기존 CPU 경로를 바꾸지 않는다.
+- Actual ROI warm p50은 Python/native reducer `5.094436 / 4.643004초`, p95
+  `5.128807 / 4.697531초`다. P50 `1.097228x`, wall `8.861%` 개선이고 1M
+  선형 환산은 `50.94 -> 46.43초`다.
+- Reducer replay는 `1.062883 -> 0.443459초`(`2.3968x`), commit은
+  `1.101820 -> 0.643344초`(`1.7126x`)였다. Native kernel execute
+  `0.021806초`보다 prepare `0.174618초`, result validation `0.237018초`, apply
+  `0.133177초`가 더 큰 후속 비용이다.
+- Native attempt/success `98/98`, fallback `0`이며 seven semantic/hash family와
+  count, grid/contribution/path, ordered float bit가 exact했다. 최종 suite는
+  `193 passed, 180 subtests passed`다.
+- Warm gate는 통과했지만 reducer cold JIT `2.382357초`, optional 배포와 단발
+  실행 손익 때문에 `auto`는 Python/no-probe를 유지한다. 다음은 native
+  prepare/validation/apply 축소, `counter_rng_v2`, CUDA 순서다.
+- Actual artifact SHA256은
+  `04bb4514a3a5909a5f8afbc551cecd4de3c84b70c11cada6d9335f7ec5dcf648`, final
+  audit SHA256은
+  `feacdb1acbb7e757d4690147bea8bf0e9a6b75439cc81b4573faa43e1877846a`다.
 - GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.

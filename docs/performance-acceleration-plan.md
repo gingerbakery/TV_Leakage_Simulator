@@ -177,7 +177,7 @@
 - Surface/path/planner fallback을 포함한 전체 Python suite `160`개가 통과했다.
 - 실제 ROI의 1,000,000-ray 선형 환산은 약 `52.6초`라 최종 목표 달성을
   주장하지 않는다. SoA state와 event tape는 PERF-3B-2C에서 이어서 구현하며
-  compiled ordered reducer는 그 다음 경계다.
+  compiled ordered reducer는 이어진 PERF-3B-2C-2에서 완료했다.
 
 #### PERF-3B-2C/2C-1: SoA state와 ordered event tape v2
 
@@ -213,8 +213,32 @@
 - Strict/trusted/payload/fallback/no-probe 회귀를 포함한 전체 Python suite는
   `184 passed, 154 subtests passed`다. Unit test에는 wall-time threshold를 두지
   않는다.
-- 다음 단계는 tape를 직접 소비하는 compiled ordered reducer다. 그 뒤
-  `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를 진행한다.
+- Tape를 직접 소비하는 compiled ordered reducer는 이어진 2C-2에서 완료했다.
+  그 뒤 `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를 진행한다.
+
+#### PERF-3B-2C-2: compiled ordered summary reducer
+
+- 상태: optional CPU native 구현, exact regression과 actual canonical 완료
+  (2026-08-19), 기본 자동 선택은 Python 유지
+- Runtime-only `wavefront_reducer`는 `auto`, `python_cpu`, `numba_cpu`다.
+  `auto`는 Python/no-probe이고 explicit native는 SoA summary에서만 지원한다.
+  Detailed contribution은 정상 Python 선택이며 native attempt/fallback이 없다.
+- `ordered_summary_reducer_v1`은 primary-major tape를 serial strict `float64`,
+  `fastmath=False`로 처리해 Python의 primary/event 덧셈 순서를 보존한다.
+- Native output은 owned/read-only/no-alias이며 provider/consumer validation과 digest,
+  staged dict/grid/path 복원을 모두 통과한 뒤 한 번만 publish한다.
+- Unavailable/initialize/execute/result-validation/apply 실패는 같은 tape 전체를
+  Python으로 한 번 replay하고 run-local circuit breaker를 연다. Logical count는
+  native attempt와 replay를 중복 집계하지 않는다.
+- Deterministic/stochastic/depth/chunk/multi-emitter, terminal-only, quota 교체,
+  Stop, fallback과 concurrent run에서 object/SoA Python/native ordered JSON,
+  모든 float bit와 dict insertion order가 exact다.
+- Actual warm p50은 Python `5.094436초`, native `4.643004초`로 `1.097228x`,
+  wall `8.861%` 개선됐다. Replay는 `2.3968x`, commit은 `1.7126x`다.
+- Cold JIT `2.382357초`, optional Numba/llvmlite 배포와 단발 실행 손익 때문에
+  기본 `auto`는 Python/no-probe를 유지한다. Native는 명시적 opt-in이다.
+- 다음은 prepare/result-validation/apply overhead 축소, `counter_rng_v2`, CUDA
+  backend 순서다.
 
 #### PERF-3B-3: CUDA GPU backend
 - 상태: 예정
@@ -429,8 +453,9 @@ chunk/provider exact를 확인했다. Legacy depth-first scalar와 seed 3개씩 
 연결하는 방향이 유효함을 보여준다. 그러나 1,000,000-ray 선형 환산은 약
 `70.7초`다. 따라서 사용자가 요구한 백만 ray와 LightTools 이상 속도를
 달성했다고 주장하지 않는다.
-Wavefront timing을 보면 교차 커널 외 reflection planning과 ordered commit이
-다음 최적화 대상이다. 이 구간의 배열화/compiled commit을 먼저 진행한 뒤 같은
+Wavefront timing에서 확인한 reflection planning과 ordered commit은 이후
+2B/2C/2C-2에서 배열화와 compiled summary reducer로 이어졌다. 남은
+prepare/validation/apply 비용과 stochastic planning 범위를 줄인 뒤 같은
 active-ray buffer를 CUDA backend에 재사용한다.
 
 ## PERF-3B-2B compiled wavefront 측정 (2026-08-19)
@@ -551,10 +576,57 @@ attempt/success `1,078/1,078`, native success row `309,119`, intersection fallba
 
 측정된 `1.021782x`는 자동 승격 gate `>= 1.05x`에 못 미치므로
 `wavefront_pipeline="auto"`는 `object_reference`를 유지한다. Actual-event CSR은
-다음 compiled reducer/CUDA의 메모리·데이터 경계이며, 1M 선형 환산
+2C-2 compiled reducer와 후속 CUDA의 메모리·데이터 경계이며, 1M 선형 환산
 `51.21초`로 목표 달성을 주장하지 않는다. 재현 결과는 git-ignored
 `outputs/perf3b2c_soa_event_tape/actual_roi_summary.json`에
 `perf3b2c_actual_roi_comparison_v1`로 기록했다. Artifact SHA256은
 `ef2ad80346d7e1ea44c00fc9cd19be0cfb75c9da00362231920782c486c9ad5e`,
 benchmark script SHA256은
 `89b223a2c128f83d1cfc76c5f9dee1e9aa8aee7cf5f1fb41f2ad5859c10cb783`다.
+
+## PERF-3B-2C-2 Compiled reducer 측정 (2026-08-19)
+
+2C-1과 같은 actual ROI, SoA tape, intersection/planner 조건에서 reducer만
+`python_cpu`와 `numba_cpu`로 바꿨다. Reducer별 10k warmup 뒤 3회씩
+`P,N,N,P,P,N` counterbalanced 측정했고 source hash는 전후 동일했다.
+
+| Reducer | Wall p50 | Wall p95 | Primary ray/s p50 | 1M 선형 환산 |
+| --- | ---: | ---: | ---: | ---: |
+| `python_cpu` | `5.094436초` | `5.128807초` | `19,629.26` | `50.94초` |
+| `numba_cpu` | `4.643004초` | `4.697531초` | `21,537.78` | `46.43초` |
+
+Native는 p50 `1.097228x`/wall `8.861%`, p95 `1.091809x`/wall `8.409%`
+개선했다. Reducer replay는 `1.062883 -> 0.443459초`(`2.3968x`), commit은
+`1.101820 -> 0.643344초`(`1.7126x`)였고 plan은
+`2.959407 / 2.962245초`로 같은 범위였다.
+
+Native p50 내부는 prepare `0.174618초`, dispatch `0.310282초`, kernel execute
+`0.021806초`, result validation `0.237018초`, apply `0.133177초`, path stage
+`0.023353초`다. 이 값들은 nested timing이며 서로 단순 합산하지 않는다. 현재
+kernel보다 prepare/validation/public object apply가 더 큰 후속 최적화 대상이다.
+
+Receiver/surface/terminated `12,652 / 225,482 / 87,348`, flux
+`0.040176617410112817`, path `500`, materialized/skipped `931/99,069`는 같았다.
+Native tape/primary/event는 `98 / 100,000 / 225,482`, attempt/success `98/98`,
+fallback `0`이었다. Seven semantic/hash family, grid/contribution/path와 ordered
+float bits는 warmup/measured 전체에서 exact했다. Paths-off 10k quick도
+`1.081299x`, exact였고 detailed synthetic은 정상 Python 선택/attempt `0`였다.
+
+Sampled RSS peak delta p50 `4,210,688 / 3,735,552 bytes`는 allocator와 측정
+순서에 민감하므로 memory 우위로 주장하지 않는다. Tape peak/copy는 두 reducer
+모두 `680,048 / 29,407,112 bytes`로 같다.
+
+Warmup에서 reducer cold JIT는 `2.382357초`였다. 따라서 warm gate
+`>= 1.05x`를 통과했어도 짧은 단발 실행, optional Numba/llvmlite 배포와
+GPU·Numba가 없는 PC의 CPU 무회귀 원칙 때문에 `wavefront_reducer="auto"`는
+Python/no-probe를 유지한다. Explicit native는 반복 실행에서 사용할 수 있다.
+
+Actual artifact SHA256은
+`04bb4514a3a5909a5f8afbc551cecd4de3c84b70c11cada6d9335f7ec5dcf648`, final
+audit SHA256은
+`feacdb1acbb7e757d4690147bea8bf0e9a6b75439cc81b4573faa43e1877846a`다. 실제
+사용자 input은 hash만 기록하고 repository fixture로 추가하지 않는다.
+Actual 전용 harness SHA256은
+`f11985a62911d0eb47312adb46990dd8c0bee6c11dc503c78667748ba49123e8`, repository
+benchmark SHA256은
+`0c7308f1a7effffde4b3efb534181d4dfbd369247ae5625731eb2acc7e688834`다.

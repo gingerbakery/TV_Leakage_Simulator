@@ -405,6 +405,38 @@ logical/Python-sidecar `225,482/225,482`, native attempt/fallback `0`이었다.
 `271,080 / 643,800 bytes`, copy는 `1,131,996 / 2,952,580 bytes`였으며 이 값은
 process RSS가 아니다.
 
+### PERF-3B-2C-2 compiled ordered summary reducer
+
+Runtime-only `wavefront_reducer` 허용값은 `auto`, `python_cpu`, `numba_cpu`다.
+기본 `auto`는 `python_ordered_v1`이며 Numba를 import/probe하지 않는다. Explicit
+`numba_cpu`는 `soa_event_tape`, `max_depth >= 2`, summary contribution에서만
+`ordered_summary_reducer_v1`을 시도한다. Detailed contribution, scalar,
+single-bounce, `object_reference`와 face/polygon legacy 경로는 정상 Python 선택이며
+native attempt가 없다.
+
+Native batch는 tape core/terminal/binding의 owned read-only input과 현재 public
+summary에서 만든 owned mutable scratch accumulator로 구성한다. Serial
+`float64`, `fastmath=False` kernel은 primary와 event의 기존 덧셈 순서를 보존한다.
+Provider는 caller scratch를 직접 수정하지 않고 복사본에서 실행하며 output은
+owned/C-contiguous/read-only, input과 non-alias여야 한다. Provider와 consumer가
+count, float shadow/reference, touch order, storage와 digest를 모두 검증한 뒤
+dict/grid/path를 별도 stage하고 마지막에 한 번만 publish한다.
+
+Unavailable 또는 `initialize`, `execute`, `result_validation`, apply 준비 실패는
+public 상태를 바꾸지 않고 같은 tape 전체를 Python으로 정확히 한 번 replay한다.
+Run-local circuit breaker가 이후 native 시도를 막으며 logical tape/primary/event
+count에는 attempt와 replay를 중복 반영하지 않는다. Stop은 기존 primary-chunk
+원자성을 유지한다. Terminal-only tape는 primary count가 양수이고 event count가
+`0`인 정상 input이다.
+
+Actual ROI 100k, depth 10, paths 500, chunk 1,024의 warm p50은 Python reducer
+`5.094436초`, native `4.643004초`로 `1.097228x`, wall `8.861%` 개선됐다.
+Reducer replay는 `1.062883 -> 0.443459초`로 `2.3968x`, commit은
+`1.101820 -> 0.643344초`로 `1.7126x`였다. Native attempt/success는
+`98/98`, fallback `0`이고 seven semantic/hash family와 count가 exact했다.
+Cold reducer JIT `2.382357초`와 optional package 조건 때문에 기본 `auto`는 계속
+Python/no-probe이며 native reducer는 명시적 opt-in이다.
+
 ## 백엔드 종류
 
 ### `auto`
