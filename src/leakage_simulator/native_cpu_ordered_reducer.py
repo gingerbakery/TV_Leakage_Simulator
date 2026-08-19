@@ -1878,6 +1878,23 @@ def _copy_accumulator(
     )
 
 
+def clone_ordered_summary_accumulator(
+    state: OrderedSummaryAccumulator,
+) -> OrderedSummaryAccumulator:
+    """Return an owned mutable copy suitable for a subsequent tape call.
+
+    Provider results are intentionally frozen at the public boundary.  A
+    run-local ordered reduction session may nevertheless feed the validated
+    state from one tape into the next without hydrating Python summaries in
+    between.  Keeping that transition here preserves the accumulator storage
+    contract and avoids consumers depending on the private copy helper.
+    """
+
+    if not isinstance(state, OrderedSummaryAccumulator):
+        raise TypeError("state must be an OrderedSummaryAccumulator")
+    return _copy_accumulator(state)
+
+
 def _validate_result(
     batch: OrderedSummaryBatch,
     baseline: dict[str, np.ndarray],
@@ -2511,6 +2528,7 @@ __all__ = [
     "REF_ROULETTE_TERMINATED_COUNT",
     "REF_SURFACE_HIT_COUNT",
     "reduce_ordered_summary_native_cpu",
+    "clone_ordered_summary_accumulator",
     "probe_native_cpu_ordered_reducer",
     "validate_ordered_summary_execution",
 ]

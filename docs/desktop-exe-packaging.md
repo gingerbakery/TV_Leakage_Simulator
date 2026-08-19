@@ -74,6 +74,27 @@ device 검증을 내장 Python으로 실행할 수 있다. `[OK]` 확인 후 GPU
 현재 표준 GPU 산출물 실측은 폴더 `481.8MB`, ZIP `145.4MB`다. 빌드마다
 frontend asset 이름과 문서가 바뀔 수 있어 소수점 단위 크기는 달라질 수 있다.
 
+### PERF-3D release 동기화
+
+PERF-3D는 GPU intersection package 자체를 바꾸는 단계가 아니라 GPU run의 host
+overhead를 줄이는 source 변경이다. 따라서 Lite와 GPU ZIP을 같은 PERF-3D source와
+문서로 모두 다시 빌드한다.
+
+- Lite는 CPU `auto -> per_tape`, CUDA/Numba no-import/no-probe를 보존한다.
+- GPU edition은 `auto -> run_accumulator`, vector seed/numeric Receiver와
+  stored-path payload suppression을 포함한다.
+- 기존 PERF-3C ZIP을 이름만 바꿔 PERF-3D로 배포하지 않는다.
+- 두 ZIP 모두 재추출한 패키지 안의 `raytracer.py`, ordered reducer와 기존 포함
+  문서인 README, backend contract, performance plan, desktop packaging guide가
+  build source와 같은지 stream hash로 확인한다. 상세 PERF-3D change report는
+  repository-only이며 package 복사 범위를 늘리지 않는다.
+- GPU ZIP은 재추출 뒤 device/kernel smoke, Lite ZIP은 CPU/no-probe smoke를
+  실행한다.
+- ZIP SHA-256은 최종 문서 동기화 뒤 다시 만든 산출물을 기준으로 한다. ZIP 내부
+  문서에는 자기 ZIP의 hash를 넣지 않아 문서-hash 자기참조를 피한다.
+- 전달 시 최종 hash와 byte size는 ZIP 밖의 `<zip-name>.sha256` sidecar와 release
+  보고에서 확인한다.
+
 ### 포함 기능
 - STEP/STP 실제 import와 OCP tessellation
 - React + TypeScript App Shell
@@ -86,6 +107,8 @@ frontend asset 이름과 문서가 바뀔 수 있어 소수점 단위 크기는 
 - RT-2C Specular/Gaussian/Lambertian 1회 반사
 - PERF-1 Python hot path 최적화
 - PERF-2 flat BVH CAD 교차 가속
+- PERF-3C strict-float64 CUDA/hybrid stack(GPU edition)
+- PERF-3D host-overhead 제거와 run-retained ordered accumulator
 
 ### 최소 런타임
 - Python 3.13 embedded runtime

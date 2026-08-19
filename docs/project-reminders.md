@@ -245,3 +245,16 @@
   NVIDIA driver/CUDA toolkit 조합을 배포 전 검증한다.
 - PERF-3C 최종 repository test는 Python `226 passed, 256 subtests passed`,
   frontend `20 files / 128 tests passed`다.
+- PERF-3D host-overhead 단계는 seed/Receiver numeric batch, run-retained ordered
+  accumulator와 path-quota payload suppression을 구현했다. Actual ROI 1M p50은
+  `7.277951 -> 5.541795초`(`1.3133x`, `-23.855%`), 처리량은
+  `180,447 primary ray/s`다. Count/flux/path/ordered semantic은 exact다.
+- GPU `auto`만 `run_accumulator`를 사용하고 CPU `auto`는 기존 `per_tape`와
+  Numba/CUDA no-probe를 유지한다. CPU paired actual/synthetic는 `3%`
+  no-regression gate 안이었다.
+- PERF-3D의 retained/resident는 run-local CPU reducer accumulator다. 전체 ray
+  state/scene GPU residency 또는 fused CUDA depth kernel 완성으로 표현하지 않는다.
+  다음 병목은 depth 사이 host 왕복과 intersection/planner를 합치는 device kernel이다.
+- PERF-3D 최종 repository test는 Python `237 passed, 279 subtests passed`,
+  focused matrix는 `60 passed, 126 subtests passed`다. 상세는
+  `docs/changes/2026-08-20_perf3d-host-overhead-run-accumulator.md`를 따른다.

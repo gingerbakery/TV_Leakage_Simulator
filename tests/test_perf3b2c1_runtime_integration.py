@@ -89,7 +89,13 @@ def _run_soa(trace_input, *, chunk_size: int, **kwargs):
 
 
 class Perf3B2C1RuntimeIntegrationTests(unittest.TestCase):
-    def assertStrictV2Metrics(self, result, *, path_payload: str) -> None:
+    def assertStrictV2Metrics(
+        self,
+        result,
+        *,
+        path_payload: str,
+        path_payload_requested: str | None = None,
+    ) -> None:
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
         self.assertEqual(
@@ -107,6 +113,40 @@ class Perf3B2C1RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(
             performance["wavefront_event_tape_path_payload"],
             path_payload,
+        )
+        if path_payload_requested is None:
+            path_payload_requested = path_payload
+        self.assertEqual(
+            performance["wavefront_event_tape_path_payload_requested"],
+            path_payload_requested,
+        )
+        full_chunks = performance[
+            "wavefront_event_tape_path_payload_full_chunk_count"
+        ]
+        omitted_chunks = performance[
+            "wavefront_event_tape_path_payload_omitted_chunk_count"
+        ]
+        self.assertEqual(
+            full_chunks + omitted_chunks,
+            performance["wavefront_chunk_count"],
+        )
+        self.assertEqual(
+            performance[
+                "wavefront_event_tape_path_payload_full_primary_count"
+            ]
+            + performance[
+                "wavefront_event_tape_path_payload_omitted_primary_count"
+            ],
+            performance["wavefront_primary_ray_count"],
+        )
+        self.assertEqual(
+            performance[
+                "wavefront_event_tape_path_payload_full_event_count"
+            ]
+            + performance[
+                "wavefront_event_tape_path_payload_omitted_event_count"
+            ],
+            performance["wavefront_event_count"],
         )
         self.assertEqual(
             performance["wavefront_event_tape_peak_scope"],
@@ -136,13 +176,19 @@ class Perf3B2C1RuntimeIntegrationTests(unittest.TestCase):
         ray_count = 29
         chunk_size = 7
         cases = (
-            (False, 12, "omitted_v1", 0),
-            (True, 0, "omitted_v1", 0),
-            (True, 2, "full_path_v1", 2),
+            (False, 12, "omitted_v1", "omitted_v1", 0),
+            (True, 0, "omitted_v1", "omitted_v1", 0),
+            (True, 2, "mixed_v1", "full_path_v1", 2),
         )
         omitted_memory = []
-        full_memory = None
-        for store_paths, quota, expected_payload, expected_paths in cases:
+        path_enabled_memory = None
+        for (
+            store_paths,
+            quota,
+            expected_payload,
+            expected_requested_payload,
+            expected_paths,
+        ) in cases:
             with self.subTest(store_paths=store_paths, quota=quota):
                 reference_input = two_bounce_input(
                     max_depth=2,
@@ -180,10 +226,26 @@ class Perf3B2C1RuntimeIntegrationTests(unittest.TestCase):
                 self.assertEqual(actual.contribution_summary, reference.contribution_summary)
                 self.assertEqual(actual.stored_paths, reference.stored_paths)
                 self.assertEqual(len(actual.stored_paths), expected_paths)
-                self.assertStrictV2Metrics(actual, path_payload=expected_payload)
+                self.assertStrictV2Metrics(
+                    actual,
+                    path_payload=expected_payload,
+                    path_payload_requested=expected_requested_payload,
+                )
                 performance = actual.metrics["_performance_summary"]
                 if expected_payload == "omitted_v1":
                     materialize_mock.assert_not_called()
+                    self.assertEqual(
+                        performance[
+                            "wavefront_event_tape_path_payload_full_chunk_count"
+                        ],
+                        0,
+                    )
+                    self.assertEqual(
+                        performance[
+                            "wavefront_event_tape_path_payload_suppressed_chunk_count"
+                        ],
+                        0,
+                    )
                     omitted_memory.append(
                         (
                             performance["wavefront_event_tape_copy_bytes"],
@@ -192,16 +254,34 @@ class Perf3B2C1RuntimeIntegrationTests(unittest.TestCase):
                     )
                 else:
                     self.assertEqual(materialize_mock.call_count, expected_paths)
-                    full_memory = (
+                    self.assertEqual(
+                        performance[
+                            "wavefront_event_tape_path_payload_full_chunk_count"
+                        ],
+                        1,
+                    )
+                    self.assertEqual(
+                        performance[
+                            "wavefront_event_tape_path_payload_omitted_chunk_count"
+                        ],
+                        4,
+                    )
+                    self.assertEqual(
+                        performance[
+                            "wavefront_event_tape_path_payload_suppressed_chunk_count"
+                        ],
+                        4,
+                    )
+                    path_enabled_memory = (
                         performance["wavefront_event_tape_copy_bytes"],
                         performance["wavefront_event_tape_peak_bytes"],
                     )
 
         self.assertEqual(omitted_memory[0], omitted_memory[1])
-        self.assertIsNotNone(full_memory)
-        assert full_memory is not None
-        self.assertLess(omitted_memory[0][0], full_memory[0])
-        self.assertLess(omitted_memory[0][1], full_memory[1])
+        self.assertIsNotNone(path_enabled_memory)
+        assert path_enabled_memory is not None
+        self.assertLess(omitted_memory[0][0], path_enabled_memory[0])
+        self.assertLess(omitted_memory[0][1], path_enabled_memory[1])
 
     def test_mid_depth_intersection_failure_keeps_one_logical_query(self) -> None:
         ray_count = 23

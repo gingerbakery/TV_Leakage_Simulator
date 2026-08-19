@@ -86,6 +86,7 @@ from .wavefront_event_tape import (
     LOBE_NONE as TAPE_LOBE_NONE,
     LOBE_SPECULAR as TAPE_LOBE_SPECULAR,
     PATH_PAYLOAD_FULL as TAPE_PATH_PAYLOAD_FULL,
+    PATH_PAYLOAD_OMITTED as TAPE_PATH_PAYLOAD_OMITTED,
     PrimaryMajorEventTape,
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT as TAPE_RAY_KIND_DIRECT,
@@ -187,6 +188,21 @@ class ReceiverHitCandidate:
             ray_kind=self.ray_kind,
             receiver_flux_lumen=self.received_power_lumen,
         )
+
+
+@dataclass(slots=True)
+class _ReceiverHitBatch:
+    """Numeric nearest-receiver result aligned with an input ray batch."""
+
+    distances_mm: np.ndarray
+    receiver_indices: np.ndarray
+    rows: np.ndarray
+    columns: np.ndarray
+    received_power_lumen: np.ndarray
+    points: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.distances_mm)
 
 
 @dataclass(slots=True)
@@ -1034,6 +1050,22 @@ class _WavefrontReducerStats:
     native_apply_sec: float = 0.0
     native_path_sec: float = 0.0
     bindings: Optional[_OrderedReducerBindings] = None
+    commit_policy: str = "per_tape"
+    retained_result: Optional[native_ordered_reducer.OrderedSummaryResult] = None
+    retained_profile_touch_slots: List[int] = field(default_factory=list)
+    retained_profile_touch_faces: List[int] = field(default_factory=list)
+    retained_reflection_depth_touch: List[int] = field(default_factory=list)
+    retained_contribution_depth_touch: List[int] = field(default_factory=list)
+    retained_receiver_depth_touch_receivers: List[int] = field(
+        default_factory=list
+    )
+    retained_receiver_depth_touch_depths: List[int] = field(default_factory=list)
+    retained_tape_count: int = 0
+    retained_primary_count: int = 0
+    retained_event_count: int = 0
+    final_flush_count: int = 0
+    final_flush_sec: float = 0.0
+    fallback_flush_count: int = 0
 
     @property
     def native_requested(self) -> bool:
@@ -1196,6 +1228,17 @@ class _WavefrontReducerStats:
             ),
             "wavefront_reducer_native_apply_sec": self.native_apply_sec,
             "wavefront_reducer_native_path_sec": self.native_path_sec,
+            "wavefront_reducer_commit_policy": self.commit_policy,
+            "wavefront_reducer_retained_tape_count": self.retained_tape_count,
+            "wavefront_reducer_retained_primary_count": (
+                self.retained_primary_count
+            ),
+            "wavefront_reducer_retained_event_count": self.retained_event_count,
+            "wavefront_reducer_final_flush_count": self.final_flush_count,
+            "wavefront_reducer_final_flush_sec": self.final_flush_sec,
+            "wavefront_reducer_fallback_flush_count": (
+                self.fallback_flush_count
+            ),
             "wavefront_reducer_native_timing_scope": (
                 "prepare_external_plus_dispatch_including_jit_wait_and_validation"
             ),
@@ -1380,6 +1423,19 @@ class _WavefrontStoredPathQuota:
         self.paths[replace_index] = completed_path
 
 
+def _stored_path_payload_required(
+    stored_paths: List[List[RayHit]],
+    max_stored_paths: int,
+) -> bool:
+    """Whether a future tape can still change the bounded path store."""
+
+    if max_stored_paths <= 0:
+        return False
+    if len(stored_paths) < max_stored_paths:
+        return True
+    return any(not _path_reaches_receiver(path) for path in stored_paths)
+
+
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -1392,6 +1448,7 @@ def run_direct_ray_trace(
     wavefront_pipeline: str = "auto",
     wavefront_reducer: str = "auto",
     wavefront_rng: str = "auto",
+    wavefront_reducer_commit: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
@@ -1423,6 +1480,14 @@ def run_direct_ray_trace(
     }:
         raise ValueError(
             "wavefront_rng must be auto, per_primary_seeded_v1, or counter_rng_v2"
+        )
+    if wavefront_reducer_commit not in {
+        "auto",
+        "per_tape",
+        "run_accumulator",
+    }:
+        raise ValueError(
+            "wavefront_reducer_commit must be auto, per_tape, or run_accumulator"
         )
 
     gpu_compute_requested = (
@@ -1459,6 +1524,10 @@ def run_direct_ray_trace(
             wavefront_rng = "counter_rng_v2"
     elif wavefront_rng == "auto":
         wavefront_rng = "per_primary_seeded_v1"
+    if wavefront_reducer_commit == "auto":
+        wavefront_reducer_commit = (
+            "run_accumulator" if gpu_compute_requested else "per_tape"
+        )
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     intersection_stats = _IntersectionDispatchStats(
@@ -1476,6 +1545,7 @@ def run_direct_ray_trace(
     )
     wavefront_reducer_stats = _WavefrontReducerStats(
         requested_provider=wavefront_reducer,
+        commit_policy=wavefront_reducer_commit,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
     receiver_grids = {
@@ -1538,6 +1608,7 @@ def run_direct_ray_trace(
         "surface_geometry_dispatch": "numpy_batch_v1",
         "path_quota_dispatch": "ordered_dead_end_queue_v1",
         "reflection_rng": wavefront_rng,
+        "reflection_seed_dispatch": "not_used",
         "counter_apply_dispatch": "not_used",
         "rng_scalar_parity": (
             "statistical_vs_per_primary_seeded_v1"
@@ -1567,6 +1638,14 @@ def run_direct_ray_trace(
         "event_tape_copy_bytes": 0,
         "event_tape_copy_contract": "not_used",
         "event_tape_path_payload": "not_used",
+        "event_tape_path_payload_requested": "not_used",
+        "event_tape_path_payload_full_chunk_count": 0,
+        "event_tape_path_payload_omitted_chunk_count": 0,
+        "event_tape_path_payload_full_primary_count": 0,
+        "event_tape_path_payload_omitted_primary_count": 0,
+        "event_tape_path_payload_full_event_count": 0,
+        "event_tape_path_payload_omitted_event_count": 0,
+        "event_tape_path_payload_suppressed_chunk_count": 0,
         "event_tape_peak_scope": "not_used",
         "event_count": 0,
         "event_tape_peak_bytes": 0,
@@ -1719,6 +1798,25 @@ def run_direct_ray_trace(
             if stopped_early:
                 break
             continue
+        if wavefront_reducer_stats.retained_result is not None:
+            flush_started = time.perf_counter()
+            _flush_retained_ordered_summary(
+                trace_input.mesh,
+                trace_input.config,
+                receiver_frames,
+                receiver_grids,
+                optical_summary,
+                reflection_summary,
+                contribution_summary,
+                resolved_optical_by_face,
+                stored_paths,
+                wavefront_reducer_stats,
+            )
+            flush_elapsed = time.perf_counter() - flush_started
+            wavefront_reducer_stats.native_apply_sec += flush_elapsed
+            wavefront_summary["commit_sec"] += flush_elapsed
+            wavefront_summary["total_sec"] += flush_elapsed
+            wavefront_summary["reducer_replay_sec"] += flush_elapsed
         for ray in _iter_primary_emitter_rays(
             trace_input.mesh,
             emitter,
@@ -2046,6 +2144,25 @@ def run_direct_ray_trace(
         if stopped_early:
             break
 
+    if wavefront_reducer_stats.retained_result is not None:
+        flush_started = time.perf_counter()
+        _flush_retained_ordered_summary(
+            trace_input.mesh,
+            trace_input.config,
+            receiver_frames,
+            receiver_grids,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+            resolved_optical_by_face,
+            stored_paths,
+            wavefront_reducer_stats,
+        )
+        flush_elapsed = time.perf_counter() - flush_started
+        wavefront_reducer_stats.native_apply_sec += flush_elapsed
+        wavefront_summary["commit_sec"] += flush_elapsed
+        wavefront_summary["total_sec"] += flush_elapsed
+        wavefront_summary["reducer_replay_sec"] += flush_elapsed
     if progress_callback is not None:
         progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
@@ -2122,6 +2239,9 @@ def run_direct_ray_trace(
             "path_quota_dispatch"
         ],
         "wavefront_reflection_rng": wavefront_summary["reflection_rng"],
+        "wavefront_reflection_seed_dispatch": wavefront_summary[
+            "reflection_seed_dispatch"
+        ],
         "wavefront_counter_apply_dispatch": wavefront_summary[
             "counter_apply_dispatch"
         ],
@@ -2181,6 +2301,32 @@ def run_direct_ray_trace(
         "wavefront_event_tape_path_payload": wavefront_summary[
             "event_tape_path_payload"
         ],
+        "wavefront_event_tape_path_payload_requested": wavefront_summary[
+            "event_tape_path_payload_requested"
+        ],
+        "wavefront_event_tape_path_payload_full_chunk_count": (
+            wavefront_summary["event_tape_path_payload_full_chunk_count"]
+        ),
+        "wavefront_event_tape_path_payload_omitted_chunk_count": (
+            wavefront_summary["event_tape_path_payload_omitted_chunk_count"]
+        ),
+        "wavefront_event_tape_path_payload_full_primary_count": (
+            wavefront_summary["event_tape_path_payload_full_primary_count"]
+        ),
+        "wavefront_event_tape_path_payload_omitted_primary_count": (
+            wavefront_summary["event_tape_path_payload_omitted_primary_count"]
+        ),
+        "wavefront_event_tape_path_payload_full_event_count": (
+            wavefront_summary["event_tape_path_payload_full_event_count"]
+        ),
+        "wavefront_event_tape_path_payload_omitted_event_count": (
+            wavefront_summary["event_tape_path_payload_omitted_event_count"]
+        ),
+        "wavefront_event_tape_path_payload_suppressed_chunk_count": (
+            wavefront_summary[
+                "event_tape_path_payload_suppressed_chunk_count"
+            ]
+        ),
         "wavefront_event_tape_peak_scope": wavefront_summary[
             "event_tape_peak_scope"
         ],
@@ -2572,6 +2718,45 @@ def _wavefront_reflection_seed(emitter_seed: int, primary_index: int) -> int:
     value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
     value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
     return value ^ (value >> 31)
+
+
+def _wavefront_reflection_seeds(
+    emitter_seed: int,
+    primary_start_index: int,
+    count: int,
+) -> np.ndarray:
+    """Vectorized, bit-exact form of :func:`_wavefront_reflection_seed`.
+
+    The scalar helper deliberately specifies modulo-2**64 SplitMix arithmetic.
+    NumPy ``uint64`` arrays provide the same wraparound without entering Python
+    once per primary ray.  Masking the two scalar inputs before conversion also
+    retains the scalar contract for negative or wider-than-64-bit test values.
+    """
+
+    if isinstance(count, bool) or not isinstance(count, Integral):
+        raise ValueError("count must be an integer")
+    count = int(count)
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    if count == 0:
+        return np.empty(0, dtype=np.uint64)
+
+    mask = (1 << 64) - 1
+    golden = np.uint64(0x9E3779B97F4A7C15)
+    values = np.arange(count, dtype=np.uint64)
+    values += np.uint64(int(primary_start_index) & mask)
+    values += np.uint64(1)
+    values *= golden
+    values ^= np.uint64(int(emitter_seed) & mask)
+    values += golden
+    values = (values ^ (values >> np.uint64(30))) * np.uint64(
+        0xBF58476D1CE4E5B9
+    )
+    values = (values ^ (values >> np.uint64(27))) * np.uint64(
+        0x94D049BB133111EB
+    )
+    values ^= values >> np.uint64(31)
+    return values
 
 
 class _WavefrontNoDrawRng:
@@ -2982,23 +3167,27 @@ def _plan_deterministic_wavefront_rows(
     return native_plan, native_plan_positions
 
 
-def _find_first_receiver_hits_batch(
+def _find_first_receiver_hits_numeric(
     origins: np.ndarray,
     directions: np.ndarray,
     powers_lumen: np.ndarray,
     receivers: List[ReceiverFrame],
-    grids: Dict[str, ReceiverGrid],
     config: RayTraceConfig,
-    depth: int,
-    ray_kinds: List[str],
-) -> Tuple[List[Optional[ReceiverHitCandidate]], np.ndarray]:
+    *,
+    include_points: bool = True,
+) -> _ReceiverHitBatch:
+    """Find nearest receiver hits without hydrating per-ray Python objects."""
+
     ray_count = len(origins)
     best_distance = np.full(ray_count, float("inf"), dtype=np.float64)
     best_receiver = np.full(ray_count, -1, dtype=np.int64)
     best_row = np.zeros(ray_count, dtype=np.int64)
     best_column = np.zeros(ray_count, dtype=np.int64)
     best_received_power = np.zeros(ray_count, dtype=np.float64)
-    best_points = np.zeros((ray_count, 3), dtype=np.float64)
+    best_points = np.zeros(
+        (ray_count if include_points else 0, 3),
+        dtype=np.float64,
+    )
 
     origin_x = origins[:, 0]
     origin_y = origins[:, 1]
@@ -3087,32 +3276,62 @@ def _find_first_receiver_hits_batch(
         best_received_power[candidate_indices] = (
             powers_lumen[candidate_indices] * acceptance_cosine
         )
-        best_points[candidate_indices, 0] = point_x
-        best_points[candidate_indices, 1] = point_y
-        best_points[candidate_indices, 2] = point_z
+        if include_points:
+            best_points[candidate_indices, 0] = point_x
+            best_points[candidate_indices, 1] = point_y
+            best_points[candidate_indices, 2] = point_z
 
-    candidates: List[Optional[ReceiverHitCandidate]] = [None] * ray_count
-    for index in np.flatnonzero(best_receiver >= 0):
-        receiver_frame = receivers[int(best_receiver[index])]
+    return _ReceiverHitBatch(
+        distances_mm=best_distance,
+        receiver_indices=best_receiver,
+        rows=best_row,
+        columns=best_column,
+        received_power_lumen=best_received_power,
+        points=best_points,
+    )
+
+
+def _find_first_receiver_hits_batch(
+    origins: np.ndarray,
+    directions: np.ndarray,
+    powers_lumen: np.ndarray,
+    receivers: List[ReceiverFrame],
+    grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    depth: int,
+    ray_kinds: List[str],
+) -> Tuple[List[Optional[ReceiverHitCandidate]], np.ndarray]:
+    """Compatibility object view of the numeric receiver batch result."""
+
+    result = _find_first_receiver_hits_numeric(
+        origins,
+        directions,
+        powers_lumen,
+        receivers,
+        config,
+    )
+    candidates: List[Optional[ReceiverHitCandidate]] = [None] * len(result)
+    for index in np.flatnonzero(result.receiver_indices >= 0):
+        receiver_frame = receivers[int(result.receiver_indices[index])]
         receiver = receiver_frame.receiver
         candidates[int(index)] = ReceiverHitCandidate(
             grid=grids[receiver.receiver_id],
-            row=int(best_row[index]),
-            column=int(best_column[index]),
-            received_power_lumen=float(best_received_power[index]),
+            row=int(result.rows[index]),
+            column=int(result.columns[index]),
+            received_power_lumen=float(result.received_power_lumen[index]),
             point=(
-                float(best_points[index, 0]),
-                float(best_points[index, 1]),
-                float(best_points[index, 2]),
+                float(result.points[index, 0]),
+                float(result.points[index, 1]),
+                float(result.points[index, 2]),
             ),
             normal=receiver_frame.normal,
-            distance_mm=float(best_distance[index]),
+            distance_mm=float(result.distances_mm[index]),
             incoming_power_lumen=float(powers_lumen[index]),
             receiver_id=receiver.receiver_id,
             depth=depth,
             ray_kind=ray_kinds[int(index)],
         )
-    return candidates, best_distance
+    return candidates, result.distances_mm
 
 
 def _commit_multi_bounce_wavefront_ray(
@@ -3479,7 +3698,11 @@ def _reduce_wavefront_event_tape_python_ordered(
         config.max_stored_paths,
     )
     path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
-    if path_storage_enabled and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+    path_payload_required = path_storage_enabled and _stored_path_payload_required(
+        stored_paths,
+        config.max_stored_paths,
+    )
+    if path_payload_required and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
         raise ValueError("path-enabled reduction requires full path payload")
     receiver_hit_count = 0
     surface_hit_count = 0
@@ -4148,7 +4371,7 @@ class _NativeOrderedReducerCommit:
 
 def _stage_ordered_summary_result(
     result: native_ordered_reducer.OrderedSummaryResult,
-    tape: PrimaryMajorEventTape,
+    tape: Optional[PrimaryMajorEventTape],
     mesh: TriangleMesh,
     config: RayTraceConfig,
     receiver_frames: List[ReceiverFrame],
@@ -4159,16 +4382,22 @@ def _stage_ordered_summary_result(
     resolved_optical_by_face: List,
     bindings: _OrderedReducerBindings,
     stored_paths: List[List[RayHit]],
+    *,
+    stage_paths: bool = True,
 ) -> _NativeOrderedReducerCommit:
     state = result.state
-    if result.surface_hit_count != tape.event_count:
-        raise ValueError("native reducer surface count does not match the tape")
-    if (
-        result.receiver_hit_count < 0
-        or result.terminated_ray_count < 0
-        or result.receiver_hit_count + result.terminated_ray_count != len(tape)
-    ):
-        raise ValueError("native reducer terminal counts do not match the tape")
+    if tape is None:
+        if stage_paths:
+            raise ValueError("path staging requires an ordered event tape")
+    else:
+        if result.surface_hit_count != tape.event_count:
+            raise ValueError("native reducer surface count does not match the tape")
+        if (
+            result.receiver_hit_count < 0
+            or result.terminated_ray_count < 0
+            or result.receiver_hit_count + result.terminated_ray_count != len(tape)
+        ):
+            raise ValueError("native reducer terminal counts do not match the tape")
 
     staged_profile_hits = {
         profile_id: dict(entry)
@@ -4456,13 +4685,45 @@ def _stage_ordered_summary_result(
         staged_paths,
         config.max_stored_paths,
     )
-    path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
-    if path_storage_enabled and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+    path_storage_enabled = (
+        stage_paths
+        and config.store_ray_paths
+        and config.max_stored_paths > 0
+    )
+    path_payload_required = path_storage_enabled and _stored_path_payload_required(
+        stored_paths,
+        config.max_stored_paths,
+    )
+    if (
+        path_payload_required
+        and (tape is None or tape.path_payload != TAPE_PATH_PAYLOAD_FULL)
+    ):
         raise ValueError("path-enabled native reduction requires full path payload")
     path_materialized_count = 0
-    path_skipped_count = 0
+    path_skipped_count = (
+        len(tape)
+        if (
+            tape is not None
+            and
+            path_storage_enabled
+            and not path_payload_required
+            and tape.path_payload != TAPE_PATH_PAYLOAD_FULL
+        )
+        else 0
+    )
     path_sec = 0.0
-    for primary_slot in range(len(tape)):
+    primary_slots_to_visit = (
+        range(len(tape))
+        if tape is not None
+        and stage_paths
+        and not (
+            path_storage_enabled
+            and not path_payload_required
+            and tape.path_payload != TAPE_PATH_PAYLOAD_FULL
+        )
+        else ()
+    )
+    for primary_slot in primary_slots_to_visit:
         terminal_code = int(tape.terminal_kind_codes[primary_slot])
         terminal_kind = (
             "receiver"
@@ -4538,6 +4799,113 @@ def _stage_ordered_summary_result(
     )
 
 
+@dataclass(slots=True)
+class _NativeOrderedPathCommit:
+    stored_paths: List[List[RayHit]]
+    materialized_count: int
+    skipped_count: int
+    path_sec: float
+
+
+def _stage_ordered_paths_only(
+    tape: PrimaryMajorEventTape,
+    mesh: TriangleMesh,
+    config: RayTraceConfig,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    resolved_optical_by_face: List,
+    stored_paths: List[List[RayHit]],
+) -> _NativeOrderedPathCommit:
+    """Transactionally stage the bounded path payload for one retained tape."""
+
+    staged_paths = list(stored_paths)
+    path_quota = _WavefrontStoredPathQuota.from_paths(
+        staged_paths,
+        config.max_stored_paths,
+    )
+    path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
+    path_payload_required = path_storage_enabled and _stored_path_payload_required(
+        stored_paths,
+        config.max_stored_paths,
+    )
+    if path_payload_required and tape.path_payload != TAPE_PATH_PAYLOAD_FULL:
+        raise ValueError("path-enabled native reduction requires full path payload")
+    materialized_count = 0
+    skip_path_scan = (
+        path_storage_enabled
+        and not path_payload_required
+        and tape.path_payload != TAPE_PATH_PAYLOAD_FULL
+    )
+    skipped_count = len(tape) if skip_path_scan else 0
+    path_sec = 0.0
+    primary_slots_to_visit = () if skip_path_scan else range(len(tape))
+    for primary_slot in primary_slots_to_visit:
+        terminal_code = int(tape.terminal_kind_codes[primary_slot])
+        terminal_kind = (
+            "receiver"
+            if terminal_code == TAPE_TERMINAL_RECEIVER
+            else "escaped"
+            if terminal_code == TAPE_TERMINAL_ESCAPED
+            else "blocked"
+        )
+        store_path = path_storage_enabled and path_quota.can_store(terminal_kind)
+        if path_storage_enabled:
+            if store_path:
+                materialized_count += 1
+            else:
+                skipped_count += 1
+        if not store_path:
+            continue
+        path_started = time.perf_counter()
+        terminal_receiver: Optional[ReceiverHitCandidate] = None
+        if terminal_code == TAPE_TERMINAL_RECEIVER:
+            receiver_index = int(tape.terminal_receiver_indices[primary_slot])
+            receiver_frame = receiver_frames[receiver_index]
+            receiver_id = receiver_frame.receiver.receiver_id
+            terminal_receiver = ReceiverHitCandidate(
+                grid=receiver_grids[receiver_id],
+                row=int(tape.terminal_rows[primary_slot]),
+                column=int(tape.terminal_columns[primary_slot]),
+                received_power_lumen=float(
+                    tape.terminal_received_power_lumen[primary_slot]
+                ),
+                point=(
+                    float(tape.terminal_points[primary_slot, 0]),
+                    float(tape.terminal_points[primary_slot, 1]),
+                    float(tape.terminal_points[primary_slot, 2]),
+                ),
+                normal=(
+                    float(tape.terminal_normals[primary_slot, 0]),
+                    float(tape.terminal_normals[primary_slot, 1]),
+                    float(tape.terminal_normals[primary_slot, 2]),
+                ),
+                distance_mm=float(tape.terminal_distances_mm[primary_slot]),
+                incoming_power_lumen=float(
+                    tape.terminal_incoming_power_lumen[primary_slot]
+                ),
+                receiver_id=receiver_id,
+                depth=int(tape.terminal_depths[primary_slot]),
+                ray_kind=_tape_ray_kind_name(
+                    int(tape.terminal_ray_kind_codes[primary_slot])
+                ),
+            )
+        path_events = _materialize_stored_path_from_tape(
+            tape,
+            primary_slot,
+            mesh,
+            resolved_optical_by_face,
+            terminal_receiver,
+        )
+        path_quota.store(path_events, terminal_kind)
+        path_sec += time.perf_counter() - path_started
+    return _NativeOrderedPathCommit(
+        stored_paths=staged_paths,
+        materialized_count=materialized_count,
+        skipped_count=skipped_count,
+        path_sec=path_sec,
+    )
+
+
 def _publish_ordered_summary_commit(
     commit: _NativeOrderedReducerCommit,
     receiver_grids: Dict[str, ReceiverGrid],
@@ -4571,6 +4939,144 @@ def _publish_ordered_summary_commit(
     receiver_grids.clear()
     receiver_grids.update(commit.receiver_grids)
     stored_paths[:] = commit.stored_paths
+
+
+def _retain_ordered_summary_result(
+    reducer_stats: _WavefrontReducerStats,
+    tape: PrimaryMajorEventTape,
+    result: native_ordered_reducer.OrderedSummaryResult,
+) -> None:
+    reducer_stats.retained_result = result
+    reducer_stats.retained_profile_touch_slots.extend(
+        int(value) for value in result.profile_first_touch_slots
+    )
+    reducer_stats.retained_profile_touch_faces.extend(
+        int(value) for value in result.profile_first_touch_faces
+    )
+    reducer_stats.retained_reflection_depth_touch.extend(
+        int(value) for value in result.reflection_depth_first_touch
+    )
+    reducer_stats.retained_contribution_depth_touch.extend(
+        int(value) for value in result.contribution_depth_first_touch
+    )
+    reducer_stats.retained_receiver_depth_touch_receivers.extend(
+        int(value) for value in result.receiver_depth_first_touch_receivers
+    )
+    reducer_stats.retained_receiver_depth_touch_depths.extend(
+        int(value) for value in result.receiver_depth_first_touch_depths
+    )
+    reducer_stats.retained_tape_count += 1
+    reducer_stats.retained_primary_count += len(tape)
+    reducer_stats.retained_event_count += tape.event_count
+
+
+def _retained_ordered_summary_result(
+    reducer_stats: _WavefrontReducerStats,
+) -> native_ordered_reducer.OrderedSummaryResult:
+    result = reducer_stats.retained_result
+    if result is None:
+        raise RuntimeError("ordered reducer has no retained result")
+
+    def readonly(values: List[int], dtype: np.dtype) -> np.ndarray:
+        array = np.asarray(values, dtype=dtype)
+        array.setflags(write=False)
+        return array
+
+    return native_ordered_reducer.OrderedSummaryResult(
+        state=result.state,
+        profile_first_touch_slots=readonly(
+            reducer_stats.retained_profile_touch_slots,
+            np.dtype(np.int32),
+        ),
+        profile_first_touch_faces=readonly(
+            reducer_stats.retained_profile_touch_faces,
+            np.dtype(np.int64),
+        ),
+        reflection_depth_first_touch=readonly(
+            reducer_stats.retained_reflection_depth_touch,
+            np.dtype(np.int16),
+        ),
+        contribution_depth_first_touch=readonly(
+            reducer_stats.retained_contribution_depth_touch,
+            np.dtype(np.int16),
+        ),
+        receiver_depth_first_touch_receivers=readonly(
+            reducer_stats.retained_receiver_depth_touch_receivers,
+            np.dtype(np.int32),
+        ),
+        receiver_depth_first_touch_depths=readonly(
+            reducer_stats.retained_receiver_depth_touch_depths,
+            np.dtype(np.int16),
+        ),
+        # These counts are validated against the retained last tape by the
+        # staging boundary; the run-level caller already accumulated all
+        # earlier per-tape counts independently.
+        receiver_hit_count=result.receiver_hit_count,
+        surface_hit_count=result.surface_hit_count,
+        terminated_ray_count=result.terminated_ray_count,
+    )
+
+
+def _clear_retained_ordered_summary(
+    reducer_stats: _WavefrontReducerStats,
+) -> None:
+    reducer_stats.retained_result = None
+    reducer_stats.retained_profile_touch_slots.clear()
+    reducer_stats.retained_profile_touch_faces.clear()
+    reducer_stats.retained_reflection_depth_touch.clear()
+    reducer_stats.retained_contribution_depth_touch.clear()
+    reducer_stats.retained_receiver_depth_touch_receivers.clear()
+    reducer_stats.retained_receiver_depth_touch_depths.clear()
+
+
+def _flush_retained_ordered_summary(
+    mesh: TriangleMesh,
+    config: RayTraceConfig,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    resolved_optical_by_face: List,
+    stored_paths: List[List[RayHit]],
+    reducer_stats: _WavefrontReducerStats,
+    *,
+    fallback_flush: bool = False,
+) -> None:
+    if reducer_stats.retained_result is None:
+        return
+    bindings = reducer_stats.bindings
+    if bindings is None:
+        raise RuntimeError("retained ordered reducer state is incomplete")
+    started = time.perf_counter()
+    commit = _stage_ordered_summary_result(
+        _retained_ordered_summary_result(reducer_stats),
+        None,
+        mesh,
+        config,
+        receiver_frames,
+        receiver_grids,
+        optical_summary,
+        reflection_summary,
+        contribution_summary,
+        resolved_optical_by_face,
+        bindings,
+        stored_paths,
+        stage_paths=False,
+    )
+    _publish_ordered_summary_commit(
+        commit,
+        receiver_grids,
+        optical_summary,
+        reflection_summary,
+        contribution_summary,
+        stored_paths,
+    )
+    reducer_stats.final_flush_count += 1
+    reducer_stats.final_flush_sec += time.perf_counter() - started
+    if fallback_flush:
+        reducer_stats.fallback_flush_count += 1
+    _clear_retained_ordered_summary(reducer_stats)
 
 
 def _set_wavefront_reducer_contract(
@@ -4626,6 +5132,20 @@ def _reduce_wavefront_event_tape_ordered(
         and not reducer_stats.native_provider_disabled
     )
     if not native_eligible:
+        if reducer_stats.retained_result is not None:
+            _flush_retained_ordered_summary(
+                mesh,
+                config,
+                receiver_frames,
+                receiver_grids,
+                optical_summary,
+                reflection_summary,
+                contribution_summary,
+                resolved_optical_by_face,
+                stored_paths,
+                reducer_stats,
+                fallback_flush=True,
+            )
         if (
             reducer_stats.native_requested
             and reducer_stats.native_provider_disabled
@@ -4658,15 +5178,25 @@ def _reduce_wavefront_event_tape_ordered(
             reducer_stats,
         )
         batch = _prepare_ordered_summary_batch(tape, config, bindings)
-        accumulator = _prepare_ordered_summary_accumulator(
-            batch,
-            bindings,
-            receiver_frames,
-            receiver_grids,
-            optical_summary,
-            reflection_summary,
-            contribution_summary,
-        )
+        if (
+            reducer_stats.commit_policy == "run_accumulator"
+            and reducer_stats.retained_result is not None
+        ):
+            accumulator = (
+                native_ordered_reducer.clone_ordered_summary_accumulator(
+                    reducer_stats.retained_result.state
+                )
+            )
+        else:
+            accumulator = _prepare_ordered_summary_accumulator(
+                batch,
+                bindings,
+                receiver_frames,
+                receiver_grids,
+                optical_summary,
+                reflection_summary,
+                contribution_summary,
+            )
     except Exception:
         prepare_elapsed = time.perf_counter() - prepare_started
         reducer_stats.native_prepare_sec += prepare_elapsed
@@ -4752,21 +5282,35 @@ def _reduce_wavefront_event_tape_ordered(
                 consumer_validation_sec
             )
             apply_started = time.perf_counter()
+            retain_result = reducer_stats.commit_policy == "run_accumulator"
             try:
-                commit = _stage_ordered_summary_result(
-                    execution.result,
-                    tape,
-                    mesh,
-                    config,
-                    receiver_frames,
-                    receiver_grids,
-                    optical_summary,
-                    reflection_summary,
-                    contribution_summary,
-                    resolved_optical_by_face,
-                    bindings,
-                    stored_paths,
-                )
+                if retain_result:
+                    path_commit = _stage_ordered_paths_only(
+                        tape,
+                        mesh,
+                        config,
+                        receiver_frames,
+                        receiver_grids,
+                        resolved_optical_by_face,
+                        stored_paths,
+                    )
+                    commit = None
+                else:
+                    commit = _stage_ordered_summary_result(
+                        execution.result,
+                        tape,
+                        mesh,
+                        config,
+                        receiver_frames,
+                        receiver_grids,
+                        optical_summary,
+                        reflection_summary,
+                        contribution_summary,
+                        resolved_optical_by_face,
+                        bindings,
+                        stored_paths,
+                    )
+                    path_commit = None
             except Exception:
                 failed_apply_elapsed = time.perf_counter() - apply_started
                 reducer_stats.native_apply_sec += failed_apply_elapsed
@@ -4778,41 +5322,79 @@ def _reduce_wavefront_event_tape_ordered(
                     "native_ordered_reducer_apply_prepare_failed",
                 )
             else:
-                _publish_ordered_summary_commit(
-                    commit,
-                    receiver_grids,
-                    optical_summary,
-                    reflection_summary,
-                    contribution_summary,
-                    stored_paths,
-                )
+                if retain_result:
+                    assert path_commit is not None
+                    stored_paths[:] = path_commit.stored_paths
+                    _retain_ordered_summary_result(
+                        reducer_stats,
+                        tape,
+                        execution.result,
+                    )
+                    path_sec = path_commit.path_sec
+                    path_materialized_count = path_commit.materialized_count
+                    path_skipped_count = path_commit.skipped_count
+                    result_counts = (
+                        execution.result.receiver_hit_count,
+                        execution.result.surface_hit_count,
+                        execution.result.terminated_ray_count,
+                    )
+                else:
+                    assert commit is not None
+                    _publish_ordered_summary_commit(
+                        commit,
+                        receiver_grids,
+                        optical_summary,
+                        reflection_summary,
+                        contribution_summary,
+                        stored_paths,
+                    )
+                    path_sec = commit.path_sec
+                    path_materialized_count = commit.path_materialized_count
+                    path_skipped_count = (
+                        commit.path_materialization_skipped_count
+                    )
+                    result_counts = (
+                        commit.receiver_hit_count,
+                        commit.surface_hit_count,
+                        commit.terminated_ray_count,
+                    )
                 apply_elapsed = time.perf_counter() - apply_started
-                reducer_stats.native_path_sec += commit.path_sec
+                reducer_stats.native_path_sec += path_sec
                 apply_without_path = max(
                     0.0,
-                    apply_elapsed - commit.path_sec,
+                    apply_elapsed - path_sec,
                 )
                 reducer_stats.native_apply_sec += apply_without_path
                 wavefront_summary["reducer_replay_sec"] += apply_without_path
                 reducer_stats.record_success(primary_count, event_count)
                 wavefront_summary["path_materialized_count"] += (
-                    commit.path_materialized_count
+                    path_materialized_count
                 )
                 wavefront_summary["path_materialization_skipped_count"] += (
-                    commit.path_materialization_skipped_count
+                    path_skipped_count
                 )
-                wavefront_summary["reducer_hydrate_sec"] += commit.path_sec
+                wavefront_summary["reducer_hydrate_sec"] += path_sec
                 wavefront_summary["reducer_logical_event_count"] += event_count
                 _set_wavefront_reducer_contract(
                     wavefront_summary,
                     native_ordered_reducer.CONTRACT_VERSION,
                 )
-                return (
-                    commit.receiver_hit_count,
-                    commit.surface_hit_count,
-                    commit.terminated_ray_count,
-                )
+                return result_counts
 
+    if reducer_stats.retained_result is not None:
+        _flush_retained_ordered_summary(
+            mesh,
+            config,
+            receiver_frames,
+            receiver_grids,
+            optical_summary,
+            reflection_summary,
+            contribution_summary,
+            resolved_optical_by_face,
+            stored_paths,
+            reducer_stats,
+            fallback_flush=True,
+        )
     reducer_stats.record_python(primary_count, event_count)
     _set_wavefront_reducer_contract(wavefront_summary, "python_ordered_v1")
     return _reduce_wavefront_event_tape_python_ordered(
@@ -4862,6 +5444,14 @@ def _trace_multi_bounce_wavefront_batch(
 
     wavefront_started = time.perf_counter()
     state_build_started = time.perf_counter()
+    reflection_seeds = _wavefront_reflection_seeds(
+        emitter_seed,
+        primary_start_index,
+        ray_count,
+    )
+    wavefront_summary["reflection_seed_dispatch"] = (
+        "numpy_splitmix64_batch_v1"
+    )
     states: List[_MultiBounceWavefrontRay] = []
     for index in range(ray_count):
         origin = tuple(float(value) for value in origins[index])
@@ -4872,10 +5462,7 @@ def _trace_multi_bounce_wavefront_batch(
                 initial_origin=origin,  # type: ignore[arg-type]
                 initial_direction=direction,  # type: ignore[arg-type]
                 initial_power_lumen=ray_power,
-                reflection_seed=_wavefront_reflection_seed(
-                    emitter_seed,
-                    primary_start_index + index,
-                ),
+                reflection_seed=int(reflection_seeds[index]),
                 reflection_rng=None,
                 current_origin=origin,  # type: ignore[arg-type]
                 current_direction=direction,  # type: ignore[arg-type]
@@ -5156,16 +5743,13 @@ def _trace_multi_bounce_wavefront_soa_batch(
 
     wavefront_started = time.perf_counter()
     state_init_started = time.perf_counter()
-    reflection_seeds = np.fromiter(
-        (
-            _wavefront_reflection_seed(
-                emitter_seed,
-                primary_start_index + index,
-            )
-            for index in range(ray_count)
-        ),
-        dtype=np.uint64,
-        count=ray_count,
+    reflection_seeds = _wavefront_reflection_seeds(
+        emitter_seed,
+        primary_start_index,
+        ray_count,
+    )
+    wavefront_summary["reflection_seed_dispatch"] = (
+        "numpy_splitmix64_batch_v1"
     )
     active = StableActiveRaySoA.initialize(
         origins,
@@ -5174,8 +5758,26 @@ def _trace_multi_bounce_wavefront_soa_batch(
         primary_start_index,
         reflection_seeds,
     )
-    path_payload_enabled = (
+    path_payload_requested = (
         config.store_ray_paths and config.max_stored_paths > 0
+    )
+    path_payload_enabled = path_payload_requested and _stored_path_payload_required(
+        stored_paths,
+        config.max_stored_paths,
+    )
+    wavefront_summary["event_tape_path_payload_requested"] = (
+        TAPE_PATH_PAYLOAD_FULL
+        if path_payload_requested
+        else TAPE_PATH_PAYLOAD_OMITTED
+    )
+    if path_payload_requested and not path_payload_enabled:
+        wavefront_summary[
+            "event_tape_path_payload_suppressed_chunk_count"
+        ] += 1
+    receiver_normals = (
+        np.asarray([frame.normal for frame in receivers], dtype=np.float64)
+        if path_payload_enabled
+        else None
     )
     tape_builder = PrimaryMajorEventTapeBuilder(
         origins if path_payload_enabled else None,
@@ -5191,10 +5793,6 @@ def _trace_multi_bounce_wavefront_soa_batch(
     wavefront_summary["state_build_sec"] += state_init_elapsed
     wavefront_summary["state_init_sec"] += state_init_elapsed
 
-    receiver_index_by_id = {
-        frame.receiver.receiver_id: index
-        for index, frame in enumerate(receivers)
-    }
     wavefront_summary["chunk_count"] += 1
     wavefront_summary["primary_ray_count"] += ray_count
     wavefront_summary["max_active_ray_count"] = max(
@@ -5219,19 +5817,16 @@ def _trace_multi_bounce_wavefront_soa_batch(
         )
 
         receiver_started = time.perf_counter()
-        receiver_candidates, maximum_t = _find_first_receiver_hits_batch(
+        receiver_batch = _find_first_receiver_hits_numeric(
             active.origins,
             active.directions,
             active.powers_lumen,
             receivers,
-            receiver_grids,
             config,
-            depth,
-            [
-                _tape_ray_kind_name(int(code))
-                for code in active.ray_kind_codes
-            ],
+            include_points=path_payload_enabled,
         )
+        maximum_t = receiver_batch.distances_mm
+        wavefront_summary["receiver_dispatch"] = "numpy_numeric_batch_v2"
         wavefront_summary["receiver_sec"] += (
             time.perf_counter() - receiver_started
         )
@@ -5528,84 +6123,42 @@ def _trace_multi_bounce_wavefront_soa_batch(
             )
 
         missed_rows = np.flatnonzero(hit_batch.face_indices < 0)
-        receiver_rows = [
-            int(index)
-            for index in missed_rows
-            if receiver_candidates[int(index)] is not None
-        ]
-        escaped_rows = [
-            int(index)
-            for index in missed_rows
-            if receiver_candidates[int(index)] is None
-        ]
-        if receiver_rows:
+        missed_receiver_indices = receiver_batch.receiver_indices[missed_rows]
+        receiver_mask = missed_receiver_indices >= 0
+        receiver_rows = missed_rows[receiver_mask]
+        escaped_rows = missed_rows[~receiver_mask]
+        if len(receiver_rows):
             receiver_slots = active.primary_slots[receiver_rows]
-            candidates = [receiver_candidates[index] for index in receiver_rows]
-            if any(candidate is None for candidate in candidates):
-                raise RuntimeError("receiver terminal lost its candidate")
-            typed_candidates = [
-                candidate for candidate in candidates if candidate is not None
-            ]
+            receiver_indices = receiver_batch.receiver_indices[receiver_rows]
             tape_builder.set_receiver_terminals(
                 primary_slots=receiver_slots,
                 depth=depth,
                 current_power_lumen=active.powers_lumen[receiver_rows],
                 ray_kind_codes=active.ray_kind_codes[receiver_rows],
-                receiver_indices=np.asarray(
-                    [
-                        receiver_index_by_id[candidate.receiver_id]
-                        for candidate in typed_candidates
-                    ],
-                    dtype=np.int32,
-                ),
-                rows=np.asarray(
-                    [candidate.row for candidate in typed_candidates],
-                    dtype=np.int32,
-                ),
-                columns=np.asarray(
-                    [candidate.column for candidate in typed_candidates],
-                    dtype=np.int32,
-                ),
-                received_power_lumen=np.asarray(
-                    [
-                        candidate.received_power_lumen
-                        for candidate in typed_candidates
-                    ],
-                    dtype=np.float64,
-                ),
+                receiver_indices=receiver_indices.astype(np.int32),
+                rows=receiver_batch.rows[receiver_rows].astype(np.int32),
+                columns=receiver_batch.columns[receiver_rows].astype(np.int32),
+                received_power_lumen=receiver_batch.received_power_lumen[
+                    receiver_rows
+                ],
                 points=(
-                    np.asarray(
-                        [candidate.point for candidate in typed_candidates],
-                        dtype=np.float64,
-                    )
+                    receiver_batch.points[receiver_rows]
                     if path_payload_enabled
                     else None
                 ),
                 normals=(
-                    np.asarray(
-                        [candidate.normal for candidate in typed_candidates],
-                        dtype=np.float64,
-                    )
+                    receiver_normals[receiver_indices]
                     if path_payload_enabled
                     else None
                 ),
                 distances_mm=(
-                    np.asarray(
-                        [candidate.distance_mm for candidate in typed_candidates],
-                        dtype=np.float64,
-                    )
+                    receiver_batch.distances_mm[receiver_rows]
                     if path_payload_enabled
                     else None
                 ),
-                incoming_power_lumen=np.asarray(
-                    [
-                        candidate.incoming_power_lumen
-                        for candidate in typed_candidates
-                    ],
-                    dtype=np.float64,
-                ),
+                incoming_power_lumen=active.powers_lumen[receiver_rows],
             )
-        if escaped_rows:
+        if len(escaped_rows):
             tape_builder.set_nonreceiver_terminals(
                 primary_slots=active.primary_slots[escaped_rows],
                 terminal_kind=TAPE_TERMINAL_ESCAPED,
@@ -5661,7 +6214,31 @@ def _trace_multi_bounce_wavefront_soa_batch(
     wavefront_summary["event_tape_copy_contract"] = (
         "builder_owned_materialization_v1"
     )
-    wavefront_summary["event_tape_path_payload"] = tape.path_payload
+    prior_path_payload = wavefront_summary["event_tape_path_payload"]
+    if prior_path_payload == "not_used":
+        wavefront_summary["event_tape_path_payload"] = tape.path_payload
+    elif prior_path_payload != tape.path_payload:
+        wavefront_summary["event_tape_path_payload"] = "mixed_v1"
+    if tape.path_payload == TAPE_PATH_PAYLOAD_FULL:
+        wavefront_summary[
+            "event_tape_path_payload_full_chunk_count"
+        ] += 1
+        wavefront_summary[
+            "event_tape_path_payload_full_primary_count"
+        ] += len(tape)
+        wavefront_summary[
+            "event_tape_path_payload_full_event_count"
+        ] += tape.event_count
+    else:
+        wavefront_summary[
+            "event_tape_path_payload_omitted_chunk_count"
+        ] += 1
+        wavefront_summary[
+            "event_tape_path_payload_omitted_primary_count"
+        ] += len(tape)
+        wavefront_summary[
+            "event_tape_path_payload_omitted_event_count"
+        ] += tape.event_count
     wavefront_summary["event_tape_peak_scope"] = (
         "tape_owned_ndarray_estimate_v2"
     )

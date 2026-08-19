@@ -309,3 +309,14 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   `13ca76ce6c4e8129ae7b5dfefbadaca8c20d06884b7264d0c60a5e65812fef2e`다.
 - 상세 계약, benchmark matrix와 해석 제한은
   `docs/changes/2026-08-20_perf3c-strict-fp64-cuda-wavefront.md`에 기록한다.
+- PERF-3D는 GPU stack의 host overhead를 줄였다. Reflection seed와 Receiver
+  candidate를 numeric batch로 만들고, compiled reducer accumulator를 run-local로
+  유지해 마지막에 한 번만 Python 결과로 복원한다. Stored-path quota가
+  receiver-only로 포화된 뒤에는 full payload가 다시 나타나지 않는다.
+- Actual ROI 1M p50은 `7.277951 -> 5.541795초`, `1.3133x`, latency
+  `-23.855%`이며 count/flux/path/ordered semantic은 exact다. CPU default paired
+  두 case는 `3%` no-regression gate 안이고 Numba/CUDA를 probe하지 않았다.
+- PERF-3D는 전체 GPU residency나 fused CUDA depth kernel이 아니다. 다음 주요
+  병목은 depth 사이 host 왕복과 intersection/planning을 합치는 device kernel이다.
+  상세는
+  `docs/changes/2026-08-20_perf3d-host-overhead-run-accumulator.md`에 기록한다.

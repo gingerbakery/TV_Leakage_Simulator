@@ -258,6 +258,21 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
   `7.277951 / 8.004967초`, `137,401 primary ray/s`였다.
   이는 LightTools 비교가 아니며 VRAM/Stop/clean-PC 배포 gate는 후속 검증한다.
 
+#### PERF-3D: host overhead 제거와 run-retained ordered accumulator
+
+- GPU project의 `wavefront_reducer_commit="auto"`는
+  `run_accumulator`를 선택해 tape별 Python accumulator build/hydrate를 마지막
+  1회로 줄인다. CPU project의 `auto`는 기존 `per_tape`를 유지한다.
+- Reflection seed는 `numpy_splitmix64_batch_v1`, Receiver 후보는
+  `numpy_numeric_batch_v2` numeric batch를 사용한다.
+- Stored-path quota가 receiver-only로 포화된 뒤에는 path payload를 단조롭게
+  생략한다. Dead-end replacement 가능성이 남아 있으면 full payload를 유지한다.
+- Retained result는 run-local이고 성공한 native result만 저장한다. 실패 시 이전
+  성공 state를 flush한 뒤 failing tape 전체를 Python으로 한 번 replay하며 Stop과
+  concurrent run의 원자성은 기존 계약을 유지한다.
+- 이번 단계의 retained/resident는 CPU numeric reducer accumulator만 뜻한다.
+  전체 ray state GPU residency나 fused CUDA depth kernel은 후속이다.
+
 ## 정합성 기준
 - Random draw가 없는 같은-seed wavefront는 legacy scalar와 exact해야 한다.
 - Stochastic wavefront는 같은 seed에서 chunk 크기, 반복 실행과 provider가
@@ -689,3 +704,37 @@ Actual ROI 1M artifact SHA256은
 `13ca76ce6c4e8129ae7b5dfefbadaca8c20d06884b7264d0c60a5e65812fef2e`다.
 상세 계약과 해석 제한은
 `docs/changes/2026-08-20_perf3c-strict-fp64-cuda-wavefront.md`를 따른다.
+
+## PERF-3D Host-overhead 측정 (2026-08-20)
+
+PERF-3C와 같은 actual ROI 1M, depth 10, paths 500의 source-frozen warm raw는
+`5.715687 / 5.541795 / 5.208224초`, p50/p95는
+`5.541795 / 5.698298초`, 처리량은 `180,447 primary ray/s`다. PERF-3C p50
+`7.277951초` 대비 `1.3133x`, latency `23.855%` 개선됐다.
+
+Receiver/surface/terminated `126,609 / 2,250,471 / 873,391`, flux
+`0.03998454755283727`, stored paths `500`과 ordered semantic hash는 PERF-3C와
+세 run 모두 exact했다. Intersection/planner/reducer hard fallback은 `0`이다.
+
+Representative Receiver/plan/commit/wavefront는
+`0.216118 / 1.576959 / 1.145978 / 5.274202초`다. Intersection은
+`1.985698초`로 PERF-3C representative `1.578990초`보다 불리했으므로 CUDA
+intersection 개선으로 해석하지 않는다. Host overhead 감소가 전체 wall 개선을
+만들었다.
+
+Run accumulator는 `16 tape / 1,000,000 primary / 2,250,471 event`를 유지하고
+마지막에 `1회 / 0.000637초` flush했다. Payload는 첫 65,536-primary tape만 full,
+뒤 15개 tape는 omitted였고 copy accounting은
+`293,678,488 -> 124,395,352 bytes`(`-57.642%`)다.
+
+100k counterbalanced p50은 PERF-3C parent/PERF-3D per-tape/retained
+`0.831689 / 0.772222 / 0.734558초`로 retained가 parent 대비 `1.1322x`, 같은
+PERF-3D per-tape 대비 `1.0513x`였다. 성능 threshold는 report-only다.
+
+CPU default paired p50은 actual `-1.80%`, synthetic `+0.812%`로 `3%`
+no-regression gate 안이었다. Semantic/count/path exact, fresh-process
+Numba/CUDA/native no-probe도 통과했다. 최종 Python suite는
+`237 passed, 279 subtests passed`다.
+
+상세 계약, artifact와 해석 제한은
+`docs/changes/2026-08-20_perf3d-host-overhead-run-accumulator.md`를 따른다.

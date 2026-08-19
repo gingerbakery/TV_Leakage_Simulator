@@ -77,7 +77,7 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         result,
         *,
         event_count: int,
-        path_payload: str = "full_path_v1",
+        path_payload: str | None = None,
     ) -> None:
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
@@ -97,10 +97,54 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
             performance["wavefront_event_tape_copy_contract"],
             "builder_owned_materialization_v1",
         )
+        effective_path_payload = performance[
+            "wavefront_event_tape_path_payload"
+        ]
+        if path_payload is not None:
+            self.assertEqual(effective_path_payload, path_payload)
+        else:
+            self.assertIn(effective_path_payload, {"full_path_v1", "mixed_v1"})
+            self.assertEqual(
+                performance["wavefront_event_tape_path_payload_requested"],
+                "full_path_v1",
+            )
+        full_chunks = performance[
+            "wavefront_event_tape_path_payload_full_chunk_count"
+        ]
+        omitted_chunks = performance[
+            "wavefront_event_tape_path_payload_omitted_chunk_count"
+        ]
         self.assertEqual(
-            performance["wavefront_event_tape_path_payload"],
-            path_payload,
+            full_chunks + omitted_chunks,
+            performance["wavefront_chunk_count"],
         )
+        self.assertEqual(
+            performance[
+                "wavefront_event_tape_path_payload_full_primary_count"
+            ]
+            + performance[
+                "wavefront_event_tape_path_payload_omitted_primary_count"
+            ],
+            performance["wavefront_primary_ray_count"],
+        )
+        self.assertEqual(
+            performance[
+                "wavefront_event_tape_path_payload_full_event_count"
+            ]
+            + performance[
+                "wavefront_event_tape_path_payload_omitted_event_count"
+            ],
+            event_count,
+        )
+        if effective_path_payload == "mixed_v1":
+            self.assertGreater(full_chunks, 0)
+            self.assertGreater(omitted_chunks, 0)
+            self.assertEqual(
+                performance[
+                    "wavefront_event_tape_path_payload_suppressed_chunk_count"
+                ],
+                omitted_chunks,
+            )
         self.assertEqual(
             performance["wavefront_event_tape_peak_scope"],
             "tape_owned_ndarray_estimate_v2",

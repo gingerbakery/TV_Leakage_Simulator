@@ -472,6 +472,36 @@ invalidation은 host/device scene cache를 함께 무효화한다. Workspace cap
 memory와 Stop 경계를 크게 한다. Stop은 시작한 primary/intersection chunk를
 원자적으로 끝낸 다음 경계에서 반영한다.
 
+### PERF-3D host-overhead와 run accumulator
+
+Runtime-only `wavefront_reducer_commit` 허용값은 `auto`, `per_tape`,
+`run_accumulator`다. GPU project의 `auto`는 `run_accumulator`, CPU project의
+`auto`는 `per_tape`다. 기본 CPU/legacy project는 이 선택을 위해 Numba/CUDA를
+import하거나 probe하지 않는다.
+
+`run_accumulator`는 native ordered reducer의 strict `float64` numeric result를
+run-local state로 유지한다. 성공 결과만 owned mutable clone으로 다음 tape에
+넘기고 public dict/grid는 final flush 전까지 수정하지 않는다. Stored path는
+tape별 완전한 staged copy 성공 뒤 원자 publish해 다음 quota/payload gate에
+반영한다. 중간 tape가 실패하면 이전 성공 numeric state를 먼저 한 번 publish하고
+failing logical tape 전체를 Python ordered reducer로 한 번 replay한다. Run-local
+circuit breaker, no-double-count, Stop complete-chunk와 concurrent-run isolation
+계약은 `per_tape`와 같다.
+
+Reflection seed/Receiver numeric seam은 각각 `_wavefront_reflection_seeds()`와
+`_find_first_receiver_hits_numeric()`이다. Scalar 함수는 exact oracle과
+compatibility wrapper로 남는다. Effective dispatch metric은
+`numpy_splitmix64_batch_v1`과 `numpy_numeric_batch_v2`다.
+
+Path payload는 저장 quota가 비었거나 oldest dead-end replacement 가능성이 있으면
+full이다. Quota가 receiver-only로 포화되면 run-local monotonic latch가 이후 tape를
+omitted로 고정한다. 한 번 omitted로 전이한 뒤 full로 돌아갈 수 없다. Effective
+payload는 `full_path_v1`, `omitted_v1`, `mixed_v1` 중 하나이고 requested mode와
+full/omitted chunk·primary·event count, suppressed chunk count를 별도로 기록한다.
+
+여기서 retained/resident는 CPU numeric accumulator에만 해당한다. Ray/scene 전체
+GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -598,6 +628,22 @@ memory와 Stop 경계를 크게 한다. Stop은 시작한 primary/intersection c
 - `wavefront_reducer_contract`, `wavefront_reducer_replay_sec`,
   `wavefront_reducer_hydrate_sec`,
   `wavefront_reducer_logical_event_count`
+- `wavefront_reflection_seed_dispatch`
+- `wavefront_event_tape_path_payload_requested`
+- `wavefront_event_tape_path_payload_full_chunk_count`,
+  `wavefront_event_tape_path_payload_omitted_chunk_count`,
+  `wavefront_event_tape_path_payload_suppressed_chunk_count`
+- `wavefront_event_tape_path_payload_full_primary_count`,
+  `wavefront_event_tape_path_payload_omitted_primary_count`
+- `wavefront_event_tape_path_payload_full_event_count`,
+  `wavefront_event_tape_path_payload_omitted_event_count`
+- `wavefront_reducer_commit_policy`,
+  `wavefront_reducer_retained_tape_count`,
+  `wavefront_reducer_retained_primary_count`,
+  `wavefront_reducer_retained_event_count`
+- `wavefront_reducer_final_flush_count`,
+  `wavefront_reducer_final_flush_sec`,
+  `wavefront_reducer_fallback_flush_count`
 - `requested_wavefront_planner`, `wavefront_planner`,
   `wavefront_planner_contract`
 - `wavefront_planner_logical_row_count`,
