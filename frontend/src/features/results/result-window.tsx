@@ -2012,6 +2012,37 @@ export function RayTraceResultWindow({
                 {' · '}
                 {performance.bvh_cache_hit ? 'Cache Hit' : 'Rebuilt'}
               </p>
+              <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+                Compute
+                <HelpTooltip label="Compute backend 설명">
+                  실제 Ray 교차 계산에 사용된 장치와 provider입니다. CUDA를
+                  선택했더라도 장치 또는 런타임을 사용할 수 없거나 실행 중
+                  오류가 발생하면 해당 batch 전체를 CPU에서 다시 계산합니다.
+                </HelpTooltip>
+                {' · '}
+                {String(performance.compute_backend ?? 'cpu').toUpperCase()}
+                {' · '}
+                {String(performance.intersection_provider ?? 'python_cpu')}
+                {performance.gpu_cuda_used && performance.gpu_cuda_device_name
+                  ? ` · ${String(performance.gpu_cuda_device_name)}`
+                  : ''}
+                {numeric(performance.gpu_cuda_hybrid_cpu_success_count) > 0
+                  ? ` · CPU small-wave batches ${Math.trunc(
+                      numeric(
+                        performance.gpu_cuda_hybrid_cpu_success_count,
+                      ),
+                    ).toLocaleString()}`
+                  : ''}
+                {performance.intersection_fallback_reason
+                  ? ` · CPU fallback (${String(
+                      performance.intersection_fallback_reason,
+                    )})`
+                  : performance.intersection_provider_unavailable_reason
+                    ? ` · CPU (${String(
+                        performance.intersection_provider_unavailable_reason,
+                      )})`
+                    : ''}
+              </p>
               {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">
                   <div className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">

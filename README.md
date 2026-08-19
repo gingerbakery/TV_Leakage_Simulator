@@ -77,6 +77,16 @@ python run.py --rays 4000 --max-depth 2 --seed 42 --output outputs
 .\build_lightweight_desktop.bat
 ```
 
+NVIDIA CUDA GPU 가속이 필요한 PC용 별도 배포본 생성:
+
+```powershell
+.\build_gpu_cuda_desktop.bat
+```
+
+GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVIDIA
+드라이버는 대상 PC에 별도 설치되어 있어야 한다. 기본 경량 배포본에는 이
+의존성을 넣지 않으므로 CPU-only PC의 크기와 실행 경로는 기존과 같다.
+
 - 출력: `release/leakage_simulator_desktop_v1.0.0_lite/`
 - 전달용 ZIP: `release/leakage_simulator_desktop_v1.0.0_lite.zip`
 - 사용자는 압축 해제 후 `LeakageSimulator.exe`만 더블클릭

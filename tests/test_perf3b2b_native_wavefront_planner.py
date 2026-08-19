@@ -40,6 +40,7 @@ from leakage_simulator.native_cpu_wavefront import (
     probe_native_cpu_wavefront,
     scatter_codes_from_names,
 )
+from leakage_simulator.native_cpu_intersection import probe_native_cpu
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.types import OpticalProfile
 
@@ -511,11 +512,20 @@ print(json.dumps({{
                     73,
                 )
                 if intersection_provider == "numba_cpu":
+                    intersection_capability = probe_native_cpu()
+                    expected_provider = (
+                        "numba_cpu"
+                        if intersection_capability.available
+                        else "python_cpu"
+                    )
                     self.assertEqual(
                         performance["intersection_provider"],
-                        "numba_cpu",
+                        expected_provider,
                     )
-                    self.assertTrue(performance["native_used"])
+                    self.assertEqual(
+                        performance["native_used"],
+                        intersection_capability.available,
+                    )
 
     def test_planner_failures_fallback_once_without_duplicate_logical_rows(
         self,

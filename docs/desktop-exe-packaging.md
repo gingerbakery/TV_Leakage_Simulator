@@ -20,6 +20,60 @@
 - 사용자는 ZIP을 정상적으로 압축 해제한 뒤 `LeakageSimulator.exe`를 더블클릭한다.
 - 내장 WebView2 초기화가 실패하면 기본 브라우저로 local UI를 연다.
 
+## PERF-3C NVIDIA CUDA 배포본
+
+- 빌드 명령: `.\build_gpu_cuda_desktop.bat`
+- 출력 폴더: `release/leakage_simulator_desktop_v1.0.0_gpu_cuda/`
+- 전달 파일: `release/leakage_simulator_desktop_v1.0.0_gpu_cuda.zip`
+- 기본 Lite 배포본과 분리된 opt-in 에디션이다. 실제 동등 빌드 비교에서
+  GPU 의존성 증가분은 폴더 `127.5MB`, ZIP `43.8MB`였으며 Lite/CPU 사용자는
+  이 파일을 추가로 받지 않는다.
+- GPU 에디션에는 `numba==0.66.0`, `llvmlite==0.48.0` 및 네이티브
+  `llvmlite.dll`이 포함된다.
+- CUDA Toolkit과 NVIDIA 드라이버는 재배포하지 않고 대상 PC의 설치본을
+  사용한다.
+
+Windows의 긴 경로 아래 worktree에서 빌드한다면 `-ReleaseDirectory`로 짧은
+release 경로를 지정할 수 있다. 일반 저장소 루트의 one-click 빌드에는 필요
+없다.
+
+### 대상 PC 요구 사항
+
+- 64-bit Windows와 NVIDIA CUDA 지원 GPU
+- 설치된 GPU에 맞는 NVIDIA display driver
+- CUDA Toolkit. 현재 검증 기준은 CUDA Toolkit `13.1`이며 provider가
+  Windows CUDA 13의 `bin/x64`, `nvvm/bin/x64`, `nvvm/libdevice` 구조를
+  명시적으로 탐색한다.
+- Toolkit에는 `cudart64_*.dll`, `nvvm*.dll`, `libdevice*.bc`가 모두 있어야
+  한다. `CUDA_PATH` 또는 표준 NVIDIA 설치 경로로 찾을 수 있어야 한다.
+
+GPU를 선택했지만 드라이버·Toolkit·GPU가 없거나 실행 중 CUDA 오류가 나면
+해당 logical batch 전체를 CPU에서 한 번 재실행한다. 기본 compute mode는
+계속 CPU이며, Lite 배포본은 CUDA probe나 Numba import를 하지 않는다.
+
+### GPU 패키지 검증
+
+빌드 스크립트는 패키징 전과 ZIP 재추출 후에 각각 다음을 확인한다.
+
+1. Numba/llvmlite 버전 pin과 `llvmlite.dll` 실제 로드
+2. PERF-3C provider의 CUDA driver/Toolkit/device probe
+3. FP64 배열을 대상으로 한 실제 `@cuda.jit` kernel 실행과 결과 일치
+4. strict JSON 결과를 `gpu_cuda_runtime_manifest.json`에 기록
+
+의존성 import만 확인해야 하는 CPU-only 진단에서는 다음 명령을 쓸 수 있다.
+
+```powershell
+_tools\python313\python.exe scripts\verify_gpu_cuda_runtime.py --mode imports
+```
+
+실제 GPU와 Toolkit까지 확인하려면 `--mode device`를 사용한다.
+배포받은 사용자는 패키지 루트의 `CHECK_GPU_CUDA.bat`을 더블클릭하면 같은
+device 검증을 내장 Python으로 실행할 수 있다. `[OK]` 확인 후 GPU mode를
+선택한다.
+
+현재 표준 GPU 산출물 실측은 폴더 `481.8MB`, ZIP `145.4MB`다. 빌드마다
+frontend asset 이름과 문서가 바뀔 수 있어 소수점 단위 크기는 달라질 수 있다.
+
 ### 포함 기능
 - STEP/STP 실제 import와 OCP tessellation
 - React + TypeScript App Shell
@@ -40,6 +94,7 @@
 - OCP가 직접 연결하는 CAD/VTK DLL dependency closure
 - `NumPy`
 - 전체 CadQuery, VTK Python module, SciPy, PyArrow, Jupyter 등은 제외
+- GPU 에디션에만 Numba·llvmlite를 추가하며 CUDA Toolkit은 포함하지 않음
 
 ### 제외 기능
 - X_T 직접 import는 아직 구현되지 않았다.

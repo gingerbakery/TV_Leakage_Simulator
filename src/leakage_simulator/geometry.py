@@ -382,6 +382,9 @@ class TriangleMesh:
         self._native_cpu_scene = None
         self._native_cpu_scene_build_sec = 0.0
         self._native_cpu_scene_lock = threading.RLock()
+        self._gpu_cuda_scene = None
+        self._gpu_cuda_scene_build_sec = 0.0
+        self._gpu_cuda_scene_lock = threading.RLock()
 
     def add_vertex(self, vertex: Vec3) -> int:
         self.vertices.append(vertex)
@@ -689,6 +692,230 @@ class TriangleMesh:
             ) from exc
         return hits, execution
 
+    def prepare_gpu_cuda_scene(self):
+        """Pack and cache a strict-float64 BVH for the explicit CUDA provider.
+
+        The host representation reuses the already immutable native BVH
+        arrays.  This does not import or probe Numba; device discovery and the
+        persistent upload remain lazy inside :mod:`gpu_cuda_intersection`.
+        """
+        from .gpu_cuda_intersection import GpuCudaScene
+
+        with self._gpu_cuda_scene_lock:
+            if self._gpu_cuda_scene is not None:
+                return self._gpu_cuda_scene
+            started = time.perf_counter()
+            packed = self.prepare_native_cpu_scene()
+            node_total = len(packed.node_count)
+            maximum_depth = 0
+            pending: List[Tuple[int, int]] = [(0, 1)] if node_total else []
+            while pending:
+                node_index, depth = pending.pop()
+                maximum_depth = max(maximum_depth, depth)
+                if int(packed.node_count[node_index]) > 0:
+                    continue
+                left = int(packed.node_left[node_index])
+                right = int(packed.node_right[node_index])
+                if left < 0 or right < 0 or left >= node_total or right >= node_total:
+                    raise ValueError("prepared BVH contains an invalid child index")
+                pending.append((left, depth + 1))
+                pending.append((right, depth + 1))
+            # A DFS traversal can retain one sibling for every tree level.
+            # Two spare slots make the bound robust for the push-before-pop
+            # implementation and turn any violated assumption into a checked
+            # provider fallback rather than an out-of-bounds device write.
+            stack_width = max(2, maximum_depth + 2)
+            self._gpu_cuda_scene_build_sec = time.perf_counter() - started
+            self._gpu_cuda_scene = GpuCudaScene(
+                triangle_v0=packed.triangle_v0,
+                triangle_edge1=packed.triangle_edge1,
+                triangle_edge2=packed.triangle_edge2,
+                node_bounds_min=packed.node_bounds_min,
+                node_bounds_max=packed.node_bounds_max,
+                node_left=packed.node_left,
+                node_right=packed.node_right,
+                node_start=packed.node_start,
+                node_count=packed.node_count,
+                ordered_faces=packed.ordered_faces,
+                traceable_face_mask=packed.traceable_face_mask,
+                stack_width=stack_width,
+                build_sec=self._gpu_cuda_scene_build_sec,
+            )
+            return self._gpu_cuda_scene
+
+    def intersect_rays_gpu_cuda(
+        self,
+        rays: RayBatch,
+        backend: Optional[str] = None,
+    ):
+        """Run one complete logical batch through the explicit CUDA provider."""
+        from .gpu_cuda_intersection import (
+            GpuCudaCapability,
+            GpuCudaExecution,
+            GpuCudaProviderError,
+            GpuCudaUnavailable,
+            PROVIDER_CONTRACT,
+            intersect_gpu_cuda,
+            probe_gpu_cuda,
+        )
+
+        if not isinstance(rays, RayBatch):
+            raise TypeError("rays must be a RayBatch")
+        if len(rays) == 0:
+            empty_distances = np.empty(0, dtype=np.float64)
+            empty_faces = np.empty(0, dtype=np.int64)
+            empty_distances.setflags(write=False)
+            empty_faces.setflags(write=False)
+            return (
+                RayHitBatch(
+                    t=empty_distances,
+                    face_indices=empty_faces,
+                ),
+                GpuCudaExecution(
+                    distances=empty_distances,
+                    face_indices=empty_faces,
+                    scene_build_sec=0.0,
+                    scene_upload_sec=0.0,
+                    workspace_prepare_sec=0.0,
+                    input_upload_sec=0.0,
+                    jit_compile_sec=0.0,
+                    kernel_sec=0.0,
+                    output_download_sec=0.0,
+                    numba_version="not_probed",
+                    device_name="not_probed",
+                    compute_capability="not_probed",
+                    device_id=-1,
+                    toolkit_layout="not_probed",
+                    reused_device_scene=True,
+                    reused_workspace=True,
+                ),
+            )
+        if self._resolve_intersection_backend(backend) != "bvh":
+            raise GpuCudaUnavailable("gpu_cuda_requires_bvh")
+        capability: GpuCudaCapability = probe_gpu_cuda()
+        if not capability.available:
+            raise GpuCudaUnavailable(
+                capability.reason_code or "gpu_cuda_unavailable"
+            )
+        scene = self.prepare_gpu_cuda_scene()
+        execution = intersect_gpu_cuda(
+            scene,
+            rays.origins,
+            rays.directions,
+            rays.min_t,
+            rays.max_t,
+            rays.ignore_faces,
+        )
+        if not isinstance(execution, GpuCudaExecution):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_execution_contract_invalid",
+            )
+        timing_names = (
+            "scene_build_sec",
+            "scene_upload_sec",
+            "workspace_prepare_sec",
+            "input_upload_sec",
+            "jit_compile_sec",
+            "kernel_sec",
+            "output_download_sec",
+        )
+        if (
+            execution.strict_float64 is not True
+            or execution.provider_contract != PROVIDER_CONTRACT
+            or type(execution.device_id) is not int
+            or execution.device_id < 0
+            or type(execution.reused_device_scene) is not bool
+            or type(execution.reused_workspace) is not bool
+            or any(
+                not isinstance(getattr(execution, name), float)
+                or not math.isfinite(getattr(execution, name))
+                or getattr(execution, name) < 0.0
+                for name in timing_names
+            )
+            or any(
+                not isinstance(getattr(execution, name), str)
+                or not getattr(execution, name)
+                for name in (
+                    "numba_version",
+                    "device_name",
+                    "compute_capability",
+                    "toolkit_layout",
+                )
+            )
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_execution_contract_invalid",
+            )
+        if (
+            not isinstance(execution.distances, np.ndarray)
+            or not isinstance(execution.face_indices, np.ndarray)
+            or execution.distances.dtype != np.float64
+            or execution.face_indices.dtype != np.int64
+            or execution.distances.shape != (len(rays),)
+            or execution.face_indices.shape != (len(rays),)
+            or not execution.distances.flags.c_contiguous
+            or not execution.face_indices.flags.c_contiguous
+            or not execution.distances.flags.owndata
+            or not execution.face_indices.flags.owndata
+            or execution.distances.flags.writeable
+            or execution.face_indices.flags.writeable
+            or np.shares_memory(execution.distances, execution.face_indices)
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_shape_dtype_or_ownership_invalid",
+            )
+        if np.any(execution.face_indices < -1) or np.any(
+            execution.face_indices >= len(self.faces)
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_face_out_of_range",
+            )
+        hit_mask = execution.face_indices >= 0
+        if np.any(
+            hit_mask
+            & (
+                (execution.distances <= rays.min_t)
+                | (execution.distances > rays.max_t)
+            )
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_distance_out_of_bounds",
+            )
+        if np.any(hit_mask & (execution.face_indices == rays.ignore_faces)):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_ignored_face",
+            )
+        miss_mask = ~hit_mask
+        if np.any(miss_mask & ~np.isposinf(execution.distances)):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_invalid_miss",
+            )
+        if np.any(hit_mask):
+            hit_faces = execution.face_indices[hit_mask]
+            if np.any(~scene.traceable_face_mask[hit_faces]):
+                raise GpuCudaProviderError(
+                    "result_validation",
+                    "gpu_cuda_result_trace_excluded_face",
+                )
+        try:
+            hits = RayHitBatch(
+                t=execution.distances,
+                face_indices=execution.face_indices,
+            )
+        except (TypeError, ValueError) as exc:
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_invalid",
+            ) from exc
+        return hits, execution
+
     def intersect_ray_native_cpu(
         self,
         origin: Vec3,
@@ -807,6 +1034,7 @@ class TriangleMesh:
             "bvh_leaf_count": self._bvh_leaf_count,
             "bvh_build_sec": self._bvh_build_sec,
             "native_cpu_scene_build_sec": self._native_cpu_scene_build_sec,
+            "gpu_cuda_scene_build_sec": self._gpu_cuda_scene_build_sec,
         }
 
     def _resolve_intersection_backend(self, backend: Optional[str]) -> str:
@@ -1180,6 +1408,8 @@ class TriangleMesh:
         self._bvh_leaf_count = 0
         self._native_cpu_scene = None
         self._native_cpu_scene_build_sec = 0.0
+        self._gpu_cuda_scene = None
+        self._gpu_cuda_scene_build_sec = 0.0
 
     @staticmethod
     def _ray_box_entry_fast(

@@ -66,6 +66,45 @@ describe('BITSAM project format', () => {
     expect(serialized).not.toContain('activeRayTraceJobId')
   })
 
+  it('round-trips the explicit CUDA compute backend', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.setActiveCad({
+      path: 'gpu-model.step',
+      displayName: 'gpu-model.step',
+    })
+    store.getState().actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      compute_backend: 'gpu_cuda',
+    })
+    const project = createBitsamProject(
+      createSceneFixture(),
+      store.getState(),
+      new Date('2026-08-20T00:00:00.000Z'),
+    )
+
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+
+    expect(restored.workspace.rayTraceConfig.compute_backend).toBe(
+      'gpu_cuda',
+    )
+  })
+
+  it('loads legacy projects without compute_backend and restores CPU safely', () => {
+    const { project } = createProjectFixture()
+    const legacy = structuredClone(project)
+    delete (
+      legacy.workspace.rayTraceConfig as Partial<
+        typeof legacy.workspace.rayTraceConfig
+      >
+    ).compute_backend
+
+    const restored = parseBitsamProject(JSON.stringify(legacy))
+    const store = createWorkspaceStore()
+    store.getState().actions.restoreProjectState(restored.workspace)
+
+    expect(store.getState().rayTraceConfig.compute_backend).toBe('cpu')
+  })
+
   it('uses the custom .bitsam extension', () => {
     const { project } = createProjectFixture()
 

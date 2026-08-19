@@ -28,7 +28,24 @@ from .geometry import (
     clamp01,
 )
 from .native_cpu_intersection import NativeCpuProviderError, NativeCpuUnavailable
+from .native_cpu_counter_wavefront import (
+    CONTRACT_VERSION as COUNTER_WAVEFRONT_CONTRACT,
+    RNG_ALGORITHM as COUNTER_WAVEFRONT_RNG_ALGORITHM,
+    CounterWavefrontPlanInput,
+    CounterWavefrontPlanResult,
+    NativeCpuCounterWavefrontProviderError,
+    NativeCpuCounterWavefrontUnavailable,
+    plan_counter_native_cpu,
+    plan_counter_reference,
+)
+from .gpu_cuda_intersection import (
+    GpuCudaProviderError,
+    GpuCudaUnavailable,
+    PROVIDER_CONTRACT as GPU_CUDA_INTERSECTION_CONTRACT,
+)
 from .native_cpu_wavefront import (
+    LOBE_GAUSSIAN as NATIVE_WAVEFRONT_LOBE_GAUSSIAN,
+    LOBE_LAMBERTIAN as NATIVE_WAVEFRONT_LOBE_LAMBERTIAN,
     LOBE_SPECULAR as NATIVE_WAVEFRONT_LOBE_SPECULAR,
     SCATTER_NONE as NATIVE_WAVEFRONT_SCATTER_NONE,
     SCATTER_SPECULAR as NATIVE_WAVEFRONT_SCATTER_SPECULAR,
@@ -39,6 +56,7 @@ from .native_cpu_wavefront import (
     STATUS_EMITTED as NATIVE_WAVEFRONT_STATUS_EMITTED,
     STATUS_ROULETTE_SURVIVED as NATIVE_WAVEFRONT_STATUS_ROULETTE_SURVIVED,
     STATUS_ROULETTE_TERMINATED as NATIVE_WAVEFRONT_STATUS_ROULETTE_TERMINATED,
+    TERMINATION_RUSSIAN_ROULETTE as NATIVE_WAVEFRONT_TERMINATION_RUSSIAN_ROULETTE,
     TERMINATION_THRESHOLD as NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
     NativeCpuWavefrontProviderError,
     NativeCpuWavefrontUnavailable,
@@ -224,6 +242,7 @@ class _MultiBounceWavefrontRay:
     current_source_face: int = -1
     current_depth: int = 0
     current_ray_kind: str = "direct"
+    counter_rng_used: bool = False
     steps: List[_MultiBounceSurfaceStep] = field(default_factory=list)
     terminal_kind: Optional[str] = None
     terminal_receiver: Optional[ReceiverHitCandidate] = None
@@ -259,6 +278,32 @@ class _IntersectionDispatchStats:
     fallback_phase: Optional[str] = None
     fallback_reason: Optional[str] = None
     unavailable_reason: Optional[str] = None
+    gpu_cuda_scene_upload_sec: float = 0.0
+    gpu_cuda_workspace_prepare_sec: float = 0.0
+    gpu_cuda_input_upload_sec: float = 0.0
+    gpu_cuda_kernel_sec: float = 0.0
+    gpu_cuda_output_download_sec: float = 0.0
+    gpu_cuda_device_name: Optional[str] = None
+    gpu_cuda_compute_capability: Optional[str] = None
+    gpu_cuda_device_id: Optional[int] = None
+    gpu_cuda_toolkit_layout: Optional[str] = None
+    gpu_cuda_device_scene_reuse_count: int = 0
+    gpu_cuda_workspace_reuse_count: int = 0
+    gpu_cuda_hybrid_cpu_below_rays: int = 0
+    gpu_cuda_hybrid_cpu_attempt_count: int = 0
+    gpu_cuda_hybrid_cpu_attempt_ray_count: int = 0
+    gpu_cuda_hybrid_cpu_success_count: int = 0
+    gpu_cuda_hybrid_cpu_success_ray_count: int = 0
+    gpu_cuda_hybrid_cpu_execute_sec: float = 0.0
+    gpu_cuda_hybrid_cpu_failure_count: int = 0
+    gpu_cuda_hybrid_cpu_failure_reason: Optional[str] = None
+    gpu_cuda_hybrid_cpu_disabled: bool = False
+    gpu_cuda_gpu_attempt_count: int = 0
+    gpu_cuda_gpu_attempt_ray_count: int = 0
+    gpu_cuda_gpu_success_count: int = 0
+    gpu_cuda_gpu_success_ray_count: int = 0
+    gpu_cuda_available_state: Optional[bool] = None
+    gpu_cuda_numba_version: Optional[str] = None
 
     def intersect_scalar(
         self,
@@ -271,6 +316,14 @@ class _IntersectionDispatchStats:
         max_t: Optional[float] = None,
     ) -> Optional[HitRecord]:
         self.scalar_query_count += 1
+        if self.requested_provider == "gpu_cuda":
+            # PERF-3C deliberately exposes only a batch CUDA contract.  A
+            # scalar launch would be substantially slower and would also
+            # probe GPUs in code paths that cannot benefit from one.
+            # This is a normal per-query CPU selection, not a provider
+            # failure: a later batch in the same mixed-emitter run may still
+            # use the GPU.
+            self.unavailable_reason = "gpu_cuda_scalar_uses_python_cpu"
         if self.requested_provider == "numba_cpu" and not self.native_provider_disabled:
             self.native_attempt_count += 1
             self.native_attempt_ray_count += 1
@@ -331,28 +384,80 @@ class _IntersectionDispatchStats:
         started = time.perf_counter()
         ray_count = len(rays)
         hits: Optional[RayHitBatch] = None
+        execution = None
+        used_gpu_cuda = False
+        used_hybrid_cpu = False
         if (
-            self.requested_provider == "numba_cpu"
+            self.requested_provider in {"numba_cpu", "gpu_cuda"}
             and not self.native_provider_disabled
         ):
             self.native_attempt_count += 1
             self.native_attempt_ray_count += ray_count
+            if (
+                self.requested_provider == "gpu_cuda"
+                and self.gpu_cuda_hybrid_cpu_below_rays > 0
+                and ray_count < self.gpu_cuda_hybrid_cpu_below_rays
+                and not self.gpu_cuda_hybrid_cpu_disabled
+            ):
+                self.gpu_cuda_hybrid_cpu_attempt_count += 1
+                self.gpu_cuda_hybrid_cpu_attempt_ray_count += ray_count
+                hybrid_started = time.perf_counter()
+                try:
+                    hits, execution = mesh.intersect_rays_native_cpu(
+                        rays,
+                        backend=self.intersection_backend,
+                    )
+                except (NativeCpuUnavailable, NativeCpuProviderError) as exc:
+                    self.gpu_cuda_hybrid_cpu_failure_count += 1
+                    self.gpu_cuda_hybrid_cpu_failure_reason = exc.reason_code
+                    self.gpu_cuda_hybrid_cpu_disabled = True
+                    hits = None
+                    execution = None
+                except Exception:
+                    self.gpu_cuda_hybrid_cpu_failure_count += 1
+                    self.gpu_cuda_hybrid_cpu_failure_reason = (
+                        "gpu_cuda_hybrid_cpu_unexpected_failure"
+                    )
+                    self.gpu_cuda_hybrid_cpu_disabled = True
+                    hits = None
+                    execution = None
+                else:
+                    used_hybrid_cpu = True
+                    self.gpu_cuda_hybrid_cpu_success_count += 1
+                    self.gpu_cuda_hybrid_cpu_success_ray_count += ray_count
+                    self.gpu_cuda_hybrid_cpu_execute_sec += (
+                        time.perf_counter() - hybrid_started
+                    )
+
             try:
-                hits, execution = mesh.intersect_rays_native_cpu(
-                    rays,
-                    backend=self.intersection_backend,
-                )
-            except NativeCpuUnavailable as exc:
+                if self.requested_provider == "gpu_cuda" and hits is None:
+                    self.gpu_cuda_gpu_attempt_count += 1
+                    self.gpu_cuda_gpu_attempt_ray_count += ray_count
+                    hits, execution = mesh.intersect_rays_gpu_cuda(
+                        rays,
+                        backend=self.intersection_backend,
+                    )
+                    used_gpu_cuda = True
+                elif self.requested_provider == "numba_cpu":
+                    hits, execution = mesh.intersect_rays_native_cpu(
+                        rays,
+                        backend=self.intersection_backend,
+                    )
+            except (NativeCpuUnavailable, GpuCudaUnavailable) as exc:
                 self.native_available = False
                 self.native_provider_disabled = True
                 self.unavailable_reason = exc.reason_code
-            except NativeCpuProviderError as exc:
+                if self.requested_provider == "gpu_cuda":
+                    self.gpu_cuda_available_state = False
+            except (NativeCpuProviderError, GpuCudaProviderError) as exc:
                 self.native_available = True
                 self.native_provider_disabled = True
                 self.fallback_count += 1
                 self.fallback_ray_count += ray_count
                 self.fallback_phase = exc.phase
                 self.fallback_reason = exc.reason_code
+                if self.requested_provider == "gpu_cuda":
+                    self.gpu_cuda_available_state = True
             except Exception:
                 self.native_available = True
                 self.native_provider_disabled = True
@@ -360,18 +465,50 @@ class _IntersectionDispatchStats:
                 self.fallback_ray_count += ray_count
                 self.fallback_phase = "execute"
                 self.fallback_reason = "native_unexpected_failure"
+                if self.requested_provider == "gpu_cuda":
+                    self.gpu_cuda_available_state = True
             else:
-                self.native_available = True
-                self.native_success_count += 1
-                self.native_success_ray_count += ray_count
-                self.native_batch_success_count += 1
-                self.native_execute_sec += execution.execute_sec
-                self.native_scene_build_sec = max(
-                    self.native_scene_build_sec,
-                    execution.scene_build_sec,
-                )
-                self.native_jit_compile_sec += execution.jit_compile_sec
-                self.native_provider_version = execution.numba_version
+                if execution is not None:
+                    self.native_available = True
+                    self.native_success_count += 1
+                    self.native_success_ray_count += ray_count
+                    self.native_batch_success_count += 1
+                    self.native_execute_sec += float(
+                        getattr(execution, "execute_sec", 0.0)
+                        or getattr(execution, "kernel_sec", 0.0)
+                    )
+                    self.native_scene_build_sec = max(
+                        self.native_scene_build_sec,
+                        execution.scene_build_sec,
+                    )
+                    self.native_jit_compile_sec += execution.jit_compile_sec
+                    self.native_provider_version = execution.numba_version
+                if used_gpu_cuda and execution is not None:
+                    self.gpu_cuda_available_state = True
+                    self.gpu_cuda_gpu_success_count += 1
+                    self.gpu_cuda_gpu_success_ray_count += ray_count
+                    self.gpu_cuda_numba_version = execution.numba_version
+                    self.gpu_cuda_scene_upload_sec += execution.scene_upload_sec
+                    self.gpu_cuda_workspace_prepare_sec += (
+                        execution.workspace_prepare_sec
+                    )
+                    self.gpu_cuda_input_upload_sec += execution.input_upload_sec
+                    self.gpu_cuda_kernel_sec += execution.kernel_sec
+                    self.gpu_cuda_output_download_sec += (
+                        execution.output_download_sec
+                    )
+                    self.gpu_cuda_device_name = execution.device_name
+                    self.gpu_cuda_compute_capability = (
+                        execution.compute_capability
+                    )
+                    self.gpu_cuda_device_id = execution.device_id
+                    self.gpu_cuda_toolkit_layout = execution.toolkit_layout
+                    self.gpu_cuda_device_scene_reuse_count += int(
+                        execution.reused_device_scene
+                    )
+                    self.gpu_cuda_workspace_reuse_count += int(
+                        execution.reused_workspace
+                    )
 
         if hits is None:
             reference_started = time.perf_counter()
@@ -398,10 +535,24 @@ class _IntersectionDispatchStats:
         reference_used = bool(
             self.reference_scalar_query_count or self.reference_batch_count
         )
-        if self.native_success_count and reference_used:
+        if self.requested_provider == "gpu_cuda":
+            committed_providers = set()
+            if self.gpu_cuda_gpu_success_count:
+                committed_providers.add("gpu_cuda")
+            if self.gpu_cuda_hybrid_cpu_success_count:
+                committed_providers.add("numba_cpu")
+            if reference_used:
+                committed_providers.add("python_cpu")
+            if not committed_providers:
+                effective_provider = "not_used"
+            elif len(committed_providers) == 1:
+                effective_provider = next(iter(committed_providers))
+            else:
+                effective_provider = "mixed"
+        elif self.native_success_count and reference_used:
             effective_provider = "mixed"
         elif self.native_success_count:
-            effective_provider = "numba_cpu"
+            effective_provider = self.requested_provider
         elif reference_used:
             effective_provider = "python_cpu"
         else:
@@ -438,6 +589,90 @@ class _IntersectionDispatchStats:
             "intersection_fallback_phase": self.fallback_phase,
             "intersection_fallback_reason": self.fallback_reason,
             "intersection_provider_unavailable_reason": self.unavailable_reason,
+            "gpu_cuda_requested": self.requested_provider == "gpu_cuda",
+            "gpu_cuda_available": (
+                self.gpu_cuda_available_state
+                if self.requested_provider == "gpu_cuda"
+                else None
+            ),
+            "gpu_cuda_used": (
+                self.requested_provider == "gpu_cuda"
+                and self.gpu_cuda_gpu_success_count > 0
+            ),
+            "gpu_cuda_contract": (
+                GPU_CUDA_INTERSECTION_CONTRACT
+                if self.requested_provider == "gpu_cuda"
+                else "not_requested"
+            ),
+            "gpu_cuda_strict_float64": (
+                True if self.requested_provider == "gpu_cuda" else None
+            ),
+            "gpu_cuda_device_name": self.gpu_cuda_device_name,
+            "gpu_cuda_compute_capability": self.gpu_cuda_compute_capability,
+            "gpu_cuda_device_id": self.gpu_cuda_device_id,
+            "gpu_cuda_numba_version": (
+                self.gpu_cuda_numba_version
+                if self.requested_provider == "gpu_cuda"
+                else None
+            ),
+            "gpu_cuda_toolkit_layout": self.gpu_cuda_toolkit_layout,
+            "gpu_cuda_scene_upload_sec": self.gpu_cuda_scene_upload_sec,
+            "gpu_cuda_workspace_prepare_sec": (
+                self.gpu_cuda_workspace_prepare_sec
+            ),
+            "gpu_cuda_input_upload_sec": self.gpu_cuda_input_upload_sec,
+            "gpu_cuda_kernel_sec": self.gpu_cuda_kernel_sec,
+            "gpu_cuda_output_download_sec": self.gpu_cuda_output_download_sec,
+            "gpu_cuda_device_scene_reuse_count": (
+                self.gpu_cuda_device_scene_reuse_count
+            ),
+            "gpu_cuda_workspace_reuse_count": (
+                self.gpu_cuda_workspace_reuse_count
+            ),
+            "gpu_cuda_execution_policy": (
+                "not_requested"
+                if self.requested_provider != "gpu_cuda"
+                else (
+                    "hybrid_numba_cpu_small_wave_v1"
+                    if self.gpu_cuda_hybrid_cpu_below_rays > 0
+                    else "gpu_only_v1"
+                )
+            ),
+            "gpu_cuda_hybrid_cpu_below_rays": (
+                self.gpu_cuda_hybrid_cpu_below_rays
+            ),
+            "gpu_cuda_hybrid_cpu_attempt_count": (
+                self.gpu_cuda_hybrid_cpu_attempt_count
+            ),
+            "gpu_cuda_hybrid_cpu_attempt_ray_count": (
+                self.gpu_cuda_hybrid_cpu_attempt_ray_count
+            ),
+            "gpu_cuda_hybrid_cpu_success_count": (
+                self.gpu_cuda_hybrid_cpu_success_count
+            ),
+            "gpu_cuda_hybrid_cpu_success_ray_count": (
+                self.gpu_cuda_hybrid_cpu_success_ray_count
+            ),
+            "gpu_cuda_hybrid_cpu_execute_sec": (
+                self.gpu_cuda_hybrid_cpu_execute_sec
+            ),
+            "gpu_cuda_hybrid_cpu_failure_count": (
+                self.gpu_cuda_hybrid_cpu_failure_count
+            ),
+            "gpu_cuda_hybrid_cpu_failure_reason": (
+                self.gpu_cuda_hybrid_cpu_failure_reason
+            ),
+            "gpu_cuda_hybrid_cpu_disabled": (
+                self.gpu_cuda_hybrid_cpu_disabled
+            ),
+            "gpu_cuda_gpu_attempt_count": self.gpu_cuda_gpu_attempt_count,
+            "gpu_cuda_gpu_attempt_ray_count": (
+                self.gpu_cuda_gpu_attempt_ray_count
+            ),
+            "gpu_cuda_gpu_success_count": self.gpu_cuda_gpu_success_count,
+            "gpu_cuda_gpu_success_ray_count": (
+                self.gpu_cuda_gpu_success_ray_count
+            ),
         }
 
 
@@ -446,6 +681,7 @@ class _WavefrontPlannerStats:
     """Run-local capability, fallback and timing state for reflection planning."""
 
     requested_provider: str = "auto"
+    rng_contract: str = "per_primary_seeded_v1"
     logical_row_count: int = 0
     python_sidecar_row_count: int = 0
     native_attempt_count: int = 0
@@ -456,6 +692,7 @@ class _WavefrontPlannerStats:
     native_input_prepare_sec: float = 0.0
     native_dispatch_sec: float = 0.0
     native_execute_sec: float = 0.0
+    native_result_validation_sec: float = 0.0
     native_jit_compile_sec: float = 0.0
     native_provider_version: Optional[str] = None
     native_available: Optional[bool] = None
@@ -469,6 +706,9 @@ class _WavefrontPlannerStats:
     face_reflectance: Optional[np.ndarray] = None
     face_roughness: Optional[np.ndarray] = None
     face_scatter: Optional[np.ndarray] = None
+    counter_face_tables_prepared: bool = False
+    face_specular_ratio: Optional[np.ndarray] = None
+    face_gaussian_sigma_deg: Optional[np.ndarray] = None
 
     @property
     def native_requested(self) -> bool:
@@ -478,7 +718,9 @@ class _WavefrontPlannerStats:
         self,
         resolved_optical_by_face: List,
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        if not self.native_requested or self.native_provider_disabled:
+        if not self.native_requested and self.rng_contract != "counter_rng_v2":
+            return None
+        if self.native_provider_disabled and not self.face_tables_prepared:
             return None
         if self.face_tables_prepared:
             assert self.face_reflectance is not None
@@ -520,6 +762,49 @@ class _WavefrontPlannerStats:
         self.face_roughness = roughness
         self.face_scatter = scatter
         return reflectance, roughness, scatter
+
+    def prepare_counter_face_tables(
+        self,
+        resolved_optical_by_face: List,
+    ) -> Optional[
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ]:
+        """Build the complete face table required by ``counter_rng_v2``."""
+
+        base = self.prepare_face_tables(resolved_optical_by_face)
+        if base is None:
+            return None
+        if self.counter_face_tables_prepared:
+            assert self.face_specular_ratio is not None
+            assert self.face_gaussian_sigma_deg is not None
+            return (*base, self.face_specular_ratio, self.face_gaussian_sigma_deg)
+        started = time.perf_counter()
+        try:
+            specular_ratio = np.asarray(
+                [
+                    resolved.profile.specular_ratio
+                    for resolved in resolved_optical_by_face
+                ],
+                dtype=np.float64,
+            )
+            gaussian_sigma = np.asarray(
+                [
+                    resolved.profile.gaussian_sigma_deg
+                    for resolved in resolved_optical_by_face
+                ],
+                dtype=np.float64,
+            )
+            specular_ratio.setflags(write=False)
+            gaussian_sigma.setflags(write=False)
+        except Exception:
+            self.record_input_prepare_failure(0)
+            return None
+        finally:
+            self.native_face_table_prepare_sec += time.perf_counter() - started
+        self.counter_face_tables_prepared = True
+        self.face_specular_ratio = specular_ratio
+        self.face_gaussian_sigma_deg = gaussian_sigma
+        return (*base, specular_ratio, gaussian_sigma)
 
     def plan_native(
         self,
@@ -579,6 +864,55 @@ class _WavefrontPlannerStats:
         self.native_dispatch_sec += time.perf_counter() - started
         return None
 
+    def plan_counter_native(
+        self,
+        batch: CounterWavefrontPlanInput,
+    ) -> Optional[CounterWavefrontPlanResult]:
+        row_count = len(batch)
+        if row_count == 0:
+            return None
+        self.native_attempt_count += 1
+        self.native_attempt_row_count += row_count
+        started = time.perf_counter()
+        try:
+            execution = plan_counter_native_cpu(batch)
+            result = execution.result
+            if len(result) != row_count or not bool(np.all(result.supported_mask)):
+                raise NativeCpuCounterWavefrontProviderError(
+                    "result_validation",
+                    "native_counter_wavefront_unsupported_output",
+                )
+        except NativeCpuCounterWavefrontUnavailable as exc:
+            self.native_available = False
+            self.native_provider_disabled = True
+            self.unavailable_reason = exc.reason_code
+        except NativeCpuCounterWavefrontProviderError as exc:
+            self.native_available = True
+            self.native_provider_disabled = True
+            self.fallback_count += 1
+            self.fallback_row_count += row_count
+            self.fallback_phase = exc.phase
+            self.fallback_reason = exc.reason_code
+        except Exception:
+            self.native_available = True
+            self.native_provider_disabled = True
+            self.fallback_count += 1
+            self.fallback_row_count += row_count
+            self.fallback_phase = "execute"
+            self.fallback_reason = "native_counter_wavefront_unexpected_failure"
+        else:
+            self.native_available = True
+            self.native_success_count += 1
+            self.native_success_row_count += row_count
+            self.native_execute_sec += execution.execute_sec
+            self.native_result_validation_sec += execution.result_validation_sec
+            self.native_jit_compile_sec += execution.jit_compile_sec
+            self.native_provider_version = execution.numba_version
+            self.native_dispatch_sec += time.perf_counter() - started
+            return result
+        self.native_dispatch_sec += time.perf_counter() - started
+        return None
+
     def record_python_rows(self, row_count: int) -> None:
         self.python_sidecar_row_count += row_count
 
@@ -601,7 +935,16 @@ class _WavefrontPlannerStats:
         return {
             "requested_wavefront_planner": self.requested_provider,
             "wavefront_planner": effective_provider,
-            "wavefront_planner_contract": "deterministic_reflection_v1",
+            "wavefront_planner_contract": (
+                COUNTER_WAVEFRONT_CONTRACT
+                if self.rng_contract == "counter_rng_v2"
+                else "deterministic_reflection_v1"
+            ),
+            "wavefront_planner_rng_algorithm": (
+                COUNTER_WAVEFRONT_RNG_ALGORITHM
+                if self.rng_contract == "counter_rng_v2"
+                else "python_random_mt19937_v1"
+            ),
             "wavefront_planner_logical_row_count": self.logical_row_count,
             "wavefront_planner_python_sidecar_row_count": (
                 self.python_sidecar_row_count
@@ -630,6 +973,9 @@ class _WavefrontPlannerStats:
             ),
             "wavefront_planner_native_dispatch_sec": self.native_dispatch_sec,
             "wavefront_planner_native_execute_sec": self.native_execute_sec,
+            "wavefront_planner_native_result_validation_sec": (
+                self.native_result_validation_sec
+            ),
             "wavefront_planner_native_jit_compile_sec": (
                 self.native_jit_compile_sec
             ),
@@ -1040,17 +1386,23 @@ def run_direct_ray_trace(
     should_stop: Optional[Callable[[], bool]] = None,
     *,
     intersection_dispatch: str = "auto",
-    intersection_batch_size: int = _DEFAULT_INTERSECTION_BATCH_SIZE,
+    intersection_batch_size: Optional[int] = None,
     intersection_provider: str = "auto",
     wavefront_planner: str = "auto",
     wavefront_pipeline: str = "auto",
     wavefront_reducer: str = "auto",
+    wavefront_rng: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
-    if intersection_provider not in {"auto", "python_cpu", "numba_cpu"}:
+    if intersection_provider not in {
+        "auto",
+        "python_cpu",
+        "numba_cpu",
+        "gpu_cuda",
+    }:
         raise ValueError(
-            "intersection_provider must be auto, python_cpu, or numba_cpu"
+            "intersection_provider must be auto, python_cpu, numba_cpu, or gpu_cuda"
         )
     if wavefront_planner not in {"auto", "python_cpu", "numba_cpu"}:
         raise ValueError(
@@ -1064,21 +1416,63 @@ def run_direct_ray_trace(
         raise ValueError(
             "wavefront_reducer must be auto, python_cpu, or numba_cpu"
         )
-    if (
+    if wavefront_rng not in {
+        "auto",
+        "per_primary_seeded_v1",
+        "counter_rng_v2",
+    }:
+        raise ValueError(
+            "wavefront_rng must be auto, per_primary_seeded_v1, or counter_rng_v2"
+        )
+
+    gpu_compute_requested = (
+        getattr(trace_input.config, "compute_backend", "cpu") == "gpu_cuda"
+    )
+    if intersection_batch_size is None:
+        intersection_batch_size = (
+            65536 if gpu_compute_requested else _DEFAULT_INTERSECTION_BATCH_SIZE
+        )
+    elif (
         isinstance(intersection_batch_size, bool)
         or not isinstance(intersection_batch_size, Integral)
         or intersection_batch_size <= 0
     ):
         raise ValueError("intersection_batch_size must be a positive integer")
     intersection_batch_size = int(intersection_batch_size)
+
+    # GPU is an explicit project-level opt-in. Runtime kwargs still win when
+    # they name a concrete provider/pipeline, while ``auto`` selects the
+    # complete PERF-3C batch stack. CPU/default retains every legacy selection
+    # and never probes Numba or CUDA.
+    if gpu_compute_requested:
+        if intersection_dispatch == "auto":
+            intersection_dispatch = "batch"
+        if intersection_provider == "auto":
+            intersection_provider = "gpu_cuda"
+        if wavefront_pipeline == "auto":
+            wavefront_pipeline = "soa_event_tape"
+        if wavefront_planner == "auto":
+            wavefront_planner = "numba_cpu"
+        if wavefront_reducer == "auto":
+            wavefront_reducer = "numba_cpu"
+        if wavefront_rng == "auto":
+            wavefront_rng = "counter_rng_v2"
+    elif wavefront_rng == "auto":
+        wavefront_rng = "per_primary_seeded_v1"
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     intersection_stats = _IntersectionDispatchStats(
         intersection_backend=trace_input.config.intersection_backend,
         requested_provider=intersection_provider,
+        gpu_cuda_hybrid_cpu_below_rays=(
+            8192
+            if gpu_compute_requested and intersection_provider == "gpu_cuda"
+            else 0
+        ),
     )
     wavefront_planner_stats = _WavefrontPlannerStats(
         requested_provider=wavefront_planner,
+        rng_contract=wavefront_rng,
     )
     wavefront_reducer_stats = _WavefrontReducerStats(
         requested_provider=wavefront_reducer,
@@ -1143,8 +1537,13 @@ def run_direct_ray_trace(
         "receiver_dispatch": "numpy_batch",
         "surface_geometry_dispatch": "numpy_batch_v1",
         "path_quota_dispatch": "ordered_dead_end_queue_v1",
-        "reflection_rng": "per_primary_seeded_v1",
-        "rng_scalar_parity": "exact_no_draw_statistical_stochastic",
+        "reflection_rng": wavefront_rng,
+        "counter_apply_dispatch": "not_used",
+        "rng_scalar_parity": (
+            "statistical_vs_per_primary_seeded_v1"
+            if wavefront_rng == "counter_rng_v2"
+            else "exact_no_draw_statistical_stochastic"
+        ),
         "stochastic_primary_ray_count": 0,
         "state_build_sec": 0.0,
         "state_layout": "not_used",
@@ -1685,6 +2084,12 @@ def run_direct_ray_trace(
         "stopped_early": stopped_early,
         "requested_ray_count": expected_ray_count,
         "rays_per_sec": total_rays / runtime_sec if runtime_sec > 0.0 else 0.0,
+        "compute_backend": (
+            "gpu_cuda" if gpu_compute_requested else "cpu"
+        ),
+        "acceleration_policy": (
+            "gpu_cuda_auto_v1" if gpu_compute_requested else "cpu_compatible_v1"
+        ),
         "requested_intersection_dispatch": intersection_dispatch,
         "intersection_batch_size": intersection_batch_size,
         "multi_bounce_wavefront_used": multi_bounce_wavefront_used,
@@ -1717,6 +2122,9 @@ def run_direct_ray_trace(
             "path_quota_dispatch"
         ],
         "wavefront_reflection_rng": wavefront_summary["reflection_rng"],
+        "wavefront_counter_apply_dispatch": wavefront_summary[
+            "counter_apply_dispatch"
+        ],
         "wavefront_rng_scalar_parity": wavefront_summary[
             "rng_scalar_parity"
         ],
@@ -2196,7 +2604,7 @@ def _wavefront_reflection_rng(
 
 
 def _native_wavefront_reflection_decision(
-    result: WavefrontPlanResult,
+    result: WavefrontPlanResult | CounterWavefrontPlanResult,
     row_index: int,
 ) -> _ReflectionDecision:
     flags = int(result.status_flags[row_index])
@@ -2213,15 +2621,23 @@ def _native_wavefront_reflection_decision(
         disabled=bool(flags & NATIVE_WAVEFRONT_STATUS_DISABLED),
     )
     if flags & NATIVE_WAVEFRONT_STATUS_EMITTED:
-        if int(result.lobe_codes[row_index]) != NATIVE_WAVEFRONT_LOBE_SPECULAR:
-            raise RuntimeError("deterministic native planner returned a non-specular lobe")
+        lobe_code = int(result.lobe_codes[row_index])
+        lobe_by_code = {
+            NATIVE_WAVEFRONT_LOBE_SPECULAR: "specular",
+            NATIVE_WAVEFRONT_LOBE_LAMBERTIAN: "lambertian",
+            NATIVE_WAVEFRONT_LOBE_GAUSSIAN: "gaussian",
+        }
+        try:
+            lobe = lobe_by_code[lobe_code]
+        except KeyError as exc:
+            raise RuntimeError("native planner returned an invalid lobe") from exc
         direction = (
             float(result.emitted_directions[row_index, 0]),
             float(result.emitted_directions[row_index, 1]),
             float(result.emitted_directions[row_index, 2]),
         )
         decision.emission = (
-            ReflectionSample(direction=direction, lobe="specular"),
+            ReflectionSample(direction=direction, lobe=lobe),
             float(result.emitted_power_lumen[row_index]),
         )
     return decision
@@ -2347,6 +2763,223 @@ def _wavefront_reflection_rng_soa(
         rng = random.Random(int(reflection_seeds[primary_slot]))
         reflection_rngs[primary_slot] = rng
     return rng
+
+
+def _plan_counter_wavefront_rows(
+    active_directions: np.ndarray,
+    surface_normals: np.ndarray,
+    active_powers: np.ndarray,
+    hit_rows: np.ndarray,
+    hit_faces: np.ndarray,
+    rng_keys: np.ndarray,
+    depth: int,
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    planner_stats: _WavefrontPlannerStats,
+) -> Tuple[CounterWavefrontPlanResult, np.ndarray]:
+    """Plan all hit rows under the row-addressable stochastic contract.
+
+    Native failure opens the existing run-local circuit and the complete row
+    batch is replayed once by the portable reference. No partial native result
+    is published to the wavefront state.
+    """
+
+    face_tables = planner_stats.prepare_counter_face_tables(
+        resolved_optical_by_face
+    )
+    if face_tables is None:
+        # The native gather table is an optimization, not a semantic
+        # dependency. Rebuild only the current logical rows from the canonical
+        # resolved profiles, open the run-local native circuit, and replay the
+        # whole depth batch with the portable counter planner.
+        if planner_stats.fallback_phase != "input_prepare":
+            planner_stats.record_input_prepare_failure(len(hit_rows))
+        elif planner_stats.fallback_row_count == 0:
+            planner_stats.fallback_row_count = len(hit_rows)
+        row_profiles = [
+            resolved_optical_by_face[int(face_index)].profile
+            for face_index in hit_faces
+        ]
+        face_reflectance = np.asarray(
+            [profile.reflectance for profile in row_profiles],
+            dtype=np.float64,
+        )
+        face_roughness = np.asarray(
+            [profile.roughness for profile in row_profiles],
+            dtype=np.float64,
+        )
+        face_scatter = scatter_codes_from_names(
+            profile.scatter_model for profile in row_profiles
+        )
+        face_specular_ratio = np.asarray(
+            [profile.specular_ratio for profile in row_profiles],
+            dtype=np.float64,
+        )
+        face_gaussian_sigma = np.asarray(
+            [profile.gaussian_sigma_deg for profile in row_profiles],
+            dtype=np.float64,
+        )
+        profile_rows_are_gathered = True
+    else:
+        (
+            face_reflectance,
+            face_roughness,
+            face_scatter,
+            face_specular_ratio,
+            face_gaussian_sigma,
+        ) = face_tables
+        profile_rows_are_gathered = False
+    prepare_started = time.perf_counter()
+    try:
+        batch = CounterWavefrontPlanInput(
+            active_directions[hit_rows],
+            surface_normals[hit_rows],
+            active_powers[hit_rows],
+            (
+                face_reflectance
+                if profile_rows_are_gathered
+                else face_reflectance[hit_faces]
+            ),
+            (
+                face_roughness
+                if profile_rows_are_gathered
+                else face_roughness[hit_faces]
+            ),
+            face_scatter if profile_rows_are_gathered else face_scatter[hit_faces],
+            (
+                face_specular_ratio
+                if profile_rows_are_gathered
+                else face_specular_ratio[hit_faces]
+            ),
+            (
+                face_gaussian_sigma
+                if profile_rows_are_gathered
+                else face_gaussian_sigma[hit_faces]
+            ),
+            rng_keys,
+            depth=depth,
+            max_depth=config.max_depth,
+            min_energy=config.min_energy,
+            termination_mode=(
+                NATIVE_WAVEFRONT_TERMINATION_THRESHOLD
+                if config.termination_mode == "threshold"
+                else NATIVE_WAVEFRONT_TERMINATION_RUSSIAN_ROULETTE
+            ),
+        )
+    except Exception:
+        planner_stats.record_input_prepare_failure(len(hit_rows))
+        raise
+    finally:
+        planner_stats.native_input_prepare_sec += (
+            time.perf_counter() - prepare_started
+        )
+
+    result: Optional[CounterWavefrontPlanResult] = None
+    if planner_stats.native_requested and not planner_stats.native_provider_disabled:
+        result = planner_stats.plan_counter_native(batch)
+    if result is None:
+        result = plan_counter_reference(batch)
+        planner_stats.record_python_rows(len(batch))
+    positions = np.full(len(active_directions), -1, dtype=np.int64)
+    positions[hit_rows] = np.arange(len(hit_rows), dtype=np.int64)
+    return result, positions
+
+
+def _plan_deterministic_wavefront_rows(
+    active_directions: np.ndarray,
+    surface_normals: np.ndarray,
+    active_powers: np.ndarray,
+    face_indices: np.ndarray,
+    depth: int,
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    planner_stats: _WavefrontPlannerStats,
+) -> Tuple[Optional[WavefrontPlanResult], Optional[np.ndarray]]:
+    """Preserve the PERF-3B deterministic-native/Python-sidecar policy."""
+
+    surface_hit_count = int(np.count_nonzero(face_indices >= 0))
+    face_tables = (
+        planner_stats.prepare_face_tables(resolved_optical_by_face)
+        if (
+            planner_stats.native_requested
+            and not planner_stats.native_provider_disabled
+            and config.termination_mode == "threshold"
+            and surface_hit_count > 0
+        )
+        else None
+    )
+    if face_tables is None:
+        face_reflectance = None
+        face_roughness = None
+        face_scatter = None
+    else:
+        face_reflectance, face_roughness, face_scatter = face_tables
+    native_plan: Optional[WavefrontPlanResult] = None
+    native_plan_positions: Optional[np.ndarray] = None
+    if (
+        planner_stats.native_requested
+        and not planner_stats.native_provider_disabled
+        and config.termination_mode == "threshold"
+        and face_reflectance is not None
+        and face_roughness is not None
+        and face_scatter is not None
+        and surface_hit_count > 0
+    ):
+        planner_prepare_started = time.perf_counter()
+        native_candidate_row_count = 0
+        try:
+            hit_rows = np.flatnonzero(face_indices >= 0)
+            hit_faces = face_indices[hit_rows]
+            hit_scatter = face_scatter[hit_faces]
+            deterministic_mask = (
+                (hit_scatter == NATIVE_WAVEFRONT_SCATTER_NONE)
+                | (hit_scatter == NATIVE_WAVEFRONT_SCATTER_SPECULAR)
+            )
+            native_rows = hit_rows[deterministic_mask]
+            native_candidate_row_count = len(native_rows)
+            native_faces = face_indices[native_rows]
+            native_batch = (
+                WavefrontPlanInput(
+                    active_directions[native_rows],
+                    surface_normals[native_rows],
+                    active_powers[native_rows],
+                    face_reflectance[native_faces],
+                    face_roughness[native_faces],
+                    face_scatter[native_faces],
+                    depth=depth,
+                    max_depth=config.max_depth,
+                    min_energy=config.min_energy,
+                    termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
+                )
+                if len(native_rows)
+                else None
+            )
+        except Exception:
+            planner_stats.record_input_prepare_failure(
+                native_candidate_row_count
+            )
+            native_rows = np.empty(0, dtype=np.int64)
+            native_batch = None
+        finally:
+            planner_stats.native_input_prepare_sec += (
+                time.perf_counter() - planner_prepare_started
+            )
+        if native_batch is not None:
+            native_plan = planner_stats.plan_native(native_batch)
+            if native_plan is not None:
+                native_plan_positions = np.full(
+                    len(active_directions),
+                    -1,
+                    dtype=np.int64,
+                )
+                native_plan_positions[native_rows] = np.arange(
+                    len(native_rows),
+                    dtype=np.int64,
+                )
+    planner_stats.record_python_rows(
+        surface_hit_count - (len(native_plan) if native_plan is not None else 0)
+    )
+    return native_plan, native_plan_positions
 
 
 def _find_first_receiver_hits_batch(
@@ -4324,89 +4957,43 @@ def _trace_multi_bounce_wavefront_batch(
         wavefront_summary["geometry_ray_count"] += active_count
         wavefront_summary["geometry_hit_count"] += surface_geometry.hit_count
         plan_started = time.perf_counter()
-        native_plan: Optional[WavefrontPlanResult] = None
-        native_plan_positions: Optional[np.ndarray] = None
         planner_stats.logical_row_count += surface_geometry.hit_count
-        face_tables = (
-            planner_stats.prepare_face_tables(resolved_optical_by_face)
-            if (
-                planner_stats.native_requested
-                and not planner_stats.native_provider_disabled
-                and config.termination_mode == "threshold"
-                and surface_geometry.hit_count > 0
-            )
-            else None
-        )
-        if face_tables is None:
-            face_reflectance = None
-            face_roughness = None
-            face_scatter = None
-        else:
-            face_reflectance, face_roughness, face_scatter = face_tables
         if (
-            planner_stats.native_requested
-            and not planner_stats.native_provider_disabled
-            and config.termination_mode == "threshold"
-            and face_reflectance is not None
-            and face_roughness is not None
-            and face_scatter is not None
+            planner_stats.rng_contract == "counter_rng_v2"
             and surface_geometry.hit_count > 0
         ):
-            planner_prepare_started = time.perf_counter()
-            native_candidate_row_count = 0
-            try:
-                hit_rows = np.flatnonzero(hit_batch.face_indices >= 0)
-                hit_faces = hit_batch.face_indices[hit_rows]
-                hit_scatter = face_scatter[hit_faces]
-                deterministic_mask = (
-                    (hit_scatter == NATIVE_WAVEFRONT_SCATTER_NONE)
-                    | (hit_scatter == NATIVE_WAVEFRONT_SCATTER_SPECULAR)
+            counter_rows = np.flatnonzero(hit_batch.face_indices >= 0)
+            counter_faces = hit_batch.face_indices[counter_rows]
+            counter_keys = np.fromiter(
+                (active[int(row)].reflection_seed for row in counter_rows),
+                dtype=np.uint64,
+                count=len(counter_rows),
+            )
+            native_plan, native_plan_positions = _plan_counter_wavefront_rows(
+                active_directions,
+                surface_geometry.normals,
+                active_powers,
+                counter_rows,
+                counter_faces,
+                counter_keys,
+                depth,
+                config,
+                resolved_optical_by_face,
+                planner_stats,
+            )
+        else:
+            native_plan, native_plan_positions = (
+                _plan_deterministic_wavefront_rows(
+                    active_directions,
+                    surface_geometry.normals,
+                    active_powers,
+                    hit_batch.face_indices,
+                    depth,
+                    config,
+                    resolved_optical_by_face,
+                    planner_stats,
                 )
-                native_rows = hit_rows[deterministic_mask]
-                native_candidate_row_count = len(native_rows)
-                native_faces = hit_batch.face_indices[native_rows]
-                native_batch = (
-                    WavefrontPlanInput(
-                        active_directions[native_rows],
-                        surface_geometry.normals[native_rows],
-                        active_powers[native_rows],
-                        face_reflectance[native_faces],
-                        face_roughness[native_faces],
-                        face_scatter[native_faces],
-                        depth=depth,
-                        max_depth=config.max_depth,
-                        min_energy=config.min_energy,
-                        termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
-                    )
-                    if len(native_rows)
-                    else None
-                )
-            except Exception:
-                planner_stats.record_input_prepare_failure(
-                    native_candidate_row_count
-                )
-                native_rows = np.empty(0, dtype=np.int64)
-                native_batch = None
-            finally:
-                planner_stats.native_input_prepare_sec += (
-                    time.perf_counter() - planner_prepare_started
-                )
-            if native_batch is not None:
-                native_plan = planner_stats.plan_native(native_batch)
-                if native_plan is not None:
-                    native_plan_positions = np.full(
-                        active_count,
-                        -1,
-                        dtype=np.int64,
-                    )
-                    native_plan_positions[native_rows] = np.arange(
-                        len(native_rows),
-                        dtype=np.int64,
-                    )
-        planner_stats.record_python_rows(
-            surface_geometry.hit_count
-            - (len(native_plan) if native_plan is not None else 0)
-        )
+            )
         next_active: List[_MultiBounceWavefrontRay] = []
         for index, state in enumerate(active):
             face_index = int(hit_batch.face_indices[index])
@@ -4441,6 +5028,13 @@ def _trace_multi_bounce_wavefront_batch(
                     native_plan,
                     native_position,
                 )
+                if (
+                    isinstance(native_plan, CounterWavefrontPlanResult)
+                    and int(native_plan.rng_draw_counts[native_position]) > 0
+                    and not state.counter_rng_used
+                ):
+                    state.counter_rng_used = True
+                    wavefront_summary["stochastic_primary_ray_count"] += 1
             else:
                 reflected_power = (
                     state.current_power_lumen
@@ -4592,6 +5186,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
         include_path_payload=path_payload_enabled,
     )
     reflection_rngs: List[Optional[random.Random]] = [None] * ray_count
+    counter_rng_primary_seen = np.zeros(ray_count, dtype=np.bool_)
     state_init_elapsed = time.perf_counter() - state_init_started
     wavefront_summary["state_build_sec"] += state_init_elapsed
     wavefront_summary["state_init_sec"] += state_init_elapsed
@@ -4657,89 +5252,41 @@ def _trace_multi_bounce_wavefront_soa_batch(
         wavefront_summary["geometry_hit_count"] += surface_geometry.hit_count
 
         plan_started = time.perf_counter()
-        native_plan: Optional[WavefrontPlanResult] = None
-        native_plan_positions: Optional[np.ndarray] = None
         planner_stats.logical_row_count += surface_geometry.hit_count
-        face_tables = (
-            planner_stats.prepare_face_tables(resolved_optical_by_face)
-            if (
-                planner_stats.native_requested
-                and not planner_stats.native_provider_disabled
-                and config.termination_mode == "threshold"
-                and surface_geometry.hit_count > 0
-            )
-            else None
-        )
-        if face_tables is None:
-            face_reflectance = None
-            face_roughness = None
-            face_scatter = None
-        else:
-            face_reflectance, face_roughness, face_scatter = face_tables
         if (
-            planner_stats.native_requested
-            and not planner_stats.native_provider_disabled
-            and config.termination_mode == "threshold"
-            and face_reflectance is not None
-            and face_roughness is not None
-            and face_scatter is not None
+            planner_stats.rng_contract == "counter_rng_v2"
             and surface_geometry.hit_count > 0
         ):
-            planner_prepare_started = time.perf_counter()
-            native_candidate_row_count = 0
-            try:
-                hit_rows = np.flatnonzero(hit_batch.face_indices >= 0)
-                hit_faces = hit_batch.face_indices[hit_rows]
-                hit_scatter = face_scatter[hit_faces]
-                deterministic_mask = (
-                    (hit_scatter == NATIVE_WAVEFRONT_SCATTER_NONE)
-                    | (hit_scatter == NATIVE_WAVEFRONT_SCATTER_SPECULAR)
+            counter_rows = np.flatnonzero(hit_batch.face_indices >= 0)
+            counter_faces = hit_batch.face_indices[counter_rows]
+            counter_keys = reflection_seeds[
+                active.primary_slots[counter_rows]
+            ]
+            native_plan, native_plan_positions = _plan_counter_wavefront_rows(
+                active.directions,
+                surface_geometry.normals,
+                active.powers_lumen,
+                counter_rows,
+                counter_faces,
+                counter_keys,
+                depth,
+                config,
+                resolved_optical_by_face,
+                planner_stats,
+            )
+        else:
+            native_plan, native_plan_positions = (
+                _plan_deterministic_wavefront_rows(
+                    active.directions,
+                    surface_geometry.normals,
+                    active.powers_lumen,
+                    hit_batch.face_indices,
+                    depth,
+                    config,
+                    resolved_optical_by_face,
+                    planner_stats,
                 )
-                native_rows = hit_rows[deterministic_mask]
-                native_candidate_row_count = len(native_rows)
-                native_faces = hit_batch.face_indices[native_rows]
-                native_batch = (
-                    WavefrontPlanInput(
-                        active.directions[native_rows],
-                        surface_geometry.normals[native_rows],
-                        active.powers_lumen[native_rows],
-                        face_reflectance[native_faces],
-                        face_roughness[native_faces],
-                        face_scatter[native_faces],
-                        depth=depth,
-                        max_depth=config.max_depth,
-                        min_energy=config.min_energy,
-                        termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
-                    )
-                    if len(native_rows)
-                    else None
-                )
-            except Exception:
-                planner_stats.record_input_prepare_failure(
-                    native_candidate_row_count
-                )
-                native_rows = np.empty(0, dtype=np.int64)
-                native_batch = None
-            finally:
-                planner_stats.native_input_prepare_sec += (
-                    time.perf_counter() - planner_prepare_started
-                )
-            if native_batch is not None:
-                native_plan = planner_stats.plan_native(native_batch)
-                if native_plan is not None:
-                    native_plan_positions = np.full(
-                        active_count,
-                        -1,
-                        dtype=np.int64,
-                    )
-                    native_plan_positions[native_rows] = np.arange(
-                        len(native_rows),
-                        dtype=np.int64,
-                    )
-        planner_stats.record_python_rows(
-            surface_geometry.hit_count
-            - (len(native_plan) if native_plan is not None else 0)
-        )
+            )
 
         surface_rows = np.flatnonzero(hit_batch.face_indices >= 0)
         surface_event_count = len(surface_rows)
@@ -4765,7 +5312,94 @@ def _trace_multi_bounce_wavefront_soa_batch(
         continuation_kinds = np.empty(surface_event_count, dtype=np.int8)
         continuation_count = 0
         blocked_active_rows: List[int] = []
-        for event_position, active_index_value in enumerate(surface_rows):
+        planning_rows = surface_rows
+        counter_positions: Optional[np.ndarray] = None
+        if (
+            isinstance(native_plan, CounterWavefrontPlanResult)
+            and native_plan_positions is not None
+            and surface_event_count == len(native_plan)
+        ):
+            candidate_positions = native_plan_positions[surface_rows]
+            if np.array_equal(
+                candidate_positions,
+                np.arange(surface_event_count, dtype=np.int64),
+            ):
+                counter_positions = candidate_positions
+        if counter_positions is not None:
+            # ``counter_rng_v2`` covers every surface row. Apply the immutable
+            # row-aligned result without recreating Python decision/sample
+            # objects. All masks retain the ascending active-row order, which
+            # is also the event-tape and continuation compaction order.
+            wavefront_summary["counter_apply_dispatch"] = "numpy_vectorized_v1"
+            event_reflected_power[:] = native_plan.reflected_power_lumen[
+                counter_positions
+            ]
+            event_emitted_power[:] = native_plan.emitted_power_lumen[
+                counter_positions
+            ]
+            event_status[:] = native_plan.status_flags[counter_positions]
+            native_lobes = native_plan.lobe_codes[counter_positions]
+            emitted_event_mask = (event_status & TAPE_STATUS_EMITTED) != 0
+            if np.any(emitted_event_mask):
+                tape_lobe_lookup = np.asarray(
+                    [
+                        TAPE_LOBE_SPECULAR,
+                        TAPE_LOBE_LAMBERTIAN,
+                        TAPE_LOBE_GAUSSIAN,
+                    ],
+                    dtype=np.int8,
+                )
+                event_lobes[emitted_event_mask] = tape_lobe_lookup[
+                    native_lobes[emitted_event_mask]
+                ]
+
+            draw_event_mask = native_plan.rng_draw_counts[counter_positions] > 0
+            if np.any(draw_event_mask):
+                draw_primary_slots = np.unique(
+                    active.primary_slots[surface_rows[draw_event_mask]]
+                )
+                new_primary_slots = draw_primary_slots[
+                    ~counter_rng_primary_seen[draw_primary_slots]
+                ]
+                counter_rng_primary_seen[new_primary_slots] = True
+                wavefront_summary["stochastic_primary_ray_count"] += len(
+                    new_primary_slots
+                )
+
+            continuation_event_positions = np.flatnonzero(emitted_event_mask)
+            continuation_count = len(continuation_event_positions)
+            if continuation_count:
+                emitted_active_rows = surface_rows[continuation_event_positions]
+                emitted_directions = native_plan.emitted_directions[
+                    counter_positions[continuation_event_positions]
+                ]
+                continuation_rows[:continuation_count] = emitted_active_rows
+                continuation_directions[:continuation_count] = emitted_directions
+                continuation_origins[:continuation_count] = (
+                    surface_geometry.points[emitted_active_rows]
+                    + emitted_directions * config.epsilon_mm
+                )
+                continuation_powers[:continuation_count] = event_emitted_power[
+                    continuation_event_positions
+                ]
+                continuation_faces[:continuation_count] = hit_batch.face_indices[
+                    emitted_active_rows
+                ]
+                ray_kind_lookup = np.asarray(
+                    [
+                        TAPE_RAY_KIND_SPECULAR,
+                        TAPE_RAY_KIND_LAMBERTIAN,
+                        TAPE_RAY_KIND_GAUSSIAN,
+                    ],
+                    dtype=np.int8,
+                )
+                continuation_kinds[:continuation_count] = ray_kind_lookup[
+                    event_lobes[continuation_event_positions]
+                ]
+            blocked_active_rows = surface_rows[~emitted_event_mask].tolist()
+            planning_rows = np.empty(0, dtype=np.int64)
+
+        for event_position, active_index_value in enumerate(planning_rows):
             active_index = int(active_index_value)
             face_index = int(hit_batch.face_indices[active_index])
             point = (
@@ -4792,6 +5426,14 @@ def _trace_multi_bounce_wavefront_soa_batch(
                     native_plan,
                     native_position,
                 )
+                if isinstance(native_plan, CounterWavefrontPlanResult):
+                    primary_slot = int(active.primary_slots[active_index])
+                    if (
+                        int(native_plan.rng_draw_counts[native_position]) > 0
+                        and not counter_rng_primary_seen[primary_slot]
+                    ):
+                        counter_rng_primary_seen[primary_slot] = True
+                        wavefront_summary["stochastic_primary_ray_count"] += 1
             else:
                 incoming_direction = (
                     float(active.directions[active_index, 0]),

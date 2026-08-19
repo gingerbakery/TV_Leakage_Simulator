@@ -35,10 +35,9 @@
 - 원칙: 교차점의 `face_index`, 거리, 위치, normal이 현재 데이터 계약과 동일해야 한다.
 
 ### 4. GPU 경로
-- 예정 이름: `gpu_cuda`
-- 적용 후보:
-  - NVIDIA OptiX
-  - CUDA 기반 custom kernel
+- 현재 이름: `gpu_cuda`
+- 현재 구현: Numba CUDA strict-float64 custom BVH kernel
+- 후속 후보: NVIDIA OptiX 또는 더 넓은 device-resident pipeline
 - 목적: 대량 ray와 다중 반사 계산의 처리량 확대
 - 조건: 지원 GPU, 드라이버, CUDA runtime 또는 배포 가능한 GPU 실행 환경 필요
 
@@ -57,10 +56,12 @@
 4. 그 외에는 `python_numpy_cpu`를 선택한다.
 5. 실행 실패 시 한 단계 낮은 백엔드로 안전하게 대체하고 결과에 실제 사용 백엔드를 기록한다.
 
-위 항목은 최종 목표 정책이다. PERF-3B-2 prototype 시점의 실제 `auto`는
-기존 Python CPU를 유지하며 optional provider를 probe하지 않는다. Native CPU
-또는 GPU는 정합성, 실제 ROI warm 성능, cold start와 배포 크기 gate를 모두
-통과한 뒤에만 자동 선택 대상으로 승격한다.
+위 항목은 최종 목표 정책이다. PERF-3C 시점에도 project 기본
+`compute_backend="cpu"`는 기존 Python CPU를 유지하며 optional provider를
+probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에만 GPU stack의
+`auto`가 CUDA/Numba와 hybrid policy를 선택한다. 모든 PC의 global 자동 GPU
+승격은 cold start, VRAM/Stop, clean-PC package와 다양한 driver/toolkit gate를
+통과한 뒤 별도로 판단한다.
 
 ## 단계
 
@@ -241,11 +242,21 @@
   backend 순서다.
 
 #### PERF-3B-3: CUDA GPU backend
-- 상태: 예정
-- prepared mesh/device buffer를 여러 batch가 재사용하는 adapter를 구현한다.
-- 지원 여부, 정밀도, upload/kernel/download 시간을 각각 기록한다.
-- GPU가 없거나 초기화/실행에 실패하면 batch 전체를 CPU BVH로 다시 실행한다.
-- GPU primitive id와 최종 mesh face index의 remap을 보존한다.
+- 상태: strict-float64 CUDA intersection과 GPU project stack 1차 구현 완료
+  (2026-08-20)
+- `compute_backend="gpu_cuda"`는 batch 65,536, CUDA BVH, SoA,
+  `counter_rng_v2`, Numba planner/reducer를 선택한다. `<8,192` active row는
+  Numba CPU hybrid로 처리한다.
+- Prepared host/device scene과 thread-local workspace를 재사용하고 capability,
+  upload/kernel/download, device와 hybrid/GPU별 logical count를 기록한다.
+- Face/count/grid/summary는 exact, distance/path는 abs/rel `1e-12`다.
+- GPU 부재는 정상 CPU 선택이다. Initialize/execute/result-validation hard failure는
+  logical batch 전체 CPU replay 한 번과 run-local circuit breaker로 처리한다.
+- CPU project가 기본이며 CUDA/Numba import/probe가 없다. GPU acceleration
+  dependency와 NVIDIA driver/toolkit은 optional 배포 범위다.
+- 실제 ROI 1M source-freeze isolated warm 3-run p50/p95는
+  `7.277951 / 8.004967초`, `137,401 primary ray/s`였다.
+  이는 LightTools 비교가 아니며 VRAM/Stop/clean-PC 배포 gate는 후속 검증한다.
 
 ## 정합성 기준
 - Random draw가 없는 같은-seed wavefront는 legacy scalar와 exact해야 한다.
@@ -630,3 +641,51 @@ Actual 전용 harness SHA256은
 `f11985a62911d0eb47312adb46990dd8c0bee6c11dc503c78667748ba49123e8`, repository
 benchmark SHA256은
 `0c7308f1a7effffde4b3efb534181d4dfbd369247ae5625731eb2acc7e688834`다.
+
+## PERF-3C CUDA 측정 (2026-08-20)
+
+Actual CAD 50,944 triangles와 frozen 100,000 rays의 warm intersection micro에서
+CUDA 65,536 p50은 `0.012916초`(`7.743M ray/s`)로 Numba CPU 8,192
+`0.089381초`보다 `6.920x` 빨랐다. Face/tolerance mismatch는 모두 `0`, 최대
+distance absolute error는 `2.8422e-14`다. CUDA 8,192/16,384 speedup은
+`2.650x / 4.094x`였다. 최초 cold 8,192 실행은 `0.942792초`이고 JIT
+`0.852086초`를 포함한다.
+
+모든 ray가 depth 10까지 유지되는 synthetic 100,000-primary control은 Numba
+CPU/GPU p50 `1.787338 / 1.817925초`, GPU `0.983175x`였다. 즉 actual CAD
+intersection micro 가속만으로 모든 end-to-end workload가 빨라진다고 주장하지
+않는다. Count/grid/summary exact, path tolerance mismatch와 fallback은 `0`이다.
+
+45,167 active-triangle actual ROI, depth 10, summary, paths 500의 실제
+1,000,000-primary source-freeze isolated warm raw는
+`7.277951 / 7.270346 / 8.085747초`, p50/p95는
+`7.277951 / 8.004967초`, p50 처리량은 `137,401 primary ray/s`다.
+Receiver/surface/terminated는 `126,609 / 2,250,471 / 873,391`, flux는
+`0.03998454755283727`, path는 `500`이며 세 run outcome이 exact했다.
+Representative p50 run의 logical intersection은 `176 / 3,085,763` batch/ray다.
+그중 CUDA는 `92 / 2,710,197`, hybrid Numba CPU는 `84 / 375,566`이고 모두
+attempt=success, hard fallback은 `0`이다. Planner `176/176`, reducer `16/16`
+성공과 fallback `0`을 기록했다. Requested/effective provider는
+`gpu_cuda / mixed`이며, 이는 정상 hybrid를 반영한다. Representative
+intersection/GPU kernel/hybrid CPU는 `1.578990 / 0.822200 / 0.507024초`,
+plan/commit/wavefront는 `2.078457 / 1.387784 / 6.988246초`다.
+
+GPU 기본 chunk 65,536은 launch/transfer를 줄이지만 memory와 Stop 원자 단위를
+늘린다. Actual 1M sampled RSS delta는 `57,720,832 bytes`, tape-owned peak/copy는
+`40,527,016 / 293,678,488 bytes`다. Tape 회계는 VRAM peak가 아니며 CUDA
+workspace도 run 중 자동 축소하지 않는다. `<8,192` hybrid가 작은 tail wave의
+launch를 피하지만, VRAM peak와 실제 Stop latency는 후속 계측 대상이다.
+
+8 seed × 512-ray `counter_rng_v2` statistical gate는 legacy stream 대비 Gaussian
+fraction absolute delta `0.0167253`(gate `0.05`), emitted-flux relative delta
+`5.3583%`(gate `10%`)로 통과했다. Counter stream은 chunk/provider/reorder exact지만
+legacy stream과 개별 ray bit-exact가 아니라 통계 비교 대상이다.
+
+재현 script는 `scripts/benchmark_perf3c_gpu_cuda.py`, actual CAD micro/control
+artifact는 `outputs/perf3c_gpu_cuda/summary.json`이다. 각각 SHA256은
+`a9eb801d1931ba3cb5ff9549d3631a001e56f7884bdaf6291c17a390dac952f5`,
+`e2ced20f63ea8a654b3db4cae65d32b35790e6aa73b4c96b917cc293e8ffb527`다.
+Actual ROI 1M artifact SHA256은
+`13ca76ce6c4e8129ae7b5dfefbadaca8c20d06884b7264d0c60a5e65812fef2e`다.
+상세 계약과 해석 제한은
+`docs/changes/2026-08-20_perf3c-strict-fp64-cuda-wavefront.md`를 따른다.

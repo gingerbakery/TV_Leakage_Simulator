@@ -92,6 +92,7 @@ OPTICAL_ASSIGNMENT_TARGET_TYPES = ("part", "faces")
 TERMINATION_MODES = ("threshold", "russian_roulette")
 CONTRIBUTION_MODES = ("summary", "detailed")
 INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
+COMPUTE_BACKENDS = ("cpu", "gpu_cuda")
 MAX_REFLECTION_DEPTH = 20
 
 
@@ -510,6 +511,7 @@ class RayTraceConfig:
     termination_mode: str = "threshold"
     contribution_mode: str = "summary"
     intersection_backend: str = "auto"
+    compute_backend: str = "cpu"
     store_ray_paths: bool = False
     max_stored_paths: int = 500
     auto_convergence: bool = False
@@ -540,6 +542,11 @@ class RayTraceConfig:
             self.intersection_backend,
             "intersection_backend",
             INTERSECTION_BACKENDS,
+        )
+        self.compute_backend = require_choice(
+            self.compute_backend,
+            "compute_backend",
+            COMPUTE_BACKENDS,
         )
         self.max_stored_paths = int(self.max_stored_paths)
         if self.max_stored_paths < 0:

@@ -272,4 +272,40 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   `04bb4514a3a5909a5f8afbc551cecd4de3c84b70c11cada6d9335f7ec5dcf648`, final
   audit SHA256은
   `feacdb1acbb7e757d4690147bea8bf0e9a6b75439cc81b4573faa43e1877846a`다.
-- GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.
+- PERF-3C는 `compute_backend="gpu_cuda"` project stack을 구현했다. 기본 CPU
+  project는 CUDA/Numba import/probe가 없고 legacy `.bitsam`도 CPU로 복원한다.
+- GPU stack은 primary chunk 65,536, strict-float64 CUDA BVH, SoA event tape,
+  `counter_rng_v2`, Numba planner, vectorized counter apply와 Numba reducer다.
+  Active wave `<8,192`는 Numba CPU hybrid로 처리한다.
+- CUDA face/count/grid/summary는 exact, distance/stored path는 abs/rel `1e-12`다.
+  Provider metadata, finite timing, owned/read-only/no-alias 결과까지 검증한 뒤
+  publish한다.
+- GPU unavailable은 정상 CPU 선택이다. Input/initialize/execute/result-validation
+  hard failure는 logical batch 전체 CPU replay 한 번과 run-local circuit breaker로
+  처리한다. Concurrent run의 breaker/count는 격리한다.
+- Actual CAD 50,944 triangles, frozen 100k intersection micro에서 CUDA 65,536은
+  `7.743M ray/s`, Numba CPU 대비 `6.920x`였고 mismatch `0`, maximum distance
+  error `2.8422e-14`였다. Cold wall `0.942792초` 중 JIT `0.852086초`다.
+- Fully-active depth-10 synthetic end-to-end는 GPU `0.983175x`로 CPU보다
+  근소하게 느렸다. 따라서 micro speedup을 모든 workload의 전체 speedup으로
+  일반화하지 않는다.
+- Actual ROI 1M source-freeze isolated warm raw는
+  `7.277951 / 7.270346 / 8.085747초`, p50/p95는
+  `7.277951 / 8.004967초`, `137,401 primary ray/s`다.
+  Receiver/surface/terminated와 flux는 세 실행에서
+  `126,609 / 2,250,471 / 873,391`, `0.03998454755283727`로 exact했다.
+- P50 representative의 logical `176 batch / 3,085,763 ray`는 CUDA
+  `92 / 2,710,197`와 hybrid Numba CPU `84 / 375,566`으로 분리되며 모두
+  attempt=success, hard fallback은 `0`이다. Requested/effective provider는
+  `gpu_cuda / mixed`다.
+- `counter_rng_v2`는 chunk/provider/reorder exact다. Legacy stream과의 8-seed
+  statistical gate는 Gaussian fraction delta `0.0167253 <= 0.05`, flux relative
+  delta `5.3583% <= 10%`로 통과했다.
+- Chunk 65,536은 처리량 대신 memory/Stop 원자 단위를 키운다. Actual 1M p50
+  representative sampled RSS delta `57,720,832 bytes`, tape peak/copy
+  `40,527,016 / 293,678,488 bytes`를
+  기록했지만 VRAM peak와 실제 Stop latency는 아직 별도 검증 대상이다.
+- Actual 1M artifact SHA256은
+  `13ca76ce6c4e8129ae7b5dfefbadaca8c20d06884b7264d0c60a5e65812fef2e`다.
+- 상세 계약, benchmark matrix와 해석 제한은
+  `docs/changes/2026-08-20_perf3c-strict-fp64-cuda-wavefront.md`에 기록한다.

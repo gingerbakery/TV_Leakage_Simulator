@@ -220,3 +220,28 @@
 - Multi-bounce native intersection provider 실패는 현재 depth logical batch
   전체를 Python CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화
   실패·실행 실패 시 같은 whole-depth-batch CPU BVH fallback을 유지한다.
+- PERF-3C strict-float64 CUDA wavefront stack은 2026-08-20 1차 구현했다.
+  Project `compute_backend="gpu_cuda"`가 명시된 경우만 GPU policy를 적용하고,
+  기본 CPU와 legacy `.bitsam`은 CUDA/Numba no-import/no-probe를 유지한다.
+- GPU 기본은 batch 65,536, CUDA BVH, SoA, `counter_rng_v2`, Numba planner와
+  reducer다. Active wave `<8,192`는 Numba CPU hybrid이며 `8,192` 자체는 GPU다.
+- GPU unavailable은 정상 CPU 선택이다. Input/initialize/execute/result-validation
+  hard failure는 logical batch 전체 CPU replay 한 번과 run-local circuit breaker를
+  사용한다. Provider별 GPU/hybrid count, failure phase와 timing을 결과에 남긴다.
+- Face/count/grid/summary는 exact, CUDA distance/path는 strict FP64와 abs/rel
+  `1e-12` gate를 사용한다. `counter_rng_v2`는 chunk/provider exact이고 legacy
+  stream과는 statistical parity로 비교한다.
+- Actual CAD 100k intersection micro의 CUDA 65,536 처리량은 `7.743M ray/s`,
+  Numba CPU 대비 `6.920x`다. Fully-active synthetic end-to-end는 `0.983175x`로
+  근소하게 느렸으므로 모든 장면의 자동 speedup을 주장하지 않는다.
+- Actual ROI 1M source-freeze isolated warm 3-run p50/p95는
+  `7.277951 / 8.004967초`, `137,401 primary ray/s`다. Logical 176 batch는
+  CUDA 92와 hybrid CPU 84로 분리되며 fallback은 `0`이다. Requested/effective
+  provider는 `gpu_cuda / mixed`다. Artifact SHA256은
+  `13ca76ce6c4e8129ae7b5dfefbadaca8c20d06884b7264d0c60a5e65812fef2e`다.
+  LightTools 이상이라는 표현은 같은 조건의 독립 비교 전까지 사용하지 않는다.
+- GPU chunk 65,536은 launch/transfer에는 유리하지만 memory와 Stop 원자 단위를
+  키운다. Clean CPU-only/GPU package, VRAM peak, 실제 Stop latency, 다양한 GPU와
+  NVIDIA driver/CUDA toolkit 조합을 배포 전 검증한다.
+- PERF-3C 최종 repository test는 Python `226 passed, 256 subtests passed`,
+  frontend `20 files / 128 tests passed`다.

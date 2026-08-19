@@ -418,6 +418,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   termination_mode: 'threshold',
   contribution_mode: 'summary',
   intersection_backend: 'auto',
+  compute_backend: 'cpu',
   store_ray_paths: true,
   max_stored_paths: 500,
   auto_convergence: false,
@@ -452,6 +453,8 @@ function normalizeRayTraceConfig(
       config.intersection_backend === 'bvh'
         ? config.intersection_backend
         : 'auto',
+    compute_backend:
+      config.compute_backend === 'gpu_cuda' ? 'gpu_cuda' : 'cpu',
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,

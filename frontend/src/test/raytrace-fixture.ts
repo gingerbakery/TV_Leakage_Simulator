@@ -61,6 +61,7 @@ export function createRayTraceResultFixture(): RayTraceResult {
       termination_mode: 'threshold',
       contribution_mode: 'detailed',
       intersection_backend: 'bvh',
+      compute_backend: 'cpu',
       store_ray_paths: true,
       max_stored_paths: 50,
       auto_convergence: false,

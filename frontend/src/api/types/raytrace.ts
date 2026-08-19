@@ -127,6 +127,7 @@ export interface TransformRule {
 export type TerminationMode = 'threshold' | 'russian_roulette'
 export type ContributionMode = 'summary' | 'detailed'
 export type IntersectionBackend = 'auto' | 'brute_force' | 'bvh'
+export type ComputeBackend = 'cpu' | 'gpu_cuda'
 
 export interface RayTraceConfig {
   ray_count: number
@@ -139,6 +140,7 @@ export interface RayTraceConfig {
   termination_mode: TerminationMode
   contribution_mode: ContributionMode
   intersection_backend: IntersectionBackend
+  compute_backend: ComputeBackend
   store_ray_paths: boolean
   max_stored_paths: number
   /** Frontend-only iterative run control; not sent to the trace backend. */

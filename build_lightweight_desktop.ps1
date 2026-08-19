@@ -1,13 +1,36 @@
 param(
-    [string]$OutputName = "leakage_simulator_desktop_v1.0.0_lite"
+    [ValidateSet("lite", "gpu_cuda")]
+    [string]$Edition = "lite",
+    [string]$OutputName = "",
+    [string]$SourcePythonDirectory = "",
+    [string]$ReleaseDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ReleaseRoot = Join-Path $Root "release"
+$IsGpuCudaEdition = $Edition -eq "gpu_cuda"
+if (-not $OutputName) {
+    $OutputName = if ($IsGpuCudaEdition) {
+        "leakage_simulator_desktop_v1.0.0_gpu_cuda"
+    }
+    else {
+        "leakage_simulator_desktop_v1.0.0_lite"
+    }
+}
+$ReleaseRoot = if ($ReleaseDirectory) {
+    [System.IO.Path]::GetFullPath($ReleaseDirectory)
+}
+else {
+    Join-Path $Root "release"
+}
 $OutputDir = Join-Path $ReleaseRoot $OutputName
 $ZipPath = "$OutputDir.zip"
-$SourcePython = Join-Path $Root "_tools\python313"
+$SourcePython = if ($SourcePythonDirectory) {
+    [System.IO.Path]::GetFullPath($SourcePythonDirectory)
+}
+else {
+    Join-Path $Root "_tools\python313"
+}
 $SourceSitePackages = Join-Path $SourcePython "Lib\site-packages"
 $TargetPython = Join-Path $OutputDir "_tools\python313"
 $TargetSitePackages = Join-Path $TargetPython "Lib\site-packages"
@@ -104,6 +127,9 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDir "outputs") -Force | Out
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "_uploads") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "desktop_runtime") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "docs") -Force | Out-Null
+if ($IsGpuCudaEdition) {
+    New-Item -ItemType Directory -Path (Join-Path $OutputDir "scripts") -Force | Out-Null
+}
 
 Write-Host "[1/9] Building React production UI..."
 $FrontendDir = Join-Path $Root "frontend"
@@ -166,6 +192,15 @@ $RuntimePackages = @(
     "uvicorn",
     "uvicorn-0.51.0.dist-info"
 )
+if ($IsGpuCudaEdition) {
+    $RuntimePackages += @(
+        "llvmlite",
+        "llvmlite-0.48.0.dist-info",
+        "llvmlite.libs",
+        "numba",
+        "numba-0.66.0.dist-info"
+    )
+}
 foreach ($package in $RuntimePackages) {
     Copy-RequiredPath (Join-Path $SourceSitePackages $package) $TargetSitePackages
 }
@@ -194,6 +229,11 @@ Copy-Item -LiteralPath (Join-Path $Root "requirements-dev.txt") -Destination $Ou
 Copy-Item -LiteralPath (Join-Path $Root "docs\cad-intersection-backend-contract.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\performance-acceleration-plan.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\desktop-exe-packaging.md") -Destination (Join-Path $OutputDir "docs") -Force
+if ($IsGpuCudaEdition) {
+    Copy-Item -LiteralPath (Join-Path $Root "requirements-gpu-cuda.txt") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "scripts\verify_gpu_cuda_runtime.py") -Destination (Join-Path $OutputDir "scripts") -Force
+    Copy-Item -LiteralPath (Join-Path $Root "CHECK_GPU_CUDA.bat") -Destination $OutputDir -Force
+}
 
 $WebViewCandidates = @(
     (Join-Path $Root "release\leakage_simulator_desktop_v0.1"),
@@ -240,8 +280,22 @@ Copy-Item -LiteralPath $WebViewCore -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewWinForms -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewLoader -Destination $OutputDir -Force
 
+$EditionLabel = if ($IsGpuCudaEdition) { "GPU CUDA" } else { "Lite" }
+$GpuStartNote = if ($IsGpuCudaEdition) {
 @"
-TV Leakage Simulator Desktop Lite v1.0.0
+- NVIDIA GPU mode requires a compatible NVIDIA display driver and local CUDA Toolkit.
+- This build was validated for Numba 0.66.0, llvmlite 0.48.0 and CUDA Toolkit 13.1.
+- Before selecting GPU mode, double-click CHECK_GPU_CUDA.bat and confirm [OK].
+- If GPU initialization or execution fails, the simulator replays the logical batch on CPU.
+"@
+}
+else {
+@"
+- This Lite edition intentionally excludes Numba/llvmlite; use CPU compute mode.
+"@
+}
+@"
+TV Leakage Simulator Desktop $EditionLabel v1.0.0
 
 1. Double-click LeakageSimulator.exe.
 2. Wait until the simulator window opens.
@@ -252,6 +306,7 @@ Important:
 - Keep all files and folders together.
 - X_T direct import is not implemented in this lite build.
 - If embedded WebView2 is unavailable, the launcher opens the local UI in the default browser.
+$GpuStartNote
 "@ | Set-Content -LiteralPath (Join-Path $OutputDir "START_HERE.txt") -Encoding utf8
 
 Write-Host "[6/9] Validating minimal runtime, FastAPI and STEP import..."
@@ -259,6 +314,14 @@ $TargetPythonExe = Join-Path $TargetPython "python.exe"
 & $TargetPythonExe -c "import OCP, fastapi, numpy, uvicorn; print('runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
 if ($LASTEXITCODE -ne 0) {
     throw "Minimal Python runtime import validation failed."
+}
+if ($IsGpuCudaEdition) {
+    $GpuSmokeScript = Join-Path $OutputDir "scripts\verify_gpu_cuda_runtime.py"
+    $GpuSmokeManifest = Join-Path $OutputDir "gpu_cuda_runtime_manifest.json"
+    & $TargetPythonExe $GpuSmokeScript --mode device --output $GpuSmokeManifest
+    if ($LASTEXITCODE -ne 0) {
+        throw "GPU CUDA dependency/device kernel validation failed."
+    }
 }
 & $TargetPythonExe (Join-Path $OutputDir "check_cad_import.py") `
     --cad (Join-Path $OutputDir "samples\tv_leakage_full_assembled_no_gap.stp") `
@@ -301,6 +364,16 @@ try {
         "$OutputName/_tools/python313/Lib/site-packages/fastapi/__init__.py",
         "$OutputName/WebView2Loader.dll"
     )
+    if ($IsGpuCudaEdition) {
+        $requiredEntries += @(
+            "$OutputName/_tools/python313/Lib/site-packages/numba/__init__.py",
+            "$OutputName/_tools/python313/Lib/site-packages/llvmlite/__init__.py",
+            "$OutputName/_tools/python313/Lib/site-packages/llvmlite/binding/llvmlite.dll",
+            "$OutputName/scripts/verify_gpu_cuda_runtime.py",
+            "$OutputName/CHECK_GPU_CUDA.bat",
+            "$OutputName/gpu_cuda_runtime_manifest.json"
+        )
+    }
     $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
     foreach ($entry in $requiredEntries) {
         if ($entryNames -notcontains $entry) {
@@ -313,7 +386,8 @@ finally {
 }
 
 Write-Host "[9/9] Extracting ZIP and validating integrated React server..."
-$VerifyDir = Join-Path $ReleaseRoot ("_verify_" + $OutputName)
+$VerifyToken = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+$VerifyDir = Join-Path $ReleaseRoot ("_verify_" + $VerifyToken)
 $resolvedVerify = [System.IO.Path]::GetFullPath($VerifyDir)
 if (-not $resolvedVerify.StartsWith($resolvedRelease, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Verification path must remain inside the release folder."
@@ -329,6 +403,12 @@ try {
     & $ExtractedPython -c "import OCP, fastapi, numpy, uvicorn; print('extracted runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
     if ($LASTEXITCODE -ne 0) {
         throw "Extracted ZIP runtime validation failed."
+    }
+    if ($IsGpuCudaEdition) {
+        & $ExtractedPython (Join-Path $ExtractedRoot "scripts\verify_gpu_cuda_runtime.py") --mode device
+        if ($LASTEXITCODE -ne 0) {
+            throw "Extracted ZIP GPU CUDA kernel validation failed."
+        }
     }
     & $ExtractedPython (Join-Path $ExtractedRoot "check_cad_import.py") `
         --cad (Join-Path $ExtractedRoot "samples\tv_leakage_full_assembled_no_gap.stp") `
@@ -351,7 +431,7 @@ $HashPath = "$ZipPath.sha256"
 
 $FolderMB = Get-DirectorySizeMB $OutputDir
 $ZipMB = [math]::Round((Get-Item -LiteralPath $ZipPath).Length / 1MB, 1)
-Write-Host "Lightweight desktop package completed."
+Write-Host "$Edition desktop package completed."
 Write-Host "Folder: $OutputDir ($FolderMB MB)"
 Write-Host "ZIP:    $ZipPath ($ZipMB MB)"
 Write-Host "SHA256: $HashPath"

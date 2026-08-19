@@ -2,7 +2,7 @@
 
 ## 목적
 - ray tracing 엔진이 CAD 교차 구현 방식과 분리되도록 한다.
-- brute-force, BVH, 향후 Embree/Open3D/GPU 백엔드가 동일한 교차 결과 형식을 반환하도록 한다.
+- brute-force, BVH, CUDA와 향후 Embree/Open3D 백엔드가 동일한 교차 결과 형식을 반환하도록 한다.
 - 성능 가속 후에도 face/component/material 연결이 달라지지 않게 한다.
 
 ## 입력 계약
@@ -437,6 +437,41 @@ Reducer replay는 `1.062883 -> 0.443459초`로 `2.3968x`, commit은
 Cold reducer JIT `2.382357초`와 optional package 조건 때문에 기본 `auto`는 계속
 Python/no-probe이며 native reducer는 명시적 opt-in이다.
 
+### PERF-3C strict-float64 CUDA와 hybrid dispatch
+
+Project `compute_backend="gpu_cuda"`는 runtime `auto`를 batch 65,536,
+intersection `gpu_cuda`, SoA event tape, `counter_rng_v2`, Numba planner와 Numba
+summary reducer로 선택한다. CPU project와 구체적인 runtime override는 기존
+정책을 유지한다. 특히 기본 `compute_backend="cpu"`는 Numba/CUDA를 import하거나
+probe하지 않는다.
+
+CUDA provider contract는 `strict_float64_bvh_v1`이다. Kernel은 `float64`,
+`fastmath=False`이며 최종 face index, tie-break, traceable mask, `ignore_faces`,
+`min_t`와 `max_t`를 CPU BVH와 동일하게 처리한다. Face/count/grid/summary는 exact,
+distance와 stored-path geometry는 CPU/GPU FMA ULP 차이를 고려해 absolute/relative
+`1e-12`로 비교한다. Host scene/input/output은 owned, C-contiguous, read-only,
+non-alias여야 하고 execution metadata/timing도 consumer 검증을 통과해야 한다.
+
+GPU project에서 active row가 strict `<8,192`인 intersection wave는
+`hybrid_numba_cpu_small_wave_v1` 정책으로 Numba CPU에 보낸다. `8,192`는 GPU
+경계다. Small-wave CPU 성공은 fallback이 아니다. CPU small-wave가 실패하면
+GPU를 시도하고 해당 run의 hybrid CPU circuit을 연다. 이후 small wave는 같은
+실패를 반복하지 않고 곧바로 GPU로 보낸다. Ray 수가 0인 direct provider 호출은
+CUDA를 probe하지 않으며 owned/read-only empty result와 `not_probed` metadata를
+반환한다.
+
+GPU unavailable은 정상 CPU 선택으로 기록하고 hard fallback count를 올리지
+않는다. `input_prepare`, `initialize`, `execute`, `result_validation` failure는
+현재 logical batch의 일부 GPU 결과를 publish하지 않고 batch 전체를 CPU로 한 번
+replay한다. 이후 run-local circuit breaker가 같은 run의 GPU 시도를 막는다.
+Concurrent run은 breaker와 logical count를 공유하지 않는다.
+
+Prepared device scene과 thread-local workspace는 재사용한다. Mesh acceleration
+invalidation은 host/device scene cache를 함께 무효화한다. Workspace capacity는
+다음 2의 거듭제곱으로 성장하므로 65,536은 launch/transfer에는 유리하지만
+memory와 Stop 경계를 크게 한다. Stop은 시작한 primary/intersection chunk를
+원자적으로 끝낸 다음 경계에서 반영한다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -470,13 +505,18 @@ Python/no-probe이며 native reducer는 명시적 opt-in이다.
 ## RayTraceConfig
 ```json
 {
+  "compute_backend": "cpu",
   "intersection_backend": "auto"
 }
 ```
 
+- `compute_backend` 기본값: `cpu`
+- `compute_backend` 허용값: `cpu`, `gpu_cuda`
 - 기본값: `auto`
 - 허용값: `auto`, `brute_force`, `bvh`
 - UI 일반 사용자는 `auto`를 사용한다.
+- GPU 가속은 project에서 `compute_backend="gpu_cuda"`로 명시한다.
+- 필드가 없는 legacy `.bitsam` project는 `cpu`로 복원한다.
 - 개발자 정합성 테스트에서만 강제 backend를 권장한다.
 
 ## 결과 기록
@@ -500,7 +540,8 @@ Python/no-probe이며 native reducer는 명시적 opt-in이다.
 - `intersection_timing_scope`: 현재 `batch_dispatch_only`
 - `native_batch`
 - `requested_intersection_provider`
-- `intersection_provider`: `python_cpu`, `numba_cpu`, `mixed`, `not_used`
+- `intersection_provider`: `python_cpu`, `numba_cpu`, `gpu_cuda`, `mixed`,
+  `not_used`
 - `reference_scalar_query_count`, `reference_batch_count`,
   `reference_batch_sec`
 - `native_available`, `native_used`, `native_provider_version`,
@@ -512,6 +553,24 @@ Python/no-probe이며 native reducer는 명시적 opt-in이다.
 - `intersection_fallback_count`, `intersection_fallback_ray_count`,
   `intersection_fallback_phase`, `intersection_fallback_reason`
 - `intersection_provider_unavailable_reason`
+- `compute_backend`
+- `gpu_cuda_requested`, `gpu_cuda_available`, `gpu_cuda_used`
+- `gpu_cuda_contract`, `gpu_cuda_strict_float64`
+- `gpu_cuda_device_name`, `gpu_cuda_compute_capability`, `gpu_cuda_device_id`
+- `gpu_cuda_numba_version`, `gpu_cuda_toolkit_layout`
+- `gpu_cuda_scene_upload_sec`, `gpu_cuda_workspace_prepare_sec`,
+  `gpu_cuda_input_upload_sec`, `gpu_cuda_kernel_sec`,
+  `gpu_cuda_output_download_sec`
+- `gpu_cuda_device_scene_reuse_count`, `gpu_cuda_workspace_reuse_count`
+- `gpu_cuda_execution_policy`, `gpu_cuda_hybrid_cpu_below_rays`
+- `gpu_cuda_hybrid_cpu_attempt_count`,
+  `gpu_cuda_hybrid_cpu_attempt_ray_count`,
+  `gpu_cuda_hybrid_cpu_success_count`,
+  `gpu_cuda_hybrid_cpu_success_ray_count`,
+  `gpu_cuda_hybrid_cpu_execute_sec`, `gpu_cuda_hybrid_cpu_failure_count`,
+  `gpu_cuda_hybrid_cpu_failure_reason`, `gpu_cuda_hybrid_cpu_disabled`
+- `gpu_cuda_gpu_attempt_count`, `gpu_cuda_gpu_attempt_ray_count`,
+  `gpu_cuda_gpu_success_count`, `gpu_cuda_gpu_success_ray_count`
 - `multi_bounce_wavefront_used`
 - `requested_wavefront_pipeline`, `wavefront_pipeline`
 - `wavefront_chunk_count`, `wavefront_primary_ray_count`
@@ -559,6 +618,7 @@ Python/no-probe이며 native reducer는 명시적 opt-in이다.
   `wavefront_planner_fallback_row_count`,
   `wavefront_planner_fallback_phase`, `wavefront_planner_fallback_reason`,
   `wavefront_planner_unavailable_reason`
+- `wavefront_planner_rng_algorithm`, `wavefront_counter_apply_dispatch`
 
 `wavefront_event_tape_validation_sec`은 seal과 plan에 포함되는 nested timing이다.
 `builder_owned_materialization_v1` copy bytes와
@@ -568,11 +628,11 @@ producer-side advanced-index gather를, peak bytes는 strict validator 임시 �
 포함하지 않는다. Tape를 만들지 않는 경로에서는 validation/copy/payload/peak
 scope가 `not_used`이고 관련 timing/byte/count는 `0`이다.
 
-## 향후 백엔드 확장 조건
+## 후속/외부 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.
 - batch adapter는 동일 `RayBatch`/`RayHitBatch` 계약과 row 순서를 만족해야 한다.
-- Embree/Open3D/GPU 결과를 `brute_force`와 자동 비교하는 테스트가 필요하다.
+- Embree/Open3D와 새로운 GPU kernel 결과를 reference와 자동 비교해야 한다.
 - 외부 라이브러리가 없거나 초기화에 실패하면 `bvh`로 대체한다.
-- GPU 실행 도중 실패하면 일부 GPU 결과와 CPU 결과를 섞지 않고 batch 전체를 CPU로 다시 실행한다.
-- GPU primitive id는 최종 `mesh.faces` index로 remap하고 `ignore_faces`도 traversal 중 적용한다.
-- GPU가 없는 PC에서도 프로젝트 실행과 CPU ray tracing이 가능해야 한다.
+- Accelerator 실행 도중 실패하면 일부 결과를 섞지 않고 batch 전체를 CPU로 다시 실행한다.
+- Accelerator primitive id는 최종 `mesh.faces` index로 remap하고 `ignore_faces`도 traversal 중 적용한다.
+- Accelerator가 없는 PC에서도 프로젝트 실행과 CPU ray tracing이 가능해야 한다.
