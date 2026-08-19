@@ -59,6 +59,31 @@ from .fast_sampling import (
     iter_virtual_plane_ray_batches,
     supports_fast_virtual_plane_sampling,
 )
+from .wavefront_event_tape import (
+    EVENT_TAPE_CONTRACT as WAVEFRONT_EVENT_TAPE_CONTRACT,
+    LOBE_GAUSSIAN as TAPE_LOBE_GAUSSIAN,
+    LOBE_LAMBERTIAN as TAPE_LOBE_LAMBERTIAN,
+    LOBE_NONE as TAPE_LOBE_NONE,
+    LOBE_SPECULAR as TAPE_LOBE_SPECULAR,
+    PrimaryMajorEventTape,
+    PrimaryMajorEventTapeBuilder,
+    RAY_KIND_DIRECT as TAPE_RAY_KIND_DIRECT,
+    RAY_KIND_GAUSSIAN as TAPE_RAY_KIND_GAUSSIAN,
+    RAY_KIND_LAMBERTIAN as TAPE_RAY_KIND_LAMBERTIAN,
+    RAY_KIND_SPECULAR as TAPE_RAY_KIND_SPECULAR,
+    STATE_LAYOUT as WAVEFRONT_STATE_LAYOUT,
+    STATUS_ATTEMPTED as TAPE_STATUS_ATTEMPTED,
+    STATUS_BELOW_ENERGY as TAPE_STATUS_BELOW_ENERGY,
+    STATUS_DEPTH_LIMITED as TAPE_STATUS_DEPTH_LIMITED,
+    STATUS_DISABLED as TAPE_STATUS_DISABLED,
+    STATUS_EMITTED as TAPE_STATUS_EMITTED,
+    STATUS_ROULETTE_SURVIVED as TAPE_STATUS_ROULETTE_SURVIVED,
+    STATUS_ROULETTE_TERMINATED as TAPE_STATUS_ROULETTE_TERMINATED,
+    StableActiveRaySoA,
+    TERMINAL_BLOCKED as TAPE_TERMINAL_BLOCKED,
+    TERMINAL_ESCAPED as TAPE_TERMINAL_ESCAPED,
+    TERMINAL_RECEIVER as TAPE_TERMINAL_RECEIVER,
+)
 
 
 @dataclass
@@ -800,6 +825,7 @@ def run_direct_ray_trace(
     intersection_batch_size: int = _DEFAULT_INTERSECTION_BATCH_SIZE,
     intersection_provider: str = "auto",
     wavefront_planner: str = "auto",
+    wavefront_pipeline: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
@@ -810,6 +836,10 @@ def run_direct_ray_trace(
     if wavefront_planner not in {"auto", "python_cpu", "numba_cpu"}:
         raise ValueError(
             "wavefront_planner must be auto, python_cpu, or numba_cpu"
+        )
+    if wavefront_pipeline not in {"auto", "object_reference", "soa_event_tape"}:
+        raise ValueError(
+            "wavefront_pipeline must be auto, object_reference, or soa_event_tape"
         )
     if (
         isinstance(intersection_batch_size, bool)
@@ -875,6 +905,8 @@ def run_direct_ray_trace(
     stopped_early = False
     multi_bounce_wavefront_used = False
     wavefront_summary = {
+        "requested_pipeline": wavefront_pipeline,
+        "pipeline": "not_used",
         "chunk_count": 0,
         "primary_ray_count": 0,
         "depth_batch_count": 0,
@@ -889,6 +921,9 @@ def run_direct_ray_trace(
         "rng_scalar_parity": "exact_no_draw_statistical_stochastic",
         "stochastic_primary_ray_count": 0,
         "state_build_sec": 0.0,
+        "state_layout": "not_used",
+        "state_init_sec": 0.0,
+        "state_advance_sec": 0.0,
         "receiver_sec": 0.0,
         "geometry_sec": 0.0,
         "geometry_ray_count": 0,
@@ -899,7 +934,21 @@ def run_direct_ray_trace(
         "compacted_ray_count": 0,
         "path_materialized_count": 0,
         "path_materialization_skipped_count": 0,
+        "event_tape_contract": "not_used",
+        "event_tape_append_sec": 0.0,
+        "event_tape_seal_sec": 0.0,
+        "event_count": 0,
+        "event_tape_peak_bytes": 0,
+        "reducer_contract": "not_used",
+        "reducer_replay_sec": 0.0,
+        "reducer_hydrate_sec": 0.0,
+        "reducer_logical_event_count": 0,
     }
+    selected_wavefront_pipeline = (
+        "object_reference"
+        if wavefront_pipeline == "auto"
+        else wavefront_pipeline
+    )
     if progress_callback is not None:
         progress_callback(0, expected_ray_count)
 
@@ -974,7 +1023,32 @@ def run_direct_ray_trace(
                         )
                     else:
                         multi_bounce_wavefront_used = True
-                        batch_counts = _trace_multi_bounce_wavefront_batch(
+                        if selected_wavefront_pipeline == "soa_event_tape":
+                            wavefront_summary["pipeline"] = "soa_event_tape"
+                            wavefront_summary["state_layout"] = (
+                                WAVEFRONT_STATE_LAYOUT
+                            )
+                            wavefront_summary["event_tape_contract"] = (
+                                WAVEFRONT_EVENT_TAPE_CONTRACT
+                            )
+                            wavefront_summary["reducer_contract"] = (
+                                "python_ordered_v1"
+                            )
+                            trace_wavefront_batch = (
+                                _trace_multi_bounce_wavefront_soa_batch
+                            )
+                        else:
+                            wavefront_summary["pipeline"] = "object_reference"
+                            wavefront_summary["state_layout"] = (
+                                "python_object_graph_v1"
+                            )
+                            wavefront_summary["reducer_contract"] = (
+                                "python_object_commit_v1"
+                            )
+                            trace_wavefront_batch = (
+                                _trace_multi_bounce_wavefront_batch
+                            )
+                        batch_counts = trace_wavefront_batch(
                             trace_input.mesh,
                             origin_batch[start:end],
                             direction_batch[start:end],
@@ -1378,6 +1452,10 @@ def run_direct_ray_trace(
         "requested_intersection_dispatch": intersection_dispatch,
         "intersection_batch_size": intersection_batch_size,
         "multi_bounce_wavefront_used": multi_bounce_wavefront_used,
+        "requested_wavefront_pipeline": wavefront_summary[
+            "requested_pipeline"
+        ],
+        "wavefront_pipeline": wavefront_summary["pipeline"],
         "wavefront_chunk_count": wavefront_summary["chunk_count"],
         "wavefront_primary_ray_count": wavefront_summary["primary_ray_count"],
         "wavefront_depth_batch_count": wavefront_summary["depth_batch_count"],
@@ -1410,6 +1488,11 @@ def run_direct_ray_trace(
             "stochastic_primary_ray_count"
         ],
         "wavefront_state_build_sec": wavefront_summary["state_build_sec"],
+        "wavefront_state_layout": wavefront_summary["state_layout"],
+        "wavefront_state_init_sec": wavefront_summary["state_init_sec"],
+        "wavefront_state_advance_sec": wavefront_summary[
+            "state_advance_sec"
+        ],
         "wavefront_receiver_sec": wavefront_summary["receiver_sec"],
         "wavefront_geometry_sec": wavefront_summary["geometry_sec"],
         "wavefront_geometry_ray_count": wavefront_summary[
@@ -1429,6 +1512,31 @@ def run_direct_ray_trace(
         ],
         "wavefront_path_materialization_skipped_count": wavefront_summary[
             "path_materialization_skipped_count"
+        ],
+        "wavefront_event_tape_contract": wavefront_summary[
+            "event_tape_contract"
+        ],
+        "wavefront_event_tape_append_sec": wavefront_summary[
+            "event_tape_append_sec"
+        ],
+        "wavefront_event_tape_seal_sec": wavefront_summary[
+            "event_tape_seal_sec"
+        ],
+        "wavefront_event_count": wavefront_summary["event_count"],
+        "wavefront_event_tape_peak_bytes": wavefront_summary[
+            "event_tape_peak_bytes"
+        ],
+        "wavefront_reducer_contract": wavefront_summary[
+            "reducer_contract"
+        ],
+        "wavefront_reducer_replay_sec": wavefront_summary[
+            "reducer_replay_sec"
+        ],
+        "wavefront_reducer_hydrate_sec": wavefront_summary[
+            "reducer_hydrate_sec"
+        ],
+        "wavefront_reducer_logical_event_count": wavefront_summary[
+            "reducer_logical_event_count"
         ],
         **wavefront_planner_stats.to_summary(),
         **intersection_stats.to_summary(),
@@ -1861,6 +1969,128 @@ def _native_wavefront_reflection_decision(
     return decision
 
 
+_TAPE_RAY_KIND_BY_NAME = {
+    "direct": TAPE_RAY_KIND_DIRECT,
+    "specular": TAPE_RAY_KIND_SPECULAR,
+    "lambertian": TAPE_RAY_KIND_LAMBERTIAN,
+    "gaussian": TAPE_RAY_KIND_GAUSSIAN,
+}
+_TAPE_RAY_KIND_NAMES = {
+    value: key for key, value in _TAPE_RAY_KIND_BY_NAME.items()
+}
+_TAPE_LOBE_BY_NAME = {
+    "specular": TAPE_LOBE_SPECULAR,
+    "lambertian": TAPE_LOBE_LAMBERTIAN,
+    "gaussian": TAPE_LOBE_GAUSSIAN,
+}
+_TAPE_LOBE_NAMES = {value: key for key, value in _TAPE_LOBE_BY_NAME.items()}
+
+
+def _tape_ray_kind_code(ray_kind: str) -> int:
+    try:
+        return _TAPE_RAY_KIND_BY_NAME[ray_kind]
+    except KeyError as exc:
+        raise ValueError(f"unsupported wavefront ray kind: {ray_kind}") from exc
+
+
+def _tape_ray_kind_name(ray_kind_code: int) -> str:
+    try:
+        return _TAPE_RAY_KIND_NAMES[int(ray_kind_code)]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported wavefront ray-kind code: {ray_kind_code}"
+        ) from exc
+
+
+def _tape_lobe_code(lobe: str) -> int:
+    try:
+        return _TAPE_LOBE_BY_NAME[lobe]
+    except KeyError as exc:
+        raise ValueError(f"unsupported wavefront lobe: {lobe}") from exc
+
+
+def _tape_lobe_name(lobe_code: int) -> str:
+    try:
+        return _TAPE_LOBE_NAMES[int(lobe_code)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported wavefront lobe code: {lobe_code}") from exc
+
+
+def _reflection_decision_status_flags(decision: _ReflectionDecision) -> int:
+    flags = 0
+    if decision.attempted:
+        flags |= TAPE_STATUS_ATTEMPTED
+    if decision.depth_limited:
+        flags |= TAPE_STATUS_DEPTH_LIMITED
+    if decision.below_energy:
+        flags |= TAPE_STATUS_BELOW_ENERGY
+    if decision.roulette_terminated:
+        flags |= TAPE_STATUS_ROULETTE_TERMINATED
+    if decision.roulette_survived:
+        flags |= TAPE_STATUS_ROULETTE_SURVIVED
+    if decision.disabled:
+        flags |= TAPE_STATUS_DISABLED
+    if decision.emission is not None:
+        flags |= TAPE_STATUS_EMITTED
+    return flags
+
+
+def _record_reflection_status_flags(summary: Dict, flags: int) -> None:
+    if flags & TAPE_STATUS_ATTEMPTED:
+        summary["reflection_attempt_count"] += 1
+    if flags & TAPE_STATUS_DEPTH_LIMITED:
+        summary["depth_limit_count"] += 1
+    if flags & TAPE_STATUS_BELOW_ENERGY:
+        summary["reflection_below_energy_count"] += 1
+    if flags & TAPE_STATUS_ROULETTE_TERMINATED:
+        summary["roulette_terminated_count"] += 1
+    if flags & TAPE_STATUS_ROULETTE_SURVIVED:
+        summary["roulette_survived_count"] += 1
+    if flags & TAPE_STATUS_DISABLED:
+        summary["reflection_disabled_count"] += 1
+
+
+def _record_reflection_emission_lobe(
+    summary: Dict,
+    lobe: str,
+    reflected_power_lumen: float,
+    depth: int,
+) -> None:
+    summary["reflection_emitted_count"] += 1
+    lobe_summary = summary["lobes"][lobe]
+    lobe_summary["emitted_count"] += 1
+    lobe_summary["emitted_flux_lumen"] += reflected_power_lumen
+    depth_entry = _reflection_depth_summary(summary, depth)
+    depth_entry["emitted_count"] += 1
+    depth_entry["emitted_flux_lumen"] += reflected_power_lumen
+
+
+def _wavefront_reflection_rng_soa(
+    primary_slot: int,
+    depth: int,
+    reflection_seeds: np.ndarray,
+    reflection_rngs: List[Optional[random.Random]],
+    profile: OpticalProfile,
+    config: RayTraceConfig,
+    reflected_power_lumen: float,
+) -> random.Random:
+    if depth >= config.max_depth:
+        return _WAVEFRONT_NO_DRAW_RNG  # type: ignore[return-value]
+    roulette_draw_required = (
+        config.termination_mode == "russian_roulette"
+        and config.min_energy > 0.0
+        and reflected_power_lumen < config.min_energy
+    )
+    direction_draw_required = profile.scatter_model not in {"none", "specular"}
+    if not roulette_draw_required and not direction_draw_required:
+        return _WAVEFRONT_NO_DRAW_RNG  # type: ignore[return-value]
+    rng = reflection_rngs[primary_slot]
+    if rng is None:
+        rng = random.Random(int(reflection_seeds[primary_slot]))
+        reflection_rngs[primary_slot] = rng
+    return rng
+
+
 def _find_first_receiver_hits_batch(
     origins: np.ndarray,
     directions: np.ndarray,
@@ -2239,6 +2469,340 @@ def _commit_multi_bounce_wavefront_ray(
     return receiver_hit_count, len(state.steps), terminated_ray_count
 
 
+def _materialize_stored_path_from_tape(
+    tape: PrimaryMajorEventTape,
+    primary_slot: int,
+    mesh: TriangleMesh,
+    resolved_optical_by_face: List,
+    terminal_receiver: Optional[ReceiverHitCandidate],
+) -> List[RayHit]:
+    initial_origin = (
+        float(tape.initial_origins[primary_slot, 0]),
+        float(tape.initial_origins[primary_slot, 1]),
+        float(tape.initial_origins[primary_slot, 2]),
+    )
+    initial_direction = (
+        float(tape.initial_directions[primary_slot, 0]),
+        float(tape.initial_directions[primary_slot, 1]),
+        float(tape.initial_directions[primary_slot, 2]),
+    )
+    path_events = [
+        _emitter_ray_hit(
+            -1,
+            initial_origin,
+            initial_direction,
+            float(tape.initial_power_lumen[primary_slot]),
+        )
+    ]
+    start, end = tape.primary_event_bounds(primary_slot)
+    for event_index in range(start, end):
+        depth = event_index - start
+        face_index = int(tape.face_indices[event_index])
+        resolved_optical = resolved_optical_by_face[face_index]
+        emitted = bool(int(tape.status_flags[event_index]) & TAPE_STATUS_EMITTED)
+        if emitted:
+            outgoing_power = float(tape.emitted_power_lumen[event_index])
+            ray_kind: Optional[str] = _tape_lobe_name(
+                int(tape.lobe_codes[event_index])
+            )
+        else:
+            outgoing_power = float(tape.reflected_power_lumen[event_index])
+            ray_kind = (
+                _tape_ray_kind_name(
+                    int(tape.incoming_ray_kind_codes[event_index])
+                )
+                if depth > 0
+                else None
+            )
+        path_events.append(
+            _surface_ray_hit(
+                mesh,
+                face_index,
+                (
+                    float(tape.points[event_index, 0]),
+                    float(tape.points[event_index, 1]),
+                    float(tape.points[event_index, 2]),
+                ),
+                (
+                    float(tape.normals[event_index, 0]),
+                    float(tape.normals[event_index, 1]),
+                    float(tape.normals[event_index, 2]),
+                ),
+                float(tape.distances_mm[event_index]),
+                float(tape.incoming_power_lumen[event_index]),
+                outgoing_power,
+                depth=depth,
+                optical_profile=resolved_optical.profile,
+                optical_source=resolved_optical.source,
+                ray_kind=ray_kind,
+            )
+        )
+    if terminal_receiver is not None:
+        path_events.append(terminal_receiver.to_ray_hit())
+    return path_events
+
+
+def _reduce_wavefront_event_tape_python_ordered(
+    tape: PrimaryMajorEventTape,
+    mesh: TriangleMesh,
+    config: RayTraceConfig,
+    receiver_frames: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    resolved_optical_by_face: List,
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    wavefront_summary: Dict,
+) -> Tuple[int, int, int]:
+    path_quota = _WavefrontStoredPathQuota.from_paths(
+        stored_paths,
+        config.max_stored_paths,
+    )
+    path_storage_enabled = config.store_ray_paths and config.max_stored_paths > 0
+    receiver_hit_count = 0
+    surface_hit_count = 0
+    terminated_ray_count = 0
+    hydrate_sec = 0.0
+    replay_started = time.perf_counter()
+    for primary_slot in range(len(tape)):
+        terminal_code = int(tape.terminal_kind_codes[primary_slot])
+        if terminal_code == TAPE_TERMINAL_RECEIVER:
+            terminal_kind = "receiver"
+        elif terminal_code == TAPE_TERMINAL_ESCAPED:
+            terminal_kind = "escaped"
+        elif terminal_code == TAPE_TERMINAL_BLOCKED:
+            terminal_kind = "blocked"
+        else:
+            raise ValueError("event tape contains an unknown terminal code")
+        store_path = path_storage_enabled and path_quota.can_store(terminal_kind)
+        if path_storage_enabled:
+            summary_key = (
+                "path_materialized_count"
+                if store_path
+                else "path_materialization_skipped_count"
+            )
+            wavefront_summary[summary_key] += 1
+
+        previous_surface_contribution: Optional[Dict] = None
+        previous_lobe: Optional[str] = None
+        terminal_depth = int(tape.terminal_depths[primary_slot])
+        reflection_summary["max_observed_depth"] = max(
+            reflection_summary["max_observed_depth"],
+            terminal_depth,
+        )
+        start, end = tape.primary_event_bounds(primary_slot)
+        surface_hit_count += end - start
+        for event_index in range(start, end):
+            depth = event_index - start
+            face_index = int(tape.face_indices[event_index])
+            incoming_power = float(tape.incoming_power_lumen[event_index])
+            reflected_power = float(tape.reflected_power_lumen[event_index])
+            resolved_optical = resolved_optical_by_face[face_index]
+            surface_contribution = (
+                _surface_contribution_for_face(
+                    contribution_summary,
+                    mesh,
+                    face_index,
+                    face_contribution_cache,
+                )
+                if detailed_contributions
+                else None
+            )
+            if depth == 0:
+                reflection_summary["primary_surface_hit_count"] += 1
+            reflection_summary["surface_hit_count"] += 1
+            if detailed_contributions:
+                assert surface_contribution is not None
+                _record_surface_hit_contribution(
+                    contribution_summary,
+                    surface_contribution,
+                    depth,
+                    incoming_power,
+                    reflected_power,
+                )
+            _record_optical_summary(
+                optical_summary,
+                resolved_optical.profile,
+                resolved_optical.source,
+                incoming_power,
+                reflected_power,
+            )
+            status_flags = int(tape.status_flags[event_index])
+            _record_reflection_status_flags(reflection_summary, status_flags)
+            if not (status_flags & TAPE_STATUS_EMITTED):
+                if depth > 0:
+                    assert previous_lobe is not None
+                    _record_reflection_outcome(
+                        reflection_summary,
+                        previous_lobe,
+                        "blocked",
+                        depth,
+                    )
+                    _record_surface_reflection_outcome(
+                        contribution_summary,
+                        previous_surface_contribution,
+                        previous_lobe,
+                        "blocked",
+                        incoming_power,
+                        depth,
+                    )
+                    if detailed_contributions:
+                        assert surface_contribution is not None
+                        _record_secondary_blocker_contribution(
+                            contribution_summary,
+                            surface_contribution,
+                            previous_lobe,
+                            incoming_power,
+                            depth,
+                        )
+                break
+
+            emitted_power = float(tape.emitted_power_lumen[event_index])
+            emitted_lobe = _tape_lobe_name(int(tape.lobe_codes[event_index]))
+            next_depth = depth + 1
+            if depth > 0:
+                assert previous_lobe is not None
+                _record_reflection_outcome(
+                    reflection_summary,
+                    previous_lobe,
+                    "continued",
+                    depth,
+                )
+                _record_surface_reflection_outcome(
+                    contribution_summary,
+                    previous_surface_contribution,
+                    previous_lobe,
+                    "continued",
+                    incoming_power,
+                    depth,
+                )
+            _record_reflection_emission_lobe(
+                reflection_summary,
+                emitted_lobe,
+                emitted_power,
+                next_depth,
+            )
+            _record_surface_reflection_emission(
+                contribution_summary,
+                surface_contribution,
+                emitted_lobe,
+                emitted_power,
+                next_depth,
+            )
+            previous_surface_contribution = surface_contribution
+            previous_lobe = emitted_lobe
+
+        terminal_receiver: Optional[ReceiverHitCandidate] = None
+        if terminal_code == TAPE_TERMINAL_RECEIVER:
+            receiver_index = int(tape.terminal_receiver_indices[primary_slot])
+            if receiver_index < 0 or receiver_index >= len(receiver_frames):
+                raise ValueError("event tape receiver index is outside the frame table")
+            receiver_frame = receiver_frames[receiver_index]
+            receiver_id = receiver_frame.receiver.receiver_id
+            terminal_receiver = ReceiverHitCandidate(
+                grid=receiver_grids[receiver_id],
+                row=int(tape.terminal_rows[primary_slot]),
+                column=int(tape.terminal_columns[primary_slot]),
+                received_power_lumen=float(
+                    tape.terminal_received_power_lumen[primary_slot]
+                ),
+                point=(
+                    float(tape.terminal_points[primary_slot, 0]),
+                    float(tape.terminal_points[primary_slot, 1]),
+                    float(tape.terminal_points[primary_slot, 2]),
+                ),
+                normal=(
+                    float(tape.terminal_normals[primary_slot, 0]),
+                    float(tape.terminal_normals[primary_slot, 1]),
+                    float(tape.terminal_normals[primary_slot, 2]),
+                ),
+                distance_mm=float(tape.terminal_distances_mm[primary_slot]),
+                incoming_power_lumen=float(
+                    tape.terminal_incoming_power_lumen[primary_slot]
+                ),
+                receiver_id=receiver_id,
+                depth=terminal_depth,
+                ray_kind=_tape_ray_kind_name(
+                    int(tape.terminal_ray_kind_codes[primary_slot])
+                ),
+            )
+            _record_receiver_hit(terminal_receiver)
+            receiver_hit_count += 1
+            if terminal_depth == 0:
+                reflection_summary["direct_receiver_hit_count"] += 1
+                reflection_summary["direct_receiver_flux_lumen"] += (
+                    terminal_receiver.received_power_lumen
+                )
+                _record_direct_receiver_contribution(
+                    contribution_summary,
+                    terminal_receiver,
+                )
+            else:
+                assert previous_lobe is not None
+                _record_reflection_outcome(
+                    reflection_summary,
+                    previous_lobe,
+                    "receiver",
+                    terminal_depth,
+                    terminal_receiver.received_power_lumen,
+                )
+                _record_reflected_receiver_contribution(
+                    contribution_summary,
+                    terminal_receiver,
+                    previous_lobe,
+                    terminal_depth,
+                )
+                _record_surface_reflection_outcome(
+                    contribution_summary,
+                    previous_surface_contribution,
+                    previous_lobe,
+                    "receiver",
+                    float(tape.terminal_current_power_lumen[primary_slot]),
+                    terminal_depth,
+                    received_flux_lumen=terminal_receiver.received_power_lumen,
+                )
+        elif terminal_code == TAPE_TERMINAL_ESCAPED:
+            terminated_ray_count += 1
+            if terminal_depth > 0:
+                assert previous_lobe is not None
+                _record_reflection_outcome(
+                    reflection_summary,
+                    previous_lobe,
+                    "escaped",
+                    terminal_depth,
+                )
+                _record_surface_reflection_outcome(
+                    contribution_summary,
+                    previous_surface_contribution,
+                    previous_lobe,
+                    "escaped",
+                    float(tape.terminal_current_power_lumen[primary_slot]),
+                    terminal_depth,
+                )
+        else:
+            terminated_ray_count += 1
+
+        if store_path:
+            hydrate_started = time.perf_counter()
+            path_events = _materialize_stored_path_from_tape(
+                tape,
+                primary_slot,
+                mesh,
+                resolved_optical_by_face,
+                terminal_receiver,
+            )
+            hydrate_sec += time.perf_counter() - hydrate_started
+            path_quota.store(path_events, terminal_kind)
+    replay_elapsed = time.perf_counter() - replay_started
+    wavefront_summary["reducer_hydrate_sec"] += hydrate_sec
+    wavefront_summary["reducer_replay_sec"] += max(0.0, replay_elapsed - hydrate_sec)
+    wavefront_summary["reducer_logical_event_count"] += tape.event_count
+    return receiver_hit_count, surface_hit_count, terminated_ray_count
+
+
 def _trace_multi_bounce_wavefront_batch(
     mesh: TriangleMesh,
     origins: np.ndarray,
@@ -2569,6 +3133,488 @@ def _trace_multi_bounce_wavefront_batch(
     wavefront_summary["commit_sec"] += time.perf_counter() - commit_started
     wavefront_summary["total_sec"] += time.perf_counter() - wavefront_started
     return receiver_hit_count, surface_hit_count, terminated_ray_count
+
+
+def _trace_multi_bounce_wavefront_soa_batch(
+    mesh: TriangleMesh,
+    origins: np.ndarray,
+    directions: np.ndarray,
+    ray_power: float,
+    emitter_seed: int,
+    primary_start_index: int,
+    receivers: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    intersection_stats: _IntersectionDispatchStats,
+    planner_stats: _WavefrontPlannerStats,
+    wavefront_summary: Dict,
+) -> Tuple[int, int, int]:
+    if config.max_depth <= 1:
+        raise ValueError("multi-bounce wavefront requires max_depth >= 2")
+    ray_count = len(origins)
+    if ray_count == 0:
+        return 0, 0, 0
+
+    wavefront_started = time.perf_counter()
+    state_init_started = time.perf_counter()
+    reflection_seeds = np.fromiter(
+        (
+            _wavefront_reflection_seed(
+                emitter_seed,
+                primary_start_index + index,
+            )
+            for index in range(ray_count)
+        ),
+        dtype=np.uint64,
+        count=ray_count,
+    )
+    active = StableActiveRaySoA.initialize(
+        origins,
+        directions,
+        ray_power,
+        primary_start_index,
+        reflection_seeds,
+    )
+    initial_origins = np.array(origins, dtype=np.float64, order="C", copy=True)
+    initial_directions = np.array(
+        directions,
+        dtype=np.float64,
+        order="C",
+        copy=True,
+    )
+    tape_builder = PrimaryMajorEventTapeBuilder(
+        initial_origins,
+        initial_directions,
+        np.full(ray_count, ray_power, dtype=np.float64),
+        reflection_seeds,
+        config.max_depth,
+    )
+    reflection_rngs: List[Optional[random.Random]] = [None] * ray_count
+    state_init_elapsed = time.perf_counter() - state_init_started
+    wavefront_summary["state_build_sec"] += state_init_elapsed
+    wavefront_summary["state_init_sec"] += state_init_elapsed
+
+    receiver_index_by_id = {
+        frame.receiver.receiver_id: index
+        for index, frame in enumerate(receivers)
+    }
+    wavefront_summary["chunk_count"] += 1
+    wavefront_summary["primary_ray_count"] += ray_count
+    wavefront_summary["max_active_ray_count"] = max(
+        wavefront_summary["max_active_ray_count"],
+        ray_count,
+    )
+    depth = 0
+    while len(active):
+        active_count = len(active)
+        depth_key = str(depth)
+        wavefront_summary["depth_batch_count"] += 1
+        wavefront_summary["max_observed_depth"] = max(
+            wavefront_summary["max_observed_depth"],
+            depth,
+        )
+        wavefront_summary["active_ray_count_by_depth"][depth_key] = (
+            wavefront_summary["active_ray_count_by_depth"].get(depth_key, 0)
+            + active_count
+        )
+        wavefront_summary["batch_count_by_depth"][depth_key] = (
+            wavefront_summary["batch_count_by_depth"].get(depth_key, 0) + 1
+        )
+
+        receiver_started = time.perf_counter()
+        receiver_candidates, maximum_t = _find_first_receiver_hits_batch(
+            active.origins,
+            active.directions,
+            active.powers_lumen,
+            receivers,
+            receiver_grids,
+            config,
+            depth,
+            [
+                _tape_ray_kind_name(int(code))
+                for code in active.ray_kind_codes
+            ],
+        )
+        wavefront_summary["receiver_sec"] += (
+            time.perf_counter() - receiver_started
+        )
+        ray_batch = IntersectionRayBatch(
+            active.origins,
+            active.directions,
+            min_t=config.epsilon_mm,
+            max_t=maximum_t,
+            ignore_faces=active.source_faces,
+        )
+        hit_batch = intersection_stats.intersect_batch(mesh, ray_batch)
+        geometry_started = time.perf_counter()
+        surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
+        wavefront_summary["geometry_sec"] += (
+            time.perf_counter() - geometry_started
+        )
+        wavefront_summary["geometry_ray_count"] += active_count
+        wavefront_summary["geometry_hit_count"] += surface_geometry.hit_count
+
+        plan_started = time.perf_counter()
+        native_plan: Optional[WavefrontPlanResult] = None
+        native_plan_positions: Optional[np.ndarray] = None
+        planner_stats.logical_row_count += surface_geometry.hit_count
+        face_tables = (
+            planner_stats.prepare_face_tables(resolved_optical_by_face)
+            if (
+                planner_stats.native_requested
+                and not planner_stats.native_provider_disabled
+                and config.termination_mode == "threshold"
+                and surface_geometry.hit_count > 0
+            )
+            else None
+        )
+        if face_tables is None:
+            face_reflectance = None
+            face_roughness = None
+            face_scatter = None
+        else:
+            face_reflectance, face_roughness, face_scatter = face_tables
+        if (
+            planner_stats.native_requested
+            and not planner_stats.native_provider_disabled
+            and config.termination_mode == "threshold"
+            and face_reflectance is not None
+            and face_roughness is not None
+            and face_scatter is not None
+            and surface_geometry.hit_count > 0
+        ):
+            planner_prepare_started = time.perf_counter()
+            native_candidate_row_count = 0
+            try:
+                hit_rows = np.flatnonzero(hit_batch.face_indices >= 0)
+                hit_faces = hit_batch.face_indices[hit_rows]
+                hit_scatter = face_scatter[hit_faces]
+                deterministic_mask = (
+                    (hit_scatter == NATIVE_WAVEFRONT_SCATTER_NONE)
+                    | (hit_scatter == NATIVE_WAVEFRONT_SCATTER_SPECULAR)
+                )
+                native_rows = hit_rows[deterministic_mask]
+                native_candidate_row_count = len(native_rows)
+                native_faces = hit_batch.face_indices[native_rows]
+                native_batch = (
+                    WavefrontPlanInput(
+                        active.directions[native_rows],
+                        surface_geometry.normals[native_rows],
+                        active.powers_lumen[native_rows],
+                        face_reflectance[native_faces],
+                        face_roughness[native_faces],
+                        face_scatter[native_faces],
+                        depth=depth,
+                        max_depth=config.max_depth,
+                        min_energy=config.min_energy,
+                        termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
+                    )
+                    if len(native_rows)
+                    else None
+                )
+            except Exception:
+                planner_stats.record_input_prepare_failure(
+                    native_candidate_row_count
+                )
+                native_rows = np.empty(0, dtype=np.int64)
+                native_batch = None
+            finally:
+                planner_stats.native_input_prepare_sec += (
+                    time.perf_counter() - planner_prepare_started
+                )
+            if native_batch is not None:
+                native_plan = planner_stats.plan_native(native_batch)
+                if native_plan is not None:
+                    native_plan_positions = np.full(
+                        active_count,
+                        -1,
+                        dtype=np.int64,
+                    )
+                    native_plan_positions[native_rows] = np.arange(
+                        len(native_rows),
+                        dtype=np.int64,
+                    )
+        planner_stats.record_python_rows(
+            surface_geometry.hit_count
+            - (len(native_plan) if native_plan is not None else 0)
+        )
+
+        surface_rows = np.flatnonzero(hit_batch.face_indices >= 0)
+        surface_event_count = len(surface_rows)
+        event_reflected_power = np.empty(surface_event_count, dtype=np.float64)
+        event_emitted_power = np.zeros(surface_event_count, dtype=np.float64)
+        event_status = np.empty(surface_event_count, dtype=np.uint16)
+        event_lobes = np.full(
+            surface_event_count,
+            TAPE_LOBE_NONE,
+            dtype=np.int8,
+        )
+        continuation_rows = np.empty(surface_event_count, dtype=np.int64)
+        continuation_origins = np.empty(
+            (surface_event_count, 3),
+            dtype=np.float64,
+        )
+        continuation_directions = np.empty(
+            (surface_event_count, 3),
+            dtype=np.float64,
+        )
+        continuation_powers = np.empty(surface_event_count, dtype=np.float64)
+        continuation_faces = np.empty(surface_event_count, dtype=np.int64)
+        continuation_kinds = np.empty(surface_event_count, dtype=np.int8)
+        continuation_count = 0
+        blocked_active_rows: List[int] = []
+        for event_position, active_index_value in enumerate(surface_rows):
+            active_index = int(active_index_value)
+            face_index = int(hit_batch.face_indices[active_index])
+            point = (
+                float(surface_geometry.points[active_index, 0]),
+                float(surface_geometry.points[active_index, 1]),
+                float(surface_geometry.points[active_index, 2]),
+            )
+            normal = (
+                float(surface_geometry.normals[active_index, 0]),
+                float(surface_geometry.normals[active_index, 1]),
+                float(surface_geometry.normals[active_index, 2]),
+            )
+            resolved_optical = resolved_optical_by_face[face_index]
+            native_position = (
+                int(native_plan_positions[active_index])
+                if native_plan_positions is not None
+                else -1
+            )
+            if native_plan is not None and native_position >= 0:
+                reflected_power = float(
+                    native_plan.reflected_power_lumen[native_position]
+                )
+                decision = _native_wavefront_reflection_decision(
+                    native_plan,
+                    native_position,
+                )
+            else:
+                incoming_direction = (
+                    float(active.directions[active_index, 0]),
+                    float(active.directions[active_index, 1]),
+                    float(active.directions[active_index, 2]),
+                )
+                reflected_power = (
+                    float(active.powers_lumen[active_index])
+                    * effective_surface_reflectance(
+                        incoming_direction,
+                        normal,
+                        resolved_optical.profile,
+                    )
+                )
+                primary_slot = int(active.primary_slots[active_index])
+                reflection_rng_was_unset = reflection_rngs[primary_slot] is None
+                decision = _decide_reflection_emission(
+                    _wavefront_reflection_rng_soa(
+                        primary_slot,
+                        depth,
+                        reflection_seeds,
+                        reflection_rngs,
+                        resolved_optical.profile,
+                        config,
+                        reflected_power,
+                    ),
+                    incoming_direction,
+                    normal,
+                    reflected_power,
+                    resolved_optical.profile,
+                    config,
+                    depth,
+                )
+                if reflection_rng_was_unset and reflection_rngs[primary_slot] is not None:
+                    wavefront_summary["stochastic_primary_ray_count"] += 1
+            event_reflected_power[event_position] = reflected_power
+            event_status[event_position] = _reflection_decision_status_flags(
+                decision
+            )
+            if decision.emission is None:
+                blocked_active_rows.append(active_index)
+                continue
+            reflection_sample, emitted_power = decision.emission
+            event_emitted_power[event_position] = emitted_power
+            event_lobes[event_position] = _tape_lobe_code(
+                reflection_sample.lobe
+            )
+            reflected_origin = vec_add(
+                point,
+                vec_mul(reflection_sample.direction, config.epsilon_mm),
+            )
+            continuation_rows[continuation_count] = active_index
+            continuation_origins[continuation_count] = reflected_origin
+            continuation_directions[continuation_count] = (
+                reflection_sample.direction
+            )
+            continuation_powers[continuation_count] = emitted_power
+            continuation_faces[continuation_count] = face_index
+            continuation_kinds[continuation_count] = _tape_ray_kind_code(
+                reflection_sample.lobe
+            )
+            continuation_count += 1
+
+        tape_append_started = time.perf_counter()
+        if surface_event_count:
+            tape_builder.append_surface_events(
+                depth=depth,
+                primary_slots=active.primary_slots[surface_rows],
+                face_indices=hit_batch.face_indices[surface_rows],
+                points=surface_geometry.points[surface_rows],
+                normals=surface_geometry.normals[surface_rows],
+                distances_mm=hit_batch.t[surface_rows],
+                incoming_power_lumen=active.powers_lumen[surface_rows],
+                reflected_power_lumen=event_reflected_power,
+                emitted_power_lumen=event_emitted_power,
+                status_flags=event_status,
+                lobe_codes=event_lobes,
+                incoming_ray_kind_codes=active.ray_kind_codes[surface_rows],
+            )
+
+        missed_rows = np.flatnonzero(hit_batch.face_indices < 0)
+        receiver_rows = [
+            int(index)
+            for index in missed_rows
+            if receiver_candidates[int(index)] is not None
+        ]
+        escaped_rows = [
+            int(index)
+            for index in missed_rows
+            if receiver_candidates[int(index)] is None
+        ]
+        if receiver_rows:
+            receiver_slots = active.primary_slots[receiver_rows]
+            candidates = [receiver_candidates[index] for index in receiver_rows]
+            if any(candidate is None for candidate in candidates):
+                raise RuntimeError("receiver terminal lost its candidate")
+            typed_candidates = [
+                candidate for candidate in candidates if candidate is not None
+            ]
+            tape_builder.set_receiver_terminals(
+                primary_slots=receiver_slots,
+                depth=depth,
+                current_power_lumen=active.powers_lumen[receiver_rows],
+                ray_kind_codes=active.ray_kind_codes[receiver_rows],
+                receiver_indices=np.asarray(
+                    [
+                        receiver_index_by_id[candidate.receiver_id]
+                        for candidate in typed_candidates
+                    ],
+                    dtype=np.int32,
+                ),
+                rows=np.asarray(
+                    [candidate.row for candidate in typed_candidates],
+                    dtype=np.int32,
+                ),
+                columns=np.asarray(
+                    [candidate.column for candidate in typed_candidates],
+                    dtype=np.int32,
+                ),
+                received_power_lumen=np.asarray(
+                    [
+                        candidate.received_power_lumen
+                        for candidate in typed_candidates
+                    ],
+                    dtype=np.float64,
+                ),
+                points=np.asarray(
+                    [candidate.point for candidate in typed_candidates],
+                    dtype=np.float64,
+                ),
+                normals=np.asarray(
+                    [candidate.normal for candidate in typed_candidates],
+                    dtype=np.float64,
+                ),
+                distances_mm=np.asarray(
+                    [candidate.distance_mm for candidate in typed_candidates],
+                    dtype=np.float64,
+                ),
+                incoming_power_lumen=np.asarray(
+                    [
+                        candidate.incoming_power_lumen
+                        for candidate in typed_candidates
+                    ],
+                    dtype=np.float64,
+                ),
+            )
+        if escaped_rows:
+            tape_builder.set_nonreceiver_terminals(
+                primary_slots=active.primary_slots[escaped_rows],
+                terminal_kind=TAPE_TERMINAL_ESCAPED,
+                depth=depth,
+                current_power_lumen=active.powers_lumen[escaped_rows],
+                ray_kind_codes=active.ray_kind_codes[escaped_rows],
+            )
+        if blocked_active_rows:
+            tape_builder.set_nonreceiver_terminals(
+                primary_slots=active.primary_slots[blocked_active_rows],
+                terminal_kind=TAPE_TERMINAL_BLOCKED,
+                depth=depth,
+                current_power_lumen=active.powers_lumen[blocked_active_rows],
+                ray_kind_codes=active.ray_kind_codes[blocked_active_rows],
+            )
+        wavefront_summary["event_tape_append_sec"] += (
+            time.perf_counter() - tape_append_started
+        )
+
+        state_advance_started = time.perf_counter()
+        active = active.compact_continuations(
+            continuation_rows[:continuation_count],
+            continuation_origins[:continuation_count],
+            continuation_directions[:continuation_count],
+            continuation_powers[:continuation_count],
+            continuation_faces[:continuation_count],
+            continuation_kinds[:continuation_count],
+        )
+        wavefront_summary["state_advance_sec"] += (
+            time.perf_counter() - state_advance_started
+        )
+        wavefront_summary["plan_sec"] += time.perf_counter() - plan_started
+        wavefront_summary["compacted_ray_count"] += (
+            active_count - continuation_count
+        )
+        wavefront_summary["max_active_ray_count"] = max(
+            wavefront_summary["max_active_ray_count"],
+            continuation_count,
+        )
+        depth += 1
+
+    tape_seal_started = time.perf_counter()
+    tape = tape_builder.seal()
+    tape_seal_elapsed = time.perf_counter() - tape_seal_started
+    wavefront_summary["event_tape_seal_sec"] += tape_seal_elapsed
+    wavefront_summary["plan_sec"] += tape_seal_elapsed
+    wavefront_summary["event_count"] += tape.event_count
+    wavefront_summary["event_tape_peak_bytes"] = max(
+        wavefront_summary["event_tape_peak_bytes"],
+        tape.peak_bytes,
+    )
+
+    commit_started = time.perf_counter()
+    counts = _reduce_wavefront_event_tape_python_ordered(
+        tape,
+        mesh,
+        config,
+        receivers,
+        receiver_grids,
+        optical_summary,
+        reflection_summary,
+        contribution_summary,
+        face_contribution_cache,
+        resolved_optical_by_face,
+        detailed_contributions,
+        stored_paths,
+        wavefront_summary,
+    )
+    wavefront_summary["commit_sec"] += time.perf_counter() - commit_started
+    wavefront_summary["total_sec"] += time.perf_counter() - wavefront_started
+    return counts
 
 
 def _trace_single_bounce_batch(

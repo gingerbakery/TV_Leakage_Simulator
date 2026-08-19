@@ -328,6 +328,67 @@ Logical row count에는 native retry를 중복 반영하지 않는다. Native와
 planner를 같은 run에서 사용할 수 있지만 원 row 순서와 ordered commit 순서는
 바뀌지 않는다.
 
+### PERF-3B-2C SoA state와 ordered event tape
+
+PERF-3B-2C는 multi-bounce wavefront의 계산 순서를 바꾸지 않고 active state와
+commit 입력 표현을 분리한다. Runtime-only `wavefront_pipeline` 허용값은 다음과
+같다.
+
+- `auto`: 성능 gate를 통과한 기존 `object_reference`를 사용한다.
+- `object_reference`: PERF-3B-2B Python ray-state/ordered commit을 명시한다.
+- `soa_event_tape`: `stable_active_soa_v1` state,
+  `ordered_primary_event_tape_v1` tape와 `python_ordered_v1` reducer를 사용한다.
+
+이 값은 UI, `RayTraceConfig`, 프로젝트 JSON과 `.bitsam`에 저장하지 않는다.
+Pipeline은 explicit batch, fast virtual-plane emitter와 `max_depth >= 2`인 기존
+wavefront 안에서만 선택한다. Scalar, face/polygon emitter와 single-bounce는
+tape를 만들지 않는다.
+
+#### Active state와 compaction
+
+`stable_active_soa_v1`은 primary slot/index, origin/direction, power, source face,
+ray kind와 reflection seed를 owned contiguous NumPy 배열로 보관한다. 다음 depth의
+continuation은 현재 active row의 strictly increasing 순서로 compact해 primary
+상대 순서를 유지한다. Caller input과 alias하지 않는다.
+
+#### `ordered_primary_event_tape_v1`
+
+Builder는 depth-major surface segment와 primary terminal을 수집하고 seal할 때
+primary-major CSR로 전치한다. CSR event 배열은 실제 surface hit만 포함한다.
+Receiver, escaped, blocked terminal은 primary-aligned 별도 배열이다. 따라서
+storage는 `primary_count * max_depth`가 아니라 실제 surface event 수에 비례한다.
+
+Sealed 배열은 owned, C-contiguous, read-only다. Validation은 dtype/shape/offset,
+finite/nonnegative power와 distance, reflection status whitelist, lobe와 ray-kind,
+terminal 유일성, depth 연속성, surface power의 `float64` bit chain을 확인한다.
+Unsupported/partial planner 결과는 seal할 수 없다.
+
+`wavefront_event_count`는 terminal을 제외한 surface event 수다. Tape의 terminal
+depth에 따라 Receiver/escaped는 surface event 수가 depth와 같고, blocked는
+마지막 non-emitted surface를 포함하므로 `depth + 1`이다.
+
+#### Ordered reducer와 원자성
+
+`python_ordered_v1` reducer는 chunk 안에서 primary slot 오름차순으로 tape를
+재생한다. Receiver grid/flux, optical/reflection/contribution과 dict key 생성,
+stored-path quota/교체 순서는 `object_reference`와 동일하다. 저장 가능한 path만
+`RayHit`로 materialize한다.
+
+Stop은 기존 primary chunk 원자성을 유지한다. Provider/planner 실패는 tape seal
+전에 기존 whole-depth Python fallback과 circuit breaker로 처리하며 event 일부만
+fallback 결과와 섞지 않는다. Compiled reducer나 event-level native fallback은
+PERF-3B-2C 범위가 아니다.
+
+현재 Python ordered reducer까지 포함한 explicit SoA 경로는 성능 gate를 통과하지
+못했으므로 기본 `auto`는 `object_reference`다. GPU·Numba가 없는 PC의 기본
+scalar/Python CPU 경로도 변경하지 않는다. 실제 ROI counterbalanced p50은
+object-reference `5.216227초`, SoA `6.397611초`로 SoA가 `22.65%` 느렸으며,
+semantic/grid/contribution/path hash는 exact 일치했다. 엄격한 교대가 아닌
+`O,S,S,O,O,S` counterbalanced 순서의 여섯 measured run은 모두 effective
+Numba intersection,
+`native_used=true`, fallback `0`이었다. Planner `auto`는 effective Python,
+즉 `python_cpu`였고 native attempt와 fallback은 `0`이었다.
+
 ## 백엔드 종류
 
 ### `auto`
@@ -404,6 +465,7 @@ planner를 같은 run에서 사용할 수 있지만 원 row 순서와 ordered co
   `intersection_fallback_phase`, `intersection_fallback_reason`
 - `intersection_provider_unavailable_reason`
 - `multi_bounce_wavefront_used`
+- `requested_wavefront_pipeline`, `wavefront_pipeline`
 - `wavefront_chunk_count`, `wavefront_primary_ray_count`
 - `wavefront_depth_batch_count`, `wavefront_max_active_ray_count`,
   `wavefront_max_observed_depth`
@@ -418,6 +480,14 @@ planner를 같은 run에서 사용할 수 있지만 원 row 순서와 ordered co
   `wavefront_commit_sec`, `wavefront_total_sec`
 - `wavefront_path_materialized_count`,
   `wavefront_path_materialization_skipped_count`
+- `wavefront_state_layout`, `wavefront_state_init_sec`,
+  `wavefront_state_advance_sec`
+- `wavefront_event_tape_contract`, `wavefront_event_tape_append_sec`,
+  `wavefront_event_tape_seal_sec`, `wavefront_event_count`,
+  `wavefront_event_tape_peak_bytes`
+- `wavefront_reducer_contract`, `wavefront_reducer_replay_sec`,
+  `wavefront_reducer_hydrate_sec`,
+  `wavefront_reducer_logical_event_count`
 - `requested_wavefront_planner`, `wavefront_planner`,
   `wavefront_planner_contract`
 - `wavefront_planner_logical_row_count`,

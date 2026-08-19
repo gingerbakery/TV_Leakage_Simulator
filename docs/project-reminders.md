@@ -150,8 +150,35 @@
   `9.65 -> 37.64 MiB`, Stop 원자 단위는 4배다. 이는 실제 ROI process RSS가
   아니다. 현재 runtime 기본은 메모리/응답성이 유리한 1,024다.
 - PERF-3B-2B의 백만 ray 선형 환산도 약 `52.6초`라 목표 달성을 주장하지
-  않는다. 다음 순서는 SoA state, compact event tape, compiled ordered reducer,
-  `counter_rng_v2`, CUDA다.
+  않는다. SoA state와 compact event tape는 2C에서 구현했으며 후속 순서는
+  compiled ordered reducer, `counter_rng_v2`, CUDA다.
+- PERF-3B-2C는 `stable_active_soa_v1` active state와 실제 surface event 비례
+  `ordered_primary_event_tape_v1` CSR을 2026-08-19 구현했다. Runtime-only
+  `wavefront_pipeline="soa_event_tape"`를 명시할 때만 사용하는 experimental
+  경로다.
+- `python_ordered_v1`은 primary 순서로 Receiver/contribution/reflection/path를
+  replay하며 object-reference 대비 deterministic/stochastic float bit와 dict
+  order, chunk/provider exact를 보존한다. 전체 Python suite는 `172`개가
+  통과했다.
+- 현재 Python reducer까지 포함한 SoA 경로는 object-reference보다 느리므로
+  `wavefront_pipeline="auto"`는 `object_reference`를 유지한다. 기본 scalar와
+  GPU·Numba가 없는 PC의 no-probe CPU 경로에는 변화가 없다.
+- 실제 ROI 100,000-ray, depth-10 counterbalanced 측정 p50은 object-reference
+  `5.216227초`, SoA `6.397611초`로 SoA가 `22.65%` 느렸다. Semantic/grid/
+  contribution/path hash는 exact했고 event/reducer count는 `225,482`, tape peak는
+  `682,614 bytes`였다. 이 exact는 같은 stochastic wavefront stream의 pipeline
+  비교이며 legacy scalar에는 statistical parity를 적용한다.
+- 여섯 measured run 모두 effective `numba_cpu`, `native_used=true`, intersection
+  fallback `0`이었다. Planner `auto`는 effective `python_cpu`, native
+  attempt/fallback `0`이었다.
+- SoA의 1M 단순 선형 환산은 `63.98초`로 object-reference `52.16초`보다
+  나쁘므로 이번 단계도 백만 ray/LightTools 이상 목표 달성을 주장하지 않는다.
+- Actual-event CSR의 구조적 memory 개선과 read-only validation은 후속 compiled
+  ordered reducer/CUDA용 데이터 경계다. PERF-3B-2C 자체를 end-to-end speedup
+  또는 백만 ray 목표 달성으로 기록하지 않는다.
+- 다음 성능 단계는 `ordered_primary_event_tape_v1`을 직접 소비하는 compiled
+  reducer이며, 이후 `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를
+  검토한다.
 - 실제 사용자 `.bitsam`은 성능 smoke 측정에만 사용했으며 repository fixture로 추가하지 않는다.
 - Multi-bounce native intersection provider 실패는 현재 depth logical batch
   전체를 Python CPU로 다시 실행한다. GPU backend에서도 GPU 부재·초기화

@@ -201,6 +201,32 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   `9.65 -> 37.64 MiB`, Stop 원자 단위는 4배다. 이 값은 실제 ROI process
   RSS가 아니다. 현재 기본은 메모리/Stop 응답성이 유리한 1,024다.
 - PERF-3B-2B도 아직 백만 ray 목표를 달성하지 않았다. `5.2553초`의 선형
-  환산은 약 `52.6초`다. 다음은 SoA ray state, compact event tape, compiled
-  ordered reducer, `counter_rng_v2`, CUDA 순서다.
+  환산은 약 `52.6초`다. SoA ray state와 compact event tape는 2C에서
+  구현했으며 후속은 compiled ordered reducer, `counter_rng_v2`, CUDA 순서다.
+- PERF-3B-2C는 explicit experimental `soa_event_tape` pipeline을 추가했다.
+  Active ray는 `stable_active_soa_v1` owned 배열로 stable compact하고, 실제
+  surface event만 `ordered_primary_event_tape_v1` primary-major CSR에 저장한다.
+- `python_ordered_v1` reducer는 primary 순서로 Receiver grid/flux,
+  summary/detailed contribution, reflection과 stored-path quota를 replay한다.
+  Deterministic depth 2/10과 mixed/Gaussian/Russian-roulette는
+  object-reference 대비 float bit, dict key 순서와 chunk/provider 결과가 exact다.
+- Event count는 terminal이 아닌 실제 surface hit 수이고 tape peak bytes는 run
+  합이 아니라 primary chunk의 builder+sealed storage 최대값이다. Sealed 배열은
+  read-only이며 status/lobe/ray-kind/power chain을 검증한다.
+- 현재 Python reducer를 포함한 SoA 경로는 object-reference보다 느려 기본
+  `wavefront_pipeline="auto"`를 `object_reference`로 유지한다. 기본 scalar와
+  GPU·Numba가 없는 PC의 no-probe CPU 경로도 바뀌지 않는다.
+- 실제 ROI 100,000-ray, depth-10 counterbalanced p50은 object-reference
+  `5.216227초`, SoA `6.397611초`로 SoA가 `22.65%` 느렸다. Event/reducer count
+  `225,482`, tape peak `682,614 bytes`이며 semantic/grid/contribution/path는
+  exact다. 1M 선형 환산도 `52.16 -> 63.98초`로 악화됐다.
+- 여섯 measured run 모두 effective `numba_cpu`, `native_used=true`, intersection
+  fallback `0`이었다. Planner `auto`는 effective `python_cpu`, native
+  attempt/fallback `0`이므로 이 비교에 compiled reflection planner speedup은
+  포함되지 않는다.
+- SoA state 비용은 줄었지만 primary-major tape seal과 Python ordered replay가
+  더 큰 병목이다. Tape bytes는 actual-event buffer 계측이며 process RSS나 기존
+  object graph 전체 memory 우위를 직접 증명하지 않는다.
+- PERF-3B-2C는 속도 목표 완료가 아니라 compiled ordered reducer/CUDA가 공유할
+  buffer 경계 확정 단계다. 다음은 compiled reducer, `counter_rng_v2`, CUDA다.
 - GPU backend는 capability/precision/fallback 계약까지 준비한 뒤 추가한다.

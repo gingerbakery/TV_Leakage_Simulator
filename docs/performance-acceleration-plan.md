@@ -176,7 +176,34 @@
   Numba planner가 `1.078~1.241x`, semantic mismatch `0`을 기록했다.
 - Surface/path/planner fallback을 포함한 전체 Python suite `160`개가 통과했다.
 - 실제 ROI의 1,000,000-ray 선형 환산은 약 `52.6초`라 최종 목표 달성을
-  주장하지 않는다. 다음은 SoA state, event tape와 compiled ordered reducer다.
+  주장하지 않는다. SoA state와 event tape는 PERF-3B-2C에서 이어서 구현하며
+  compiled ordered reducer는 그 다음 경계다.
+
+#### PERF-3B-2C: SoA state와 ordered event tape
+
+- 상태: experimental 구현 및 exact regression 완료 (2026-08-19), 자동 선택 보류
+- Runtime-only `wavefront_pipeline`에 `auto`, `object_reference`,
+  `soa_event_tape`를 추가했다.
+- `stable_active_soa_v1`은 active ray의 primary slot/index, origin/direction,
+  power, source face, ray kind와 reflection seed를 owned 배열로 유지하고 stable
+  row 순서로 compact한다.
+- `ordered_primary_event_tape_v1`은 depth-major 계산 결과를 실제 surface event
+  비례 primary-major CSR로 seal한다. Terminal은 primary-aligned 별도 배열이며
+  sealed data는 read-only/strict dtype/shape/status/power-chain validation을 거친다.
+- `python_ordered_v1` reducer는 primary 순서로 grid, flux, summary/detailed
+  contribution, reflection과 stored-path quota를 replay한다. 저장 가능한 path만
+  materialize한다.
+- Deterministic depth 2/10과 stochastic mixed/Gaussian/Russian-roulette에서
+  object-reference 대비 float bit와 dict key 순서, chunk/provider/repeat 정합성을
+  exact 검증했다.
+- 기본 `auto`는 `object_reference`다. 현재 Python reducer까지 포함한 explicit
+  SoA 경로가 end-to-end 성능 gate를 통과하지 못했으므로 구조적 buffer 개선을
+  속도 향상으로 주장하지 않는다.
+- 실제 ROI 100,000-ray counterbalanced p50은 object-reference `5.216227초`, SoA
+  `6.397611초`로 SoA가 `22.65%` 느렸다. 두 경로의 semantic/grid/contribution/
+  path hash는 exact했고 tape peak는 primary chunk당 최대 `682,614 bytes`였다.
+- 다음 단계는 tape를 직접 소비하는 compiled ordered reducer다. 그 뒤
+  `counter_rng_v2`와 같은 SoA/tape 기반 CUDA backend를 진행한다.
 
 #### PERF-3B-3: CUDA GPU backend
 - 상태: 예정
@@ -456,7 +483,60 @@ warm p50로 Python/Numba planner를 비교했다.
 않았으므로 기본 `auto`는 Python planner/scalar CPU를 유지한다.
 
 현재 100,000-ray `5.2553초`의 1,000,000-ray 단순 선형 환산은 약
-`52.6초`다. 목표 달성을 주장하지 않으며 다음 단계는 Python ray-state object를
-SoA로 옮기고 compact event tape와 exact ordered reducer를 compile하는 것이다.
-그 다음 `counter_rng_v2`로 stochastic planner 범위를 넓힌 뒤 같은 buffer와
-whole-depth fallback 계약을 CUDA에 재사용한다.
+`52.6초`다. PERF-3B-2C에서 Python ray-state object를 대체할 SoA와 compact
+event tape 경계를 구현했지만 기본 승격 기준은 통과하지 못했다. 다음 단계는
+exact ordered reducer를 compile하고, `counter_rng_v2`로 stochastic planner
+범위를 넓힌 뒤 같은 buffer와 whole-depth fallback 계약을 CUDA에 재사용하는
+것이다.
+
+## PERF-3B-2C SoA/event-tape 측정 (2026-08-19)
+
+이번 단계는 같은 depth-major reflection plan을 `object_reference`와
+`soa_event_tape` pipeline으로 counterbalanced 측정한다. 비교 시 seed, chunk,
+intersection provider, planner, contribution mode와 path quota를 고정하며
+semantic mismatch와 event/tape peak bytes를 함께 기록한다.
+
+조건:
+
+- 원본/활성 ROI triangle `50,944 / 45,167`
+- primary ray `100,000`, `max_depth=10`, seed `42`
+- summary, stored paths `500`, chunk `1,024`
+- explicit Numba intersection, planner `auto`
+- pipeline별 warmup 1회 뒤 3회 측정, 순서 `O,S,S,O,O,S` counterbalanced,
+  source hash stable
+
+| Pipeline | Wall p50 | Wall p95 | Primary ray/s p50 | 1M 선형 환산 |
+| --- | ---: | ---: | ---: | ---: |
+| `object_reference` | `5.216227초` | `5.224492초` | `19,170.94` | `52.16초` |
+| `soa_event_tape` | `6.397611초` | `6.399492초` | `15,630.83` | `63.98초` |
+
+SoA는 object-reference 대비 `0.8153x`, 즉 `22.65%` 느렸다. State init
+`0.082218초`와 advance `0.021038초`는 object state build `0.477921초`보다
+작았지만, tape append `0.201680초`, seal `1.423436초`, Python reducer replay
+`1.065727초`와 stored-path hydrate `0.022554초`가 추가됐다. Plan 전체는
+`2.590310 -> 4.264059초`, commit은 `0.872476 -> 1.102477초`였다. SoA state
+init은 state build와 같은 구간이고, state advance/append/seal은 plan에,
+replay/hydrate는 commit에 포함되는 nested metric이므로 합산하지 않는다.
+Intersection/native execute도 `0.469579/0.378520초`와
+`0.464707/0.375294초`로 같은 범위였다.
+
+두 pipeline은 Receiver `12,652`, surface `225,482`, terminated `87,348`, flux
+`0.040176617410112817`, query `309,119`, path `500`, materialized/skipped
+`931/99,069`와 semantic/grid/contribution/path hash가 exact했다. SoA
+event/reducer count는 각각 `225,482`, primary-chunk tape peak 최대값은
+`682,614 bytes`다. 이 tape bytes를 process RSS나 object graph 전체 memory와
+직접 비교하지 않는다. 실제 ROI는 mixed stochastic이므로 exact 범위는 같은
+`per_primary_seeded_v1`의 두 wavefront pipeline 사이이며 legacy scalar에는
+기존 statistical parity를 적용한다.
+
+Provider는 여섯 measured run 모두 effective `numba_cpu`, `native_used=true`,
+intersection fallback `0`이었다. Planner `auto`는 effective `python_cpu`, native
+attempt `0`, fallback `0`이었다. 따라서 교차 성능은 실제 native 실행이지만
+compiled reflection planner의 speedup은 포함하지 않는다.
+
+따라서 `wavefront_pipeline="auto"`는 `object_reference`를 유지한다.
+Actual-event CSR은 다음 compiled reducer/CUDA의 메모리·데이터 경계이지, 이번
+단계 자체의 end-to-end speedup 근거가 아니다. 1M 선형 환산도 SoA
+`63.98초`이므로 목표 달성을 주장하지 않는다. 재현 결과는 git-ignored
+`outputs/perf3b2c_soa_event_tape/actual_roi_summary.json`에
+`perf3b2c_actual_roi_comparison_v1`로 기록했다.
