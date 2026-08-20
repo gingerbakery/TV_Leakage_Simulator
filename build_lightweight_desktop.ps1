@@ -229,6 +229,7 @@ Copy-Item -LiteralPath (Join-Path $Root "requirements-dev.txt") -Destination $Ou
 Copy-Item -LiteralPath (Join-Path $Root "docs\cad-intersection-backend-contract.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\performance-acceleration-plan.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\desktop-exe-packaging.md") -Destination (Join-Path $OutputDir "docs") -Force
+Copy-Item -LiteralPath (Join-Path $Root "docs\gpu-cuda-user-guide.md") -Destination (Join-Path $OutputDir "docs") -Force
 if ($IsGpuCudaEdition) {
     Copy-Item -LiteralPath (Join-Path $Root "requirements-gpu-cuda.txt") -Destination $OutputDir -Force
     Copy-Item -LiteralPath (Join-Path $Root "scripts\verify_gpu_cuda_runtime.py") -Destination (Join-Path $OutputDir "scripts") -Force
@@ -362,7 +363,8 @@ try {
         "$OutputName/_tools/python313/python.exe",
         "$OutputName/_tools/python313/Lib/site-packages/OCP/__init__.py",
         "$OutputName/_tools/python313/Lib/site-packages/fastapi/__init__.py",
-        "$OutputName/WebView2Loader.dll"
+        "$OutputName/WebView2Loader.dll",
+        "$OutputName/docs/gpu-cuda-user-guide.md"
     )
     if ($IsGpuCudaEdition) {
         $requiredEntries += @(

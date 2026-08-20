@@ -25,6 +25,8 @@
 - 빌드 명령: `.\build_gpu_cuda_desktop.bat`
 - 출력 폴더: `release/leakage_simulator_desktop_v1.0.0_gpu_cuda/`
 - 전달 파일: `release/leakage_simulator_desktop_v1.0.0_gpu_cuda.zip`
+- 사용자 실행 가이드: 배포본의 `docs/gpu-cuda-user-guide.md`
+  - 저장소 기준 문서: `docs/gpu-cuda-user-guide.md`
 - 기본 Lite 배포본과 분리된 opt-in 에디션이다. 실제 동등 빌드 비교에서
   GPU 의존성 증가분은 폴더 `127.5MB`, ZIP `43.8MB`였으며 Lite/CPU 사용자는
   이 파일을 추가로 받지 않는다.

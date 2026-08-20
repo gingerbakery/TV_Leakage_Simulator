@@ -1053,6 +1053,8 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.click(runOptionsSummary!)
     expect(runOptionsDetails?.open).toBe(true)
 
+    expect(screen.getByLabelText('Compute backend').tagName).toBe('SELECT')
+
     const runOptionRayCount = screen.getByRole('spinbutton', {
       name: 'Run option emitter rays',
     })

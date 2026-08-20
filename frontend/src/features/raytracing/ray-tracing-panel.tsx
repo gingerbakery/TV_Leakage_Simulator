@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
@@ -55,6 +55,7 @@ import {
   rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
+import { GpuCudaHelpDialog } from './gpu-cuda-help-dialog'
 
 export interface RayObjectEditRequest {
   id: string
@@ -1210,6 +1211,7 @@ export function RayTracingPanel({
   autoConvergenceCancelToken = 0,
   onEditRequestHandled,
 }: RayTracingPanelProps) {
+  const computeBackendId = useId()
   const [emitterMode, setEmitterMode] =
     useState<EmitterCreationMode | null>(null)
   const [receiverMode, setReceiverMode] =
@@ -1776,16 +1778,13 @@ export function RayTracingPanel({
             }
             description="반사를 최대 몇 번까지 추적할지 (0 = 직접광만, 반사 없음). 클수록 정확하지만 계산이 느려집니다 - quick 체크는 1, 일반 비교는 3, 밀폐된 고반사 경로는 10, 수렴성 확인 목적일 때만 20을 권장합니다."
           />
-          <label className={fieldLabelClassName}>
+          <div className={fieldLabelClassName}>
             <span className="flex items-center gap-1.5">
-              Compute backend
-              <HelpTooltip label="Compute backend 도움말">
-                CPU는 모든 PC에서 사용하는 호환 경로입니다. NVIDIA CUDA GPU는
-                지원 GPU에서 batch ray tracing을 가속하며, 사용할 수 없거나 실행에
-                실패하면 같은 작업 단위를 CPU로 다시 계산합니다.
-              </HelpTooltip>
+              <label htmlFor={computeBackendId}>Compute backend</label>
+              <GpuCudaHelpDialog />
             </span>
             <select
+              id={computeBackendId}
               className={inputClassName}
               aria-label="Ray tracing compute backend"
               value={config.compute_backend}
@@ -1802,7 +1801,7 @@ export function RayTracingPanel({
               <option value="cpu">CPU · Compatible</option>
               <option value="gpu_cuda">NVIDIA CUDA GPU · Experimental</option>
             </select>
-          </label>
+          </div>
           <NumberField
             label="Random seed"
             value={config.seed}

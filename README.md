@@ -87,6 +87,10 @@ GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVI
 드라이버는 대상 PC에 별도 설치되어 있어야 한다. 기본 경량 배포본에는 이
 의존성을 넣지 않으므로 CPU-only PC의 크기와 실행 경로는 기존과 같다.
 
+- GPU 사용자 설치·검사·선택 가이드:
+  [`docs/gpu-cuda-user-guide.md`](docs/gpu-cuda-user-guide.md)
+- Lite/GPU 배포 ZIP 안에서도 `docs/gpu-cuda-user-guide.md`로 제공한다.
+
 - 출력: `release/leakage_simulator_desktop_v1.0.0_lite/`
 - 전달용 ZIP: `release/leakage_simulator_desktop_v1.0.0_lite.zip`
 - 사용자는 압축 해제 후 `LeakageSimulator.exe`만 더블클릭

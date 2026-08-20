@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPT = ROOT / "scripts" / "verify_gpu_cuda_runtime.py"
 GPU_REQUIREMENTS = ROOT / "requirements-gpu-cuda.txt"
+GPU_USER_GUIDE = ROOT / "docs" / "gpu-cuda-user-guide.md"
 
 
 class GpuCudaPackagingTests(unittest.TestCase):
@@ -57,6 +58,26 @@ class GpuCudaPackagingTests(unittest.TestCase):
         self.assertIn("_tools\\python313\\python.exe", script)
         self.assertIn("verify_gpu_cuda_runtime.py", script)
         self.assertIn("--mode device", script)
+
+    def test_gpu_user_guide_is_bundled_with_both_editions(self) -> None:
+        guide = GPU_USER_GUIDE.read_text(encoding="utf-8")
+        self.assertIn("CHECK_GPU_CUDA.bat", guide)
+        self.assertIn("CUDA Toolkit `13.1`", guide)
+        self.assertIn("NVIDIA CUDA GPU", guide)
+
+        script = (ROOT / "build_lightweight_desktop.ps1").read_text(
+            encoding="utf-8"
+        )
+        guide_copy = script.index(
+            'docs\\gpu-cuda-user-guide.md") -Destination '
+            '(Join-Path $OutputDir "docs")',
+        )
+        gpu_block_start = script.index("if ($IsGpuCudaEdition) {", guide_copy)
+        self.assertLess(guide_copy, gpu_block_start)
+        self.assertIn(
+            '"$OutputName/docs/gpu-cuda-user-guide.md"',
+            script,
+        )
 
 
 if __name__ == "__main__":

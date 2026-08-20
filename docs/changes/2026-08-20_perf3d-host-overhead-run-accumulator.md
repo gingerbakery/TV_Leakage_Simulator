@@ -244,13 +244,13 @@ report에 있으므로 ZIP hash의 자기참조를 만들지 않는다.
 
 | Edition | Folder bytes | ZIP bytes | ZIP SHA-256 |
 | --- | ---: | ---: | --- |
-| Lite | `371,538,673` | `106,483,342` | `d4c84ebcc27b63094855b18629e4ea6a6c324f0af5ddb33b57b95d4c50159a21` |
-| GPU CUDA | `505,232,735` | `152,432,227` | `5f46f8610e01ad22fcdb16931b0718b47b90240f3be594b37de27aead28aa1ef` |
+| Lite | `371,550,394` | `106,487,920` | `abb3567617f0debaf68eed518691f5e9c57dfdec1f9f93bbb3ca4117ec6fc32f` |
+| GPU CUDA | `505,244,456` | `152,436,810` | `c24d67197bc403511c3d4711ba938fe58f3bd370afd9dab8a7a4c8928af1c49d` |
 
 두 sidecar, ZIP CRC와 entry set이 exact했다. Repo↔folder↔ZIP의 source, README와
-기존 포함 문서 3종 stream aggregate는 모두
-`499b2e117b0e6a44baccf2e98220efe2c59fecbcf605df0c4220b0f4e4134810`로
-일치했다. 두 edition 모두 repository `237` test를 통과했고 Lite의 acceleration
+기존 포함 문서와 GPU 사용자 가이드 4종 stream aggregate는 모두
+`7868b345e69451931c8d0e4b968904d12506711e23afb26d8e9ad74b1e6bcbd1`로
+일치했다. 두 edition 모두 repository `238` test를 통과했고 Lite의 acceleration
 optional case `30`개는 expected skip이었다. Lite는 Numba/llvmlite 미포함과
 CPU no-import/no-probe를, GPU edition은 RTX 3070 strict-FP64 device kernel
 checksum `33153`을 재추출 package에서 확인했다.
