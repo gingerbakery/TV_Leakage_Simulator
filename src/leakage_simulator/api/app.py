@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,9 @@ def create_app(
     runtime: ApiRuntime | None = None,
 ) -> FastAPI:
     api_runtime = runtime or ApiRuntime(ROOT)
-    boot_token = str(time.time_ns())
+    boot_token = os.environ.get("LEAKAGE_BOOT_TOKEN")
+    if boot_token is None:
+        boot_token = str(time.time_ns())
     application = FastAPI(
         title="TV Leakage Simulator API",
         version=API_VERSION,
@@ -75,6 +78,36 @@ def create_app(
     @application.get("/_ping", response_class=PlainTextResponse)
     def ping() -> str:
         return "pong"
+
+    @application.get(
+        "/api/gpu-cuda/status",
+        response_class=JSONResponse,
+    )
+    def gpu_cuda_status(refresh: bool = False) -> dict[str, Any]:
+        """Probe CUDA only when a user explicitly requests this endpoint."""
+
+        # Keep this import inside the endpoint.  App startup, health checks,
+        # and the default CPU trace path must not discover Numba or CUDA.
+        from leakage_simulator.gpu_cuda_intersection import (
+            PROVIDER_CONTRACT,
+            preflight_gpu_cuda,
+        )
+
+        capability = preflight_gpu_cuda(refresh=refresh)
+        return {
+            "available": capability.available,
+            "reason_code": capability.reason_code,
+            "device_name": capability.device_name,
+            "compute_capability": capability.compute_capability,
+            "device_id": capability.device_id,
+            "numba_version": capability.numba_version,
+            "toolkit_layout": capability.toolkit_layout,
+            "strict_float64": capability.strict_float64,
+            "kernel_executed": capability.kernel_executed,
+            "kernel_verified": capability.kernel_verified,
+            "preflight_scope": capability.preflight_scope,
+            "provider_contract": PROVIDER_CONTRACT,
+        }
 
     @application.get("/api/scene", response_class=JSONResponse)
     def scene(cad: str = "") -> Any:

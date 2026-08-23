@@ -99,6 +99,7 @@ describe('BITSAM project format', () => {
     ).compute_backend
 
     const restored = parseBitsamProject(JSON.stringify(legacy))
+    expect(restored.workspace.rayTraceConfig.compute_backend).toBeUndefined()
     const store = createWorkspaceStore()
     store.getState().actions.restoreProjectState(restored.workspace)
 

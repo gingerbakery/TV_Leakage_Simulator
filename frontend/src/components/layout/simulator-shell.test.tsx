@@ -12,10 +12,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
-import { workspaceStore } from '@/stores'
+import { createWorkspaceStore, workspaceStore } from '@/stores'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
+import {
+  createBitsamProject,
+  serializeBitsamProject,
+} from '@/features/projects'
 
 import { SimulatorShell } from './simulator-shell'
 
@@ -127,6 +131,71 @@ describe('SimulatorShell', () => {
     expect(screen.getByText('No transform rules')).not.toBeNull()
   })
 
+  it('keeps the workflow menu inside its column and exposes accessible width controls', () => {
+    window.localStorage.removeItem('tv-leakage-workflow-sidebar-width')
+    const view = renderShell()
+    const layout = view.container.querySelector<HTMLElement>(
+      '[data-simulator-workspace-layout]',
+    )
+    const sidebar = view.container.querySelector<HTMLElement>(
+      '[data-workflow-sidebar]',
+    )
+    const workflowRegion = screen.getByRole('region', {
+      name: 'Workflow menu',
+    })
+    const rayTracingStep = screen.getByRole('button', {
+      name: 'Step 04 Ray Tracing',
+    })
+
+    expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
+      '384px',
+    )
+    const sidebarClasses = sidebar?.className.split(' ') ?? []
+    const workflowRegionClasses = workflowRegion.className.split(' ')
+    expect(sidebarClasses).toContain('min-w-0')
+    expect(sidebarClasses).toContain('overflow-x-clip')
+    expect(sidebarClasses).toContain('lg:overflow-hidden')
+    expect(workflowRegionClasses).toContain('overflow-x-clip')
+    expect(workflowRegionClasses).toContain('lg:h-full')
+    expect(workflowRegionClasses).toContain('lg:overflow-y-auto')
+    expect(workflowRegionClasses).not.toContain('overflow-y-auto')
+    expect(
+      workflowRegionClasses.some((className) =>
+        className.startsWith('h-[min('),
+      ),
+    ).toBe(false)
+    expect(rayTracingStep.className).toContain('min-w-0')
+    expect(rayTracingStep.className).not.toContain('-mx-')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '왼쪽 메뉴 넓게 보기' }),
+    )
+    expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
+      '464px',
+    )
+
+    const resizeHandle = screen.getByRole('separator', {
+      name: '왼쪽 메뉴 너비 조절',
+    })
+    expect(resizeHandle.getAttribute('aria-controls')).toBe(
+      'workflow-sidebar',
+    )
+    expect(resizeHandle.getAttribute('aria-valuenow')).toBe('464')
+
+    fireEvent.keyDown(resizeHandle, { key: 'Home' })
+    expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
+      '320px',
+    )
+    fireEvent.keyDown(resizeHandle, { key: 'End' })
+    expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
+      `${resizeHandle.getAttribute('aria-valuemax')}px`,
+    )
+    fireEvent.doubleClick(resizeHandle)
+    expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
+      '384px',
+    )
+  })
+
   it('opens the Manual Guide placeholder dialog', async () => {
     renderShell()
 
@@ -137,6 +206,62 @@ describe('SimulatorShell', () => {
         name: 'Manual Guide',
       }),
     ).not.toBeNull()
+  })
+
+  it('announces legacy CPU restoration and offers one-click GPU selection', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    workspaceStore.getState().actions.setActiveCad({
+      path: 'fixture.step',
+      displayName: 'fixture.step',
+    })
+    const savedStore = createWorkspaceStore()
+    savedStore.getState().actions.setActiveCad({
+      path: 'fixture.step',
+      displayName: 'fixture.step',
+    })
+    const project = createBitsamProject(
+      scene,
+      savedStore.getState(),
+      new Date('2026-08-20T00:00:00.000Z'),
+    )
+    project.workspace.rayTraceConfig.intersection_backend = 'brute_force'
+    delete (
+      project.workspace.rayTraceConfig as Partial<
+        typeof project.workspace.rayTraceConfig
+      >
+    ).compute_backend
+    const file = new File(
+      [serializeBitsamProject(project)],
+      'legacy.bitsam',
+      { type: 'application/vnd.bitsam+json' },
+    )
+
+    renderShell()
+    fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+      target: { files: [file] },
+    })
+
+    const dialog = await screen.findByRole('dialog', {
+      name: 'CPU 모드로 프로젝트를 불러왔습니다',
+    })
+    expect(dialog.textContent).toContain('CPU로 안전하게 복원했습니다')
+    expect(workspaceStore.getState().rayTraceConfig.compute_backend).toBe('cpu')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'NVIDIA CUDA GPU 선택' }),
+    )
+
+    expect(workspaceStore.getState().rayTraceConfig.compute_backend).toBe(
+      'gpu_cuda',
+    )
+    expect(workspaceStore.getState().rayTraceConfig.intersection_backend).toBe(
+      'bvh',
+    )
+    expect(
+      screen.getByRole('button', { name: 'Step 04 Ray Tracing' })
+        .getAttribute('aria-current'),
+    ).toBe('step')
   })
 
   it('moves from Ray tracing to Result when tracing completes', () => {

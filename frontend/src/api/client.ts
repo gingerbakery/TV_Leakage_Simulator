@@ -2,6 +2,7 @@ import { createHttpClient, type HttpClientOptions } from './http'
 import type {
   CadUploadResponse,
   DevStatus,
+  GpuCudaStatus,
   RayTraceJob,
   RayTraceRequest,
   RayTraceResult,
@@ -10,6 +11,10 @@ import type {
 
 export interface ApiRequestOptions {
   signal?: AbortSignal
+}
+
+export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
+  refresh?: boolean
 }
 
 export interface LeakageApiClient {
@@ -33,6 +38,7 @@ export interface LeakageApiClient {
     options?: ApiRequestOptions,
   ): Promise<RayTraceResult>
   getDevStatus(options?: ApiRequestOptions): Promise<DevStatus>
+  getGpuCudaStatus(options?: GpuCudaStatusRequestOptions): Promise<GpuCudaStatus>
   getHealth(options?: ApiRequestOptions): Promise<string>
   ping(options?: ApiRequestOptions): Promise<string>
 }
@@ -95,6 +101,15 @@ export function createApiClient(
 
     getDevStatus(requestOptions) {
       return http.requestJson<DevStatus>('/dev-status', {
+        signal: requestOptions?.signal,
+      })
+    },
+
+    getGpuCudaStatus(requestOptions) {
+      const path = requestOptions?.refresh
+        ? '/api/gpu-cuda/status?refresh=true'
+        : '/api/gpu-cuda/status'
+      return http.requestJson<GpuCudaStatus>(path, {
         signal: requestOptions?.signal,
       })
     },

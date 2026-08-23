@@ -205,7 +205,7 @@
   }
 
   body {
-    @apply min-w-80 min-h-svh bg-background text-foreground antialiased;
+    @apply min-h-svh w-full min-w-0 bg-background text-foreground antialiased;
     margin: 0;
   }
 
@@ -248,5 +248,34 @@
 
   .simulator-popup-typography :where(.popup-guide, [role="tooltip"]) {
     font-size: 12px;
+  }
+
+  /* The workflow column owns its width. Keep form controls and nested panels
+     inside that boundary instead of letting intrinsic content widen Radix
+     accordion rows beyond the visible sidebar. */
+  [data-workflow-sidebar] {
+    container-type: inline-size;
+  }
+
+  .workflow-sidebar-content,
+  .workflow-sidebar-content :where(*) {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .workflow-sidebar-content :where(button, label, p) {
+    overflow-wrap: anywhere;
+  }
+}
+
+/* At phone widths, three-field rows become a readable vertical sequence.
+   This only affects the workflow column, not dialogs or result windows. */
+@container (max-width: 350px) {
+  .workflow-sidebar-content :where(.grid-cols-3) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-sidebar-content :where(label) {
+    white-space: normal !important;
   }
 }

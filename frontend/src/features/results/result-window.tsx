@@ -46,6 +46,7 @@ import {
   type ReceiverHeatmapSample,
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
+import { ComputeExecutionStatus } from './compute-execution-status'
 
 // Kill switch for the Ray Section View images in the Ray summary tab.
 // This feature has a known limitation (the true filled-cap cross-section
@@ -1997,51 +1998,25 @@ export function RayTraceResultWindow({
                   help="3D 경로 및 Section View 확인을 위해 저장된 대표 Ray 경로 수입니다. 추적된 모든 Ray 수와 같지 않을 수 있습니다."
                 />
               </div>
+              <ComputeExecutionStatus
+                configuredBackend={result.config.compute_backend}
+                performance={performance}
+              />
               <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
-                Intersection backend
-                <HelpTooltip label="Intersection backend 설명">
-                  Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. Cache Hit는 동일 형상 조건의 BVH를 재사용했음을 뜻하며, Rebuilt는 형상 변경으로 새로 생성했음을 뜻합니다.
+                Acceleration structure
+                <HelpTooltip label="Acceleration structure 설명">
+                  Ray와 CAD Mesh의 충돌 후보를 빠르게 찾는 자료구조입니다. GPU 선택과는 별개이며 CUDA 실행도 BVH를 사용합니다. Cache Hit는 동일 형상을 재사용했고 Rebuilt는 새로 생성했음을 뜻합니다.
                 </HelpTooltip>
                 {' · '}
                 {String(
-                  performance.intersection_backend ??
+                  performance.acceleration_structure ??
+                    performance.intersection_backend ??
                     result.config.intersection_backend,
                 ).toUpperCase()}
                 {' · '}BVH build{' '}
                 {formatMetric(performance.bvh_build_sec)} s
                 {' · '}
                 {performance.bvh_cache_hit ? 'Cache Hit' : 'Rebuilt'}
-              </p>
-              <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
-                Compute
-                <HelpTooltip label="Compute backend 설명">
-                  실제 Ray 교차 계산에 사용된 장치와 provider입니다. CUDA를
-                  선택했더라도 장치 또는 런타임을 사용할 수 없거나 실행 중
-                  오류가 발생하면 해당 batch 전체를 CPU에서 다시 계산합니다.
-                </HelpTooltip>
-                {' · '}
-                {String(performance.compute_backend ?? 'cpu').toUpperCase()}
-                {' · '}
-                {String(performance.intersection_provider ?? 'python_cpu')}
-                {performance.gpu_cuda_used && performance.gpu_cuda_device_name
-                  ? ` · ${String(performance.gpu_cuda_device_name)}`
-                  : ''}
-                {numeric(performance.gpu_cuda_hybrid_cpu_success_count) > 0
-                  ? ` · CPU small-wave batches ${Math.trunc(
-                      numeric(
-                        performance.gpu_cuda_hybrid_cpu_success_count,
-                      ),
-                    ).toLocaleString()}`
-                  : ''}
-                {performance.intersection_fallback_reason
-                  ? ` · CPU fallback (${String(
-                      performance.intersection_fallback_reason,
-                    )})`
-                  : performance.intersection_provider_unavailable_reason
-                    ? ` · CPU (${String(
-                        performance.intersection_provider_unavailable_reason,
-                      )})`
-                    : ''}
               </p>
               {RAY_SECTION_VIEW_ENABLED && scene ? (
                 <div className="space-y-2">

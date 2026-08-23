@@ -1053,7 +1053,15 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.click(runOptionsSummary!)
     expect(runOptionsDetails?.open).toBe(true)
 
-    expect(screen.getByLabelText('Compute backend').tagName).toBe('SELECT')
+    const computeDeviceSelector = screen.getByRole('group', {
+      name: '연산 장치 선택',
+    })
+    expect(runOptionsDetails?.contains(computeDeviceSelector)).toBe(false)
+    expect(
+      screen.getByRole('button', { name: 'CPU로 연산' }).getAttribute(
+        'aria-pressed',
+      ),
+    ).toBe('true')
 
     const runOptionRayCount = screen.getByRole('spinbutton', {
       name: 'Run option emitter rays',

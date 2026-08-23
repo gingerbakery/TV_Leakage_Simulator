@@ -1002,10 +1002,22 @@ class TriangleMesh:
             execution,
         )
 
-    def set_intersection_backend(self, backend: str) -> None:
+    def set_acceleration_structure(self, backend: str) -> None:
         if backend not in {"auto", "brute_force", "bvh"}:
-            raise ValueError("intersection backend must be auto, brute_force, or bvh")
+            if backend == "gpu_cuda":
+                raise ValueError(
+                    "gpu_cuda is a compute backend, not an acceleration "
+                    "structure; select it with compute_backend"
+                )
+            raise ValueError(
+                "acceleration structure must be auto, brute_force, or bvh"
+            )
         self.intersection_backend = backend
+
+    def set_intersection_backend(self, backend: str) -> None:
+        """Compatibility alias for :meth:`set_acceleration_structure`."""
+
+        self.set_acceleration_structure(backend)
 
     def prepare_acceleration(self) -> Dict[str, float | int | str]:
         self._ensure_prepared_triangles()

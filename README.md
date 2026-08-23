@@ -43,6 +43,12 @@ npm run dev
 더블클릭하는 것입니다. 새 clone 환경에서는 `.venv`와 frontend package를
 최초 1회 자동으로 준비하고 `http://127.0.0.1:8788/`을 엽니다.
 
+GPU를 검증할 source 사용자는 `run_web.bat` 대신 `run_web_gpu.bat`을
+더블클릭합니다. 이 파일은 전용 `.venv-gpu`, CPU/GPU requirements와 frontend를
+pull된 source에 맞게 동기화하고 실제 production Ray/BVH CUDA kernel이 통과한 경우에만 서버를
+시작합니다. `[GPU VERIFIED]`와 ray tracing 결과의 `Compute` 행을 모두
+확인해야 실제 GPU 사용으로 판정합니다.
+
 ```powershell
 npm --prefix frontend install
 npm --prefix frontend run build
@@ -83,6 +89,16 @@ NVIDIA CUDA GPU 가속이 필요한 PC용 별도 배포본 생성:
 .\build_gpu_cuda_desktop.bat
 ```
 
+다른 사용자에게 검증 가능한 GPU ZIP을 전달할 때는 다음 helper를 사용합니다.
+
+```powershell
+.\prepare_gpu_cuda_test_release.bat
+```
+
+helper는 clean commit에서 ZIP을 다시 만들고 commit·byte size·SHA-256이 담긴
+`.handoff.json`을 생성합니다. ZIP, `.sha256`, `.handoff.json`을 함께
+전달합니다. `git pull`은 이미 압축 해제한 EXE나 ZIP을 갱신하지 않습니다.
+
 GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVIDIA
 드라이버는 대상 PC에 별도 설치되어 있어야 한다. 기본 경량 배포본에는 이
 의존성을 넣지 않으므로 CPU-only PC의 크기와 실행 경로는 기존과 같다.
@@ -90,6 +106,32 @@ GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVI
 - GPU 사용자 설치·검사·선택 가이드:
   [`docs/gpu-cuda-user-guide.md`](docs/gpu-cuda-user-guide.md)
 - Lite/GPU 배포 ZIP 안에서도 `docs/gpu-cuda-user-guide.md`로 제공한다.
+
+### AI를 통한 GPU 실행
+
+Codex는 저장소 또는 압축 해제한 패키지 루트를 파일 접근 권한과 함께 열면
+루트의 `AGENTS.md`를 자동 발견해 GPU 실행 규칙의 첫 진입점으로 사용한다.
+Claude, Gemini, GitHub Copilot용 얇은 안내 파일도 같은 공통 런북으로
+연결한다. 각 도구의 버전·설정에 따른 자동 발견 차이가 있으므로 실제로 문서를
+읽었는지는 확인해야 한다. Lite/GPU ZIP에도 이 파일들을 함께 넣는다.
+
+다만 모든 웹 채팅 AI가 로컬 폴더를 자동으로 읽을 수 있는 공통 표준은 없다.
+AI에 저장소/패키지 파일 접근 권한이 없거나 루트가 아닌 곳에서 시작했다면
+자동 안내는 보장되지 않는다. 이때는 아래 프롬프트를 전달하고, 필요하면 세
+문서를 첨부한다.
+
+```text
+이 프로젝트의 GPU 실행을 맡아줘. 명령을 실행하기 전에 저장소/압축 해제 폴더
+루트의 AGENTS.md, docs/ai-gpu-execution-runbook.md,
+docs/gpu-cuda-user-guide.md를 끝까지 읽고 그대로 따라줘. 먼저 Source/GPU ZIP/
+Lite ZIP 중 전달 경로를 식별하고, production_ray_bvh 사전 검사와 완료된 실행의
+Compute 상태 및 CUDA 성공 batch 수를 모두 확인하기 전에는 GPU 성공이라고
+말하지 마. 드라이버·CUDA Toolkit 설치나 재부팅은 내 명시적 승인을 먼저 받아.
+```
+
+- AI 공통 GPU 실행 런북:
+  [`docs/ai-gpu-execution-runbook.md`](docs/ai-gpu-execution-runbook.md)
+- 저장소 전체 AI 규칙: [`AGENTS.md`](AGENTS.md)
 
 - 출력: `release/leakage_simulator_desktop_v1.0.0_lite/`
 - 전달용 ZIP: `release/leakage_simulator_desktop_v1.0.0_lite.zip`
@@ -117,6 +159,8 @@ GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVI
   - 소형 샘플 자산
 
 ## 주요 문서
+- AI 저장소 지침: `AGENTS.md`
+- AI GPU 실행 런북: `docs/ai-gpu-execution-runbook.md`
 - 요구사항: `docs/requirements.md`
 - 아키텍처: `docs/design.md`
 - ROI/Gap/Ray trace 계약: `docs/backend-data-contracts.md`
@@ -129,11 +173,11 @@ GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVI
 
 ## 실행 관련 주의사항
 - Git 저장소에는 `_tools/` 런타임이 기본적으로 포함되지 않도록 설정되어 있습니다.
-- 따라서 다른 개발자가 clone만 해서는 즉시 실행되지 않을 수 있습니다.
+- CPU source는 `run_web.bat`, GPU source는 `run_web_gpu.bat`으로 환경을
+  자동 준비합니다. Python 3.13이 설치되지 않은 PC에서는 먼저 설치가 필요합니다.
 - 실행이 바로 필요하면 아래 중 하나가 필요합니다:
-  - 별도로 공유된 `_tools/` 런타임
-  - 시스템 Python + 필요한 의존성 설치
-  - `release/` 패키지 전달
+  - Source: 시스템 Python 3.13 + Node.js 후 해당 one-click launcher
+  - 일반 테스터: 전체 runtime이 포함된 `release/` 패키지 전달
 
 ## 협업 권장 방식
 - `main`: 통합 안정 브랜치

@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -136,6 +137,32 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertTrue(dev_response.json()["ok"])
         self.assertIn("boot_token", dev_response.json())
         self.assertEqual(ping_response.text, "pong")
+
+    def test_dev_status_exposes_explicit_environment_boot_token(self):
+        expected_token = "gpu-source-launch-0123456789abcdef"
+        with patch.dict(
+            "os.environ",
+            {"LEAKAGE_BOOT_TOKEN": expected_token},
+        ):
+            client = TestClient(create_app(self.runtime))
+        try:
+            response = client.get("/dev-status")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["boot_token"], expected_token)
+
+    def test_dev_status_keeps_generated_time_token_without_environment_value(self):
+        with patch.dict("os.environ", {}, clear=True):
+            client = TestClient(create_app(self.runtime))
+        try:
+            response = client.get("/dev-status")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["boot_token"].isdigit())
 
     def test_production_frontend_is_served_from_same_origin(self):
         frontend_dist = (

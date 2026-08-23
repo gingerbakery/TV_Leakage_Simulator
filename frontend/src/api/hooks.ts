@@ -8,6 +8,7 @@ import { apiClient, type LeakageApiClient } from './client'
 import {
   apiQueryKeys,
   devStatusQueryOptions,
+  gpuCudaStatusQueryOptions,
   rayTraceJobQueryOptions,
   sceneQueryOptions,
 } from './query-options'
@@ -31,6 +32,27 @@ export interface RayTraceMutationVariables {
 
 export function useDevStatusQuery() {
   return useQuery(devStatusQueryOptions())
+}
+
+export function useGpuCudaStatusQuery(enabled: boolean) {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    ...gpuCudaStatusQueryOptions(),
+    enabled,
+  })
+  const refreshMutation = useMutation({
+    mutationKey: [...apiQueryKeys.gpuCudaStatus(), 'refresh'],
+    mutationFn: () => apiClient.getGpuCudaStatus({ refresh: true }),
+    onSuccess: (status) => {
+      queryClient.setQueryData(apiQueryKeys.gpuCudaStatus(), status)
+    },
+  })
+  return {
+    ...query,
+    refresh: refreshMutation.mutate,
+    isRefreshing: refreshMutation.isPending,
+    refreshFailed: refreshMutation.isError,
+  }
 }
 
 export function useSceneQuery(cadPath: string) {

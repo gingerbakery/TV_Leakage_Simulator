@@ -57,7 +57,10 @@ def build_prepared_trace_geometry(
             int(mesh.metadata(face_index).get("source_face_index", face_index)): face_index
             for face_index in range(len(mesh.faces))
         }
-    mesh.set_intersection_backend("bvh")
+    # Prepared geometry caches a BVH acceleration structure for both CPU and
+    # CUDA consumers.  Compute-device selection remains request-local in
+    # RayTraceConfig and is deliberately not encoded in this geometry cache.
+    mesh.set_acceleration_structure("bvh")
     mesh.prepare_acceleration()
     return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active)
 

@@ -1,146 +1,188 @@
-# NVIDIA CUDA GPU 가속 사용 가이드
+# NVIDIA CUDA GPU 실행·검증 가이드
 
-이 문서는 `leakage_simulator_desktop_v1.0.0_gpu_cuda.zip` 사용자를 위한
-체크리스트다. Lite ZIP에서는 GPU 가속을 사용할 수 없다.
+GPU 사용자는 먼저 전달 방식을 구분해야 한다. Git source와 GPU ZIP은 서로
+다른 실행 환경이며, 한쪽을 갱신해도 다른 쪽은 바뀌지 않는다.
 
-## 1. 준비 확인
+| 받은 것 | 실행 파일 | 환경 준비 | GPU 통과 기준 |
+| --- | --- | --- | --- |
+| Git source/branch | `run_web_gpu.bat` | Python·frontend 자동 동기화 | 서버 시작 전 `[GPU VERIFIED]` |
+| GPU CUDA ZIP | `CHECK_GPU_CUDA.bat`, 이후 `LeakageSimulator.exe` | Python·frontend 포함 | checker의 `[OK]` |
+| Lite ZIP | `LeakageSimulator.exe` | CPU runtime 포함 | GPU 사용 불가 |
 
-- [ ] 64-bit Windows PC다.
-- [ ] CUDA를 지원하는 NVIDIA GPU가 있다.
-- [ ] CUDA Toolkit `13.1`과 호환되는 NVIDIA display driver를 설치했다.
-- [ ] CUDA Toolkit `13.1`을 설치했다.
-- [ ] GPU CUDA ZIP을 받았다. Lite ZIP이 아니다.
+> `git pull`은 이미 압축 해제한 EXE, ZIP, `_tools`, `.venv`를 업데이트하지
+> 않는다. 반대로 새 GPU ZIP을 받아도 source checkout은 바뀌지 않는다.
 
-GPU ZIP에는 Python, Numba `0.66.0`, llvmlite `0.48.0`이 들어 있다.
-Python, Node.js, npm은 따로 설치하지 않는다.
+## A. Git source에서 실행
 
-다음 항목은 패키지에 포함되지 않으므로 PC에 직접 설치해야 한다.
+### A-1. PC 준비
 
-- NVIDIA display driver
-- CUDA Toolkit `13.1`
+- [ ] 64-bit Windows와 CUDA 지원 NVIDIA GPU
+- [ ] GPU와 CUDA Toolkit `13.1`이 호환되는 NVIDIA display driver
+- [ ] CUDA Toolkit `13.1`
+- [ ] Python `3.13` 64-bit (`py` launcher 또는 PATH의 `python.exe`)
+- [ ] Node.js LTS와 `npm`
 
-설치 후 Windows를 다시 시작하는 것을 권장한다.
+### A-2. pull 후 원클릭 실행
 
-## 2. 압축 해제
+프로젝트 루트에서 다음 파일을 더블클릭한다.
 
-1. ZIP 파일을 우클릭하고 `압축 풀기`를 선택한다.
-2. 짧은 로컬 경로에 폴더 전체를 푼다.
-   - 권장: `C:\TV_leakage_simulator_gpu`
-3. ZIP 내부에서 EXE를 바로 실행하지 않는다.
-4. `_tools`, `src`, `frontend`, `scripts` 폴더를 이동하거나 삭제하지 않는다.
+```text
+run_web_gpu.bat
+```
 
-이 프로그램은 설치 마법사가 없는 portable 패키지다. 기존 사용자는 새 GPU
-ZIP을 새 폴더에 풀어야 이번 GPU 최적화를 사용할 수 있다.
+또는 PowerShell에서 포트를 지정한다.
 
-## 3. GPU 사전 검사
+```powershell
+.\run_web_gpu.bat 8788
+```
 
-1. 압축을 푼 폴더에서 `CHECK_GPU_CUDA.bat`을 더블클릭한다.
-2. 검사 창이 끝날 때까지 기다린다.
+이 launcher는 매번 다음 순서로 검증한다.
+
+1. 전용 `.venv-gpu`가 Python 3.13 64-bit인지 확인한다.
+2. `requirements-dev.txt`와 `requirements-gpu-cuda.txt` hash가 바뀌면
+   `.venv-gpu`를 새로 만든다.
+3. 두 requirements를 다시 동기화하고 `pip check`와 exact-pin 검사를 한다.
+4. `npm ci`로 `package-lock.json`과 frontend package를 일치시킨다.
+5. 최신 frontend production build를 만든다.
+6. 실제 production BVH 장면을 GPU에 올리고 hit/miss Ray 결과를 FP64로 검사한다.
+7. 모두 성공한 경우에만 서버와 브라우저를 연다.
+
+정상 시작에는 다음 표시가 모두 있어야 한다.
+
+```text
+[PYTHON VERIFIED] requirements-dev.txt + requirements-gpu-cuda.txt are synchronized.
+[GPU VERIFIED] Device: <NVIDIA GPU 이름>
+[GPU VERIFIED] Real Ray/BVH CUDA kernel: PASS | scope production_ray_bvh
+[GPU VERIFIED] The production Ray/BVH CUDA kernel passed. The server is now starting.
+```
+
+`[GPU FAILED]` 또는 `[GPU SOURCE FAILED]`이면 GPU 서버가 시작되지 않는다.
+가장 가까운 `[ACTION]` 문구를 처리하고 다시 실행한다. CPU 사용이 목적일 때만
+별도 `run_web.bat`을 사용한다.
+
+## B. GPU CUDA ZIP에서 실행
+
+### B-1. PC와 파일 확인
+
+- [ ] 64-bit Windows와 CUDA 지원 NVIDIA GPU
+- [ ] GPU와 CUDA Toolkit `13.1`이 호환되는 NVIDIA display driver
+- [ ] CUDA Toolkit `13.1`
+- [ ] 파일 이름이 `leakage_simulator_desktop_*_gpu_cuda.zip`
+- [ ] 함께 받은 `.sha256`과 `.handoff.json`의 commit·hash 확인
+
+GPU ZIP에는 Python, Numba `0.66.0`, llvmlite `0.48.0`, frontend build가 들어
+있다. Python, Node.js, npm은 따로 설치하지 않는다. NVIDIA driver와 CUDA
+Toolkit은 ZIP에 포함되지 않는다.
+
+### B-2. 압축 해제
+
+1. ZIP을 `C:\TV_leakage_simulator_gpu` 같은 짧은 새 폴더에 전체 압축 해제한다.
+2. ZIP 내부에서 EXE를 직접 실행하지 않는다.
+3. 이전 GPU/Lite 폴더 위에 덮어쓰지 않는다.
+4. `_tools`, `src`, `frontend`, `scripts`를 이동하거나 삭제하지 않는다.
+
+### B-3. 이 PC에서 실제 GPU 검사
+
+1. `CHECK_GPU_CUDA.bat`을 더블클릭한다.
+2. GPU 이름과 `Real Ray/BVH CUDA kernel: PASS`를 확인한다.
 3. 마지막의 다음 문구를 확인한다.
 
 ```text
-[OK] NVIDIA CUDA runtime and a real GPU kernel are working.
+[OK] NVIDIA CUDA runtime and the production Ray/BVH kernel are working on THIS PC.
 ```
 
-이 검사는 GPU 이름 확인만 하지 않는다. 내장 Python으로 실제 FP64 CUDA
-kernel을 실행하고 결과까지 검증한다.
+`gpu_cuda_runtime_manifest.json`은 패키지를 만든 PC의 기록이다. 현재 PC의
+동작은 반드시 `CHECK_GPU_CUDA.bat`으로 다시 증명한다.
 
-`[FAIL]`이면 우선 CPU 모드를 사용하고 [문제 해결](#7-문제-해결)을 확인한다.
+## C. 앱에서 GPU 선택
 
-## 4. 앱에서 GPU 선택
+1. Source는 열린 브라우저, ZIP은 `LeakageSimulator.exe`를 사용한다.
+2. CAD와 `.bitsam` 프로젝트를 연다.
+3. `Ray Tracing` 탭 맨 위의 `연산 장치` 영역을 확인한다.
+4. `NVIDIA GPU` 버튼을 선택한다.
+5. `준비 완료 · <NVIDIA GPU 이름>` 한 줄 상태를 확인한다.
+6. `Run Ray Tracing`을 누른다.
 
-1. `LeakageSimulator.exe`를 더블클릭한다.
-2. CAD와 `.bitsam` 프로젝트를 평소처럼 연다.
-3. `Ray Tracing` 패널의 `Run Options`를 펼친다.
-4. `Compute backend`에서 `NVIDIA CUDA GPU`를 선택한다.
-5. `Run Ray Tracing`을 누른다.
+`Acceleration structure` 또는 기존 명칭 `Intersection backend`의 `BVH`는
+GPU 장치 선택이 아니다. 이 전문 설정은 `Run Options > 고급 옵션` 안에 있으며
+일반 사용자는 `자동 최적화 (권장)`를 유지한다. GPU 선택 값은
+`compute_backend=gpu_cuda`이고, 앱이 호환되는 BVH 경로를 자동 적용한다.
 
-`Compute backend` 옆 도움말 아이콘을 누르면 요구 사항과 fallback 설명을 앱
-안에서 다시 볼 수 있다.
+## D. 실행 결과로 실제 GPU 사용 증명
 
-## 5. 실제 GPU 사용 확인
+사전 검사는 GPU가 실행 가능한지를 증명하고, 결과의 `Compute` 행은 해당 ray
+tracing run이 실제 GPU를 사용했는지를 증명한다.
 
-계산이 끝나면 결과 창의 `Compute` 항목을 확인한다.
-
-| 표시 | 의미 |
+| 결과 표시 | 판정 |
 | --- | --- |
-| `GPU_CUDA · gpu_cuda · <GPU 이름>` | GPU provider가 사용됨 |
-| `GPU_CUDA · mixed · <GPU 이름>` | GPU와 작은 wave용 CPU provider가 함께 사용됨 |
-| `CPU small-wave batches ...` | 작은 batch를 CPU로 처리함. 정상 hybrid 동작 |
-| `CPU fallback (...)` | CUDA 실행 실패 후 해당 작업 단위를 CPU로 재계산함 |
-| `CPU (...)` | GPU를 사용할 수 없어 CPU 경로를 사용함 |
+| `Compute device · GPU 활성` + GPU 이름 | 이 run에서 GPU provider 사용 |
+| `Compute device · GPU 활성 · CPU 보조` | GPU와 작은 wave용 CPU를 함께 사용 |
+| `CUDA batches · 성공/시도`에서 성공 수 > 0 | 실제 CUDA batch 실행 성공 |
+| `CPU small waves` 배지 | 정상 hybrid 처리일 수 있음 |
+| `CPU 대체 실행 · GPU 미사용` 또는 `CUDA batches · 0/...` | GPU 요청은 했지만 이 run은 CPU로 실행 |
+| `Compute device · CPU 실행` | CPU 모드로 실행 |
 
-GPU 이름이 보이고 fallback 사유가 없다면 GPU 가속이 정상 동작한 것이다.
+GPU 테스트 보고에는 다음 네 가지를 같이 남긴다.
 
-## 6. 프로젝트 기본값
+- `run_web_gpu.bat` 또는 `CHECK_GPU_CUDA.bat`의 GPU 이름·kernel PASS
+- 결과의 전체 `Compute` 행
+- 같은 장면의 첫 실행과 2·3번째 실행 시간
+- emitter 종류와 사용한 `.bitsam`
 
-- 새 프로젝트의 기본 backend는 `CPU`다.
-- `compute_backend` 항목이 없는 기존 `.bitsam`도 안전하게 `CPU`로 열린다.
-- 현재 버전에서 GPU를 선택해 저장한 `.bitsam`은 그 선택을 복원할 수 있다.
-- 다른 PC에서 프로젝트를 열면 `CHECK_GPU_CUDA.bat`을 다시 실행한다.
-- GPU를 쓰려면 프로젝트마다 `NVIDIA CUDA GPU` 선택을 확인한다.
+결과에 `Compute` 행 자체가 없으면 최신 frontend가 아니다. Source에서는
+`run_web_gpu.bat`을 다시 실행하고, EXE에서는 새 GPU ZIP을 새 폴더에 푼다.
 
-## 7. 문제 해결
+## E. 기존 프로젝트와 지원 범위
 
-### `cuda_driver_unavailable`
+- `compute_backend`가 없는 기존 `.bitsam`은 CPU로 열린다.
+- GPU 테스트 전 프로젝트마다 `연산 장치 > NVIDIA GPU` 선택을 확인한다.
+- GPU 선택을 저장한 프로젝트는 다음 실행에서 해당 선택을 복원할 수 있다.
+- Face 및 `polygon_auto` emitter 등 일부 workload는 현재 CPU 경로를 포함할 수
+  있다. 결과 `Compute` 행의 GPU batch와 fallback을 기준으로 판정한다.
+- 작은 장면은 JIT와 전송 비용 때문에 CPU보다 빠르지 않을 수 있다.
+- CAD import, BVH build, UI 전체가 GPU 가속 대상은 아니다.
+- 성능 비교는 같은 앱 세션에서 같은 장면을 2·3회 실행해 warm 결과를 기록한다.
 
-- NVIDIA display driver 설치 여부를 확인한다.
-- 설치 후 Windows를 다시 시작한다.
-- 원격 데스크톱이나 가상 환경이라면 GPU가 현재 세션에 노출되는지 확인한다.
+### 성능 숫자 해석
 
-### `cuda_toolkit_not_found`
+기존 보고서의 `7.28초 → 5.54초(-23.9%)`는 이전 PERF-3C GPU build와
+PERF-3D GPU build의 비교다. CPU와 GPU를 직접 비교한 수치가 아니다.
 
-- CUDA Toolkit `13.1`이 설치됐는지 확인한다.
-- 기본 설치 경로를 권장한다.
-- 사용자 지정 경로라면 `CUDA_PATH`가 Toolkit 루트를 가리키는지 확인한다.
-- Toolkit 폴더에 다음 파일이 있는지 확인한다.
-  - `bin\x64\cudart64_*.dll`
-  - `nvvm\bin\x64\nvvm*.dll`
-  - `nvvm\libdevice\libdevice*.bc`
-
-### `numba_not_installed` 또는 Numba import 오류
-
-- Lite ZIP을 실행한 것은 아닌지 확인한다.
-- GPU ZIP을 다시 다운로드하고 새 폴더에 전체 압축 해제한다.
-- `_tools` 폴더를 다른 패키지의 파일로 덮어쓰지 않는다.
-
-### 앱은 실행되지만 결과가 CPU로 표시됨
-
-- `Run Options > Compute backend`가 `NVIDIA CUDA GPU`인지 확인한다.
-- 결과 창의 `CPU fallback (...)` 또는 `CPU (...)` 사유를 확인한다.
-- 앱을 닫고 `CHECK_GPU_CUDA.bat`을 다시 실행한다.
-
-### 앱 자체가 열리지 않음
-
-- `desktop_runtime\launcher.log`를 확인한다.
-- 패키지를 더 짧은 로컬 경로에 다시 푼다.
-- 폴더 일부가 누락되지 않았는지 확인한다.
-
-`gpu_cuda_runtime_manifest.json`은 패키지를 만든 PC의 검증 기록이다. 현재 PC의
-동작 확인에는 반드시 `CHECK_GPU_CUDA.bat` 결과를 사용한다.
-
-## 8. 성능 기대와 제약
-
-- 실제 RTX 3070, ROI 100만 primary ray, 반사 깊이 10 기준 측정은
-  `7.28초 → 5.54초`였다.
-- 같은 조건에서 지연시간은 약 `23.9%` 감소했다.
-- 이는 이전 PERF-3C GPU build와 현재 build의 비교이며 CPU 대비 향상률이 아니다.
-- 장면, ray 수, 반사 깊이, GPU에 따라 향상 폭은 달라진다.
-- 모든 장면에서 GPU가 CPU보다 빠르다고 보장하지 않는다.
-- 작은 계산은 초기 JIT compile과 전송 비용 때문에 CPU보다 빠르지 않을 수 있다.
-- 첫 GPU 실행보다 같은 앱 세션의 후속 실행이 더 빠를 수 있다.
-- GPU 가속 대상은 ray tracing 계산이다. CAD import와 UI 전체가 빨라지는 것은
-  아니다.
-- 현재 구현은 strict FP64 CUDA/hybrid 경로다. 전체 계산을 하나의 GPU kernel에
-  상주시킨 완전 fused 구현은 아니다.
-- GPU 오류 시 결과를 버리지 않고 해당 logical batch를 CPU로 한 번 재계산한다.
-
-## 빠른 확인표
-
-| 단계 | 완료 기준 |
+| 상황 | 기대 |
 | --- | --- |
-| 패키지 | GPU CUDA ZIP을 새 폴더에 전체 압축 해제 |
-| PC 준비 | NVIDIA driver + CUDA Toolkit `13.1` 설치 |
-| 검사 | `CHECK_GPU_CUDA.bat`에서 `[OK]` |
-| 선택 | `Run Options > Compute backend > NVIDIA CUDA GPU` |
-| 확인 | 결과 창 `Compute`에 GPU 이름 표시 |
+| branch pull 후 CPU 선택 | GPU 가속 없음; 자동으로 빨라진다고 판정하지 않음 |
+| 첫 GPU run | BVH build·CUDA JIT가 포함돼 느릴 수 있음 |
+| 같은 장면의 warm GPU run | GPU batch가 실제 성공했을 때 비교 가능 |
+| CAD import·BVH build만 비교 | GPU ray-tracing 속도 증거가 아님 |
+
+## F. 문제 해결
+
+| 표시 | 조치 |
+| --- | --- |
+| `cuda_driver_unavailable` | 호환 NVIDIA driver 설치 → 재부팅 → 재검사 |
+| `cuda_toolkit_not_found` | CUDA Toolkit `13.1` 기본 설치 또는 `CUDA_PATH` 확인 |
+| `numba_not_installed` | Source는 `run_web_gpu.bat`, EXE는 GPU ZIP 사용 |
+| dependency pin mismatch | `run_web_gpu.bat` 재실행; 계속되면 `.venv-gpu` 삭제 후 재실행 |
+| frontend/npm 실패 | Node.js LTS 확인 후 `run_web_gpu.bat` 재실행 |
+| 앱이 열리지 않음 | ZIP은 `desktop_runtime\launcher.log`; Source는 launcher 창의 첫 오류 확인 |
+| Compute가 CPU | GPU 선택·emitter·fallback reason·GPU batch count 확인 |
+
+CUDA Toolkit 폴더에는 다음 파일이 있어야 한다.
+
+```text
+bin\x64\cudart64_*.dll
+nvvm\bin\x64\nvvm*.dll
+nvvm\libdevice\libdevice*.bc
+```
+
+## G. 빠른 완료 기준
+
+| 단계 | Source | GPU ZIP |
+| --- | --- | --- |
+| 전달 확인 | branch/commit | ZIP + `.sha256` + `.handoff.json` |
+| 사전 검사 | `run_web_gpu.bat` kernel PASS | `CHECK_GPU_CUDA.bat` kernel PASS |
+| 앱 선택 | `연산 장치 > NVIDIA GPU` | `연산 장치 > NVIDIA GPU` |
+| run 증명 | Compute 행 GPU 이름 + GPU batch > 0 | Compute 행 GPU 이름 + GPU batch > 0 |
+| 비교 | 동일 장면 warm 2·3회 | 동일 장면 warm 2·3회 |
+
+이 네 단계 중 하나라도 빠지면 “GPU 가속 확인 완료”로 판정하지 않는다.

@@ -35,6 +35,7 @@ BoolArray = NDArray[np.bool_]
 
 PROVIDER_NAME = "gpu_cuda"
 PROVIDER_CONTRACT = "strict_float64_bvh_v1"
+PREFLIGHT_SCOPE = "production_ray_bvh"
 THREADS_PER_BLOCK = 128
 
 
@@ -62,6 +63,21 @@ class GpuCudaCapability:
     device_id: Optional[int]
     strict_float64: bool
     toolkit_layout: Optional[str]
+
+
+@dataclass(frozen=True, slots=True)
+class GpuCudaPreflight:
+    available: bool
+    reason_code: Optional[str]
+    numba_version: Optional[str]
+    device_name: Optional[str]
+    compute_capability: Optional[str]
+    device_id: Optional[int]
+    strict_float64: bool
+    toolkit_layout: Optional[str]
+    kernel_executed: bool
+    kernel_verified: bool
+    preflight_scope: str = PREFLIGHT_SCOPE
 
 
 @dataclass(slots=True)
@@ -148,6 +164,7 @@ class _Workspace:
 
 _STATE_LOCK = threading.RLock()
 _CAPABILITY: Optional[GpuCudaCapability] = None
+_PREFLIGHT: Optional[GpuCudaPreflight] = None
 _CUDA: Any = None
 _NUMBA: Any = None
 _KERNEL: Optional[Callable[..., None]] = None
@@ -206,6 +223,8 @@ def _apply_numba_cuda13_layout_compatibility() -> Optional[str]:
     """Teach an old Numba discovery cache about CUDA 13's x64 folders."""
 
     global _TOOLKIT_LAYOUT
+    if _TOOLKIT_LAYOUT is not None:
+        return _TOOLKIT_LAYOUT
     layout = _find_cuda13_windows_layout()
     if layout is None:
         return None
@@ -233,14 +252,25 @@ def _apply_numba_cuda13_layout_compatibility() -> Optional[str]:
     return _TOOLKIT_LAYOUT
 
 
-def probe_gpu_cuda() -> GpuCudaCapability:
-    """Lazily probe Numba, toolkit and one CUDA device."""
+def probe_gpu_cuda(*, refresh: bool = False) -> GpuCudaCapability:
+    """Lazily probe Numba, toolkit and one CUDA device.
 
-    global _CAPABILITY, _CUDA, _NUMBA
-    if _CAPABILITY is not None:
+    The process-lifetime result is cached because CUDA discovery can be
+    comparatively expensive.  ``refresh=True`` is reserved for an explicit
+    user retry (for example after installing a driver or toolkit); normal CPU
+    execution never calls this function.  Refreshing only invalidates the
+    capability snapshot, so it cannot tear down CUDA objects used by another
+    in-flight trace.
+    """
+
+    global _CAPABILITY, _PREFLIGHT, _CUDA, _NUMBA
+    if not refresh and _CAPABILITY is not None:
         return _CAPABILITY
     with _STATE_LOCK:
-        if _CAPABILITY is not None:
+        if refresh:
+            _CAPABILITY = None
+            _PREFLIGHT = None
+        elif _CAPABILITY is not None:
             return _CAPABILITY
         try:
             numba = importlib.import_module("numba")
@@ -360,6 +390,254 @@ def probe_gpu_cuda() -> GpuCudaCapability:
             toolkit_layout or "numba_default",
         )
         return _CAPABILITY
+
+
+def _preflight_from_capability(
+    capability: GpuCudaCapability,
+    *,
+    available: Optional[bool] = None,
+    reason_code: Optional[str] = None,
+    kernel_executed: bool = False,
+    kernel_verified: bool = False,
+) -> GpuCudaPreflight:
+    resolved_available = (
+        capability.available if available is None else available
+    )
+    return GpuCudaPreflight(
+        available=resolved_available,
+        reason_code=(
+            capability.reason_code
+            if reason_code is None
+            else reason_code
+        ),
+        numba_version=capability.numba_version,
+        device_name=capability.device_name,
+        compute_capability=capability.compute_capability,
+        device_id=capability.device_id,
+        strict_float64=(
+            capability.strict_float64
+            and resolved_available
+            and kernel_verified
+        ),
+        toolkit_layout=capability.toolkit_layout,
+        kernel_executed=kernel_executed,
+        kernel_verified=kernel_verified,
+    )
+
+
+def _classify_preflight_failure(exc: Exception) -> str:
+    detail = "{}: {}".format(type(exc).__name__, exc).casefold()
+    if "nvvm" in detail or "libdevice" in detail or "toolkit" in detail:
+        return "cuda_toolkit_not_found"
+    if "driver" in detail or "no cuda-capable device" in detail:
+        return "cuda_driver_unavailable"
+    return "cuda_preflight_kernel_failed"
+
+
+def _readonly_preflight_array(values: Any, dtype: Any) -> np.ndarray:
+    result = np.ascontiguousarray(values, dtype=dtype)
+    result.setflags(write=False)
+    return result
+
+
+def _production_preflight_fixture() -> tuple[
+    GpuCudaScene,
+    FloatArray,
+    FloatArray,
+    FloatArray,
+    FloatArray,
+    IntArray,
+]:
+    """Build a one-leaf BVH and one known hit plus one known miss."""
+
+    scene = GpuCudaScene(
+        triangle_v0=_readonly_preflight_array(
+            [[0.0, 0.0, 5.0]],
+            np.float64,
+        ),
+        triangle_edge1=_readonly_preflight_array(
+            [[1.0, 0.0, 0.0]],
+            np.float64,
+        ),
+        triangle_edge2=_readonly_preflight_array(
+            [[0.0, 1.0, 0.0]],
+            np.float64,
+        ),
+        node_bounds_min=_readonly_preflight_array(
+            [[0.0, 0.0, 5.0]],
+            np.float64,
+        ),
+        node_bounds_max=_readonly_preflight_array(
+            [[1.0, 1.0, 5.0]],
+            np.float64,
+        ),
+        node_left=_readonly_preflight_array([-1], np.int64),
+        node_right=_readonly_preflight_array([-1], np.int64),
+        node_start=_readonly_preflight_array([0], np.int64),
+        node_count=_readonly_preflight_array([1], np.int64),
+        ordered_faces=_readonly_preflight_array([0], np.int64),
+        traceable_face_mask=_readonly_preflight_array([True], np.bool_),
+        stack_width=3,
+        build_sec=0.0,
+    )
+    return (
+        scene,
+        _readonly_preflight_array(
+            [[0.25, 0.25, 0.0], [1.5, 1.5, 0.0]],
+            np.float64,
+        ),
+        _readonly_preflight_array(
+            [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            np.float64,
+        ),
+        _readonly_preflight_array([1e-8, 1e-8], np.float64),
+        _readonly_preflight_array([10.0, 10.0], np.float64),
+        _readonly_preflight_array([-1, -1], np.int64),
+    )
+
+
+def _production_preflight_contract_is_valid(execution: Any) -> bool:
+    timing_names = (
+        "scene_build_sec",
+        "scene_upload_sec",
+        "workspace_prepare_sec",
+        "input_upload_sec",
+        "jit_compile_sec",
+        "kernel_sec",
+        "output_download_sec",
+    )
+    return bool(
+        isinstance(execution, GpuCudaExecution)
+        and execution.strict_float64 is True
+        and execution.provider_contract == PROVIDER_CONTRACT
+        and execution.reused_device_scene is False
+        and type(execution.reused_workspace) is bool
+        and type(execution.device_id) is int
+        and execution.device_id >= 0
+        and all(
+            isinstance(getattr(execution, name), str)
+            and bool(getattr(execution, name))
+            for name in (
+                "numba_version",
+                "device_name",
+                "compute_capability",
+                "toolkit_layout",
+            )
+        )
+        and all(
+            isinstance(getattr(execution, name), float)
+            and math.isfinite(getattr(execution, name))
+            and getattr(execution, name) >= 0.0
+            for name in timing_names
+        )
+        and isinstance(execution.distances, np.ndarray)
+        and isinstance(execution.face_indices, np.ndarray)
+        and execution.distances.dtype == np.float64
+        and execution.face_indices.dtype == np.int64
+        and execution.distances.shape == (2,)
+        and execution.face_indices.shape == (2,)
+        and execution.distances.flags.c_contiguous
+        and execution.face_indices.flags.c_contiguous
+        and execution.distances.flags.owndata
+        and execution.face_indices.flags.owndata
+        and not execution.distances.flags.writeable
+        and not execution.face_indices.flags.writeable
+        and not np.shares_memory(
+            execution.distances,
+            execution.face_indices,
+        )
+    )
+
+
+def _production_preflight_result_is_valid(
+    execution: GpuCudaExecution,
+) -> bool:
+    expected_distances = np.asarray([5.0, np.inf], dtype=np.float64)
+    expected_faces = np.asarray([0, -1], dtype=np.int64)
+    return bool(
+        np.array_equal(execution.distances, expected_distances)
+        and np.array_equal(execution.face_indices, expected_faces)
+    )
+
+
+def preflight_gpu_cuda(*, refresh: bool = False) -> GpuCudaPreflight:
+    """Execute and verify the production strict-float64 BVH CUDA path.
+
+    A successful result proves that a real one-triangle BVH scene upload,
+    workspace/input upload, production intersection kernel, result download,
+    and known hit/miss FP64 contract all worked in this process.  Results are
+    cached until the user explicitly retries with ``refresh=True``.
+    """
+
+    global _PREFLIGHT
+    if not refresh and _PREFLIGHT is not None:
+        return _PREFLIGHT
+    with _STATE_LOCK:
+        if refresh:
+            _PREFLIGHT = None
+        elif _PREFLIGHT is not None:
+            return _PREFLIGHT
+
+        capability = probe_gpu_cuda(refresh=refresh)
+        if not capability.available:
+            _PREFLIGHT = _preflight_from_capability(capability)
+            return _PREFLIGHT
+        try:
+            (
+                scene,
+                origins,
+                directions,
+                minimum_t,
+                maximum_t,
+                ignored_faces,
+            ) = _production_preflight_fixture()
+            execution = intersect_gpu_cuda(
+                scene,
+                origins,
+                directions,
+                minimum_t,
+                maximum_t,
+                ignored_faces,
+            )
+        except GpuCudaUnavailable as exc:
+            reason_code = exc.reason_code
+        except GpuCudaProviderError as exc:
+            # Preserve the production phase-specific reason (scene upload,
+            # input upload, kernel, output download, stack validation, ...).
+            reason_code = exc.reason_code
+        except Exception as exc:
+            reason_code = _classify_preflight_failure(exc)
+        else:
+            contract_valid = _production_preflight_contract_is_valid(
+                execution
+            )
+            verified = (
+                contract_valid
+                and _production_preflight_result_is_valid(execution)
+            )
+            _PREFLIGHT = _preflight_from_capability(
+                capability,
+                available=verified,
+                reason_code=(
+                    None
+                    if verified
+                    else (
+                        "gpu_cuda_preflight_result_mismatch"
+                        if contract_valid
+                        else "gpu_cuda_preflight_contract_invalid"
+                    )
+                ),
+                kernel_executed=True,
+                kernel_verified=verified,
+            )
+            return _PREFLIGHT
+
+        _PREFLIGHT = _preflight_from_capability(
+            capability,
+            available=False,
+            reason_code=reason_code,
+        )
+        return _PREFLIGHT
 
 
 def _make_kernel() -> Callable[..., None]:
@@ -917,9 +1195,11 @@ def intersect_gpu_cuda(
 def _reset_gpu_cuda_provider_for_tests() -> None:
     """Reset lazy process state.  Intended only for isolated provider tests."""
 
-    global _CAPABILITY, _CUDA, _NUMBA, _KERNEL, _KERNEL_COMPILED
+    global _CAPABILITY, _PREFLIGHT, _CUDA, _NUMBA
+    global _KERNEL, _KERNEL_COMPILED
     with _STATE_LOCK:
         _CAPABILITY = None
+        _PREFLIGHT = None
         _CUDA = None
         _NUMBA = None
         _KERNEL = None
@@ -931,11 +1211,14 @@ def _reset_gpu_cuda_provider_for_tests() -> None:
 __all__ = [
     "GpuCudaCapability",
     "GpuCudaExecution",
+    "GpuCudaPreflight",
     "GpuCudaProviderError",
     "GpuCudaScene",
     "GpuCudaUnavailable",
     "PROVIDER_CONTRACT",
     "PROVIDER_NAME",
+    "PREFLIGHT_SCOPE",
     "intersect_gpu_cuda",
+    "preflight_gpu_cuda",
     "probe_gpu_cuda",
 ]

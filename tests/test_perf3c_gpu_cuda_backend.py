@@ -368,6 +368,14 @@ print(json.dumps({{'before': before, 'after': after, 'probed': gpu._CAPABILITY i
         self.assertEqual(performance["gpu_cuda_gpu_attempt_count"], 0)
         self.assertEqual(performance["gpu_cuda_hybrid_cpu_failure_count"], 0)
         self.assertEqual(
+            performance["compute_execution_state"],
+            "gpu_requested_cpu_only",
+        )
+        self.assertEqual(
+            performance["compute_execution_reason"],
+            "gpu_cuda_below_hybrid_threshold",
+        )
+        self.assertEqual(
             performance["gpu_cuda_hybrid_cpu_attempt_count"],
             performance["gpu_cuda_hybrid_cpu_success_count"],
         )
@@ -456,6 +464,14 @@ print(json.dumps({{'before': before, 'after': after, 'probed': gpu._CAPABILITY i
             performance["intersection_provider_unavailable_reason"],
             "injected_no_gpu",
         )
+        self.assertEqual(
+            performance["compute_execution_state"],
+            "gpu_requested_cpu_only",
+        )
+        self.assertEqual(
+            performance["compute_execution_reason"],
+            "injected_no_gpu",
+        )
 
     def test_gpu_hard_failures_replay_whole_batch_once_and_open_circuit(self) -> None:
         reference = _batch_run(reflected_case(41), "python_cpu")
@@ -494,6 +510,14 @@ print(json.dumps({{'before': before, 'after': after, 'probed': gpu._CAPABILITY i
                 )
                 self.assertEqual(performance["intersection_fallback_phase"], phase)
                 self.assertEqual(performance["intersection_fallback_reason"], reason)
+                self.assertEqual(
+                    performance["compute_execution_state"],
+                    "gpu_requested_cpu_only",
+                )
+                self.assertEqual(
+                    performance["compute_execution_reason"],
+                    reason,
+                )
                 self.assertEqual(
                     sum(len(call.args[0]) for call in reference_mock.call_args_list),
                     performance["intersection_ray_count"],

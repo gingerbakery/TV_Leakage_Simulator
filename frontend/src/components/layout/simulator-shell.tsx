@@ -4,6 +4,9 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import {
   apiClient,
@@ -63,6 +66,35 @@ import {
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
 
+const WORKFLOW_SIDEBAR_STORAGE_KEY = 'tv-leakage-workflow-sidebar-width'
+const WORKFLOW_SIDEBAR_MIN_WIDTH = 320
+const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 384
+const WORKFLOW_SIDEBAR_WIDE_WIDTH = 464
+const WORKFLOW_SIDEBAR_MAX_WIDTH = 560
+
+function workflowSidebarMaxWidth(viewportWidth = window.innerWidth) {
+  if (viewportWidth < 1024) return WORKFLOW_SIDEBAR_MAX_WIDTH
+  return Math.max(
+    WORKFLOW_SIDEBAR_MIN_WIDTH,
+    Math.min(
+      WORKFLOW_SIDEBAR_MAX_WIDTH,
+      Math.floor(viewportWidth * 0.46),
+    ),
+  )
+}
+
+function clampWorkflowSidebarWidth(
+  width: number,
+  viewportWidth = window.innerWidth,
+) {
+  return Math.round(
+    Math.min(
+      Math.max(width, WORKFLOW_SIDEBAR_MIN_WIDTH),
+      workflowSidebarMaxWidth(viewportWidth),
+    ),
+  )
+}
+
 export function SimulatorShell() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     window.localStorage.getItem('tv-leakage-theme') === 'dark'
@@ -71,6 +103,21 @@ export function SimulatorShell() {
   )
   const [activeSection, setActiveSection] =
     useState<WorkflowSectionId>('model-import')
+  const [workflowSidebarWidth, setWorkflowSidebarWidth] = useState(() => {
+    const storedWidth = Number(
+      window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY),
+    )
+    return Number.isFinite(storedWidth) && storedWidth > 0
+      ? clampWorkflowSidebarWidth(storedWidth)
+      : clampWorkflowSidebarWidth(WORKFLOW_SIDEBAR_DEFAULT_WIDTH)
+  })
+  const [isWorkflowSidebarResizing, setIsWorkflowSidebarResizing] =
+    useState(false)
+  const workflowSidebarResizeStartRef = useRef<{
+    pointerId: number
+    clientX: number
+    width: number
+  } | null>(null)
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)
@@ -87,6 +134,7 @@ export function SimulatorShell() {
   const [noticeDialog, setNoticeDialog] = useState<{
     title: string
     description: string
+    action?: 'select-gpu'
   } | null>(null)
   const [copySetupOpen, setCopySetupOpen] = useState(false)
   const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
@@ -103,6 +151,23 @@ export function SimulatorShell() {
     document.documentElement.style.colorScheme = theme
     window.localStorage.setItem('tv-leakage-theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      WORKFLOW_SIDEBAR_STORAGE_KEY,
+      String(workflowSidebarWidth),
+    )
+  }, [workflowSidebarWidth])
+
+  useEffect(() => {
+    const clampToViewport = () =>
+      setWorkflowSidebarWidth((current) =>
+        clampWorkflowSidebarWidth(current),
+      )
+
+    window.addEventListener('resize', clampToViewport)
+    return () => window.removeEventListener('resize', clampToViewport)
+  }, [])
   const lastOpenedResultRunIdRef = useRef('')
   const previousActiveCaseIdRef = useRef<string | null>(null)
   const suppressedCaseJobIdRef = useRef<string | null>(null)
@@ -264,15 +329,22 @@ export function SimulatorShell() {
     setRayTraceResultOpen(true)
   }, [actions, activeRayTraceJobId, emitters, rayTraceConfig, rayTraceResult, receivers, savedActiveCaseResult?.run_id])
 
-  const openFeatureNotice = (title: string, description: string) => {
+  const openFeatureNotice = (
+    title: string,
+    description: string,
+    action?: 'select-gpu',
+  ) => {
     if (document.activeElement instanceof HTMLElement) {
       noticeReturnFocusRef.current = document.activeElement
     }
-    setNoticeDialog({ title, description })
+    setNoticeDialog({ title, description, action })
   }
 
   useEffect(() => {
     if (!pendingProject || !activeCad || !scene) return
+
+    const restoredLegacyCpu =
+      pendingProject.workspace.rayTraceConfig.compute_backend === undefined
 
     const compatibility = compareBitsamProjectScene(
       pendingProject,
@@ -287,14 +359,20 @@ export function SimulatorShell() {
       actions.restoreProjectState(settingsOnly.workspace)
       setPendingProject(null)
       openFeatureNotice(
-        '설정 조건만 불러왔습니다',
+        restoredLegacyCpu
+          ? 'CPU 모드로 설정 조건을 불러왔습니다'
+          : '설정 조건만 불러왔습니다',
         [
           '저장 당시 CAD와 현재 CAD의 Surface 구조가 달라 형상 연결 항목은 제외했습니다.',
           'Ray 개수, 최대 반사 횟수, 종료 조건, Stored paths 및 표시 조건을 복원했습니다.',
           `Datum emitter ${settingsOnly.restoredDatumEmitters}개 / Datum receiver ${settingsOnly.restoredDatumReceivers}개를 복원했습니다.`,
           `CAD Component·Face·ROI 연결 항목 ${settingsOnly.skippedGeometryItems}개는 잘못된 면 연결을 방지하기 위해 제외했습니다.`,
           ...compatibility.reasons.map((reason) => `불일치: ${reason}`),
+          ...(restoredLegacyCpu
+            ? ['이 프로젝트에는 계산 장치 설정이 없어 CPU로 복원했습니다.']
+            : []),
         ].join('\n'),
+        restoredLegacyCpu ? 'select-gpu' : undefined,
       )
       return
     }
@@ -306,12 +384,18 @@ export function SimulatorShell() {
     setPendingProject(null)
     projectLoadAttemptRef.current = ''
     openFeatureNotice(
-      'BITSAM 프로젝트 불러오기 완료',
+      restoredLegacyCpu
+        ? 'CPU 모드로 프로젝트를 불러왔습니다'
+        : 'BITSAM 프로젝트 불러오기 완료',
       [
         `${pendingProject.project_name} 설정을 현재 CAD에 복원했습니다.`,
         'ROI, Component 상태, Transform, Material, Emitter, Receiver와 Ray Tracing 설정이 적용되었습니다.',
         ...compatibility.warnings,
+        ...(restoredLegacyCpu
+          ? ['이전 프로젝트에 계산 장치 설정이 없어 CPU로 안전하게 복원했습니다. GPU를 사용하려면 아래 버튼으로 명시적으로 선택하세요.']
+          : []),
       ].join('\n'),
+      restoredLegacyCpu ? 'select-gpu' : undefined,
     )
   }, [actions, activeCad, pendingProject, scene])
 
@@ -484,8 +568,76 @@ export function SimulatorShell() {
     }
   }
 
+  const updateWorkflowSidebarWidth = (width: number) => {
+    setWorkflowSidebarWidth(clampWorkflowSidebarWidth(width))
+  }
+
+  const handleWorkflowSidebarWidthToggle = () => {
+    setWorkflowSidebarWidth((current) =>
+      clampWorkflowSidebarWidth(
+        current > WORKFLOW_SIDEBAR_DEFAULT_WIDTH + 24
+          ? WORKFLOW_SIDEBAR_DEFAULT_WIDTH
+          : WORKFLOW_SIDEBAR_WIDE_WIDTH,
+      ),
+    )
+  }
+
+  const handleWorkflowSidebarResizePointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    workflowSidebarResizeStartRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      width: workflowSidebarWidth,
+    }
+    setIsWorkflowSidebarResizing(true)
+  }
+
+  const handleWorkflowSidebarResizePointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    const start = workflowSidebarResizeStartRef.current
+    if (!start || start.pointerId !== event.pointerId) return
+    updateWorkflowSidebarWidth(start.width + event.clientX - start.clientX)
+  }
+
+  const finishWorkflowSidebarResize = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    const start = workflowSidebarResizeStartRef.current
+    if (!start || start.pointerId !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    workflowSidebarResizeStartRef.current = null
+    setIsWorkflowSidebarResizing(false)
+  }
+
+  const handleWorkflowSidebarResizeKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) => {
+    const step = event.shiftKey ? 32 : 16
+    let nextWidth: number | undefined
+
+    if (event.key === 'ArrowLeft') {
+      nextWidth = workflowSidebarWidth - step
+    } else if (event.key === 'ArrowRight') {
+      nextWidth = workflowSidebarWidth + step
+    } else if (event.key === 'Home') {
+      nextWidth = WORKFLOW_SIDEBAR_MIN_WIDTH
+    } else if (event.key === 'End') {
+      nextWidth = workflowSidebarMaxWidth()
+    }
+
+    if (nextWidth === undefined) return
+    event.preventDefault()
+    updateWorkflowSidebarWidth(nextWidth)
+  }
+
   return (
-    <div className="grid min-h-svh bg-background text-foreground lg:h-svh lg:grid-rows-[3.25rem_minmax(0,1fr)] lg:overflow-hidden">
+    <div className="grid min-h-svh w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)] bg-background text-foreground lg:h-svh lg:grid-rows-[3.25rem_minmax(0,1fr)] lg:overflow-hidden">
       <header className="sticky top-0 z-30 flex h-13 items-center justify-between border-b border-border bg-background/92 px-3 backdrop-blur-xl lg:static lg:px-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
@@ -603,10 +755,22 @@ export function SimulatorShell() {
         </div>
       </header>
 
-      <div className="grid min-h-0 lg:grid-cols-[22rem_minmax(0,1fr)]">
+      <div
+        className="relative grid min-h-0 min-w-0 grid-cols-1 lg:grid-cols-[var(--workflow-sidebar-width)_minmax(0,1fr)]"
+        data-simulator-workspace-layout
+        style={
+          {
+            '--workflow-sidebar-width': `${workflowSidebarWidth}px`,
+          } as CSSProperties
+        }
+      >
         <WorkflowSidebar
           activeSection={activeSection}
           onActiveSectionChange={setActiveSection}
+          isWide={
+            workflowSidebarWidth > WORKFLOW_SIDEBAR_DEFAULT_WIDTH + 24
+          }
+          onToggleWidth={handleWorkflowSidebarWidthToggle}
           scene={scene}
           cameraFrame={viewerCameraFrame}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
@@ -630,6 +794,43 @@ export function SimulatorShell() {
             openComponentDialog('delete', request)
           }
         />
+        <div
+          className={`group absolute inset-y-0 z-20 hidden w-3 -translate-x-1/2 cursor-col-resize touch-none select-none outline-none lg:block ${
+            isWorkflowSidebarResizing ? 'bg-primary/8' : ''
+          }`}
+          style={{ left: 'var(--workflow-sidebar-width)' }}
+          role="separator"
+          aria-label="왼쪽 메뉴 너비 조절"
+          aria-orientation="vertical"
+          aria-controls="workflow-sidebar"
+          aria-valuemin={WORKFLOW_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={workflowSidebarMaxWidth()}
+          aria-valuenow={workflowSidebarWidth}
+          aria-valuetext={`${workflowSidebarWidth}px`}
+          tabIndex={0}
+          title="드래그하거나 방향키로 왼쪽 메뉴 너비 조절 · 더블클릭으로 기본 폭"
+          onPointerDown={handleWorkflowSidebarResizePointerDown}
+          onPointerMove={handleWorkflowSidebarResizePointerMove}
+          onPointerUp={finishWorkflowSidebarResize}
+          onPointerCancel={finishWorkflowSidebarResize}
+          onLostPointerCapture={() => {
+            workflowSidebarResizeStartRef.current = null
+            setIsWorkflowSidebarResizing(false)
+          }}
+          onKeyDown={handleWorkflowSidebarResizeKeyDown}
+          onDoubleClick={() =>
+            updateWorkflowSidebarWidth(WORKFLOW_SIDEBAR_DEFAULT_WIDTH)
+          }
+        >
+          <span
+            className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-[width,background-color,box-shadow] group-hover:w-0.5 group-hover:bg-primary/70 group-focus-visible:w-0.5 group-focus-visible:bg-primary group-focus-visible:shadow-[0_0_0_2px_color-mix(in_oklab,var(--primary)_25%,transparent)] ${
+              isWorkflowSidebarResizing
+                ? 'w-0.5 bg-primary'
+                : 'bg-border'
+            }`}
+            aria-hidden="true"
+          />
+        </div>
         <ViewerWorkspace
           scene={scene}
           cadModelVisible={activeCadCaseVisible}
@@ -752,9 +953,30 @@ export function SimulatorShell() {
         description={noticeDialog?.description}
         returnFocusRef={noticeReturnFocusRef}
         footer={
-          <Button variant="outline" onClick={() => setNoticeDialog(null)}>
-            Close
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setNoticeDialog(null)}>
+              Close
+            </Button>
+            {noticeDialog?.action === 'select-gpu' ? (
+              <Button
+                onClick={() => {
+                  const current = workspaceStore.getState().rayTraceConfig
+                  actions.setRayTraceConfig({
+                    ...current,
+                    compute_backend: 'gpu_cuda',
+                    intersection_backend:
+                      current.intersection_backend === 'brute_force'
+                        ? 'bvh'
+                        : current.intersection_backend,
+                  })
+                  setActiveSection('ray-tracing')
+                  setNoticeDialog(null)
+                }}
+              >
+                NVIDIA CUDA GPU 선택
+              </Button>
+            ) : null}
+          </>
         }
       >
         <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-5 text-muted-foreground">

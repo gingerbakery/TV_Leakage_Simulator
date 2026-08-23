@@ -321,6 +321,48 @@ class _IntersectionDispatchStats:
     gpu_cuda_available_state: Optional[bool] = None
     gpu_cuda_numba_version: Optional[str] = None
 
+    def compute_execution_diagnosis(
+        self,
+        gpu_compute_requested: bool,
+    ) -> Tuple[str, Optional[str]]:
+        """Summarize the requested device against committed trace work."""
+
+        gpu_requested = (
+            gpu_compute_requested or self.requested_provider == "gpu_cuda"
+        )
+        if not gpu_requested:
+            return "cpu", None
+
+        gpu_succeeded = self.gpu_cuda_gpu_success_count > 0
+        cpu_committed = bool(
+            self.gpu_cuda_hybrid_cpu_success_count
+            or self.reference_scalar_query_count
+            or self.reference_batch_count
+        )
+        if gpu_succeeded:
+            if not cpu_committed:
+                return "gpu_active", None
+            reason = self.fallback_reason or self.unavailable_reason
+            if reason is None and self.gpu_cuda_hybrid_cpu_success_count:
+                reason = "gpu_cuda_hybrid_small_waves"
+            return "gpu_mixed", reason or "gpu_cuda_partial_cpu_path"
+
+        if self.requested_provider != "gpu_cuda":
+            reason = "gpu_cuda_provider_overridden"
+        elif self.fallback_reason:
+            reason = self.fallback_reason
+        elif self.unavailable_reason:
+            reason = self.unavailable_reason
+        elif self.gpu_cuda_hybrid_cpu_success_count:
+            reason = "gpu_cuda_below_hybrid_threshold"
+        elif self.gpu_cuda_hybrid_cpu_failure_reason:
+            reason = self.gpu_cuda_hybrid_cpu_failure_reason
+        elif not (self.scalar_query_count or self.batch_count):
+            reason = "gpu_cuda_no_intersection_work"
+        else:
+            reason = "gpu_cuda_no_successful_batch"
+        return "gpu_requested_cpu_only", reason
+
     def intersect_scalar(
         self,
         mesh: TriangleMesh,
@@ -1493,6 +1535,17 @@ def run_direct_ray_trace(
     gpu_compute_requested = (
         getattr(trace_input.config, "compute_backend", "cpu") == "gpu_cuda"
     )
+    configured_acceleration_structure = (
+        trace_input.config.intersection_backend
+    )
+    effective_acceleration_structure = (
+        "bvh"
+        if (
+            gpu_compute_requested
+            and configured_acceleration_structure == "auto"
+        )
+        else configured_acceleration_structure
+    )
     if intersection_batch_size is None:
         intersection_batch_size = (
             65536 if gpu_compute_requested else _DEFAULT_INTERSECTION_BATCH_SIZE
@@ -1531,7 +1584,7 @@ def run_direct_ray_trace(
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     intersection_stats = _IntersectionDispatchStats(
-        intersection_backend=trace_input.config.intersection_backend,
+        intersection_backend=effective_acceleration_structure,
         requested_provider=intersection_provider,
         gpu_cuda_hybrid_cpu_below_rays=(
             8192
@@ -2173,7 +2226,13 @@ def run_direct_ray_trace(
     metrics["_contribution_summary"] = contribution_summary.to_dict()
     runtime_sec = time.time() - start_time
     acceleration_info = trace_input.mesh.acceleration_info(
-        backend=trace_input.config.intersection_backend
+        backend=effective_acceleration_structure
+    )
+    intersection_summary = intersection_stats.to_summary()
+    compute_execution_state, compute_execution_reason = (
+        intersection_stats.compute_execution_diagnosis(
+            gpu_compute_requested,
+        )
     )
     metrics["_performance_summary"] = {
         "backend": "python_numpy_cpu",
@@ -2185,6 +2244,8 @@ def run_direct_ray_trace(
         "contribution_mode": trace_input.config.contribution_mode,
         "intersection_backend": acceleration_info["selected_backend"],
         "configured_intersection_backend": trace_input.config.intersection_backend,
+        "acceleration_structure": acceleration_info["selected_backend"],
+        "configured_acceleration_structure": configured_acceleration_structure,
         "bvh_node_count": acceleration_info["bvh_node_count"],
         "bvh_leaf_count": acceleration_info["bvh_leaf_count"],
         "bvh_build_sec": (
@@ -2351,7 +2412,9 @@ def run_direct_ray_trace(
         ],
         **wavefront_planner_stats.to_summary(),
         **wavefront_reducer_stats.to_summary(),
-        **intersection_stats.to_summary(),
+        **intersection_summary,
+        "compute_execution_state": compute_execution_state,
+        "compute_execution_reason": compute_execution_reason,
     }
     return RayTraceResult(
         run_id=fresh_run_id("rt3"),

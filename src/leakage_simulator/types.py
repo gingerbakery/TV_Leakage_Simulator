@@ -538,6 +538,12 @@ class RayTraceConfig:
             "contribution_mode",
             CONTRIBUTION_MODES,
         )
+        if self.intersection_backend == "gpu_cuda":
+            raise ValueError(
+                'intersection_backend selects the acceleration structure, not '
+                'the compute device; use compute_backend="gpu_cuda" and set '
+                'intersection_backend to auto or bvh'
+            )
         self.intersection_backend = require_choice(
             self.intersection_backend,
             "intersection_backend",
@@ -548,6 +554,14 @@ class RayTraceConfig:
             "compute_backend",
             COMPUTE_BACKENDS,
         )
+        if (
+            self.compute_backend == "gpu_cuda"
+            and self.intersection_backend == "brute_force"
+        ):
+            raise ValueError(
+                'compute_backend="gpu_cuda" requires intersection_backend '
+                'to be auto or bvh; brute_force is CPU-only'
+            )
         self.max_stored_paths = int(self.max_stored_paths)
         if self.max_stored_paths < 0:
             raise ValueError("max_stored_paths must be non-negative")
@@ -564,7 +578,41 @@ class RayTraceConfig:
 
     @classmethod
     def from_dict(cls, payload: Dict) -> "RayTraceConfig":
-        return cls(**payload)
+        normalized = dict(payload)
+        acceleration_structure = normalized.pop(
+            "acceleration_structure",
+            None,
+        )
+        if acceleration_structure is not None:
+            legacy_value = normalized.get("intersection_backend")
+            if (
+                legacy_value is not None
+                and legacy_value != acceleration_structure
+            ):
+                raise ValueError(
+                    "acceleration_structure and intersection_backend must match"
+                )
+            normalized["intersection_backend"] = acceleration_structure
+        return cls(**normalized)
+
+    @property
+    def acceleration_structure(self) -> str:
+        """Clear-name alias for the legacy ``intersection_backend`` field."""
+
+        return self.intersection_backend
+
+    @acceleration_structure.setter
+    def acceleration_structure(self, value: str) -> None:
+        if value == "gpu_cuda":
+            raise ValueError(
+                'acceleration_structure cannot be gpu_cuda; use '
+                'compute_backend="gpu_cuda"'
+            )
+        self.intersection_backend = require_choice(
+            value,
+            "acceleration_structure",
+            INTERSECTION_BACKENDS,
+        )
 
 
 @dataclass

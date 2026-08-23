@@ -1,0 +1,647 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+import sys
+from unittest.mock import call, patch
+
+import numpy as np
+from fastapi.testclient import TestClient
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from leakage_simulator import gpu_cuda_intersection as gpu_cuda
+from leakage_simulator.api import ApiRuntime, create_app
+from leakage_simulator.geometry import RayBatch, RayHitBatch, TriangleMesh
+from leakage_simulator.raytracer import run_direct_ray_trace
+from leakage_simulator.raytrace_bridge import build_direct_trace_input
+from leakage_simulator.types import RayTraceConfig
+
+
+def _scene_mesh() -> dict:
+    return {
+        "vertices": [
+            [-100.0, -100.0, 10.0],
+            [100.0, -100.0, 10.0],
+            [0.0, 100.0, 10.0],
+        ],
+        "faces": [[0, 1, 2]],
+        "face_component_ids": [7],
+        "face_material_ids": ["default"],
+    }
+
+
+def _request_payload(
+    *,
+    compute_backend: str,
+    intersection_backend: str = "auto",
+    ray_count: int = 8,
+) -> dict:
+    return {
+        "scene_token": "gpu-contract-scene",
+        "emitters": [
+            {
+                "emitter_id": "source",
+                "emitter_type": "datum_plane",
+                "center": [0.0, 0.0, 0.0],
+                "u_axis": [1.0, 0.0, 0.0],
+                "v_axis": [0.0, 1.0, 0.0],
+                "width_mm": 1.0,
+                "height_mm": 1.0,
+                "direction_distribution": "gaussian",
+                "gaussian_sigma_deg": 1.0,
+                "ray_count": ray_count,
+                "seed": 41,
+            }
+        ],
+        "receivers": [
+            {
+                "receiver_id": "receiver",
+                "center": [0.0, 0.0, 20.0],
+                "normal": [0.0, 0.0, -1.0],
+                "width_mm": 200.0,
+                "height_mm": 200.0,
+                "resolution": [2, 2],
+            }
+        ],
+        "config": {
+            "ray_count": ray_count,
+            "max_depth": 0,
+            "contribution_mode": "summary",
+            "intersection_backend": intersection_backend,
+            "compute_backend": compute_backend,
+        },
+    }
+
+
+def _face_emitter_payload(ray_count: int = 4) -> dict:
+    return {
+        "emitter_id": "face-source",
+        "emitter_type": "face",
+        "face_indices": [0],
+        "direction_distribution": "gaussian",
+        "gaussian_sigma_deg": 1.0,
+        "ray_count": ray_count,
+        "seed": 43,
+    }
+
+
+def _owned_readonly(values, dtype) -> np.ndarray:
+    result = np.array(values, dtype=dtype, copy=True, order="C")
+    result.setflags(write=False)
+    return result
+
+
+def _fake_gpu_execution(rays: RayBatch):
+    distances = _owned_readonly(
+        np.full(len(rays), np.inf, dtype=np.float64),
+        np.float64,
+    )
+    face_indices = _owned_readonly(
+        np.full(len(rays), -1, dtype=np.int64),
+        np.int64,
+    )
+    hits = RayHitBatch(t=distances, face_indices=face_indices)
+    return hits, gpu_cuda.GpuCudaExecution(
+        distances=distances,
+        face_indices=face_indices,
+        scene_build_sec=0.0,
+        scene_upload_sec=0.0,
+        workspace_prepare_sec=0.0,
+        input_upload_sec=0.0,
+        jit_compile_sec=0.0,
+        kernel_sec=0.0,
+        output_download_sec=0.0,
+        numba_version="fake-numba",
+        device_name="fake-gpu",
+        compute_capability="9.9",
+        device_id=3,
+        toolkit_layout="fake-toolkit",
+        reused_device_scene=True,
+        reused_workspace=True,
+    )
+
+
+def _fake_preflight_execution(
+    distances=(5.0, np.inf),
+    face_indices=(0, -1),
+) -> gpu_cuda.GpuCudaExecution:
+    return gpu_cuda.GpuCudaExecution(
+        distances=_owned_readonly(distances, np.float64),
+        face_indices=_owned_readonly(face_indices, np.int64),
+        scene_build_sec=0.0,
+        scene_upload_sec=0.01,
+        workspace_prepare_sec=0.01,
+        input_upload_sec=0.01,
+        jit_compile_sec=0.01,
+        kernel_sec=0.0,
+        output_download_sec=0.01,
+        numba_version="fake-numba",
+        device_name="fake-gpu",
+        compute_capability="9.9",
+        device_id=4,
+        toolkit_layout="fake-toolkit",
+        reused_device_scene=False,
+        reused_workspace=False,
+    )
+
+
+def _contract_trace_runner(
+    trace_input,
+    progress_callback=None,
+    should_stop=None,
+):
+    return run_direct_ray_trace(
+        trace_input,
+        progress_callback=progress_callback,
+        should_stop=should_stop,
+        wavefront_planner="python_cpu",
+        wavefront_pipeline="object_reference",
+        wavefront_reducer="python_cpu",
+    )
+
+
+class GpuBackendContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _runtime(self, *, trace_runner=run_direct_ray_trace) -> ApiRuntime:
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name),
+            trace_runner=trace_runner,
+        )
+        runtime._scene_mesh_cache["gpu-contract-scene"] = _scene_mesh()
+        return runtime
+
+    def test_explicit_status_endpoint_has_stable_schema_and_refresh(self) -> None:
+        available_capability = gpu_cuda.GpuCudaPreflight(
+            available=True,
+            reason_code=None,
+            numba_version="0.test",
+            device_name="Contract GPU",
+            compute_capability="9.1",
+            device_id=2,
+            strict_float64=True,
+            toolkit_layout="test-layout",
+            kernel_executed=True,
+            kernel_verified=True,
+        )
+        unavailable_capability = gpu_cuda.GpuCudaPreflight(
+            available=False,
+            reason_code="cuda_toolkit_not_found",
+            numba_version="0.test",
+            device_name=None,
+            compute_capability=None,
+            device_id=None,
+            strict_float64=False,
+            toolkit_layout=None,
+            kernel_executed=False,
+            kernel_verified=False,
+        )
+        client = TestClient(create_app(self._runtime()))
+        try:
+            with patch.object(
+                gpu_cuda,
+                "preflight_gpu_cuda",
+                side_effect=[available_capability, unavailable_capability],
+            ) as probe:
+                cached_response = client.get("/api/gpu-cuda/status")
+                refreshed_response = client.get(
+                    "/api/gpu-cuda/status",
+                    params={"refresh": "true"},
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(cached_response.status_code, 200)
+        self.assertEqual(refreshed_response.status_code, 200)
+        self.assertEqual(
+            cached_response.json(),
+            {
+                "available": True,
+                "reason_code": None,
+                "device_name": "Contract GPU",
+                "compute_capability": "9.1",
+                "device_id": 2,
+                "numba_version": "0.test",
+                "toolkit_layout": "test-layout",
+                "strict_float64": True,
+                "kernel_executed": True,
+                "kernel_verified": True,
+                "preflight_scope": "production_ray_bvh",
+                "provider_contract": "strict_float64_bvh_v1",
+            },
+        )
+        self.assertEqual(
+            refreshed_response.json(),
+            {
+                "available": False,
+                "reason_code": "cuda_toolkit_not_found",
+                "device_name": None,
+                "compute_capability": None,
+                "device_id": None,
+                "numba_version": "0.test",
+                "toolkit_layout": None,
+                "strict_float64": False,
+                "kernel_executed": False,
+                "kernel_verified": False,
+                "preflight_scope": "production_ray_bvh",
+                "provider_contract": "strict_float64_bvh_v1",
+            },
+        )
+        probe.assert_has_calls([call(refresh=False), call(refresh=True)])
+
+    def test_cpu_api_trace_never_probes_or_executes_cuda(self) -> None:
+        client = TestClient(create_app(self._runtime()))
+        try:
+            with (
+                patch.object(
+                    gpu_cuda,
+                    "probe_gpu_cuda",
+                    side_effect=AssertionError("CPU request probed CUDA"),
+                ) as probe,
+                patch.object(
+                    TriangleMesh,
+                    "intersect_rays_gpu_cuda",
+                    side_effect=AssertionError("CPU request executed CUDA"),
+                ) as execute,
+            ):
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=_request_payload(compute_backend="cpu"),
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        performance = response.json()["metrics"]["_performance_summary"]
+        self.assertEqual(performance["compute_backend"], "cpu")
+        self.assertEqual(performance["compute_execution_state"], "cpu")
+        self.assertIsNone(performance["compute_execution_reason"])
+        self.assertFalse(performance["gpu_cuda_requested"])
+        self.assertFalse(performance["gpu_cuda_used"])
+        probe.assert_not_called()
+        execute.assert_not_called()
+
+    def test_preflight_executes_production_bvh_and_refresh_retries(self) -> None:
+        capability = gpu_cuda.GpuCudaCapability(
+            available=True,
+            reason_code=None,
+            numba_version="fake-numba",
+            device_name="fake-gpu",
+            compute_capability="9.9",
+            device_id=4,
+            strict_float64=True,
+            toolkit_layout="fake-toolkit",
+        )
+
+        def fake_intersect(
+            scene,
+            origins,
+            directions,
+            minimum_t,
+            maximum_t,
+            ignored_faces,
+        ):
+            self.assertIsInstance(scene, gpu_cuda.GpuCudaScene)
+            self.assertEqual(scene.triangle_v0.shape, (1, 3))
+            np.testing.assert_array_equal(scene.node_count, [1])
+            np.testing.assert_array_equal(scene.ordered_faces, [0])
+            np.testing.assert_array_equal(
+                origins,
+                [[0.25, 0.25, 0.0], [1.5, 1.5, 0.0]],
+            )
+            np.testing.assert_array_equal(
+                directions,
+                [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            )
+            np.testing.assert_array_equal(minimum_t, [1e-8, 1e-8])
+            np.testing.assert_array_equal(maximum_t, [10.0, 10.0])
+            np.testing.assert_array_equal(ignored_faces, [-1, -1])
+            return _fake_preflight_execution()
+
+        with (
+            patch.object(
+                gpu_cuda,
+                "probe_gpu_cuda",
+                return_value=capability,
+            ) as probe,
+            patch.object(
+                gpu_cuda,
+                "intersect_gpu_cuda",
+                side_effect=fake_intersect,
+            ) as intersect,
+            patch.object(gpu_cuda, "_PREFLIGHT", None),
+        ):
+            first = gpu_cuda.preflight_gpu_cuda()
+            cached = gpu_cuda.preflight_gpu_cuda()
+            refreshed = gpu_cuda.preflight_gpu_cuda(refresh=True)
+
+        self.assertTrue(first.available)
+        self.assertTrue(first.kernel_executed)
+        self.assertTrue(first.kernel_verified)
+        self.assertTrue(first.strict_float64)
+        self.assertEqual(first.preflight_scope, "production_ray_bvh")
+        self.assertIs(first, cached)
+        self.assertTrue(refreshed.available)
+        self.assertEqual(intersect.call_count, 2)
+        probe.assert_has_calls([call(refresh=False), call(refresh=True)])
+
+    def test_preflight_preserves_provider_reason_and_rejects_wrong_result(
+        self,
+    ) -> None:
+        capability = gpu_cuda.GpuCudaCapability(
+            available=True,
+            reason_code=None,
+            numba_version="fake-numba",
+            device_name="fake-gpu",
+            compute_capability="9.9",
+            device_id=4,
+            strict_float64=True,
+            toolkit_layout="fake-toolkit",
+        )
+        failures = (
+            ("initialize", "gpu_cuda_scene_upload_failed"),
+            ("input_prepare", "gpu_cuda_input_upload_failed"),
+            ("execute", "gpu_cuda_kernel_failed"),
+            ("result_validation", "gpu_cuda_output_download_failed"),
+        )
+        for phase, reason in failures:
+            with (
+                self.subTest(phase=phase),
+                patch.object(
+                    gpu_cuda,
+                    "probe_gpu_cuda",
+                    return_value=capability,
+                ),
+                patch.object(
+                    gpu_cuda,
+                    "intersect_gpu_cuda",
+                    side_effect=gpu_cuda.GpuCudaProviderError(
+                        phase,
+                        reason,
+                    ),
+                ),
+                patch.object(gpu_cuda, "_PREFLIGHT", None),
+            ):
+                failure = gpu_cuda.preflight_gpu_cuda()
+
+            self.assertFalse(failure.available)
+            self.assertFalse(failure.kernel_executed)
+            self.assertFalse(failure.kernel_verified)
+            self.assertEqual(failure.reason_code, reason)
+
+        with (
+            patch.object(
+                gpu_cuda,
+                "probe_gpu_cuda",
+                return_value=capability,
+            ),
+            patch.object(
+                gpu_cuda,
+                "intersect_gpu_cuda",
+                return_value=_fake_preflight_execution(
+                    face_indices=(1, -1),
+                ),
+            ),
+            patch.object(gpu_cuda, "_PREFLIGHT", None),
+        ):
+            wrong_result = gpu_cuda.preflight_gpu_cuda()
+
+        self.assertFalse(wrong_result.available)
+        self.assertTrue(wrong_result.kernel_executed)
+        self.assertFalse(wrong_result.kernel_verified)
+        self.assertEqual(
+            wrong_result.reason_code,
+            "gpu_cuda_preflight_result_mismatch",
+        )
+
+    def test_gpu_api_preserves_config_selects_provider_and_forces_small_bvh(
+        self,
+    ) -> None:
+        observed_backends: list[str | None] = []
+
+        def fake_gpu(mesh, rays, backend=None):
+            observed_backends.append(backend)
+            return _fake_gpu_execution(rays)
+
+        client = TestClient(
+            create_app(self._runtime(trace_runner=_contract_trace_runner))
+        )
+        try:
+            with patch.object(
+                TriangleMesh,
+                "intersect_rays_gpu_cuda",
+                new=fake_gpu,
+            ):
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=_request_payload(
+                        compute_backend="gpu_cuda",
+                        intersection_backend="auto",
+                        # Exactly the hybrid cutoff ensures the fake CUDA
+                        # provider is selected instead of the small-wave CPU
+                        # optimization.
+                        ray_count=8192,
+                    ),
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        performance = response.json()["metrics"]["_performance_summary"]
+        self.assertTrue(observed_backends)
+        self.assertEqual(set(observed_backends), {"bvh"})
+        self.assertEqual(performance["compute_backend"], "gpu_cuda")
+        self.assertEqual(performance["configured_intersection_backend"], "auto")
+        self.assertEqual(performance["configured_acceleration_structure"], "auto")
+        self.assertEqual(performance["intersection_backend"], "bvh")
+        self.assertEqual(performance["acceleration_structure"], "bvh")
+        self.assertEqual(
+            performance["requested_intersection_provider"],
+            "gpu_cuda",
+        )
+        self.assertEqual(performance["intersection_provider"], "gpu_cuda")
+        self.assertTrue(performance["gpu_cuda_requested"])
+        self.assertTrue(performance["gpu_cuda_used"])
+        self.assertEqual(performance["gpu_cuda_device_name"], "fake-gpu")
+        self.assertEqual(
+            performance["compute_execution_state"],
+            "gpu_active",
+        )
+        self.assertIsNone(performance["compute_execution_reason"])
+
+    def test_face_scalar_request_reports_gpu_requested_cpu_only(self) -> None:
+        payload = _request_payload(compute_backend="gpu_cuda")
+        payload["emitters"] = [_face_emitter_payload()]
+        client = TestClient(
+            create_app(self._runtime(trace_runner=_contract_trace_runner))
+        )
+        try:
+            with patch.object(
+                TriangleMesh,
+                "intersect_rays_gpu_cuda",
+                side_effect=AssertionError("face scalar path launched CUDA"),
+            ) as execute:
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=payload,
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        performance = response.json()["metrics"]["_performance_summary"]
+        self.assertEqual(
+            performance["compute_execution_state"],
+            "gpu_requested_cpu_only",
+        )
+        self.assertEqual(
+            performance["compute_execution_reason"],
+            "gpu_cuda_scalar_uses_python_cpu",
+        )
+        self.assertFalse(performance["gpu_cuda_used"])
+        execute.assert_not_called()
+
+    def test_mixed_gpu_and_face_scalar_work_reports_gpu_mixed(self) -> None:
+        payload = _request_payload(
+            compute_backend="gpu_cuda",
+            ray_count=8192,
+        )
+        payload["emitters"].append(_face_emitter_payload())
+
+        def fake_gpu(mesh, rays, backend=None):
+            return _fake_gpu_execution(rays)
+
+        client = TestClient(
+            create_app(self._runtime(trace_runner=_contract_trace_runner))
+        )
+        try:
+            with patch.object(
+                TriangleMesh,
+                "intersect_rays_gpu_cuda",
+                new=fake_gpu,
+            ):
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=payload,
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        performance = response.json()["metrics"]["_performance_summary"]
+        self.assertEqual(
+            performance["compute_execution_state"],
+            "gpu_mixed",
+        )
+        self.assertEqual(
+            performance["compute_execution_reason"],
+            "gpu_cuda_scalar_uses_python_cpu",
+        )
+        self.assertTrue(performance["gpu_cuda_used"])
+
+    def test_invalid_gpu_acceleration_value_returns_actionable_api_error(
+        self,
+    ) -> None:
+        client = TestClient(create_app(self._runtime()))
+        try:
+            response = client.post(
+                "/api/raytrace/direct",
+                json=_request_payload(
+                    compute_backend="cpu",
+                    intersection_backend="gpu_cuda",
+                ),
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 400)
+        message = response.json()["error"]
+        self.assertIn("acceleration structure", message)
+        self.assertIn('compute_backend="gpu_cuda"', message)
+
+    def test_gpu_with_brute_force_is_rejected_before_api_execution(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            'compute_backend="gpu_cuda" requires intersection_backend.*auto or bvh',
+        ):
+            RayTraceConfig(
+                compute_backend="gpu_cuda",
+                intersection_backend="brute_force",
+            )
+
+        client = TestClient(create_app(self._runtime()))
+        try:
+            with patch.object(
+                TriangleMesh,
+                "intersect_rays_gpu_cuda",
+                side_effect=AssertionError(
+                    "invalid GPU/brute-force request reached execution"
+                ),
+            ) as execute:
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=_request_payload(
+                        compute_backend="gpu_cuda",
+                        intersection_backend="brute_force",
+                    ),
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 400)
+        message = response.json()["error"]
+        self.assertIn('compute_backend="gpu_cuda"', message)
+        self.assertIn("auto or bvh", message)
+        self.assertIn("brute_force is CPU-only", message)
+        execute.assert_not_called()
+
+    def test_clear_acceleration_structure_alias_preserves_legacy_contract(
+        self,
+    ) -> None:
+        config = RayTraceConfig.from_dict(
+            {
+                "acceleration_structure": "bvh",
+                "compute_backend": "gpu_cuda",
+            }
+        )
+        self.assertEqual(config.acceleration_structure, "bvh")
+        self.assertEqual(config.intersection_backend, "bvh")
+        self.assertEqual(config.to_dict()["intersection_backend"], "bvh")
+
+        mesh = TriangleMesh()
+        mesh.set_acceleration_structure("bvh")
+        self.assertEqual(mesh.intersection_backend, "bvh")
+        mesh.set_intersection_backend("auto")
+        self.assertEqual(mesh.intersection_backend, "auto")
+
+        with self.assertRaisesRegex(ValueError, "compute_backend"):
+            RayTraceConfig.from_dict(
+                {"acceleration_structure": "gpu_cuda"}
+            )
+
+    def test_bridge_keeps_compute_and_acceleration_config_separate(self) -> None:
+        trace_input = build_direct_trace_input(
+            _scene_mesh(),
+            _request_payload(
+                compute_backend="gpu_cuda",
+                intersection_backend="auto",
+            ),
+        )
+
+        self.assertEqual(trace_input.config.compute_backend, "gpu_cuda")
+        self.assertEqual(trace_input.config.intersection_backend, "auto")
+        # Geometry preparation owns a reusable BVH; it does not overwrite the
+        # request-local compute or configured acceleration values above.
+        self.assertEqual(trace_input.mesh.intersection_backend, "bvh")
+
+
+if __name__ == "__main__":
+    unittest.main()
