@@ -16,6 +16,11 @@ GPU 사용자는 먼저 전달 방식을 구분해야 한다. Git source와 GPU 
 
 ### A-1. PC 준비
 
+처음 설치하거나 어떤 사전 프로그램이 필요한지 확실하지 않으면
+[`WINDOWS_GPU_SETUP.md`](WINDOWS_GPU_SETUP.md)의 읽기 전용 점검부터 실행한다.
+`setup_windows_gpu.bat`은 기본적으로 설치하지 않고 현재 상태만 보여주며,
+명시적으로 승인한 `-Install` 모드에서만 누락된 고정 package를 설치한다.
+
 - [ ] 64-bit Windows와 CUDA 지원 NVIDIA GPU
 - [ ] GPU와 CUDA Toolkit `13.1`이 호환되는 NVIDIA display driver
 - [ ] CUDA Toolkit `13.1`
@@ -63,6 +68,10 @@ run_web_gpu.bat
 ## B. GPU CUDA ZIP에서 실행
 
 ### B-1. PC와 파일 확인
+
+NVIDIA driver와 CUDA Toolkit 설치 절차는
+[`WINDOWS_GPU_SETUP.md`](WINDOWS_GPU_SETUP.md)를 따른다. GPU ZIP에는 Python과
+Node.js가 포함되므로 이 두 항목은 설치하지 않는다.
 
 - [ ] 64-bit Windows와 CUDA 지원 NVIDIA GPU
 - [ ] GPU와 CUDA Toolkit `13.1`이 호환되는 NVIDIA display driver
@@ -156,6 +165,10 @@ PERF-3D GPU build의 비교다. CPU와 GPU를 직접 비교한 수치가 아니�
 | CAD import·BVH build만 비교 | GPU ray-tracing 속도 증거가 아님 |
 
 ## F. 문제 해결
+
+Driver, CUDA Toolkit, Python 또는 Node.js 자체가 없거나 버전이 맞지 않으면
+[`WINDOWS_GPU_SETUP.md`](WINDOWS_GPU_SETUP.md)의 RTX A4000/일반 Windows 설치
+절차와 사내 AI용 프롬프트를 사용한다. 사내 정책이나 UAC를 우회하지 않는다.
 
 | 표시 | 조치 |
 | --- | --- |

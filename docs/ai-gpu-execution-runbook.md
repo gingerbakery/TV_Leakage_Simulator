@@ -1,9 +1,9 @@
 # AI GPU execution runbook
 
 This is the deterministic GPU/CUDA runbook for repository-aware AI assistants.
-Read it and `docs/gpu-cuda-user-guide.md` completely before executing a GPU
-request. If a command result conflicts with prose, fail closed and report the
-observed result.
+Read it, `docs/WINDOWS_GPU_SETUP.md`, and `docs/gpu-cuda-user-guide.md`
+completely before executing a GPU request. If a command result conflicts with
+prose, fail closed and report the observed result.
 
 ## 1. Classify what the user has
 
@@ -32,6 +32,24 @@ ZIP contains them. The NVIDIA driver and CUDA Toolkit are never bundled.
 An AI may inspect these prerequisites. It MUST obtain explicit user approval
 before installing an OS driver or CUDA Toolkit, changing system-wide settings,
 or rebooting the PC.
+
+Use this installation workflow; do not infer install permission from a missing
+command:
+
+1. Run `setup_windows_gpu.bat` without arguments for read-only inventory.
+2. Report observed versions, missing items, exact planned packages, privilege
+   changes, screen impact, and possible reboot.
+3. Wait for explicit install authorization.
+4. Only then use `setup_windows_gpu.bat -Install` or the approved manual steps
+   in `docs/WINDOWS_GPU_SETUP.md`.
+5. Never reboot automatically. Ask again immediately before a required reboot.
+6. Open a new PowerShell session, repeat inventory, and run the production
+   preflight. Do not report a package install as GPU success.
+
+The setup helper does not guess or silently download an NVIDIA driver. If the
+driver is missing or older than the CUDA 13.x minimum, stop and use an RTX
+A4000-compatible official or company-IT-approved installer. Never bypass UAC,
+application control, proxy, TLS validation, or company policy.
 
 ## 3. Source-checkout workflow
 

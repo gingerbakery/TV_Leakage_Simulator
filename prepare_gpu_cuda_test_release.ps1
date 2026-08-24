@@ -8,6 +8,9 @@ $ErrorActionPreference = "Stop"
 $Root = [System.IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
 $AiInstructionEntrypoint = "AGENTS.md"
 $AiGpuRunbook = "docs/ai-gpu-execution-runbook.md"
+$WindowsGpuSetupGuide = "docs/WINDOWS_GPU_SETUP.md"
+$WindowsGpuSetupEntrypoint = "setup_windows_gpu.bat"
+$WindowsGpuSetupScript = "setup_windows_gpu.ps1"
 
 function Get-NormalizedFullPath([string]$Path) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -137,7 +140,13 @@ try {
         $ArchiveEntries = @(
             $Archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") }
         )
-        foreach ($AiEntry in @($AiInstructionEntrypoint, $AiGpuRunbook)) {
+        foreach ($AiEntry in @(
+            $AiInstructionEntrypoint,
+            $AiGpuRunbook,
+            $WindowsGpuSetupGuide,
+            $WindowsGpuSetupEntrypoint,
+            $WindowsGpuSetupScript
+        )) {
             $ExpectedArchiveEntry = "$OutputName/$AiEntry"
             if ($ArchiveEntries -notcontains $ExpectedArchiveEntry) {
                 throw "The GPU ZIP is missing its AI guidance entry: $ExpectedArchiveEntry"
@@ -162,6 +171,9 @@ try {
         packaged_tester_entrypoint = "CHECK_GPU_CUDA.bat"
         ai_instruction_entrypoint = $AiInstructionEntrypoint
         ai_gpu_runbook = $AiGpuRunbook
+        windows_gpu_setup_guide = $WindowsGpuSetupGuide
+        windows_gpu_setup_entrypoint = $WindowsGpuSetupEntrypoint
+        windows_gpu_setup_script = $WindowsGpuSetupScript
         ai_requires_package_file_access = $true
         source_pull_does_not_update_extracted_zip = $true
         tester_must_report_compute_row = $true
@@ -175,7 +187,10 @@ try {
         $RoundTrip.sha256 -ne $Hash -or
         $RoundTrip.git_commit -ne $Commit -or
         $RoundTrip.ai_instruction_entrypoint -ne $AiInstructionEntrypoint -or
-        $RoundTrip.ai_gpu_runbook -ne $AiGpuRunbook
+        $RoundTrip.ai_gpu_runbook -ne $AiGpuRunbook -or
+        $RoundTrip.windows_gpu_setup_guide -ne $WindowsGpuSetupGuide -or
+        $RoundTrip.windows_gpu_setup_entrypoint -ne $WindowsGpuSetupEntrypoint -or
+        $RoundTrip.windows_gpu_setup_script -ne $WindowsGpuSetupScript
     ) {
         throw "The generated handoff manifest failed round-trip verification."
     }

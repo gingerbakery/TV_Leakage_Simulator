@@ -43,6 +43,7 @@ class GpuSourceBootstrapTests(unittest.TestCase):
         self.assertIn('-Port "%PORT%"', script)
         self.assertIn("The GPU server was not started", script)
         self.assertIn("run_web.bat", script)
+        self.assertIn("docs\\WINDOWS_GPU_SETUP.md", script)
 
     def test_bootstrap_synchronizes_every_pulled_runtime_layer(self) -> None:
         script = BOOTSTRAP_PS1.read_text(encoding="utf-8")
@@ -67,6 +68,8 @@ class GpuSourceBootstrapTests(unittest.TestCase):
         for token in expected_tokens:
             with self.subTest(token=token):
                 self.assertIn(token, script)
+
+        self.assertIn("docs\\WINDOWS_GPU_SETUP.md", script)
 
         preflight = script.index("verify_gpu_cuda_runtime.py")
         server = script.index('Join-Path $Root "run_web.py"')
@@ -292,11 +295,17 @@ class GpuSourceBootstrapTests(unittest.TestCase):
             "git_commit",
             "ai_instruction_entrypoint",
             "ai_gpu_runbook",
+            "windows_gpu_setup_guide",
+            "windows_gpu_setup_entrypoint",
+            "windows_gpu_setup_script",
             "ai_requires_package_file_access",
             "[System.IO.Compression.ZipFile]::OpenRead",
             "$ExpectedArchiveEntry",
             "$RoundTrip.ai_instruction_entrypoint",
             "$RoundTrip.ai_gpu_runbook",
+            "$RoundTrip.windows_gpu_setup_guide",
+            "$RoundTrip.windows_gpu_setup_entrypoint",
+            "$RoundTrip.windows_gpu_setup_script",
             "source_pull_does_not_update_extracted_zip",
             "tester_must_run_real_cuda_preflight",
         )

@@ -103,9 +103,11 @@ GPU 배포본은 Numba/llvmlite를 추가로 포함하지만 CUDA Toolkit과 NVI
 드라이버는 대상 PC에 별도 설치되어 있어야 한다. 기본 경량 배포본에는 이
 의존성을 넣지 않으므로 CPU-only PC의 크기와 실행 경로는 기존과 같다.
 
+- Windows GPU 사전 설치 및 사내 AI 자동화 가이드:
+  [`docs/WINDOWS_GPU_SETUP.md`](docs/WINDOWS_GPU_SETUP.md)
 - GPU 사용자 설치·검사·선택 가이드:
   [`docs/gpu-cuda-user-guide.md`](docs/gpu-cuda-user-guide.md)
-- Lite/GPU 배포 ZIP 안에서도 `docs/gpu-cuda-user-guide.md`로 제공한다.
+- Lite/GPU 배포 ZIP 안에서도 두 문서를 `docs/`에 제공한다.
 
 ### AI를 통한 GPU 실행
 
@@ -117,18 +119,23 @@ Claude, Gemini, GitHub Copilot용 얇은 안내 파일도 같은 공통 런북�
 
 다만 모든 웹 채팅 AI가 로컬 폴더를 자동으로 읽을 수 있는 공통 표준은 없다.
 AI에 저장소/패키지 파일 접근 권한이 없거나 루트가 아닌 곳에서 시작했다면
-자동 안내는 보장되지 않는다. 이때는 아래 프롬프트를 전달하고, 필요하면 세
+자동 안내는 보장되지 않는다. 이때는 아래 프롬프트를 전달하고, 필요하면 네
 문서를 첨부한다.
 
 ```text
 이 프로젝트의 GPU 실행을 맡아줘. 명령을 실행하기 전에 저장소/압축 해제 폴더
-루트의 AGENTS.md, docs/ai-gpu-execution-runbook.md,
-docs/gpu-cuda-user-guide.md를 끝까지 읽고 그대로 따라줘. 먼저 Source/GPU ZIP/
-Lite ZIP 중 전달 경로를 식별하고, production_ray_bvh 사전 검사와 완료된 실행의
-Compute 상태 및 CUDA 성공 batch 수를 모두 확인하기 전에는 GPU 성공이라고
-말하지 마. 드라이버·CUDA Toolkit 설치나 재부팅은 내 명시적 승인을 먼저 받아.
+루트의 AGENTS.md, docs/WINDOWS_GPU_SETUP.md,
+docs/ai-gpu-execution-runbook.md, docs/gpu-cuda-user-guide.md를 끝까지 읽고
+그대로 따라줘. 먼저 setup_windows_gpu.bat의 기본 점검 모드와 Source/GPU ZIP/
+Lite ZIP 전달 경로 식별부터 진행해. 누락된 설치 항목과 변경 범위를 보고한 뒤
+내 승인을 받아야 setup_windows_gpu.bat -Install을 실행할 수 있어. 드라이버,
+CUDA Toolkit, 시스템 설정, 재부팅은 각각 명시적 승인을 먼저 받고 사내 정책과
+UAC를 우회하지 마. production_ray_bvh 사전 검사와 완료된 실행의 Compute 상태
+및 CUDA 성공 batch 수를 모두 확인하기 전에는 GPU 성공이라고 말하지 마.
 ```
 
+- Windows 설치/AI 자동화 기준:
+  [`docs/WINDOWS_GPU_SETUP.md`](docs/WINDOWS_GPU_SETUP.md)
 - AI 공통 GPU 실행 런북:
   [`docs/ai-gpu-execution-runbook.md`](docs/ai-gpu-execution-runbook.md)
 - 저장소 전체 AI 규칙: [`AGENTS.md`](AGENTS.md)
@@ -160,6 +167,7 @@ Compute 상태 및 CUDA 성공 batch 수를 모두 확인하기 전에는 GPU �
 
 ## 주요 문서
 - AI 저장소 지침: `AGENTS.md`
+- Windows GPU 설치/AI 자동화: `docs/WINDOWS_GPU_SETUP.md`
 - AI GPU 실행 런북: `docs/ai-gpu-execution-runbook.md`
 - 요구사항: `docs/requirements.md`
 - 아키텍처: `docs/design.md`
@@ -174,7 +182,8 @@ Compute 상태 및 CUDA 성공 batch 수를 모두 확인하기 전에는 GPU �
 ## 실행 관련 주의사항
 - Git 저장소에는 `_tools/` 런타임이 기본적으로 포함되지 않도록 설정되어 있습니다.
 - CPU source는 `run_web.bat`, GPU source는 `run_web_gpu.bat`으로 환경을
-  자동 준비합니다. Python 3.13이 설치되지 않은 PC에서는 먼저 설치가 필요합니다.
+  자동 준비합니다. OS 사전 요구사항은 `setup_windows_gpu.bat`으로 먼저
+  점검하며, 승인된 경우에만 `setup_windows_gpu.bat -Install`로 설치합니다.
 - 실행이 바로 필요하면 아래 중 하나가 필요합니다:
   - Source: 시스템 Python 3.13 + Node.js 후 해당 one-click launcher
   - 일반 테스터: 전체 runtime이 포함된 `release/` 패키지 전달

@@ -47,7 +47,7 @@ function Find-Python313 {
         }
     }
 
-    throw "Python 3.13 64-bit was not found. [ACTION] Install Python 3.13 for all users, enable the py launcher, then run run_web_gpu.bat again."
+    throw "Python 3.13 64-bit was not found. [ACTION] Follow docs\WINDOWS_GPU_SETUP.md, enable the py launcher, then run run_web_gpu.bat again."
 }
 
 function Get-RequirementsFingerprint {
@@ -143,7 +143,7 @@ try {
 
     $Npm = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
     if (-not $Npm) {
-        throw "Node.js/npm was not found. [ACTION] Install the current Node.js LTS release, then run run_web_gpu.bat again."
+        throw "Node.js/npm was not found. [ACTION] Follow docs\WINDOWS_GPU_SETUP.md, install the documented Node.js LTS release, then run run_web_gpu.bat again."
     }
 
     # npm ci removes packages that are no longer in package-lock.json. This is
@@ -196,6 +196,7 @@ catch {
     Write-Host ""
     Write-Host "[GPU SOURCE FAILED] $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "[ACTION] The GPU server was not started. Fix the reported item and rerun run_web_gpu.bat." -ForegroundColor Yellow
+    Write-Host "[GUIDE] Prerequisite installation and AI workflow: docs\WINDOWS_GPU_SETUP.md" -ForegroundColor Yellow
     Write-Host "[ACTION] Use run_web.bat only when intentional CPU fallback is acceptable." -ForegroundColor Yellow
     exit 1
 }

@@ -10,6 +10,7 @@ running commands or making a GPU-success claim:
 
 - `docs/ai-gpu-execution-runbook.md`
 - `docs/gpu-cuda-user-guide.md`
+- `docs/WINDOWS_GPU_SETUP.md`
 
 Then follow these repository rules:
 
@@ -24,8 +25,13 @@ Then follow these repository rules:
    CUDA Toolkit 13.1. A source checkout additionally needs 64-bit Python 3.13
    and Node.js LTS/npm. The source launcher prepares the virtual environment,
    pinned Python packages, frontend packages, and production build.
-3. Never install an OS driver or CUDA Toolkit, change system settings, or
-   reboot without explicit user authorization.
+3. For Windows prerequisite setup, run `setup_windows_gpu.bat` without
+   arguments first; its default mode is read-only inventory. Report the exact
+   missing items and planned mutations before asking for approval. Use
+   `setup_windows_gpu.bat -Install` only after explicit install authorization.
+   Never install an OS driver or CUDA Toolkit, change system settings, or
+   reboot without explicit user authorization. Reboot requires its own
+   just-in-time approval. Do not bypass UAC or company security policy.
 4. For a GPU request, do not substitute `run_web.bat` and do not hand-roll a
    `pip`/`npm` setup while `run_web_gpu` is available.
 5. Preflight is successful only when all of these fields are true or exact:

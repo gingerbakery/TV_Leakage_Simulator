@@ -11,6 +11,18 @@
 4. Model Import에서 STEP/STP 파일을 선택합니다.
 5. WebView2를 사용할 수 없는 환경에서는 기본 브라우저로 자동 전환됩니다.
 
+## GPU 사용 전
+
+- 파일 이름이 `*_gpu_cuda.zip`인 GPU 배포본만 NVIDIA GPU 모드를 제공한다.
+- GPU 배포본도 NVIDIA driver와 CUDA Toolkit 13.1은 PC에 별도 설치해야 한다.
+- 설치가 확실하지 않으면 `docs\WINDOWS_GPU_SETUP.md`를 읽고
+  `setup_windows_gpu.bat`의 기본 점검 모드부터 실행한다.
+- 설치 승인을 한 경우에만 `setup_windows_gpu.bat -Install`을 사용한다.
+- 설치 후 `CHECK_GPU_CUDA.bat`이 실제 RTX A4000 production kernel PASS를
+  표시해야 `LeakageSimulator.exe`에서 GPU를 선택한다.
+- `*_lite.zip`은 CPU 전용이다. GPU가 설치되어 있어도 Lite EXE는 CUDA를 쓰지
+  않는다.
+
 ## 포함 파일
 - `LeakageSimulator.exe`
 - `run_web.py`

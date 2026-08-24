@@ -328,10 +328,13 @@ Copy-Item -LiteralPath (Join-Path $Root "docs\performance-acceleration-plan.md")
 Copy-Item -LiteralPath (Join-Path $Root "docs\desktop-exe-packaging.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\gpu-cuda-user-guide.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\ai-gpu-execution-runbook.md") -Destination (Join-Path $OutputDir "docs") -Force
+Copy-Item -LiteralPath (Join-Path $Root "docs\WINDOWS_GPU_SETUP.md") -Destination (Join-Path $OutputDir "docs") -Force
 if ($IsGpuCudaEdition) {
     Copy-Item -LiteralPath (Join-Path $Root "requirements-gpu-cuda.txt") -Destination $OutputDir -Force
     Copy-Item -LiteralPath (Join-Path $Root "scripts\verify_gpu_cuda_runtime.py") -Destination (Join-Path $OutputDir "scripts") -Force
     Copy-Item -LiteralPath (Join-Path $Root "CHECK_GPU_CUDA.bat") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "setup_windows_gpu.bat") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "setup_windows_gpu.ps1") -Destination $OutputDir -Force
 }
 
 $WebViewCandidates = @(
@@ -384,6 +387,7 @@ $GpuStartNote = if ($IsGpuCudaEdition) {
 @"
 - NVIDIA GPU mode requires a compatible NVIDIA display driver and local CUDA Toolkit.
 - This build was validated for Numba 0.66.0, llvmlite 0.48.0 and CUDA Toolkit 13.1.
+- If prerequisites are uncertain, run setup_windows_gpu.bat in its default read-only mode and follow docs/WINDOWS_GPU_SETUP.md. Install mode always requires explicit approval.
 - Before selecting GPU mode, double-click CHECK_GPU_CUDA.bat and confirm the GPU name, Ray/BVH kernel PASS and final [OK].
 - After ray tracing, confirm the Compute row shows the GPU name and at least one successful GPU batch.
 - BVH/Rebuilt describes the acceleration structure build; it does not prove that this run used the GPU.
@@ -406,7 +410,7 @@ TV Leakage Simulator Desktop $EditionLabel v1.0.0
 
 Important:
 - Keep all files and folders together.
-- When using an AI assistant, open this package root and make it read AGENTS.md and docs/ai-gpu-execution-runbook.md before it runs commands.
+- When using an AI assistant, open this package root and make it read AGENTS.md, docs/WINDOWS_GPU_SETUP.md and docs/ai-gpu-execution-runbook.md before it runs commands.
 - A web AI without access to this folder cannot read those instructions automatically; attach the files or use the prompt in README.md.
 - X_T direct import is not implemented in this lite build.
 - If embedded WebView2 is unavailable, the launcher opens the local UI in the default browser.
@@ -474,7 +478,8 @@ try {
         "$OutputName/GEMINI.md",
         "$OutputName/.github/copilot-instructions.md",
         "$OutputName/docs/gpu-cuda-user-guide.md",
-        "$OutputName/docs/ai-gpu-execution-runbook.md"
+        "$OutputName/docs/ai-gpu-execution-runbook.md",
+        "$OutputName/docs/WINDOWS_GPU_SETUP.md"
     )
     if ($IsGpuCudaEdition) {
         $requiredEntries += @(
@@ -483,6 +488,8 @@ try {
             "$OutputName/_tools/python313/Lib/site-packages/llvmlite/binding/llvmlite.dll",
             "$OutputName/scripts/verify_gpu_cuda_runtime.py",
             "$OutputName/CHECK_GPU_CUDA.bat",
+            "$OutputName/setup_windows_gpu.bat",
+            "$OutputName/setup_windows_gpu.ps1",
             "$OutputName/gpu_cuda_runtime_manifest.json"
         )
     }

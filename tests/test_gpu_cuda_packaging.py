@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPT = ROOT / "scripts" / "verify_gpu_cuda_runtime.py"
 GPU_REQUIREMENTS = ROOT / "requirements-gpu-cuda.txt"
 GPU_USER_GUIDE = ROOT / "docs" / "gpu-cuda-user-guide.md"
+WINDOWS_GPU_SETUP = ROOT / "docs" / "WINDOWS_GPU_SETUP.md"
 
 
 def _load_cuda_verifier():
@@ -198,6 +199,19 @@ class GpuCudaPackagingTests(unittest.TestCase):
             script,
         )
 
+        setup_guide = WINDOWS_GPU_SETUP.read_text(encoding="utf-8")
+        self.assertIn("NVIDIA RTX A4000", setup_guide)
+        setup_copy = script.index(
+            'docs\\WINDOWS_GPU_SETUP.md") -Destination '
+            '(Join-Path $OutputDir "docs")',
+        )
+        gpu_block_start = script.index("if ($IsGpuCudaEdition) {", setup_copy)
+        self.assertLess(setup_copy, gpu_block_start)
+        self.assertIn(
+            '"$OutputName/docs/WINDOWS_GPU_SETUP.md"',
+            script,
+        )
+
     def test_ai_gpu_guidance_is_bundled_with_both_editions(self) -> None:
         script = (ROOT / "build_lightweight_desktop.ps1").read_text(
             encoding="utf-8"
@@ -208,6 +222,7 @@ class GpuCudaPackagingTests(unittest.TestCase):
             'Join-Path $Root "GEMINI.md") -Destination $OutputDir',
             'Join-Path $Root ".github\\copilot-instructions.md")',
             'Join-Path $Root "docs\\ai-gpu-execution-runbook.md")',
+            'Join-Path $Root "docs\\WINDOWS_GPU_SETUP.md")',
         )
         for token in copy_tokens:
             with self.subTest(copy_token=token):
@@ -230,11 +245,30 @@ class GpuCudaPackagingTests(unittest.TestCase):
                 self.assertIn(entry, script)
 
         self.assertIn(
-            "make it read AGENTS.md and docs/ai-gpu-execution-runbook.md",
+            "make it read AGENTS.md, docs/WINDOWS_GPU_SETUP.md and docs/ai-gpu-execution-runbook.md",
             script,
         )
         self.assertIn(
             "without access to this folder cannot read those instructions automatically",
+            script,
+        )
+
+    def test_windows_setup_helper_is_bundled_with_gpu_edition(self) -> None:
+        script = (ROOT / "build_lightweight_desktop.ps1").read_text(
+            encoding="utf-8"
+        )
+        gpu_block_start = script.index("if ($IsGpuCudaEdition) {", script.index("[4/9]"))
+        for filename in ("setup_windows_gpu.bat", "setup_windows_gpu.ps1"):
+            with self.subTest(filename=filename):
+                copy_index = script.index(
+                    f'Join-Path $Root "{filename}") -Destination $OutputDir',
+                    gpu_block_start,
+                )
+                self.assertGreater(copy_index, gpu_block_start)
+                self.assertIn(f'"$OutputName/{filename}"', script)
+
+        self.assertIn(
+            "run setup_windows_gpu.bat in its default read-only mode",
             script,
         )
 

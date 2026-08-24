@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_GUIDE = ROOT / "AGENTS.md"
 AI_GPU_RUNBOOK = ROOT / "docs" / "ai-gpu-execution-runbook.md"
 GPU_USER_GUIDE = ROOT / "docs" / "gpu-cuda-user-guide.md"
+WINDOWS_GPU_SETUP = ROOT / "docs" / "WINDOWS_GPU_SETUP.md"
 AI_ENTRYPOINTS = (
     ROOT / "CLAUDE.md",
     ROOT / "GEMINI.md",
@@ -34,6 +35,7 @@ class AiGpuGuidanceTests(unittest.TestCase):
             AGENT_GUIDE,
             AI_GPU_RUNBOOK,
             GPU_USER_GUIDE,
+            WINDOWS_GPU_SETUP,
             *AI_ENTRYPOINTS,
         )
         for path in expected_files:
@@ -43,12 +45,14 @@ class AiGpuGuidanceTests(unittest.TestCase):
         agent_guide = read_lower(AGENT_GUIDE)
         self.assertIn("docs/ai-gpu-execution-runbook.md", agent_guide)
         self.assertIn("docs/gpu-cuda-user-guide.md", agent_guide)
+        self.assertIn("docs/windows_gpu_setup.md", agent_guide)
 
         for path in AI_ENTRYPOINTS:
             entrypoint = read_lower(path)
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertIn("agents.md", entrypoint)
                 self.assertIn("docs/ai-gpu-execution-runbook.md", entrypoint)
+                self.assertIn("docs/windows_gpu_setup.md", entrypoint)
 
     def test_canonical_guidance_preserves_the_fail_closed_runtime_contract(self) -> None:
         guidance = "\n".join(
@@ -124,6 +128,7 @@ class AiGpuGuidanceTests(unittest.TestCase):
         )
         for token in (
             "agents.md",
+            "docs/windows_gpu_setup.md",
             "docs/ai-gpu-execution-runbook.md",
             "docs/gpu-cuda-user-guide.md",
         ):
@@ -140,6 +145,71 @@ class AiGpuGuidanceTests(unittest.TestCase):
             readme,
             r"(?:cannot|can['’]t|not guaranteed|불가능|못|보장되지|자동.{0,30}않)",
             "README must not promise that every AI can automatically read the guide",
+        )
+
+    def test_windows_setup_guide_is_actionable_and_approval_gated(self) -> None:
+        setup = read_lower(WINDOWS_GPU_SETUP)
+        required_tokens = (
+            "nvidia rtx a4000",
+            "compute capability 8.6",
+            "driver 580",
+            "cuda toolkit 13.1",
+            "python 3.13.15",
+            "node.js 24.19.0",
+            "setup_windows_gpu.bat",
+            "-install",
+            "nvidia-smi",
+            "nvcc --version",
+            "$env:cuda_path",
+            "run_web_gpu.ps1 -preflightonly",
+            "production_ray_bvh",
+            "strict_float64_bvh_v1",
+            "gpu_cuda_gpu_success_count",
+        )
+        for token in required_tokens:
+            with self.subTest(token=token):
+                self.assertIn(token, setup)
+
+        self.assert_has_pattern(
+            setup,
+            r"(?:source checkout|git source).{0,300}(?:python|node)",
+            "source setup must disclose its Python/Node prerequisites",
+        )
+        self.assert_has_pattern(
+            setup,
+            r"gpu zip.{0,300}(?:python|node).{0,120}(?:포함|설치하지)",
+            "GPU ZIP setup must say Python/Node are bundled or unnecessary",
+        )
+        self.assert_has_pattern(
+            setup,
+            r"(?:driver|드라이버).{0,200}(?:승인|approval)",
+            "driver installation must require explicit approval",
+        )
+        self.assert_has_pattern(
+            setup,
+            r"(?:재부팅|reboot).{0,120}(?:별도|다시|직전).{0,80}(?:승인|approval)",
+            "reboot must require separate just-in-time approval",
+        )
+        self.assert_has_pattern(
+            setup,
+            r"(?:uac|사내 보안|company policy).{0,100}(?:우회|bypass)",
+            "the guide must forbid bypassing company/UAC controls",
+        )
+
+    def test_ai_runbook_routes_prerequisite_setup_through_check_first_mode(self) -> None:
+        runbook = read_lower(AI_GPU_RUNBOOK)
+        self.assertIn("docs/windows_gpu_setup.md", runbook)
+        self.assertIn("setup_windows_gpu.bat", runbook)
+        self.assertIn("setup_windows_gpu.bat -install", runbook)
+        self.assert_has_pattern(
+            runbook,
+            r"without arguments.{0,100}read-only inventory",
+            "the AI runbook must start with non-mutating inventory",
+        )
+        self.assert_has_pattern(
+            runbook,
+            r"reboot.{0,120}(?:ask again|approval)",
+            "the AI runbook must not authorize automatic reboot",
         )
 
 
