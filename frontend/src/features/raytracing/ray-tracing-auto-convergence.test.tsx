@@ -49,7 +49,7 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Auto convergence', () => {
-  it('stops and detaches an automatic retry when the result window is closed', async () => {
+  it('stops a closed-window retry without reusing its cancel token on a later run', async () => {
     const result = createRayTraceResultFixture()
     const emitter = { ...result.emitters[0], ray_count: 100 }
     const receiver = result.receivers[0]
@@ -70,6 +70,8 @@ describe('RayTracingPanel Auto convergence', () => {
     apiHookState.start
       .mockResolvedValueOnce({ job_id: 'job-1' })
       .mockResolvedValueOnce({ job_id: 'job-auto-retry' })
+      .mockResolvedValueOnce({ job_id: 'job-2' })
+      .mockResolvedValueOnce({ job_id: 'job-2-auto-retry' })
 
     const { rerender } = render(
       <AppProviders>
@@ -133,5 +135,54 @@ describe('RayTracingPanel Auto convergence', () => {
       }),
     )
     expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
+
+    apiHookState.job = undefined
+    rerender(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+          autoConvergenceCancelToken={1}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(3))
+    await waitFor(() =>
+      expect(workspaceStore.getState().activeRayTraceJobId).toBe('job-2'),
+    )
+
+    const secondCompleted = createCompletedRayTraceJobFixture()
+    secondCompleted.job_id = 'job-2'
+    secondCompleted.result.total_rays = 100
+    secondCompleted.total_rays = 100
+    secondCompleted.result.metrics.receiver_001 = {
+      ...(secondCompleted.result.metrics.receiver_001 as Record<
+        string,
+        unknown
+      >),
+      hit_count: 100,
+      error_estimate_percent: 12,
+      peak_area_error_estimate_percent: 14,
+    }
+    apiHookState.job = secondCompleted
+
+    rerender(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+          autoConvergenceCancelToken={1}
+        />
+      </AppProviders>,
+    )
+
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(4))
+    await waitFor(() =>
+      expect(workspaceStore.getState().activeRayTraceJobId).toBe(
+        'job-2-auto-retry',
+      ),
+    )
   })
 })

@@ -1228,6 +1228,9 @@ export function RayTracingPanel({
   const autoRetryJobIdRef = useRef<string | null>(null)
   const autoRetryAbortControllerRef = useRef<AbortController | null>(null)
   const autoConvergenceCancelTokenRef = useRef(autoConvergenceCancelToken)
+  const handledAutoConvergenceCancelTokenRef = useRef(
+    autoConvergenceCancelToken,
+  )
   autoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
   const [convergenceHistory, setConvergenceHistory] = useState<
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
@@ -1321,7 +1324,11 @@ export function RayTracingPanel({
     !isRunning
 
   useEffect(() => {
-    if (autoConvergenceCancelToken <= 0) return
+    if (
+      autoConvergenceCancelToken <=
+      handledAutoConvergenceCancelTokenRef.current
+    ) return
+    handledAutoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
     const hadPendingAutoConvergence =
       autoConvergenceActiveRef.current ||
       autoRetryAbortControllerRef.current !== null ||
