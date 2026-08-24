@@ -187,8 +187,29 @@ class ApiRuntime:
             "created_at": time.time(),
         }
         with self._state_lock:
+            superseded_job_count = 0
+            for existing_job in self._raytrace_jobs.values():
+                if existing_job.get("status") not in {"queued", "running"}:
+                    continue
+                existing_job["stop_requested"] = True
+                existing_job["phase"] = "stopping"
+                superseded_job_count += 1
             self._raytrace_jobs[job_id] = job
             self._prune_raytrace_jobs_locked()
+
+        config = request_payload.get("config")
+        if not isinstance(config, dict):
+            config = {}
+        print(
+            "[RAY] job start | {} | rays={} depth={} backend={} | stopped_previous={}".format(
+                job_id[:8],
+                requested_ray_count,
+                config.get("max_depth", "?"),
+                config.get("intersection_backend", "auto"),
+                superseded_job_count,
+            ),
+            flush=True,
+        )
 
         worker = threading.Thread(
             target=self._run_raytrace_job,

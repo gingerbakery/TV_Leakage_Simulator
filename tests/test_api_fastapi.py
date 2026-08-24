@@ -423,6 +423,66 @@ class FastApiLayerTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_starting_a_new_job_stops_the_previous_active_job(self):
+        class PartialResult:
+            def __init__(self, total_rays):
+                self.total_rays = total_rays
+
+            def to_dict(self):
+                return {"run_id": "run_replaced", "total_rays": self.total_rays}
+
+        first_started = threading.Event()
+
+        def input_builder(scene_mesh, request_payload):
+            return SimpleNamespace(
+                emitters=[SimpleNamespace(ray_count=200, enabled=True)],
+            )
+
+        def slow_runner(trace_input, progress_callback=None, should_stop=None):
+            processed = 0
+            first_started.set()
+            for processed in range(1, 201):
+                if should_stop is not None and should_stop():
+                    processed -= 1
+                    break
+                if progress_callback is not None:
+                    progress_callback(processed, 200)
+                time.sleep(0.002)
+            return PartialResult(processed)
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name) / "replace-active",
+            scene_loader=_scene_loader,
+            trace_input_builder=input_builder,
+            trace_runner=slow_runner,
+        )
+        scene = runtime.load_scene("replace-active.step")
+        payload = {
+            "scene_token": scene["metadata"]["scene_token"],
+            "emitters": [{"enabled": True, "ray_count": 200}],
+        }
+
+        first = runtime.start_raytrace_job(payload)
+        self.assertTrue(first_started.wait(timeout=1.0))
+        second = runtime.start_raytrace_job(payload)
+
+        first_snapshot = runtime.raytrace_job_snapshot(first["job_id"])
+        self.assertIsNotNone(first_snapshot)
+        self.assertTrue(first_snapshot["stop_requested"])
+        self.assertEqual(first_snapshot["phase"], "stopping")
+        self.assertFalse(second["stop_requested"])
+
+        for _ in range(100):
+            first_snapshot = runtime.raytrace_job_snapshot(first["job_id"])
+            if first_snapshot and first_snapshot["status"] == "completed":
+                break
+            time.sleep(0.005)
+
+        self.assertIsNotNone(first_snapshot)
+        self.assertEqual(first_snapshot["phase"], "stopped")
+        self.assertTrue(first_snapshot["stopped_early"])
+        runtime.stop_raytrace_job(second["job_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

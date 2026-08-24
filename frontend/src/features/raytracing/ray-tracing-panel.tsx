@@ -1225,6 +1225,10 @@ export function RayTracingPanel({
   const autoConvergenceActiveRef = useRef(false)
   const convergenceMultiplierRef = useRef(1)
   const handledConvergenceJobRef = useRef<string | null>(null)
+  const autoRetryJobIdRef = useRef<string | null>(null)
+  const autoRetryAbortControllerRef = useRef<AbortController | null>(null)
+  const autoConvergenceCancelTokenRef = useRef(autoConvergenceCancelToken)
+  autoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
   const [convergenceHistory, setConvergenceHistory] = useState<
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
   >([])
@@ -1318,11 +1322,30 @@ export function RayTracingPanel({
 
   useEffect(() => {
     if (autoConvergenceCancelToken <= 0) return
+    const hadPendingAutoConvergence =
+      autoConvergenceActiveRef.current ||
+      autoRetryAbortControllerRef.current !== null ||
+      autoRetryJobIdRef.current !== null
     autoConvergenceActiveRef.current = false
-    setAutoConvergenceStatus(
-      '결과 창을 닫아 이후 Auto convergence 재실행을 취소했습니다.',
-    )
-  }, [autoConvergenceCancelToken])
+    autoRetryAbortControllerRef.current?.abort()
+    autoRetryAbortControllerRef.current = null
+    const autoRetryJobId = autoRetryJobIdRef.current
+    autoRetryJobIdRef.current = null
+    if (autoRetryJobId) {
+      stopMutation.mutate({ jobId: autoRetryJobId })
+      if (activeJobId === autoRetryJobId) {
+        // Keep the completed result that was already being reviewed, while
+        // detaching the canceled automatic retry so its partial result cannot
+        // reopen the report window after the user closes it.
+        actions.setActiveRayTraceJobId(null)
+      }
+    }
+    if (hadPendingAutoConvergence) {
+      setAutoConvergenceStatus(
+        '결과 창을 닫아 이후 Auto convergence 재실행을 취소했습니다.',
+      )
+    }
+  }, [actions, activeJobId, autoConvergenceCancelToken, stopMutation])
 
   useEffect(
     () => () => actions.setEmitterFaceSelectionArmed(false),
@@ -1368,7 +1391,10 @@ export function RayTracingPanel({
     actions.setRayTraceConfig({ ...config, ...patch })
   }
 
-  const launchRun = useCallback(async (rayMultiplier = 1) => {
+  const launchRun = useCallback(async (
+    rayMultiplier = 1,
+    autoRetry = false,
+  ) => {
     if (
       !scene ||
       !emitters.some((emitter) => emitter.enabled) ||
@@ -1389,19 +1415,47 @@ export function RayTracingPanel({
       roiScopes,
       config,
     })
+    const cancelTokenAtStart = autoConvergenceCancelTokenRef.current
+    const abortController = autoRetry ? new AbortController() : null
+    if (autoRetry) {
+      autoRetryAbortControllerRef.current?.abort()
+      autoRetryAbortControllerRef.current = abortController
+    }
     try {
-      const startedJob = await startMutation.mutateAsync({ request })
+      const startedJob = await startMutation.mutateAsync({
+        request,
+        signal: abortController?.signal,
+      })
+      if (autoRetryAbortControllerRef.current === abortController) {
+        autoRetryAbortControllerRef.current = null
+      }
+      if (
+        autoRetry &&
+        (cancelTokenAtStart !== autoConvergenceCancelTokenRef.current ||
+          !autoConvergenceActiveRef.current)
+      ) {
+        stopMutation.mutate({ jobId: startedJob.job_id })
+        return false
+      }
+      autoRetryJobIdRef.current = autoRetry ? startedJob.job_id : null
       actions.setActiveRayTraceJobId(startedJob.job_id)
       return true
     } catch {
+      if (autoRetryAbortControllerRef.current === abortController) {
+        autoRetryAbortControllerRef.current = null
+      }
+      if (autoRetry && abortController?.signal.aborted) return false
       autoConvergenceActiveRef.current = false
       setAutoConvergenceStatus('자동 수렴의 다음 Ray 실행을 시작하지 못했습니다.')
       return false
     }
-  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, transformRules, actions])
+  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const beginRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
+    autoRetryJobIdRef.current = null
+    autoRetryAbortControllerRef.current?.abort()
+    autoRetryAbortControllerRef.current = null
     convergenceMultiplierRef.current = 1
     handledConvergenceJobRef.current = null
     setAutoConvergenceStatus(
@@ -1427,6 +1481,9 @@ export function RayTracingPanel({
     if (!job || job.status !== 'completed' || !job.result) return
     if (handledConvergenceJobRef.current === job.job_id) return
     handledConvergenceJobRef.current = job.job_id
+    if (autoRetryJobIdRef.current === job.job_id) {
+      autoRetryJobIdRef.current = null
+    }
     const enabledIds = receivers.filter((receiver) => receiver.enabled).map((receiver) => receiver.receiver_id)
     const receiverMetrics = enabledIds.map((id) => {
       const value = job.result?.metrics[id]
@@ -1478,7 +1535,7 @@ export function RayTracingPanel({
     setAutoConvergenceStatus(
       `오차가 목표보다 높아 ${nextTotalRays.toLocaleString()} Ray로 다시 해석합니다.`,
     )
-    void launchRun(nextMultiplier)
+    void launchRun(nextMultiplier, true)
   }, [actions, config.auto_convergence, config.convergence_target_percent, config.max_convergence_multiplier, enabledEmitterRayCount, job, launchRun, receivers])
 
   const progress =

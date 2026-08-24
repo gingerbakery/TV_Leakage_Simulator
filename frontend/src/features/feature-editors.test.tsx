@@ -841,6 +841,7 @@ describe('Step 07·08 feature editors', () => {
     expect(
       screen.getByRole('button', { name: 'Run Ray Tracing' }),
     ).toHaveProperty('disabled', false)
+
   })
 
   it('keeps the Current View Receiver creation action available', () => {

@@ -100,7 +100,31 @@ interface AnalysisCaseFile {
   cases: AnalysisCase[]
 }
 
+interface AnalysisReportSaveFileHandle {
+  createWritable(): Promise<{
+    write(data: Blob): Promise<void>
+    close(): Promise<void>
+  }>
+}
+
+type AnalysisReportSaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string
+    types?: Array<{
+      description: string
+      accept: Record<string, string[]>
+    }>
+  }) => Promise<AnalysisReportSaveFileHandle>
+}
+
 type ReceiverCompareScope = 'all' | number
+type LuminanceScaleMode = 'auto' | 'compare' | 'customize'
+
+interface LuminanceDisplayScale {
+  mode: LuminanceScaleMode
+  minNit: number
+  maxNit: number
+}
 
 function receiversInDisplayOrder(receivers: ReceiverSpec[]): ReceiverSpec[] {
   return receivers
@@ -166,7 +190,6 @@ function caseLuminance(
   peakNit: number
   meanNit: number
   lightAreaMm2: Record<1 | 5 | 10, number>
-  lightAreaRatio: Record<1 | 5 | 10, number>
 } {
   let peakNit = 0
   let weightedMean = 0
@@ -185,13 +208,11 @@ function caseLuminance(
   const meanNit = totalArea > 0 ? weightedMean / totalArea : 0
   const thresholds = [1, 5, 10] as const
   const lightAreaMm2: Record<1 | 5 | 10, number> = { 1: 0, 5: 0, 10: 0 }
-  let sampledAreaMm2 = 0
   for (const grid of result.receiver_grids.filter((item) => receiverIds.has(item.receiver_id))) {
     const binAreaMm2 = Math.max(0, numeric(grid.bin_area_mm2))
     const binAreaM2 = binAreaMm2 * 1e-6
     for (const row of grid.flux_lumen) {
       for (const flux of row) {
-        sampledAreaMm2 += binAreaMm2
         const nit =
           binAreaM2 > 0
             ? (result.config.k_abs * result.config.k_brdf * numeric(flux)) /
@@ -210,12 +231,21 @@ function caseLuminance(
     peakNit,
     meanNit,
     lightAreaMm2,
-    lightAreaRatio: {
-      1: sampledAreaMm2 > 0 ? (lightAreaMm2[1] / sampledAreaMm2) * 100 : 0,
-      5: sampledAreaMm2 > 0 ? (lightAreaMm2[5] / sampledAreaMm2) * 100 : 0,
-      10: sampledAreaMm2 > 0 ? (lightAreaMm2[10] / sampledAreaMm2) * 100 : 0,
-    },
   }
+}
+
+function correspondingReceiverPeakNit(
+  result: RayTraceResult,
+  receiverId: string,
+  receiverIndex: number,
+): number {
+  const ordered = receiversInDisplayOrder(result.receivers)
+  const receiver =
+    ordered.find((item) => item.receiver_id === receiverId) ??
+    ordered[receiverIndex]
+  return receiver
+    ? numeric(objectValue(result.metrics, receiver.receiver_id).peak_nit_est)
+    : 0
 }
 
 function receiverLightAreas(
@@ -463,6 +493,12 @@ function formatMetric(value: unknown, digits = 3) {
 function ReceiverHeatmap({
   grid,
   receiver,
+  luminanceScale,
+  onLuminanceScaleModeChange,
+  customScaleMinNit,
+  customScaleMaxNit,
+  onCustomScaleMinNitChange,
+  onCustomScaleMaxNitChange,
   kAbs,
   kBrdf,
   storedPaths,
@@ -474,6 +510,12 @@ function ReceiverHeatmap({
 }: {
   grid: ReceiverGrid
   receiver: ReceiverSpec
+  luminanceScale: LuminanceDisplayScale
+  onLuminanceScaleModeChange: (mode: LuminanceScaleMode) => void
+  customScaleMinNit: number
+  customScaleMaxNit: number
+  onCustomScaleMinNitChange: (value: number) => void
+  onCustomScaleMaxNitChange: (value: number) => void
   kAbs: number
   kBrdf: number
   storedPaths: RayHit[][]
@@ -693,14 +735,21 @@ function ReceiverHeatmap({
     if (!canvas || !context) return
     canvas.width = columns
     canvas.height = rows
-    const fluxValues = receiverHeatmapDisplayValues(grid)
-    const values = displayMode === 'error' && errorValues.length > 0 ? errorValues : fluxValues
-    const peak = Math.max(...values, 0)
+    const values = displayMode === 'error' && errorValues.length > 0
+      ? errorValues
+      : luminanceValues
+    const luminanceSpan = Math.max(
+      luminanceScale.maxNit - luminanceScale.minNit,
+      1e-12,
+    )
     const image = context.createImageData(columns, rows)
     for (let index = 0; index < columns * rows; index += 1) {
       const normalized = displayMode === 'error'
         ? Math.min(1, (values[index] || 0) / Math.max(errorTargetPercent * 2, 0.01))
-        : peak > 0 ? Math.sqrt((values[index] || 0) / peak) : 0
+        : Math.sqrt(Math.min(1, Math.max(
+          0,
+          (numeric(values[index]) - luminanceScale.minNit) / luminanceSpan,
+        )))
       const pixel = index * 4
       const [red, green, blue] = colorMode === 'mono'
         ? [Math.round(normalized * 255), Math.round(normalized * 255), Math.round(normalized * 255)]
@@ -711,7 +760,17 @@ function ReceiverHeatmap({
       image.data[pixel + 3] = 255
     }
     context.putImageData(image, 0, 0)
-  }, [colorMode, columns, displayMode, errorTargetPercent, errorValues, grid, rows])
+  }, [
+    colorMode,
+    columns,
+    displayMode,
+    errorTargetPercent,
+    errorValues,
+    luminanceScale.maxNit,
+    luminanceScale.minNit,
+    luminanceValues,
+    rows,
+  ])
 
   const pointerPosition = (
     element: HTMLDivElement,
@@ -879,6 +938,62 @@ function ReceiverHeatmap({
             <button type="button" aria-pressed={colorMode === 'color'} className={`rounded px-2 py-0.5 ${colorMode === 'color' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('color')}>Color</button>
             <button type="button" aria-pressed={colorMode === 'mono'} className={`rounded px-2 py-0.5 ${colorMode === 'mono' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('mono')}>Mono</button>
           </div>
+          <div className="flex items-center gap-1">
+            <span className="font-semibold text-foreground">Scale</span>
+            <HelpTooltip label="Heatmap / Profile display scale 설명">
+              Auto는 현재 Receiver의 Peak에 맞춥니다. Compare는 선택한 Case들의 대응 Receiver 중 가장 높은 Peak를 공통 최댓값으로 사용합니다. Customize는 Heatmap과 X/Y Profile에 사용자 지정 nit 범위를 동일하게 적용합니다.
+            </HelpTooltip>
+            <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+              {(['auto', 'compare', 'customize'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={luminanceScale.mode === mode}
+                  className={`rounded px-2 py-0.5 ${luminanceScale.mode === mode ? 'bg-primary/15 font-semibold text-primary' : ''}`}
+                  onClick={() => onLuminanceScaleModeChange(mode)}
+                >
+                  {mode === 'auto' ? 'Auto' : mode === 'compare' ? 'Compare' : 'Customize'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {luminanceScale.mode === 'customize' ? (
+            <div className="flex items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 py-0.5">
+              <label className="flex items-center gap-1">
+                Min
+                <input
+                  aria-label="Custom luminance scale minimum"
+                  className="h-6 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground"
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={customScaleMinNit}
+                  onChange={(event) =>
+                    onCustomScaleMinNitChange(
+                      Math.max(0, numeric(event.currentTarget.value)),
+                    )
+                  }
+                />
+              </label>
+              <label className="flex items-center gap-1">
+                Max
+                <input
+                  aria-label="Custom luminance scale maximum"
+                  className="h-6 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground"
+                  type="number"
+                  min={0.001}
+                  step={0.1}
+                  value={customScaleMaxNit}
+                  onChange={(event) =>
+                    onCustomScaleMaxNitChange(
+                      Math.max(0.001, numeric(event.currentTarget.value)),
+                    )
+                  }
+                />
+              </label>
+              <span>nit</span>
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <span>
@@ -900,6 +1015,36 @@ function ReceiverHeatmap({
             Reset view
           </button>
         </div>
+      </div>
+      <div
+        data-testid={`${grid.receiver_id}-luminance-scale`}
+        data-scale-mode={luminanceScale.mode}
+        data-scale-min-nit={luminanceScale.minNit}
+        data-scale-max-nit={luminanceScale.maxNit}
+        className="mb-2 flex items-center justify-end gap-2 text-xs text-muted-foreground"
+      >
+        <span className="font-medium text-foreground">
+          {displayMode === 'error'
+            ? 'Error scale'
+            : `${luminanceScale.mode === 'auto' ? 'Auto' : luminanceScale.mode === 'compare' ? 'Compare' : 'Customize'} nit scale`}
+        </span>
+        <span className="font-mono">
+          {displayMode === 'error' ? '0%' : `${formatMetric(luminanceScale.minNit)} nit`}
+        </span>
+        <span
+          aria-hidden="true"
+          className="h-2.5 w-32 rounded border border-border"
+          style={{
+            background: colorMode === 'mono'
+              ? 'linear-gradient(to right, #000, #fff)'
+              : 'linear-gradient(to right, #0814be, #1598ff, #59e36a, #ffe44d, #ff3b30)',
+          }}
+        />
+        <span className="font-mono">
+          {displayMode === 'error'
+            ? `${formatMetric(errorTargetPercent * 2, 1)}%`
+            : `${formatMetric(luminanceScale.maxNit)} nit`}
+        </span>
       </div>
       <div
         className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_4.5rem_minmax(11rem,14rem)] grid-rows-[auto_3.25rem_10rem] gap-x-2"
@@ -1080,6 +1225,7 @@ function ReceiverHeatmap({
             <ReceiverProfileChart
               axis="Y"
               values={yProfile}
+              luminanceScale={luminanceScale}
               minimumMm={-layout.heightMm / 2}
               maximumMm={layout.heightMm / 2}
               fixedCoordinateMm={((profileColumn + 0.5) / columns - 0.5) * layout.widthMm}
@@ -1134,6 +1280,7 @@ function ReceiverHeatmap({
           <ReceiverProfileChart
             axis="X"
             values={xProfile}
+            luminanceScale={luminanceScale}
             minimumMm={-layout.widthMm / 2}
             maximumMm={layout.widthMm / 2}
             fixedCoordinateMm={(0.5 - (profileDisplayRow + 0.5) / rows) * layout.heightMm}
@@ -1231,22 +1378,31 @@ function ReceiverHeatmap({
 function ReceiverProfileChart({
   axis,
   values,
+  luminanceScale,
   minimumMm,
   maximumMm,
   fixedCoordinateMm,
 }: {
   axis: 'X' | 'Y'
   values: number[]
+  luminanceScale: LuminanceDisplayScale
   minimumMm: number
   maximumMm: number
   fixedCoordinateMm: number
 }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const peak = Math.max(...values, 0)
+  const scaleSpan = Math.max(
+    luminanceScale.maxNit - luminanceScale.minNit,
+    1e-12,
+  )
   const points = values
     .map((value, index) => {
       const position = values.length <= 1 ? 0 : (index / (values.length - 1)) * 100
-      const normalizedValue = peak > 0 ? value / peak : 0
+      const normalizedValue = Math.min(1, Math.max(
+        0,
+        (value - luminanceScale.minNit) / scaleSpan,
+      ))
       const x = axis === 'X' ? position : normalizedValue * 38
       const y = axis === 'X' ? 38 - normalizedValue * 34 : 100 - position
       return `${x},${y}`
@@ -1257,7 +1413,7 @@ function ReceiverProfileChart({
       <div className={`mb-1 gap-1 text-sm ${axis === 'X' ? 'flex items-center justify-between' : 'space-y-0.5'}`}>
         <span className="font-semibold">{axis}축 휘도 프로파일</span>
         <span className="font-mono text-muted-foreground">
-          {axis === 'X' ? 'Y' : 'X'}={formatReceiverCoordinate(fixedCoordinateMm)} mm · 최대 {formatMetric(peak)} nit
+          {axis === 'X' ? 'Y' : 'X'}={formatReceiverCoordinate(fixedCoordinateMm)} mm · Peak {formatMetric(peak)} nit · Scale {formatMetric(luminanceScale.minNit)}–{formatMetric(luminanceScale.maxNit)} nit
         </span>
       </div>
       <div className={`relative ${axis === 'X' ? 'h-20 w-full' : 'min-h-0 w-full flex-1'}`}>
@@ -1298,7 +1454,7 @@ function ReceiverProfileChart({
         </div>
       ) : (
         <div className="flex justify-between font-mono text-xs text-muted-foreground">
-          <span>0</span><span>{formatMetric(peak)} nit</span>
+          <span>{formatMetric(luminanceScale.minNit)}</span><span>{formatMetric(luminanceScale.maxNit)} nit</span>
         </div>
       )}
     </div>
@@ -1348,6 +1504,10 @@ export function RayTraceResultWindow({
     useState<ReceiverCompareScope>('all')
   const [reportCaseId, setReportCaseId] = useState<string | null>(null)
   const [errorTargetPercent, setErrorTargetPercent] = useState(5)
+  const [luminanceScaleMode, setLuminanceScaleMode] =
+    useState<LuminanceScaleMode>('auto')
+  const [customScaleMinNit, setCustomScaleMinNit] = useState(0)
+  const [customScaleMaxNit, setCustomScaleMaxNit] = useState(10)
   const caseFileInputRef = useRef<HTMLInputElement>(null)
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
@@ -1531,7 +1691,7 @@ export function RayTraceResultWindow({
     baselineCase?.result ?? result
   ).receivers.filter((item) => item.enabled)
 
-  const exportCases = () => {
+  const exportCases = async () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
     if (cases.length === 0) return
     const payload: AnalysisCaseFile = {
@@ -1541,14 +1701,42 @@ export function RayTraceResultWindow({
       baseline_case_id: baselineCase?.case_id ?? null,
       cases,
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
       type: 'application/json',
     })
+    const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.bitsam-report`
+    const picker = (window as AnalysisReportSaveFilePickerWindow)
+      .showSaveFilePicker
+    if (picker) {
+      try {
+        const handle = await picker({
+          suggestedName: fileName,
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        return
+      } catch (error) {
+        if (
+          error instanceof DOMException &&
+          error.name === 'AbortError'
+        ) return
+        window.alert(
+          error instanceof Error
+            ? `보고서 저장에 실패했습니다: ${error.message}`
+            : '보고서 저장에 실패했습니다.',
+        )
+        return
+      }
+    }
+
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `ray-analysis-${new Date().toISOString().slice(0, 10)}.bitsam-report`
+    anchor.download = fileName
+    document.body.append(anchor)
     anchor.click()
+    anchor.remove()
     URL.revokeObjectURL(url)
   }
 
@@ -2225,7 +2413,7 @@ export function RayTraceResultWindow({
                   </div>
                 </details>
               ) : null}
-              {receiversInDisplayOrder(result.receivers).map((receiver) => {
+              {receiversInDisplayOrder(result.receivers).map((receiver, receiverIndex) => {
                 const values = objectValue(
                   result.metrics,
                   receiver.receiver_id,
@@ -2238,6 +2426,40 @@ export function RayTraceResultWindow({
                   result,
                   receiver.receiver_id,
                 )
+                const currentPeakNit = numeric(values.peak_nit_est)
+                const comparePeakNit = Math.max(
+                  currentPeakNit,
+                  ...selectedCases.map((item) =>
+                    correspondingReceiverPeakNit(
+                      item.result,
+                      receiver.receiver_id,
+                      receiverIndex,
+                    ),
+                  ),
+                )
+                const safeCustomMinNit = Math.max(0, customScaleMinNit)
+                const safeCustomMaxNit = Math.max(
+                  safeCustomMinNit + 1e-6,
+                  customScaleMaxNit,
+                )
+                const luminanceScale: LuminanceDisplayScale =
+                  luminanceScaleMode === 'customize'
+                    ? {
+                        mode: luminanceScaleMode,
+                        minNit: safeCustomMinNit,
+                        maxNit: safeCustomMaxNit,
+                      }
+                    : luminanceScaleMode === 'compare'
+                      ? {
+                          mode: luminanceScaleMode,
+                          minNit: 0,
+                          maxNit: Math.max(comparePeakNit, 1e-6),
+                        }
+                      : {
+                          mode: luminanceScaleMode,
+                          minNit: 0,
+                          maxNit: Math.max(currentPeakNit, 1e-6),
+                        }
                 const totalError = typeof values.error_estimate_percent === 'number'
                   ? numeric(values.error_estimate_percent) : null
                 const peakAreaError = typeof values.peak_area_error_estimate_percent === 'number'
@@ -2356,6 +2578,12 @@ export function RayTraceResultWindow({
                         <ReceiverHeatmap
                           grid={grid}
                           receiver={receiver}
+                          luminanceScale={luminanceScale}
+                          onLuminanceScaleModeChange={setLuminanceScaleMode}
+                          customScaleMinNit={customScaleMinNit}
+                          customScaleMaxNit={customScaleMaxNit}
+                          onCustomScaleMinNitChange={setCustomScaleMinNit}
+                          onCustomScaleMaxNitChange={setCustomScaleMaxNit}
                           kAbs={result.config.k_abs}
                           kBrdf={result.config.k_brdf}
                           storedPaths={result.stored_paths}
