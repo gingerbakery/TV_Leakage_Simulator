@@ -76,6 +76,8 @@ from .reflection import (
     sample_reflection_direction,
 )
 from .fast_sampling import (
+    build_face_emitter_batch_geometry,
+    iter_face_emitter_ray_batches,
     iter_virtual_plane_ray_batches,
     supports_fast_virtual_plane_sampling,
 )
@@ -250,6 +252,7 @@ class _MultiBounceWavefrontRay:
     initial_origin: Vec3
     initial_direction: Vec3
     initial_power_lumen: float
+    initial_source_face: int
     reflection_seed: int
     reflection_rng: Optional[random.Random]
     current_origin: Vec3
@@ -314,6 +317,8 @@ class _IntersectionDispatchStats:
     gpu_cuda_hybrid_cpu_failure_count: int = 0
     gpu_cuda_hybrid_cpu_failure_reason: Optional[str] = None
     gpu_cuda_hybrid_cpu_disabled: bool = False
+    gpu_cuda_hybrid_bypass_count: int = 0
+    gpu_cuda_hybrid_bypass_ray_count: int = 0
     gpu_cuda_gpu_attempt_count: int = 0
     gpu_cuda_gpu_attempt_ray_count: int = 0
     gpu_cuda_gpu_success_count: int = 0
@@ -438,6 +443,8 @@ class _IntersectionDispatchStats:
         self,
         mesh: TriangleMesh,
         rays: IntersectionRayBatch,
+        *,
+        allow_hybrid_cpu: bool = True,
     ) -> RayHitBatch:
         started = time.perf_counter()
         ray_count = len(rays)
@@ -453,6 +460,7 @@ class _IntersectionDispatchStats:
             self.native_attempt_ray_count += ray_count
             if (
                 self.requested_provider == "gpu_cuda"
+                and allow_hybrid_cpu
                 and self.gpu_cuda_hybrid_cpu_below_rays > 0
                 and ray_count < self.gpu_cuda_hybrid_cpu_below_rays
                 and not self.gpu_cuda_hybrid_cpu_disabled
@@ -486,6 +494,15 @@ class _IntersectionDispatchStats:
                     self.gpu_cuda_hybrid_cpu_execute_sec += (
                         time.perf_counter() - hybrid_started
                     )
+
+            if (
+                self.requested_provider == "gpu_cuda"
+                and not allow_hybrid_cpu
+                and self.gpu_cuda_hybrid_cpu_below_rays > 0
+                and ray_count < self.gpu_cuda_hybrid_cpu_below_rays
+            ):
+                self.gpu_cuda_hybrid_bypass_count += 1
+                self.gpu_cuda_hybrid_bypass_ray_count += ray_count
 
             try:
                 if self.requested_provider == "gpu_cuda" and hits is None:
@@ -722,6 +739,12 @@ class _IntersectionDispatchStats:
             ),
             "gpu_cuda_hybrid_cpu_disabled": (
                 self.gpu_cuda_hybrid_cpu_disabled
+            ),
+            "gpu_cuda_hybrid_bypass_count": (
+                self.gpu_cuda_hybrid_bypass_count
+            ),
+            "gpu_cuda_hybrid_bypass_ray_count": (
+                self.gpu_cuda_hybrid_bypass_ray_count
             ),
             "gpu_cuda_gpu_attempt_count": self.gpu_cuda_gpu_attempt_count,
             "gpu_cuda_gpu_attempt_ray_count": (
@@ -1558,15 +1581,40 @@ def run_direct_ray_trace(
         raise ValueError("intersection_batch_size must be a positive integer")
     intersection_batch_size = int(intersection_batch_size)
 
-    # GPU is an explicit project-level opt-in. Runtime kwargs still win when
-    # they name a concrete provider/pipeline, while ``auto`` selects the
-    # complete PERF-3C batch stack. CPU/default retains every legacy selection
-    # and never probes Numba or CUDA.
-    if gpu_compute_requested:
+    requested_intersection_dispatch = intersection_dispatch
+    requested_intersection_provider = intersection_provider
+    requested_wavefront_planner = wavefront_planner
+    requested_wavefront_pipeline = wavefront_pipeline
+    requested_wavefront_reducer = wavefront_reducer
+    requested_wavefront_rng = wavefront_rng
+    requested_wavefront_reducer_commit = wavefront_reducer_commit
+    production_auto_requested = all(
+        value == "auto"
+        for value in (
+            intersection_dispatch,
+            intersection_provider,
+            wavefront_planner,
+            wavefront_pipeline,
+            wavefront_reducer,
+            wavefront_rng,
+            wavefront_reducer_commit,
+        )
+    )
+
+    # CPU and GPU production runs must consume the same Monte Carlo samples.
+    # Keeping different legacy scalar and GPU wavefront RNG streams made rare
+    # receiver hits look like a device-accuracy defect even though the FP64
+    # intersection kernels agreed. Runtime kwargs may still request a legacy
+    # diagnostic path explicitly, but the production all-``auto`` call selects
+    # this shared deterministic contract and changes only the intersection
+    # device.
+    if gpu_compute_requested or production_auto_requested:
         if intersection_dispatch == "auto":
             intersection_dispatch = "batch"
         if intersection_provider == "auto":
-            intersection_provider = "gpu_cuda"
+            intersection_provider = (
+                "gpu_cuda" if gpu_compute_requested else "numba_cpu"
+            )
         if wavefront_pipeline == "auto":
             wavefront_pipeline = "soa_event_tape"
         if wavefront_planner == "auto":
@@ -1575,12 +1623,23 @@ def run_direct_ray_trace(
             wavefront_reducer = "numba_cpu"
         if wavefront_rng == "auto":
             wavefront_rng = "counter_rng_v2"
-    elif wavefront_rng == "auto":
-        wavefront_rng = "per_primary_seeded_v1"
-    if wavefront_reducer_commit == "auto":
-        wavefront_reducer_commit = (
-            "run_accumulator" if gpu_compute_requested else "per_tape"
+        if wavefront_reducer_commit == "auto":
+            wavefront_reducer_commit = "run_accumulator"
+    else:
+        if wavefront_rng == "auto":
+            wavefront_rng = "per_primary_seeded_v1"
+        if wavefront_reducer_commit == "auto":
+            wavefront_reducer_commit = "per_tape"
+    monte_carlo_contract = (
+        "cpu_gpu_deterministic_batch_v1"
+        if (
+            intersection_dispatch == "batch"
+            and wavefront_pipeline == "soa_event_tape"
+            and wavefront_rng == "counter_rng_v2"
+            and wavefront_reducer_commit == "run_accumulator"
         )
+        else "custom_runtime_override"
+    )
     start_time = time.time()
     rng = random.Random(trace_input.config.seed)
     intersection_stats = _IntersectionDispatchStats(
@@ -1609,6 +1668,7 @@ def run_direct_ray_trace(
     stored_paths: List[List[RayHit]] = []
     total_rays = 0
     fast_primary_ray_count = 0
+    face_batch_primary_ray_count = 0
     scalar_primary_ray_count = 0
     receiver_hit_count = 0
     surface_hit_count = 0
@@ -1648,7 +1708,7 @@ def run_direct_ray_trace(
     stopped_early = False
     multi_bounce_wavefront_used = False
     wavefront_summary = {
-        "requested_pipeline": wavefront_pipeline,
+        "requested_pipeline": requested_wavefront_pipeline,
         "pipeline": "not_used",
         "chunk_count": 0,
         "primary_ray_count": 0,
@@ -1730,8 +1790,20 @@ def run_direct_ray_trace(
             else rng.randint(0, 2**31 - 1)
         )
         emitter_rng = random.Random(emitter_seed ^ 0x5DEECE66D)
+        face_batch_geometry = (
+            build_face_emitter_batch_geometry(trace_input.mesh, emitter)
+            if intersection_dispatch == "batch" and emitter.emitter_type == "face"
+            else None
+        )
+        use_face_batch_sampling = (
+            intersection_dispatch == "batch"
+            and face_batch_geometry is not None
+        )
         if supports_fast_virtual_plane_sampling(emitter):
             fast_primary_ray_count += emitter.ray_count
+        elif use_face_batch_sampling:
+            fast_primary_ray_count += emitter.ray_count
+            face_batch_primary_ray_count += emitter.ray_count
         else:
             scalar_primary_ray_count += emitter.ray_count
         face_weights = _build_emitter_face_weights(trace_input.mesh, emitter.face_indices) if emitter.emitter_type == "face" else []
@@ -1746,24 +1818,45 @@ def run_direct_ray_trace(
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
         use_batch_dispatch = (
             intersection_dispatch == "batch"
-            and supports_fast_virtual_plane_sampling(emitter)
+            and (
+                supports_fast_virtual_plane_sampling(emitter)
+                or use_face_batch_sampling
+            )
         )
         if use_batch_dispatch:
             if should_stop is not None and should_stop():
                 stopped_early = True
                 break
-            ray_batches = iter_virtual_plane_ray_batches(
-                emitter,
-                trace_input.config.epsilon_mm,
-                emitter_seed,
-            )
+            if use_face_batch_sampling:
+                assert face_batch_geometry is not None
+                ray_batches = iter_face_emitter_ray_batches(
+                    emitter,
+                    face_batch_geometry,
+                    trace_input.config.epsilon_mm,
+                    emitter_seed,
+                )
+            else:
+                ray_batches = (
+                    (
+                        origins,
+                        directions,
+                        np.full(len(origins), -1, dtype=np.int64),
+                    )
+                    for origins, directions in iter_virtual_plane_ray_batches(
+                        emitter,
+                        trace_input.config.epsilon_mm,
+                        emitter_seed,
+                    )
+                )
             emitter_ray_offset = 0
             while True:
                 if should_stop is not None and should_stop():
                     stopped_early = True
                     break
                 try:
-                    origin_batch, direction_batch = next(ray_batches)
+                    origin_batch, direction_batch, source_face_batch = next(
+                        ray_batches
+                    )
                 except StopIteration:
                     break
                 for start in range(0, len(origin_batch), intersection_batch_size):
@@ -1777,6 +1870,7 @@ def run_direct_ray_trace(
                             origin_batch[start:end],
                             direction_batch[start:end],
                             ray_power,
+                            source_face_batch[start:end],
                             receiver_frames,
                             receiver_grids,
                             trace_input.config,
@@ -1819,6 +1913,7 @@ def run_direct_ray_trace(
                             origin_batch[start:end],
                             direction_batch[start:end],
                             ray_power,
+                            source_face_batch[start:end],
                             emitter_seed,
                             emitter_ray_offset + start,
                             receiver_frames,
@@ -2256,6 +2351,7 @@ def run_direct_ray_trace(
         "bvh_cached_build_sec": acceleration_info["bvh_build_sec"],
         "bvh_cache_hit": trace_input.geometry_cache_hit,
         "fast_primary_ray_count": fast_primary_ray_count,
+        "face_batch_primary_ray_count": face_batch_primary_ray_count,
         "scalar_primary_ray_count": scalar_primary_ray_count,
         "resolved_optical_face_cache_count": len(resolved_optical_by_face),
         "stored_path_count": len(stored_paths),
@@ -2265,10 +2361,12 @@ def run_direct_ray_trace(
         "compute_backend": (
             "gpu_cuda" if gpu_compute_requested else "cpu"
         ),
+        "monte_carlo_contract": monte_carlo_contract,
         "acceleration_policy": (
             "gpu_cuda_auto_v1" if gpu_compute_requested else "cpu_compatible_v1"
         ),
-        "requested_intersection_dispatch": intersection_dispatch,
+        "requested_intersection_dispatch": requested_intersection_dispatch,
+        "effective_intersection_dispatch_request": intersection_dispatch,
         "intersection_batch_size": intersection_batch_size,
         "multi_bounce_wavefront_used": multi_bounce_wavefront_used,
         "requested_wavefront_pipeline": wavefront_summary[
@@ -2413,6 +2511,16 @@ def run_direct_ray_trace(
         **wavefront_planner_stats.to_summary(),
         **wavefront_reducer_stats.to_summary(),
         **intersection_summary,
+        "requested_intersection_provider": requested_intersection_provider,
+        "effective_intersection_provider_request": intersection_provider,
+        "requested_wavefront_planner": requested_wavefront_planner,
+        "effective_wavefront_planner_request": wavefront_planner,
+        "requested_wavefront_reducer": requested_wavefront_reducer,
+        "effective_wavefront_reducer_request": wavefront_reducer,
+        "requested_wavefront_rng": requested_wavefront_rng,
+        "requested_wavefront_reducer_commit": (
+            requested_wavefront_reducer_commit
+        ),
         "compute_execution_state": compute_execution_state,
         "compute_execution_reason": compute_execution_reason,
     }
@@ -3427,7 +3535,7 @@ def _commit_multi_bounce_wavefront_ray(
     path_events: List[RayHit] = (
         [
             _emitter_ray_hit(
-                -1,
+                state.initial_source_face,
                 state.initial_origin,
                 state.initial_direction,
                 state.initial_power_lumen,
@@ -3663,7 +3771,7 @@ def _materialize_stored_path_from_tape(
     )
     path_events = [
         _emitter_ray_hit(
-            -1,
+            int(tape.initial_source_faces[primary_slot]),
             initial_origin,
             initial_direction,
             float(tape.initial_power_lumen[primary_slot]),
@@ -5482,6 +5590,7 @@ def _trace_multi_bounce_wavefront_batch(
     origins: np.ndarray,
     directions: np.ndarray,
     ray_power: float,
+    source_faces: np.ndarray,
     emitter_seed: int,
     primary_start_index: int,
     receivers: List[ReceiverFrame],
@@ -5504,6 +5613,9 @@ def _trace_multi_bounce_wavefront_batch(
     ray_count = len(origins)
     if ray_count == 0:
         return 0, 0, 0
+    source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
+    if source_face_values.shape != (ray_count,):
+        raise ValueError("source_faces must have one value per primary ray")
 
     wavefront_started = time.perf_counter()
     state_build_started = time.perf_counter()
@@ -5525,11 +5637,13 @@ def _trace_multi_bounce_wavefront_batch(
                 initial_origin=origin,  # type: ignore[arg-type]
                 initial_direction=direction,  # type: ignore[arg-type]
                 initial_power_lumen=ray_power,
+                initial_source_face=int(source_face_values[index]),
                 reflection_seed=int(reflection_seeds[index]),
                 reflection_rng=None,
                 current_origin=origin,  # type: ignore[arg-type]
                 current_direction=direction,  # type: ignore[arg-type]
                 current_power_lumen=ray_power,
+                current_source_face=int(source_face_values[index]),
             )
         )
     wavefront_summary["state_build_sec"] += (
@@ -5598,7 +5712,14 @@ def _trace_multi_bounce_wavefront_batch(
                 dtype=np.int64,
             ),
         )
-        hit_batch = intersection_stats.intersect_batch(mesh, ray_batch)
+        hit_batch = intersection_stats.intersect_batch(
+            mesh,
+            ray_batch,
+            allow_hybrid_cpu=not (
+                depth == 0
+                and any(state.current_source_face >= 0 for state in active)
+            ),
+        )
         geometry_started = time.perf_counter()
         surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
         wavefront_summary["geometry_sec"] += (
@@ -5781,6 +5902,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     origins: np.ndarray,
     directions: np.ndarray,
     ray_power: float,
+    source_faces: np.ndarray,
     emitter_seed: int,
     primary_start_index: int,
     receivers: List[ReceiverFrame],
@@ -5803,6 +5925,9 @@ def _trace_multi_bounce_wavefront_soa_batch(
     ray_count = len(origins)
     if ray_count == 0:
         return 0, 0, 0
+    source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
+    if source_face_values.shape != (ray_count,):
+        raise ValueError("source_faces must have one value per primary ray")
 
     wavefront_started = time.perf_counter()
     state_init_started = time.perf_counter()
@@ -5820,6 +5945,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
         ray_power,
         primary_start_index,
         reflection_seeds,
+        source_faces=source_face_values,
     )
     path_payload_requested = (
         config.store_ray_paths and config.max_stored_paths > 0
@@ -5849,6 +5975,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
         reflection_seeds,
         config.max_depth,
         include_path_payload=path_payload_enabled,
+        initial_source_faces=source_face_values,
     )
     reflection_rngs: List[Optional[random.Random]] = [None] * ray_count
     counter_rng_primary_seen = np.zeros(ray_count, dtype=np.bool_)
@@ -5900,7 +6027,13 @@ def _trace_multi_bounce_wavefront_soa_batch(
             max_t=maximum_t,
             ignore_faces=active.source_faces,
         )
-        hit_batch = intersection_stats.intersect_batch(mesh, ray_batch)
+        hit_batch = intersection_stats.intersect_batch(
+            mesh,
+            ray_batch,
+            allow_hybrid_cpu=not (
+                depth == 0 and np.any(active.source_faces >= 0)
+            ),
+        )
         geometry_started = time.perf_counter()
         surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
         wavefront_summary["geometry_sec"] += (
@@ -6339,6 +6472,7 @@ def _trace_single_bounce_batch(
     origins: np.ndarray,
     directions: np.ndarray,
     ray_power: float,
+    source_faces: np.ndarray,
     receivers: List[ReceiverFrame],
     receiver_grids: Dict[str, ReceiverGrid],
     config: RayTraceConfig,
@@ -6357,6 +6491,9 @@ def _trace_single_bounce_batch(
     ray_count = len(origins)
     if ray_count == 0:
         return 0, 0, 0
+    source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
+    if source_face_values.shape != (ray_count,):
+        raise ValueError("source_faces must have one value per primary ray")
 
     origin_values: List[Vec3] = [
         tuple(float(value) for value in origin)  # type: ignore[misc]
@@ -6373,7 +6510,7 @@ def _trace_single_bounce_batch(
             origin=origin,
             direction=direction,
             power_lumen=ray_power,
-            source_face=-1,
+            source_face=int(source_face_values[index]),
             receivers=receivers,
             grids=receiver_grids,
             config=config,
@@ -6389,9 +6526,13 @@ def _trace_single_bounce_batch(
         directions,
         min_t=config.epsilon_mm,
         max_t=primary_max_t,
-        ignore_faces=-1,
+        ignore_faces=source_face_values,
     )
-    primary_hits = intersection_stats.intersect_batch(mesh, primary_rays)
+    primary_hits = intersection_stats.intersect_batch(
+        mesh,
+        primary_rays,
+        allow_hybrid_cpu=not np.any(source_face_values >= 0),
+    )
     plans: List[_SingleBouncePlan] = []
     reflected_plan_indices: List[int] = []
     reflected_origins: List[Vec3] = []
@@ -6406,7 +6547,7 @@ def _trace_single_bounce_batch(
             origin,
             direction,
             ray_power,
-            -1,
+            int(source_face_values[index]),
             direct_receivers[index],
             primary_surface_hit,
             receivers,
@@ -6453,7 +6594,12 @@ def _trace_single_bounce_batch(
     store_path = config.store_ray_paths and config.max_stored_paths > 0
     for plan in plans:
         emitter_event = (
-            _emitter_ray_hit(-1, plan.origin, plan.direction, ray_power)
+            _emitter_ray_hit(
+                plan.source_face,
+                plan.origin,
+                plan.direction,
+                ray_power,
+            )
             if store_path
             else None
         )
@@ -7855,8 +8001,8 @@ def _build_direct_metrics(
     grids: List[ReceiverGrid],
     config: RayTraceConfig,
     sample_count: int = 0,
-) -> Dict[str, Dict[str, float]]:
-    metrics: Dict[str, Dict[str, float]] = {}
+) -> Dict[str, Dict[str, object]]:
+    metrics: Dict[str, Dict[str, object]] = {}
     for grid in grids:
         values = [value for row in grid.flux_lumen for value in row]
         bin_area_m2 = grid.bin_area_mm2 * 1e-6
@@ -7876,7 +8022,7 @@ def _build_direct_metrics(
         total_flux = sum(values)
         def relative_error_percent(flux_sum: float, squared_sum: float) -> float:
             if sample_count <= 1 or flux_sum <= 0.0:
-                return 0.0
+                return 100.0
             relative_variance = max(
                 0.0,
                 (sample_count * squared_sum / (flux_sum * flux_sum) - 1.0)
@@ -7898,6 +8044,52 @@ def _build_direct_metrics(
         peak_area_error_estimate_percent = relative_error_percent(
             peak_area_flux, peak_area_squared_flux
         )
+        minimum_convergence_hits = 30
+        receiver_hit_rate = (
+            grid.hit_count / float(sample_count) if sample_count > 0 else 0.0
+        )
+        estimated_rays_for_minimum_hits = (
+            int(math.ceil(sample_count * minimum_convergence_hits / grid.hit_count))
+            if sample_count > 0 and grid.hit_count > 0
+            else None
+        )
+        if grid.hit_count <= 0:
+            statistical_quality = "no_hits"
+        elif grid.hit_count < minimum_convergence_hits:
+            statistical_quality = "insufficient_hits"
+        else:
+            statistical_quality = "estimated"
+        heatmap_bin_count = len(values)
+        heatmap_hits_per_bin = (
+            grid.hit_count / float(heatmap_bin_count)
+            if heatmap_bin_count > 0
+            else 0.0
+        )
+        minimum_usable_heatmap_hits_per_bin = 5.0
+        recommended_heatmap_hit_count = int(
+            math.ceil(heatmap_bin_count * minimum_usable_heatmap_hits_per_bin)
+        )
+        estimated_rays_for_usable_heatmap = (
+            int(
+                math.ceil(
+                    sample_count
+                    * recommended_heatmap_hit_count
+                    / grid.hit_count
+                )
+            )
+            if sample_count > 0 and grid.hit_count > 0
+            else None
+        )
+        if grid.hit_count <= 0:
+            heatmap_quality = "no_hits"
+        elif heatmap_hits_per_bin < 1.0:
+            heatmap_quality = "sparse"
+        elif heatmap_hits_per_bin < minimum_usable_heatmap_hits_per_bin:
+            heatmap_quality = "noisy"
+        elif heatmap_hits_per_bin < 20.0:
+            heatmap_quality = "usable"
+        else:
+            heatmap_quality = "stable"
         metrics[grid.receiver_id] = {
             "peak_nit_est": peak,
             "mean_nit_est": mean,
@@ -7908,6 +8100,22 @@ def _build_direct_metrics(
             "error_estimate_percent": error_estimate_percent,
             "peak_area_error_estimate_percent": peak_area_error_estimate_percent,
             "error_estimate_sample_count": float(sample_count),
+            "receiver_hit_rate": receiver_hit_rate,
+            "minimum_convergence_hits": float(minimum_convergence_hits),
+            "estimated_rays_for_minimum_hits": estimated_rays_for_minimum_hits,
+            "statistical_quality": statistical_quality,
+            "heatmap_bin_count": float(heatmap_bin_count),
+            "heatmap_hits_per_bin": heatmap_hits_per_bin,
+            "minimum_usable_heatmap_hits_per_bin": (
+                minimum_usable_heatmap_hits_per_bin
+            ),
+            "recommended_heatmap_hit_count": float(
+                recommended_heatmap_hit_count
+            ),
+            "estimated_rays_for_usable_heatmap": (
+                estimated_rays_for_usable_heatmap
+            ),
+            "heatmap_quality": heatmap_quality,
         }
     return metrics
     summary = RunResultSummary(

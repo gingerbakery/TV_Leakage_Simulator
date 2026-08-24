@@ -172,13 +172,8 @@ describe('GPU execution UX', () => {
     })
   })
 
-  it.each([
-    ['Face', 'face'],
-    ['Polygon auto', 'polygon'],
-  ] as const)(
-    'requires confirmation before unsupported %s emitters use the CPU scalar path',
-    async (_label, emitterKind) => {
-    setupRayObjects(emitterKind)
+  it('runs a Face emitter on GPU without the CPU compatibility dialog', async () => {
+    setupRayObjects('face')
     act(() => {
       workspaceStore.getState().actions.setRayTraceConfig({
         ...workspaceStore.getState().rayTraceConfig,
@@ -213,6 +208,51 @@ describe('GPU execution UX', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
 
+    await waitFor(() => {
+      expect(startSpy).toHaveBeenCalledOnce()
+    })
+    expect(
+      screen.queryByRole('dialog', {
+        name: '일부 Emitter는 CPU로 실행됩니다',
+      }),
+    ).toBeNull()
+  })
+
+  it('requires confirmation before a Polygon auto emitter uses CPU scalar', async () => {
+    setupRayObjects('polygon')
+    act(() => {
+      workspaceStore.getState().actions.setRayTraceConfig({
+        ...workspaceStore.getState().rayTraceConfig,
+        compute_backend: 'gpu_cuda',
+      })
+    })
+    const queuedJob = {
+      job_id: 'job-polygon-1',
+      status: 'queued',
+      phase: 'queued',
+      processed_rays: 0,
+      total_rays: 10_000,
+      progress: 0,
+      elapsed_sec: 0,
+      estimated_remaining_sec: null,
+      rays_per_sec: 0,
+      created_at: 1,
+    } as const
+    vi.spyOn(apiClient, 'getGpuCudaStatus').mockResolvedValue(readyStatus)
+    const startSpy = vi
+      .spyOn(apiClient, 'startRayTrace')
+      .mockResolvedValue(queuedJob)
+    vi.spyOn(apiClient, 'getRayTraceJob').mockResolvedValue(queuedJob)
+
+    render(
+      <AppProviders>
+        <RayTracingPanel scene={createSceneFixture()} cameraFrame={null} />
+      </AppProviders>,
+    )
+    expect(await screen.findByText('NVIDIA RTX Test')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+
     expect(
       await screen.findByRole('dialog', {
         name: '일부 Emitter는 CPU로 실행됩니다',
@@ -226,8 +266,7 @@ describe('GPU execution UX', () => {
     await waitFor(() => {
       expect(startSpy).toHaveBeenCalledOnce()
     })
-    },
-  )
+  })
 
   it('blocks an unverified GPU run and offers one-click CPU recovery', async () => {
     setupRayObjects()

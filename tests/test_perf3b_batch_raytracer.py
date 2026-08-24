@@ -89,20 +89,30 @@ def mixed_emitter_case() -> DirectRayTraceInput:
 
 
 class Perf3B1BatchRayTracerTests(unittest.TestCase):
-    def test_default_auto_keeps_cpu_scalar_until_native_backend_exists(self) -> None:
+    def test_default_auto_uses_cpu_gpu_parity_batch_contract(self) -> None:
         default_result = run_direct_ray_trace(stored_reflection_case(127, True))
-        scalar_result = run_direct_ray_trace(
+        reference_result = run_direct_ray_trace(
             stored_reflection_case(127, True),
-            intersection_dispatch="scalar",
+            intersection_dispatch="batch",
+            intersection_provider="python_cpu",
+            wavefront_pipeline="soa_event_tape",
+            wavefront_planner="python_cpu",
+            wavefront_reducer="python_cpu",
+            wavefront_rng="counter_rng_v2",
+            wavefront_reducer_commit="run_accumulator",
         )
 
         self.assertEqual(
             semantic_payload(default_result),
-            semantic_payload(scalar_result),
+            semantic_payload(reference_result),
         )
         performance = default_result.metrics["_performance_summary"]
         self.assertEqual(performance["requested_intersection_dispatch"], "auto")
-        self.assertEqual(performance["intersection_dispatch"], "scalar")
+        self.assertEqual(performance["intersection_dispatch"], "batch")
+        self.assertEqual(
+            performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
 
     def test_batch_dispatch_matches_scalar_for_receiver_and_blocker(self) -> None:
         for with_blocker in (False, True):
@@ -180,23 +190,30 @@ class Perf3B1BatchRayTracerTests(unittest.TestCase):
         self.assertGreater(summary["roulette_survived_count"], 0)
         self.assertGreater(summary["roulette_terminated_count"], 0)
 
-    def test_unsupported_emitters_stay_scalar_and_multibounce_uses_batch(self) -> None:
-        face_scalar = run_direct_ray_trace(
+    def test_face_emitters_and_multibounce_use_batch(self) -> None:
+        face_batch = run_direct_ray_trace(
             face_emitter_case(),
-            intersection_dispatch="scalar",
+            intersection_dispatch="batch",
+            intersection_batch_size=7,
         )
-        face_requested_batch = run_direct_ray_trace(
+        face_batch_repeat = run_direct_ray_trace(
             face_emitter_case(),
             intersection_dispatch="batch",
             intersection_batch_size=7,
         )
         self.assertEqual(
-            semantic_payload(face_scalar),
-            semantic_payload(face_requested_batch),
+            semantic_payload(face_batch),
+            semantic_payload(face_batch_repeat),
         )
         self.assertEqual(
-            face_requested_batch.metrics["_performance_summary"]["intersection_dispatch"],
-            "scalar",
+            face_batch.metrics["_performance_summary"]["intersection_dispatch"],
+            "batch",
+        )
+        self.assertGreater(
+            face_batch.metrics["_performance_summary"][
+                "face_batch_primary_ray_count"
+            ],
+            0,
         )
 
         multibounce = run_direct_ray_trace(
@@ -215,22 +232,23 @@ class Perf3B1BatchRayTracerTests(unittest.TestCase):
         )
         self.assertEqual(multibounce.receiver_hit_count, 73)
 
-    def test_mixed_emitters_report_mixed_dispatch_without_changing_result(self) -> None:
-        scalar = run_direct_ray_trace(
-            mixed_emitter_case(),
-            intersection_dispatch="scalar",
-        )
+    def test_mixed_emitters_share_batch_dispatch(self) -> None:
         mixed = run_direct_ray_trace(
+            mixed_emitter_case(),
+            intersection_dispatch="batch",
+            intersection_batch_size=17,
+        )
+        repeated = run_direct_ray_trace(
             mixed_emitter_case(),
             intersection_dispatch="batch",
             intersection_batch_size=17,
         )
         performance = mixed.metrics["_performance_summary"]
 
-        self.assertEqual(semantic_payload(scalar), semantic_payload(mixed))
-        self.assertEqual(performance["intersection_dispatch"], "mixed")
+        self.assertEqual(semantic_payload(repeated), semantic_payload(mixed))
+        self.assertEqual(performance["intersection_dispatch"], "batch")
         self.assertGreater(performance["intersection_batch_count"], 0)
-        self.assertGreater(performance["intersection_scalar_query_count"], 0)
+        self.assertEqual(performance["intersection_scalar_query_count"], 0)
 
     def test_stop_commits_the_started_chunk_atomically(self) -> None:
         trace_input = direct_input(ray_count=96)

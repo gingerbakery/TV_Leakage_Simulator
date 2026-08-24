@@ -141,16 +141,38 @@ GPU 테스트 보고에는 다음 네 가지를 같이 남긴다.
 결과에 `Compute` 행 자체가 없으면 최신 frontend가 아니다. Source에서는
 `run_web_gpu.bat`을 다시 실행하고, EXE에서는 새 GPU ZIP을 새 폴더에 푼다.
 
+현재 결과에는 `CPU/GPU 동일 샘플 계약` 배지도 함께 확인한다. GPU 활성인데 이
+배지가 없으면 서로 다른 Monte Carlo stream을 사용하던 이전 결과일 수 있으므로
+현재 버전에서 다시 실행한다.
+
+Source 환경에서 장치 정합을 독립 검증하려면 다음을 실행한다.
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\verify_gpu_cpu_accuracy.py --rays 100000
+```
+
+마지막 JSON의 `passed=true`, 각 case의 `semantic_exact=true`,
+`gpu_execution_proven=true`를 모두 요구한다. 이 검증은 CPU/GPU 구현 정합성용이며
+실측 nit의 물리 정확도 보정은 별도다.
+
 ## E. 기존 프로젝트와 지원 범위
 
 - `compute_backend`가 없는 기존 `.bitsam`은 CPU로 열린다.
 - GPU 테스트 전 프로젝트마다 `연산 장치 > NVIDIA GPU` 선택을 확인한다.
 - GPU 선택을 저장한 프로젝트는 다음 실행에서 해당 선택을 복원할 수 있다.
-- Face 및 `polygon_auto` emitter 등 일부 workload는 현재 CPU 경로를 포함할 수
-  있다. 결과 `Compute` 행의 GPU batch와 fallback을 기준으로 판정한다.
+- Face emitter의 primary ray는 batch 생성 후 CUDA BVH로 교차 판정한다. 작은
+  Face primary batch도 CUDA를 직접 호출한다. 다만 이후 반사 wave가 8,192개
+  미만이면 CPU hybrid가 포함될 수 있다.
+- `polygon_auto` emitter는 아직 CPU scalar 경로다. 결과 `Compute` 행의 GPU
+  batch와 fallback을 기준으로 실제 실행 장치를 판정한다.
 - 작은 장면은 JIT와 전송 비용 때문에 CPU보다 빠르지 않을 수 있다.
 - CAD import, BVH build, UI 전체가 GPU 가속 대상은 아니다.
 - 성능 비교는 같은 앱 세션에서 같은 장면을 2·3회 실행해 warm 결과를 기록한다.
+- Receiver 결과의 `Heatmap · Sparse/Noisy`는 GPU 오류가 아니라 셀별 표본 부족일
+  수 있다. CPU/GPU 동일 샘플 계약이 확인된 상태에서도 이 표시는 별도로 해소해야
+  한다.
+- Auto convergence `1→2→4→8배`는 각 단계를 새로 실행하므로 누적 `15배` Ray를
+  처리한다. 마지막 배수만 처리한다고 오해하지 않는다.
 
 ### 성능 숫자 해석
 

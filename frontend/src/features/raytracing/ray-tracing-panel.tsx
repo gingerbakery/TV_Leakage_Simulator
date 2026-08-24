@@ -1303,8 +1303,7 @@ export function RayTracingPanel({
   const gpuCpuOnlyEmitters = emitters.filter(
     (emitter) =>
       emitter.enabled &&
-      (emitter.emitter_type === 'face' ||
-        emitter.surface_construction === 'polygon_auto'),
+      emitter.surface_construction === 'polygon_auto',
   )
   const gpuCudaProbeReady =
     gpuCudaStatusQuery.isSuccess &&
@@ -1862,6 +1861,8 @@ export function RayTracingPanel({
                 Total Flux Error와 Peak-area Error가 모두 목표 오차 이하가 될 때까지
                 Ray 수를 2배씩 늘려 자동으로 다시 해석합니다. 각 단계는 전체 해석을
                 새로 실행하므로 Emitter의 총광량 정규화가 올바르게 유지됩니다.
+                1→2→4→8배 설정은 누적 15배 Ray를 처리하며, Flux 수렴이 셀별
+                Heatmap 노이즈 감소까지 보장하지는 않습니다.
               </HelpTooltip>
             </label>
             {config.auto_convergence ? (
@@ -1884,7 +1885,7 @@ export function RayTracingPanel({
                   step={1}
                   disabled={isRunning}
                   onChange={(value) => updateConfig({ max_convergence_multiplier: Math.trunc(value) })}
-                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 최대 80,000 Ray까지 해석합니다."
+                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 80,000 Ray를 각각 새로 실행하여 누적 150,000 Ray를 처리합니다."
                 />
               </div>
             ) : null}
@@ -2192,7 +2193,7 @@ export function RayTracingPanel({
         open={gpuCompatibilityDialogOpen}
         onOpenChange={setGpuCompatibilityDialogOpen}
         title="일부 Emitter는 CPU로 실행됩니다"
-        description="GPU는 요청되지만 아래 Emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
+        description="GPU는 요청되지만 아래 Polygon emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
         footer={
           <>
             <Button variant="outline" onClick={() => setGpuCompatibilityDialogOpen(false)}>
@@ -2217,7 +2218,7 @@ export function RayTracingPanel({
             >
               <span className="font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
               <Badge variant="outline">
-                {emitter.emitter_type === 'face' ? 'Face · CPU scalar' : 'Polygon auto · CPU scalar'}
+                Polygon auto · CPU scalar
               </Badge>
             </div>
           ))}

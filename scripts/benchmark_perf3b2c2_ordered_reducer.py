@@ -416,7 +416,7 @@ def _provider_evidence(
     if performance["wavefront_pipeline"] != "soa_event_tape":
         errors.append("soa_pipeline_not_used")
     if performance["wavefront_event_tape_contract"] != (
-        "ordered_primary_event_tape_v2"
+        "ordered_primary_event_tape_v3"
     ):
         errors.append("event_tape_contract_mismatch")
     if performance["wavefront_event_tape_validation_mode"] != "strict_v1":

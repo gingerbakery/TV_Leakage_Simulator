@@ -170,6 +170,16 @@ class Perf3B2CEventTapeContractTests(unittest.TestCase):
         self.assertFalse(np.shares_memory(compacted.origins, continuation_origins))
         self.assertGreater(compacted.nbytes, 0)
 
+        face_state = StableActiveRaySoA.initialize(
+            np.zeros((3, 3), dtype=np.float64),
+            np.asarray([(0.0, 0.0, 1.0)] * 3, dtype=np.float64),
+            ray_power_lumen=0.25,
+            primary_start_index=0,
+            reflection_seeds=np.asarray([21, 22, 23], dtype=np.uint64),
+            source_faces=np.asarray([4, -1, 9], dtype=np.int64),
+        )
+        self.assertEqual(face_state.source_faces.tolist(), [4, -1, 9])
+
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
             state.compact_continuations(
                 np.asarray([1, 1]),
@@ -257,6 +267,7 @@ class Perf3B2CEventTapeContractTests(unittest.TestCase):
         self.assertEqual(tape.event_count, 3)
         self.assertEqual(tape.offsets.tolist(), [0, 0, 1, 3])
         self.assertEqual(tape.face_indices.tolist(), [10, 20, 21])
+        self.assertEqual(tape.initial_source_faces.tolist(), [-1, -1, -1])
         self.assertEqual(tape.primary_event_bounds(0), (0, 0))
         self.assertEqual(tape.primary_event_bounds(1), (0, 1))
         self.assertEqual(tape.primary_event_bounds(2), (1, 3))

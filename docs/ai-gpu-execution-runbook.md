@@ -140,9 +140,11 @@ If `gpu_cuda_gpu_success_count > 0` but a CUDA fallback reason or CPU fallback
 count is also present, the GPU did execute work. Report the result as
 mixed/partial fallback; do not call it CPU-only or full-GPU success.
 
-Face and `polygon_auto` emitters can perform CPU scalar work. A run may be
-legitimately `gpu_mixed`; record the CPU small-wave/hybrid/fallback counts
-rather than hiding them.
+Face emitter primary rays use vectorized batch generation and CUDA BVH
+intersection. Their first intersection bypasses the small-wave CPU policy so
+even a small Face batch proves the requested CUDA path. Later reflection waves
+below the hybrid threshold may still use CPU. `polygon_auto` emitters remain
+CPU scalar. Record all hybrid/fallback counts rather than hiding them.
 
 ## 8. Benchmark and report
 
@@ -166,3 +168,24 @@ Conclusion: GPU verified | mixed/partial fallback | CPU fallback | not verified
 
 Do not use “GPU verified” if the preflight proof or completed-run proof is
 missing.
+
+## 9. Prove CPU/GPU numerical parity
+
+GPU execution proof does not by itself prove that CPU and GPU consumed the
+same Monte Carlo samples. Current production runs must also record:
+
+```text
+monte_carlo_contract=cpu_gpu_deterministic_batch_v1
+```
+
+For a source checkout, run the real-device accuracy gate:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\verify_gpu_cpu_accuracy.py --rays 100000
+```
+
+Require `passed=true`, `semantic_exact=true`, `contract_valid=true`, and
+`gpu_execution_proven=true` for every case. A result with fewer than 30
+Receiver hits is still statistically insufficient even when CPU/GPU parity is
+exact. Report `heatmap_quality` and `heatmap_hits_per_bin` separately from
+Flux convergence.

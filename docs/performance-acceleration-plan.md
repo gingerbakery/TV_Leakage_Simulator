@@ -188,7 +188,7 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
 - `stable_active_soa_v1`은 active ray의 primary slot/index, origin/direction,
   power, source face, ray kind와 reflection seed를 owned 배열로 유지하고 stable
   row 순서로 compact한다.
-- `ordered_primary_event_tape_v2`는 depth-major 계산 결과를 실제 surface event
+- `ordered_primary_event_tape_v3`는 depth-major 계산 결과를 실제 surface event
   비례 primary-major CSR로 seal한다. Core 정량 column과 optional path geometry를
   분리해 paths-off와 quota 0은 `omitted_v1`, path 저장이 필요하면
   `full_path_v1`을 사용한다.
@@ -250,6 +250,9 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
 - Prepared host/device scene과 thread-local workspace를 재사용하고 capability,
   upload/kernel/download, device와 hybrid/GPU별 logical count를 기록한다.
 - Face/count/grid/summary는 exact, distance/path는 abs/rel `1e-12`다.
+- GPU Face emitter는 vectorized primary batch와 row별 source-face ID를 만들고
+  CUDA BVH `ignore_faces`에 연결한다. 최초 Face wave는 작은 batch도 CUDA를
+  직접 호출하며 이후 작은 reflection wave는 기존 CPU hybrid 정책을 따른다.
 - GPU 부재는 정상 CPU 선택이다. Initialize/execute/result-validation hard failure는
   logical batch 전체 CPU replay 한 번과 run-local circuit breaker로 처리한다.
 - CPU project가 기본이며 CUDA/Numba import/probe가 없다. GPU acceleration

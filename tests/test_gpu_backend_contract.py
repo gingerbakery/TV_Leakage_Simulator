@@ -125,6 +125,33 @@ def _fake_gpu_execution(rays: RayBatch):
     )
 
 
+def _reference_gpu_execution(mesh, rays: RayBatch, backend=None):
+    hits = mesh.intersect_rays(rays, backend=backend)
+    distances = _owned_readonly(hits.t, np.float64)
+    face_indices = _owned_readonly(hits.face_indices, np.int64)
+    return RayHitBatch(
+        t=distances,
+        face_indices=face_indices,
+    ), gpu_cuda.GpuCudaExecution(
+        distances=distances,
+        face_indices=face_indices,
+        scene_build_sec=0.0,
+        scene_upload_sec=0.0,
+        workspace_prepare_sec=0.0,
+        input_upload_sec=0.0,
+        jit_compile_sec=0.0,
+        kernel_sec=0.0,
+        output_download_sec=0.0,
+        numba_version="fake-numba",
+        device_name="fake-gpu",
+        compute_capability="9.9",
+        device_id=3,
+        toolkit_layout="fake-toolkit",
+        reused_device_scene=True,
+        reused_workspace=True,
+    )
+
+
 def _fake_preflight_execution(
     distances=(5.0, np.inf),
     face_indices=(0, -1),
@@ -465,6 +492,10 @@ class GpuBackendContractTests(unittest.TestCase):
         self.assertEqual(performance["acceleration_structure"], "bvh")
         self.assertEqual(
             performance["requested_intersection_provider"],
+            "auto",
+        )
+        self.assertEqual(
+            performance["effective_intersection_provider_request"],
             "gpu_cuda",
         )
         self.assertEqual(performance["intersection_provider"], "gpu_cuda")
@@ -477,9 +508,15 @@ class GpuBackendContractTests(unittest.TestCase):
         )
         self.assertIsNone(performance["compute_execution_reason"])
 
-    def test_face_scalar_request_reports_gpu_requested_cpu_only(self) -> None:
+    def test_face_batch_request_executes_gpu_cuda_bvh(self) -> None:
         payload = _request_payload(compute_backend="gpu_cuda")
         payload["emitters"] = [_face_emitter_payload()]
+        observed_ignored_faces: list[np.ndarray] = []
+
+        def fake_gpu(mesh, rays, backend=None):
+            observed_ignored_faces.append(rays.ignore_faces.copy())
+            return _fake_gpu_execution(rays)
+
         client = TestClient(
             create_app(self._runtime(trace_runner=_contract_trace_runner))
         )
@@ -487,8 +524,8 @@ class GpuBackendContractTests(unittest.TestCase):
             with patch.object(
                 TriangleMesh,
                 "intersect_rays_gpu_cuda",
-                side_effect=AssertionError("face scalar path launched CUDA"),
-            ) as execute:
+                new=fake_gpu,
+            ):
                 response = client.post(
                     "/api/raytrace/direct",
                     json=payload,
@@ -500,16 +537,61 @@ class GpuBackendContractTests(unittest.TestCase):
         performance = response.json()["metrics"]["_performance_summary"]
         self.assertEqual(
             performance["compute_execution_state"],
-            "gpu_requested_cpu_only",
+            "gpu_active",
+        )
+        self.assertIsNone(performance["compute_execution_reason"])
+        self.assertTrue(performance["gpu_cuda_used"])
+        self.assertEqual(performance["face_batch_primary_ray_count"], 4)
+        self.assertEqual(performance["scalar_primary_ray_count"], 0)
+        self.assertEqual(performance["gpu_cuda_hybrid_bypass_count"], 1)
+        self.assertEqual(len(observed_ignored_faces), 1)
+        np.testing.assert_array_equal(observed_ignored_faces[0], [0, 0, 0, 0])
+
+    def test_default_cpu_and_gpu_face_runs_share_exact_monte_carlo_contract(
+        self,
+    ) -> None:
+        cpu_payload = _request_payload(compute_backend="cpu", ray_count=257)
+        cpu_payload["emitters"] = [_face_emitter_payload(ray_count=257)]
+        gpu_payload = _request_payload(compute_backend="gpu_cuda", ray_count=257)
+        gpu_payload["emitters"] = [_face_emitter_payload(ray_count=257)]
+
+        cpu_result = run_direct_ray_trace(
+            build_direct_trace_input(_scene_mesh(), cpu_payload)
+        )
+        with patch.object(
+            TriangleMesh,
+            "intersect_rays_gpu_cuda",
+            new=_reference_gpu_execution,
+        ):
+            gpu_result = run_direct_ray_trace(
+                build_direct_trace_input(_scene_mesh(), gpu_payload)
+            )
+
+        cpu_semantic = cpu_result.to_dict()
+        gpu_semantic = gpu_result.to_dict()
+        for payload in (cpu_semantic, gpu_semantic):
+            payload.pop("run_id", None)
+            payload.pop("runtime_sec", None)
+            payload["metrics"].pop("_performance_summary", None)
+            payload["config"]["compute_backend"] = "normalized"
+
+        self.assertEqual(cpu_semantic, gpu_semantic)
+        cpu_performance = cpu_result.metrics["_performance_summary"]
+        gpu_performance = gpu_result.metrics["_performance_summary"]
+        self.assertEqual(
+            cpu_performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
         )
         self.assertEqual(
-            performance["compute_execution_reason"],
-            "gpu_cuda_scalar_uses_python_cpu",
+            gpu_performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
         )
-        self.assertFalse(performance["gpu_cuda_used"])
-        execute.assert_not_called()
+        self.assertEqual(cpu_performance["face_batch_primary_ray_count"], 257)
+        self.assertEqual(gpu_performance["face_batch_primary_ray_count"], 257)
+        self.assertEqual(cpu_performance["scalar_primary_ray_count"], 0)
+        self.assertEqual(gpu_performance["scalar_primary_ray_count"], 0)
 
-    def test_mixed_gpu_and_face_scalar_work_reports_gpu_mixed(self) -> None:
+    def test_mixed_gpu_and_face_batch_work_remains_gpu_active(self) -> None:
         payload = _request_payload(
             compute_backend="gpu_cuda",
             ray_count=8192,
@@ -539,13 +621,55 @@ class GpuBackendContractTests(unittest.TestCase):
         performance = response.json()["metrics"]["_performance_summary"]
         self.assertEqual(
             performance["compute_execution_state"],
-            "gpu_mixed",
+            "gpu_active",
         )
-        self.assertEqual(
-            performance["compute_execution_reason"],
-            "gpu_cuda_scalar_uses_python_cpu",
-        )
+        self.assertIsNone(performance["compute_execution_reason"])
         self.assertTrue(performance["gpu_cuda_used"])
+        self.assertEqual(performance["face_batch_primary_ray_count"], 4)
+        self.assertEqual(performance["scalar_primary_ray_count"], 0)
+
+    def test_face_batch_preserves_source_faces_in_soa_multibounce(self) -> None:
+        payload = _request_payload(compute_backend="gpu_cuda", ray_count=16)
+        payload["emitters"] = [_face_emitter_payload(ray_count=16)]
+        payload["config"].update(
+            {
+                "max_depth": 2,
+                "store_ray_paths": True,
+                "max_stored_paths": 4,
+            }
+        )
+        trace_input = build_direct_trace_input(_scene_mesh(), payload)
+        observed_ignored_faces: list[np.ndarray] = []
+
+        def fake_gpu(mesh, rays, backend=None):
+            observed_ignored_faces.append(rays.ignore_faces.copy())
+            return _fake_gpu_execution(rays)
+
+        with patch.object(
+            TriangleMesh,
+            "intersect_rays_gpu_cuda",
+            new=fake_gpu,
+        ):
+            result = run_direct_ray_trace(
+                trace_input,
+                wavefront_pipeline="soa_event_tape",
+                wavefront_planner="python_cpu",
+                wavefront_reducer="python_cpu",
+            )
+
+        performance = result.metrics["_performance_summary"]
+        self.assertEqual(performance["compute_execution_state"], "gpu_active")
+        self.assertEqual(
+            performance["wavefront_event_tape_contract"],
+            "ordered_primary_event_tape_v3",
+        )
+        self.assertTrue(observed_ignored_faces)
+        np.testing.assert_array_equal(
+            observed_ignored_faces[0],
+            np.zeros(16, dtype=np.int64),
+        )
+        self.assertTrue(result.stored_paths)
+        self.assertTrue(all(path[0].face_index == 0 for path in result.stored_paths))
 
     def test_invalid_gpu_acceleration_value_returns_actionable_api_error(
         self,

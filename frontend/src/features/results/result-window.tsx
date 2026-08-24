@@ -2465,6 +2465,22 @@ export function RayTraceResultWindow({
                 const peakAreaError = typeof values.peak_area_error_estimate_percent === 'number'
                   ? numeric(values.peak_area_error_estimate_percent) : null
                 const receiverHits = numeric(values.hit_count)
+                const heatmapHitsPerBin = numeric(values.heatmap_hits_per_bin)
+                const heatmapQuality = typeof values.heatmap_quality === 'string'
+                  ? values.heatmap_quality
+                  : null
+                const estimatedRaysForHeatmap = typeof values.estimated_rays_for_usable_heatmap === 'number'
+                  ? numeric(values.estimated_rays_for_usable_heatmap)
+                  : null
+                const heatmapQualityBadge = heatmapQuality === 'stable'
+                  ? { label: 'Heatmap · Stable', tone: 'border-emerald-400/45 bg-emerald-100/10 text-emerald-700 dark:text-emerald-300' }
+                  : heatmapQuality === 'usable'
+                    ? { label: 'Heatmap · Usable', tone: 'border-sky-400/45 bg-sky-100/10 text-sky-700 dark:text-sky-300' }
+                    : heatmapQuality === 'noisy'
+                      ? { label: 'Heatmap · Noisy', tone: 'border-amber-300/50 bg-amber-100/10 text-amber-700 dark:text-amber-300' }
+                      : heatmapQuality === 'sparse' || heatmapQuality === 'no_hits'
+                        ? { label: 'Heatmap · Sparse', tone: 'border-rose-400/45 bg-rose-100/10 text-rose-700 dark:text-rose-300' }
+                        : null
                 const convergence = receiverHits < 30 || totalError === null || peakAreaError === null
                   ? { label: 'Insufficient samples', tone: 'border-amber-300/50 bg-amber-100/10 text-amber-700 dark:text-amber-300' }
                   : totalError <= errorTargetPercent && peakAreaError <= errorTargetPercent
@@ -2487,6 +2503,11 @@ export function RayTraceResultWindow({
                       </div>
                       <div className="flex items-center gap-2">
                         <span className={`rounded-full border px-2 py-0.5 text-sm font-semibold ${convergence.tone}`}>{convergence.label}</span>
+                        {heatmapQualityBadge ? (
+                          <span className={`rounded-full border px-2 py-0.5 text-sm font-semibold ${heatmapQualityBadge.tone}`}>
+                            {heatmapQualityBadge.label}
+                          </span>
+                        ) : null}
                         <label className="flex items-center gap-1 text-xs text-muted-foreground">
                           Target
                           <input aria-label="Convergence target percent" className="h-7 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground" type="number" min={0.1} max={100} step={0.5} value={errorTargetPercent} onChange={(event) => setErrorTargetPercent(Math.max(0.1, numeric(event.currentTarget.value)))} />%
@@ -2532,6 +2553,15 @@ export function RayTraceResultWindow({
                         help="Receiver 전체 Flux 추정값에 대한 Monte Carlo 1σ 상대 표준오차입니다. 값이 낮을수록 통계적으로 잘 수렴한 결과입니다. CAD 형상, 재질 물성 및 물리 모델 자체의 오차는 포함하지 않습니다."
                       />
                     </div>
+                    {heatmapQuality === 'no_hits' || heatmapQuality === 'sparse' || heatmapQuality === 'noisy' ? (
+                      <p className="mt-2 rounded-lg border border-amber-300/40 bg-amber-100/10 p-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                        Receiver Heatmap 표본이 부족합니다. 평균 {formatMetric(heatmapHitsPerBin, 2)} hit/cell이며,
+                        {estimatedRaysForHeatmap && estimatedRaysForHeatmap > result.total_rays
+                          ? ` 현재 hit rate 기준 약 ${Math.ceil(estimatedRaysForHeatmap).toLocaleString()} Ray가 5 hit/cell 확보에 필요합니다.`
+                          : ' 셀별 분포는 정량 비교보다 경향 확인용으로만 사용하세요.'}
+                        {' '}전체 Flux 수렴과 셀별 Heatmap 화질은 서로 다른 기준입니다.
+                      </p>
+                    ) : null}
                     <div className="mt-2 grid grid-cols-3 gap-1.5">
                       <div className="rounded-lg border border-border bg-muted/20 p-2">
                         <div className="flex items-center gap-1 text-sm text-muted-foreground">

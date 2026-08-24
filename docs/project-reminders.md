@@ -153,10 +153,11 @@
   않는다. SoA state와 compact event tape는 2C에서 구현했으며 후속 순서는
   compiled ordered reducer, `counter_rng_v2`, CUDA다.
 - PERF-3B-2C/2C-1은 `stable_active_soa_v1` active state와 실제 surface event 비례
-  `ordered_primary_event_tape_v2` CSR을 2026-08-19 구현했다. Runtime-only
+  `ordered_primary_event_tape_v3` CSR을 사용한다. v2는 2026-08-19 구현했고,
+  v3는 2026-08-24 Face emitter initial source-face 보존을 추가했다. Runtime-only
   `wavefront_pipeline="soa_event_tape"`를 명시할 때만 사용하는 experimental
   경로다.
-- Tape v2 core는 정량 field를 항상 유지하고 path geometry는
+- Tape v3 core는 정량 field를 항상 유지하고 initial source face와 path geometry는
   `store_ray_paths && max_stored_paths > 0`일 때만 `full_path_v1`, 아니면
   `omitted_v1`이다. Public runtime `seal()`은 vectorized `strict_v1`이다. Private
   `_seal_trusted()`의 `trusted_structural_v1`은 future compiled producer/benchmark
@@ -231,6 +232,9 @@
 - Face/count/grid/summary는 exact, CUDA distance/path는 strict FP64와 abs/rel
   `1e-12` gate를 사용한다. `counter_rng_v2`는 chunk/provider exact이고 legacy
   stream과는 statistical parity로 비교한다.
+- GPU Face emitter primary는 vectorized batch로 생성해 source face를 CUDA BVH
+  `ignore_faces`로 넘긴다. 최초 Face wave는 `<8,192`라도 CPU hybrid를 우회해
+  CUDA를 직접 호출한다. `polygon_auto`는 계속 CPU scalar다.
 - Actual CAD 100k intersection micro의 CUDA 65,536 처리량은 `7.743M ray/s`,
   Numba CPU 대비 `6.920x`다. Fully-active synthetic end-to-end는 `0.983175x`로
   근소하게 느렸으므로 모든 장면의 자동 speedup을 주장하지 않는다.
@@ -258,3 +262,21 @@
 - PERF-3D 최종 repository test는 Python `237 passed, 279 subtests passed`,
   focused matrix는 `60 passed, 126 subtests passed`다. 상세는
   `docs/changes/2026-08-20_perf3d-host-overhead-run-accumulator.md`를 따른다.
+
+### 2026-08-25 이후 GPU/CPU 정확도 기준
+
+- 이전 bullet의 “CPU 기본 auto는 scalar/no-probe” 정책은 역사 기록이며 현재
+  프로덕션 full-auto에는 적용하지 않는다.
+- CPU/GPU 모두 `cpu_gpu_deterministic_batch_v1`을 사용해야 한다. CPU는 Numba
+  unavailable 시 Python으로 원자 fallback하며 CUDA는 probe하지 않는다.
+- GPU 완료 판정은 production preflight, GPU success batch, 동일 샘플 계약을 모두
+  요구한다.
+- `scripts/verify_gpu_cpu_accuracy.py --rays 100000` 결과의 모든 case가 exact여야
+  한다.
+- Receiver hit가 30개 미만이면 Flux 오차도 신뢰 부족이다. Heatmap은 별도로 평균
+  `5 hit/cell` 이상을 1차 usable 기준으로 확인한다.
+- Auto convergence `1→2→4→8배`는 누적 `15배` Ray를 처리한다. 1,200만 Ray 지연
+  분석 시 마지막 Ray 수뿐 아니라 반복 실행, triangle 수, depth별 active ray를 함께
+  기록한다.
+- 다음 대규모 희귀-event 성능 과제는 Importance Sampling/Next Event Estimation과
+  누적 sample 재사용이다.

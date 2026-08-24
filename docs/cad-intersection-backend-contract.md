@@ -188,19 +188,21 @@ Python CPU 경로를 유지한다.
 
 ### PERF-3B-2A multi-bounce depth wavefront
 
-다회 반사 wavefront는 다음 조건을 모두 만족할 때만 사용한다.
+프로덕션 호출에서 모든 runtime 선택값이 `auto`이면 CPU와 GPU 모두 같은
+`cpu_gpu_deterministic_batch_v1` Monte Carlo 계약을 사용한다.
 
-- runtime `intersection_dispatch="batch"`를 명시적으로 요청한다.
-- emitter가 NumPy fast virtual-plane sampling을 지원한다.
-- `max_depth >= 2`다.
+- CPU: batch dispatch, Numba CPU BVH, SoA event tape, `counter_rng_v2`, Numba
+  planner/reducer, run accumulator를 요청한다. Numba가 없으면 같은 logical batch를
+  Python CPU로 원자 fallback한다.
+- GPU: CPU와 동일한 primary sample/RNG/tape/reducer 순서를 사용하고 교차 장치만
+  strict-FP64 CUDA BVH로 바꾼다. 작은 반사 wave는 hybrid CPU가 처리할 수 있다.
+- 개발자가 runtime 인자 중 하나 이상을 구체적으로 지정한 진단 호출은 지정하지
+  않은 `auto` 항목에 대해 기존 legacy 호환 경로를 유지할 수 있다. 이 인자들은
+  UI나 `.bitsam`에 저장되지 않는다.
 
-기본 `intersection_dispatch="auto"`는 다회 반사에서도 legacy scalar를
-유지한다. `intersection_provider="auto"`도 기존 `python_cpu`를 사용하고
-Numba를 import하거나 probe하지 않는다. Face emitter와 polygon-auto emitter는
-primary sampling과 reflection이 하나의 legacy RNG stream을 공유하므로 명시적
-batch 요청에서도 scalar로 남는다. Fast emitter와 face/polygon emitter가
-혼합된 run은 각각 batch와 scalar를 사용하고 effective dispatch를 `mixed`로
-기록할 수 있다.
+Fast virtual-plane과 Face emitter는 CPU/GPU 모두 vectorized primary batch로
+생성한다. Face batch는 row별 `source_faces: int64[N]`를 `ignore_faces`에 연결해
+방출 원본 삼각형의 self-hit을 막는다. `polygon_auto`만 현재 scalar로 남는다.
 
 한 primary chunk의 실행 순서는 다음과 같다.
 
@@ -227,6 +229,11 @@ Legacy scalar 다회 반사는 한 emitter RNG를 primary별 depth-first 순서�
 같은 순서로 소비할 수 없다. PERF-3B-2A는 stochastic scatter 또는 roulette
 draw 조건을 처음 만난 primary에 대해 emitter seed와 emitter 내부 primary
 index에서 독립 stream을 만드는 `per_primary_seeded_v1`을 사용한다.
+
+현재 프로덕션 full-auto 계약은 CPU/GPU 모두 semantic lane 기반
+`counter_rng_v2`를 사용한다. 같은 seed와 입력이면 chunk 크기와 CPU/GPU provider가
+달라도 primary sample, scatter/roulette 선택, grid와 summary가 exact하다.
+`per_primary_seeded_v1`은 명시적 legacy 진단 호출에만 남는다.
 
 - `specular`/`none`과 threshold 종료처럼 reflection random draw가 전혀 없는
   경로는 legacy scalar와 Receiver grid, flux, contribution, reflection summary,
@@ -288,7 +295,9 @@ materialization 여부는 계속 독립적이다.
 
 `run_direct_ray_trace()`의 runtime-only `wavefront_planner` 허용값은 다음과 같다.
 
-- `auto`: 기존 Python planner를 사용하고 Numba를 import/probe하지 않는다.
+- `auto`: 프로덕션 full-auto에서는 `numba_cpu`를 요청하고 unavailable 시 Python
+  sidecar/fallback을 사용한다. 명시적 legacy 진단 조합에서는 기존 Python planner를
+  유지할 수 있다.
 - `python_cpu`: Python reflection planner를 명시한다.
 - `numba_cpu`: 지원되는 deterministic row만 Numba planner에 전달한다.
 
@@ -334,15 +343,16 @@ PERF-3B-2C는 multi-bounce wavefront의 계산 순서를 바꾸지 않고 active
 commit 입력 표현을 분리한다. Runtime-only `wavefront_pipeline` 허용값은 다음과
 같다.
 
-- `auto`: 성능 gate를 통과한 기존 `object_reference`를 사용한다.
+- `auto`: 프로덕션 full-auto에서는 `soa_event_tape`를 사용한다. 명시적 legacy
+  진단 조합에서는 `object_reference`를 유지할 수 있다.
 - `object_reference`: PERF-3B-2B Python ray-state/ordered commit을 명시한다.
 - `soa_event_tape`: `stable_active_soa_v1` state,
-  `ordered_primary_event_tape_v2` tape와 `python_ordered_v1` reducer를 사용한다.
+  `ordered_primary_event_tape_v3` tape와 `python_ordered_v1` reducer를 사용한다.
 
 이 값은 UI, `RayTraceConfig`, 프로젝트 JSON과 `.bitsam`에 저장하지 않는다.
-Pipeline은 explicit batch, fast virtual-plane emitter와 `max_depth >= 2`인 기존
-wavefront 안에서만 선택한다. Scalar, face/polygon emitter와 single-bounce는
-tape를 만들지 않는다.
+Pipeline은 explicit batch, fast virtual-plane emitter 또는 GPU Face emitter와
+`max_depth >= 2`인 wavefront 안에서 선택한다. Scalar, polygon emitter와
+single-bounce는 tape를 만들지 않는다.
 
 #### Active state와 compaction
 
@@ -351,12 +361,16 @@ ray kind와 reflection seed를 owned contiguous NumPy 배열로 보관한다. �
 continuation은 현재 active row의 strictly increasing 순서로 compact해 primary
 상대 순서를 유지한다. Caller input과 alias하지 않는다.
 
-#### `ordered_primary_event_tape_v2`
+#### `ordered_primary_event_tape_v3`
 
 Builder는 depth-major surface segment와 primary terminal을 수집하고 seal할 때
 primary-major CSR로 전치한다. CSR event 배열은 실제 surface hit만 포함한다.
 Receiver, escaped, blocked terminal은 primary-aligned 별도 배열이다. 따라서
 storage는 `primary_count * max_depth`가 아니라 실제 surface event 수에 비례한다.
+v3는 full-path payload에 primary별 `initial_source_faces`를 추가해 Face emitter의
+방출 삼각형 ID가 stored path materialization까지 보존되도록 한다. `-1`은
+virtual-plane emitter다. Path payload가 생략되면 이 배열도 empty라 추가
+primary-proportional 메모리를 사용하지 않는다.
 
 Core는 initial power/seed, surface face/power/status/lobe/ray-kind와 정량 terminal
 필드를 항상 포함한다. Initial ray와 surface/receiver의 point/normal/distance는
@@ -391,10 +405,10 @@ Stop은 기존 primary chunk 원자성을 유지한다. Provider/planner 실패�
 fallback 결과와 섞지 않는다. Compiled reducer나 event-level native fallback은
 PERF-3B-2C 범위가 아니다.
 
-Explicit SoA v2 경로가 실제 ROI p50을 object-reference `5.232795초`에서
+아래 수치는 2026-08-19의 자동 승격 전 역사적 측정이다. Explicit SoA v2 경로가 실제 ROI p50을 object-reference `5.232795초`에서
 `5.121246초`로 `1.021782x`, wall `2.132%` 개선했지만 자동 승격 gate
-`>= 1.05x`에는 못 미쳤으므로 기본 `auto`는 `object_reference`다. GPU·Numba가
-없는 PC의 기본 scalar/Python CPU 경로도 변경하지 않는다. 엄격한 교대가 아닌
+`>= 1.05x`에는 못 미쳐 당시 기본 `auto`는 `object_reference`였다. 이 결정은
+2026-08-25 CPU/GPU 정확도 통합 계약으로 대체됐다. 엄격한 교대가 아닌
 `O,S,S,O,O,S` counterbalanced 순서의 여섯 measured run에서
 semantic/grid/contribution/path hash는 exact했다. Intersection은 모두 effective
 `numba_cpu`, `native_used=true`, attempt/success `1,078/1,078`, success row
@@ -408,7 +422,8 @@ process RSS가 아니다.
 ### PERF-3B-2C-2 compiled ordered summary reducer
 
 Runtime-only `wavefront_reducer` 허용값은 `auto`, `python_cpu`, `numba_cpu`다.
-기본 `auto`는 `python_ordered_v1`이며 Numba를 import/probe하지 않는다. Explicit
+프로덕션 full-auto는 `numba_cpu` reducer를 요청하고 unavailable 시 같은 tape를
+Python으로 원자 replay한다. Explicit
 `numba_cpu`는 `soa_event_tape`, `max_depth >= 2`, summary contribution에서만
 `ordered_summary_reducer_v1`을 시도한다. Detailed contribution, scalar,
 single-bounce, `object_reference`와 face/polygon legacy 경로는 정상 Python 선택이며
@@ -434,16 +449,16 @@ Actual ROI 100k, depth 10, paths 500, chunk 1,024의 warm p50은 Python reducer
 Reducer replay는 `1.062883 -> 0.443459초`로 `2.3968x`, commit은
 `1.101820 -> 0.643344초`로 `1.7126x`였다. Native attempt/success는
 `98/98`, fallback `0`이고 seven semantic/hash family와 count가 exact했다.
-Cold reducer JIT `2.382357초`와 optional package 조건 때문에 기본 `auto`는 계속
-Python/no-probe이며 native reducer는 명시적 opt-in이다.
+Cold reducer JIT `2.382357초` 때문에 2026-08-19 당시에는 native reducer가
+명시적 opt-in이었으나, 이 정책은 2026-08-25 프로덕션 parity 계약으로 대체됐다.
 
 ### PERF-3C strict-float64 CUDA와 hybrid dispatch
 
 Project `compute_backend="gpu_cuda"`는 runtime `auto`를 batch 65,536,
 intersection `gpu_cuda`, SoA event tape, `counter_rng_v2`, Numba planner와 Numba
-summary reducer로 선택한다. CPU project와 구체적인 runtime override는 기존
-정책을 유지한다. 특히 기본 `compute_backend="cpu"`는 Numba/CUDA를 import하거나
-probe하지 않는다.
+summary reducer로 선택한다. CPU project의 full-auto도 동일 stack을 사용하며
+intersection provider만 `numba_cpu`다. 구체적인 runtime override는 기존 진단
+정책을 유지한다. CPU 실행은 CUDA를 probe하지 않는다.
 
 CUDA provider contract는 `strict_float64_bvh_v1`이다. Kernel은 `float64`,
 `fastmath=False`이며 최종 face index, tie-break, traceable mask, `ignore_faces`,
@@ -460,6 +475,11 @@ GPU를 시도하고 해당 run의 hybrid CPU circuit을 연다. 이후 small wav
 CUDA를 probe하지 않으며 owned/read-only empty result와 `not_probed` metadata를
 반환한다.
 
+Face emitter의 최초 primary wave는 예외적으로 small-wave hybrid를 우회해 CUDA
+BVH를 직접 호출한다. 이때 row별 방출 face가 `ignore_faces`와 동일해야 한다.
+이후 반사 wave에는 기존 hybrid 정책을 적용한다. 우회 count와 ray count는
+`gpu_cuda_hybrid_bypass_count`, `gpu_cuda_hybrid_bypass_ray_count`로 기록한다.
+
 GPU unavailable은 정상 CPU 선택으로 기록하고 hard fallback count를 올리지
 않는다. `input_prepare`, `initialize`, `execute`, `result_validation` failure는
 현재 logical batch의 일부 GPU 결과를 publish하지 않고 batch 전체를 CPU로 한 번
@@ -475,9 +495,8 @@ memory와 Stop 경계를 크게 한다. Stop은 시작한 primary/intersection c
 ### PERF-3D host-overhead와 run accumulator
 
 Runtime-only `wavefront_reducer_commit` 허용값은 `auto`, `per_tape`,
-`run_accumulator`다. GPU project의 `auto`는 `run_accumulator`, CPU project의
-`auto`는 `per_tape`다. 기본 CPU/legacy project는 이 선택을 위해 Numba/CUDA를
-import하거나 probe하지 않는다.
+`run_accumulator`다. CPU/GPU 프로덕션 full-auto는 모두 `run_accumulator`를
+사용한다. 명시적 legacy 진단 조합의 `auto`는 `per_tape`를 유지할 수 있다.
 
 `run_accumulator`는 native ordered reducer의 strict `float64` numeric result를
 run-local state로 유지한다. 성공 결과만 owned mutable clone으로 다음 tape에
@@ -501,6 +520,20 @@ full/omitted chunk·primary·event count, suppressed chunk count를 별도로 �
 
 여기서 retained/resident는 CPU numeric accumulator에만 해당한다. Ray/scene 전체
 GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
+
+### 2026-08-25 CPU/GPU 정확도 통합 계약
+
+과거 CPU scalar와 GPU batch가 서로 다른 primary sampler와 RNG stream을 사용해,
+희귀 Receiver hit 장면에서 동일 seed임에도 Peak/Mean/Flux가 크게 달라질 수
+있었다. CUDA BVH 산술 자체는 actual STEP 200,000-ray 검증에서 face mismatch `0`,
+distance tolerance mismatch `0`, 최대 절대 오차 `2.8422e-14`였다.
+
+현재 full-auto 실행은 `monte_carlo_contract=cpu_gpu_deterministic_batch_v1`을
+기록하며 CPU/GPU가 동일한 primary batch, `counter_rng_v2`, event tape와 ordered
+reducer를 사용한다. `scripts/verify_gpu_cpu_accuracy.py`는 실제 CUDA preflight 후
+Face direct와 stochastic two-bounce 결과의 전체 semantic payload를 exact 비교하고,
+GPU success count가 양수인지 확인한다. 이 gate는 수치 구현 정합성을 증명하지만
+소재 물성이나 절대 nit의 물리적 정확도까지 증명하지는 않는다.
 
 ## 백엔드 종류
 
@@ -558,7 +591,7 @@ GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
 - `bvh_leaf_count`
 - `bvh_build_sec`
 - `rays_per_sec`
-- `requested_intersection_dispatch`
+- `requested_intersection_dispatch`, `effective_intersection_dispatch_request`
 - `intersection_batch_size`: 이번 run에 적용한 runtime chunk 크기
 - `intersection_dispatch`: `scalar`, `batch`, 또는 혼합 실행의 `mixed`
 - `intersection_batch_count`
@@ -569,7 +602,7 @@ GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
 - `intersection_sec`: batch dispatch 호출만 합산한 시간
 - `intersection_timing_scope`: 현재 `batch_dispatch_only`
 - `native_batch`
-- `requested_intersection_provider`
+- `requested_intersection_provider`, `effective_intersection_provider_request`
 - `intersection_provider`: `python_cpu`, `numba_cpu`, `gpu_cuda`, `mixed`,
   `not_used`
 - `reference_scalar_query_count`, `reference_batch_count`,
@@ -584,6 +617,8 @@ GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
   `intersection_fallback_phase`, `intersection_fallback_reason`
 - `intersection_provider_unavailable_reason`
 - `compute_backend`
+- `monte_carlo_contract`: 프로덕션 full-auto는
+  `cpu_gpu_deterministic_batch_v1`
 - `gpu_cuda_requested`, `gpu_cuda_available`, `gpu_cuda_used`
 - `gpu_cuda_contract`, `gpu_cuda_strict_float64`
 - `gpu_cuda_device_name`, `gpu_cuda_compute_capability`, `gpu_cuda_device_id`
@@ -599,6 +634,7 @@ GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
   `gpu_cuda_hybrid_cpu_success_ray_count`,
   `gpu_cuda_hybrid_cpu_execute_sec`, `gpu_cuda_hybrid_cpu_failure_count`,
   `gpu_cuda_hybrid_cpu_failure_reason`, `gpu_cuda_hybrid_cpu_disabled`
+- `gpu_cuda_hybrid_bypass_count`, `gpu_cuda_hybrid_bypass_ray_count`
 - `gpu_cuda_gpu_attempt_count`, `gpu_cuda_gpu_attempt_ray_count`,
   `gpu_cuda_gpu_success_count`, `gpu_cuda_gpu_success_ray_count`
 - `multi_bounce_wavefront_used`
@@ -646,6 +682,8 @@ GPU residency와 fused CUDA depth kernel은 이 계약의 범위 밖이다.
   `wavefront_reducer_fallback_flush_count`
 - `requested_wavefront_planner`, `wavefront_planner`,
   `wavefront_planner_contract`
+- `effective_wavefront_planner_request`, `effective_wavefront_reducer_request`
+- `requested_wavefront_rng`, `requested_wavefront_reducer_commit`
 - `wavefront_planner_logical_row_count`,
   `wavefront_planner_python_sidecar_row_count`
 - `wavefront_planner_native_available`, `wavefront_planner_native_used`,
@@ -673,6 +711,17 @@ allocator peak, GPU memory 또는 run 누적 memory를 의미하지 않는다. C
 producer-side advanced-index gather를, peak bytes는 strict validator 임시 배열을
 포함하지 않는다. Tape를 만들지 않는 경로에서는 validation/copy/payload/peak
 scope가 `not_used`이고 관련 timing/byte/count는 `0`이다.
+
+Receiver별 metric에는 Flux 수렴과 Heatmap 표본 품질을 분리해 기록한다.
+
+- `statistical_quality`, `receiver_hit_rate`,
+  `estimated_rays_for_minimum_hits`: 전체 Flux 오차 추정에 필요한 최소 hit 관점
+- `heatmap_quality`, `heatmap_hits_per_bin`, `heatmap_bin_count`: 셀별 분포 품질
+- `estimated_rays_for_usable_heatmap`: 현재 hit rate가 유지된다는 가정에서 평균
+  `5 hit/cell` 확보에 필요한 대략적 전체 Ray 수
+
+전체 Flux가 수렴해도 `heatmap_quality`가 `sparse` 또는 `noisy`일 수 있다. 이 경우
+Peak 셀과 미세 패턴은 정량 판정이 아니라 경향 확인용으로만 사용한다.
 
 ## 후속/외부 백엔드 확장 조건
 - adapter는 동일 `HitRecord` 계약을 만족해야 한다.

@@ -87,7 +87,7 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         )
         self.assertEqual(
             performance["wavefront_event_tape_contract"],
-            "ordered_primary_event_tape_v2",
+            "ordered_primary_event_tape_v3",
         )
         self.assertEqual(
             performance["wavefront_event_tape_validation_mode"],
@@ -445,7 +445,7 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
         self.assertEqual(performance["wavefront_chunk_count"], 1)
         self.assertSoAMetrics(actual, event_count=32)
 
-    def test_default_auto_scalar_does_not_probe_or_build_event_tape(self) -> None:
+    def test_explicit_scalar_does_not_probe_or_build_event_tape(self) -> None:
         reference = run_direct_ray_trace(
             two_bounce_input(max_depth=2, ray_count=31),
             intersection_dispatch="scalar",
@@ -480,7 +480,11 @@ class Perf3B2COrderedReducerTests(unittest.TestCase):
                 side_effect=AssertionError("default auto must not call native scalar"),
             ) as native_scalar,
         ):
-            actual = run_direct_ray_trace(trace_input)
+            actual = run_direct_ray_trace(
+                trace_input,
+                intersection_dispatch="scalar",
+                intersection_provider="python_cpu",
+            )
 
         self.assertSemanticBitsAndOrderEqual(actual, reference)
         intersection_probe.assert_not_called()

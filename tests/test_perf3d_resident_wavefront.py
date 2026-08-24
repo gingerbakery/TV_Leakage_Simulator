@@ -545,57 +545,29 @@ class Perf3DHostOverheadTests(unittest.TestCase):
                     0,
                 )
 
-    def test_cpu_default_never_probes_optional_acceleration(self) -> None:
+    def test_cpu_default_uses_native_parity_stack_without_cuda_probe(self) -> None:
         trace_input = _summary_two_bounce(17)
-        with (
-            patch.object(
-                gpu_cuda,
-                "probe_gpu_cuda",
-                side_effect=AssertionError("CPU default must not probe CUDA"),
-            ) as gpu_probe,
-            patch.object(
-                native_intersection,
-                "probe_native_cpu",
-                side_effect=AssertionError("CPU default must not probe Numba BVH"),
-            ) as intersection_probe,
-            patch.object(
-                native_counter,
-                "probe_native_cpu_counter_wavefront",
-                side_effect=AssertionError("CPU default must not probe planner"),
-            ) as planner_probe,
-            patch.object(
-                native_reducer,
-                "probe_native_cpu_ordered_reducer",
-                side_effect=AssertionError("CPU default must not probe reducer"),
-            ) as reducer_probe,
-            patch.object(
-                native_reducer,
-                "reduce_ordered_summary_native_cpu",
-                side_effect=AssertionError("CPU default must not execute reducer"),
-            ) as reducer_execute,
-            patch.object(
-                native_reducer,
-                "clone_ordered_summary_accumulator",
-                side_effect=AssertionError("CPU default must not retain state"),
-            ) as reducer_clone,
-        ):
+        with patch.object(
+            gpu_cuda,
+            "probe_gpu_cuda",
+            side_effect=AssertionError("CPU default must not probe CUDA"),
+        ) as gpu_probe:
             result = run_direct_ray_trace(trace_input)
 
         gpu_probe.assert_not_called()
-        intersection_probe.assert_not_called()
-        planner_probe.assert_not_called()
-        reducer_probe.assert_not_called()
-        reducer_execute.assert_not_called()
-        reducer_clone.assert_not_called()
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["compute_backend"], "cpu")
         self.assertEqual(
             performance["wavefront_reducer_commit_policy"],
-            "per_tape",
+            "run_accumulator",
         )
         self.assertEqual(
-            performance["wavefront_reflection_seed_dispatch"],
-            "not_used",
+            performance["wavefront_reflection_rng"],
+            "counter_rng_v2",
+        )
+        self.assertEqual(
+            performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
         )
 
     def test_gpu_auto_selects_run_accumulator_without_forcing_gpu_in_test(self) -> None:

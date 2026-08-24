@@ -7,7 +7,7 @@ from typing import List
 import numpy as np
 
 
-EVENT_TAPE_CONTRACT = "ordered_primary_event_tape_v2"
+EVENT_TAPE_CONTRACT = "ordered_primary_event_tape_v3"
 STATE_LAYOUT = "stable_active_soa_v1"
 VALIDATION_STRICT = "strict_v1"
 VALIDATION_TRUSTED = "trusted_structural_v1"
@@ -159,6 +159,8 @@ class StableActiveRaySoA:
         ray_power_lumen: float,
         primary_start_index: int,
         reflection_seeds: np.ndarray,
+        *,
+        source_faces: np.ndarray | None = None,
     ) -> "StableActiveRaySoA":
         owned_origins = _owned_xyz(origins, "origins")
         owned_directions = _owned_xyz(directions, "directions")
@@ -168,6 +170,19 @@ class StableActiveRaySoA:
         seeds = _owned_vector(reflection_seeds, np.uint64, "reflection_seeds")
         if len(seeds) != row_count:
             raise ValueError("reflection_seeds must have one value per ray")
+        owned_source_faces = _owned_vector(
+            (
+                np.full(row_count, -1, dtype=np.int64)
+                if source_faces is None
+                else source_faces
+            ),
+            np.int64,
+            "source_faces",
+        )
+        if len(owned_source_faces) != row_count:
+            raise ValueError("source_faces must have one value per ray")
+        if np.any(owned_source_faces < -1):
+            raise ValueError("source_faces values must be -1 or a face index")
         return cls(
             primary_slots=np.arange(row_count, dtype=np.int64),
             primary_indices=np.arange(
@@ -178,7 +193,7 @@ class StableActiveRaySoA:
             origins=owned_origins,
             directions=owned_directions,
             powers_lumen=np.full(row_count, ray_power_lumen, dtype=np.float64),
-            source_faces=np.full(row_count, -1, dtype=np.int64),
+            source_faces=owned_source_faces,
             ray_kind_codes=np.full(row_count, RAY_KIND_DIRECT, dtype=np.int8),
             reflection_seeds=seeds,
         )
@@ -283,6 +298,7 @@ class PrimaryMajorEventTape:
     offsets: np.ndarray
     initial_origins: np.ndarray
     initial_directions: np.ndarray
+    initial_source_faces: np.ndarray
     initial_power_lumen: np.ndarray
     reflection_seeds: np.ndarray
     face_indices: np.ndarray
@@ -322,6 +338,7 @@ class PrimaryMajorEventTape:
             self.offsets,
             self.initial_origins,
             self.initial_directions,
+            self.initial_source_faces,
             self.initial_power_lumen,
             self.reflection_seeds,
             self.face_indices,
@@ -371,6 +388,7 @@ class PrimaryMajorEventTape:
             (self.offsets, "offsets", np.int64, (self.primary_count + 1,)),
             (self.initial_origins, "initial_origins", np.float64, (path_primary_count, 3)),
             (self.initial_directions, "initial_directions", np.float64, (path_primary_count, 3)),
+            (self.initial_source_faces, "initial_source_faces", np.int64, (path_primary_count,)),
             (self.initial_power_lumen, "initial_power_lumen", np.float64, (self.primary_count,)),
             (self.reflection_seeds, "reflection_seeds", np.uint64, (self.primary_count,)),
             (self.face_indices, "face_indices", np.int64, (event_count,)),
@@ -444,6 +462,10 @@ class PrimaryMajorEventTape:
         )
         if any(not np.all(np.isfinite(values)) for values in finite_arrays):
             raise ValueError("event tape floating-point arrays must be finite")
+        if np.any(self.initial_source_faces < -1):
+            raise ValueError(
+                "initial_source_faces values must be -1 or a face index"
+            )
         nonnegative_arrays = (
             self.initial_power_lumen,
             self.distances_mm,
@@ -611,6 +633,7 @@ class PrimaryMajorEventTapeBuilder:
         max_depth: int,
         *,
         include_path_payload: bool = True,
+        initial_source_faces: np.ndarray | None = None,
     ) -> None:
         self.initial_power_lumen = _owned_vector(
             initial_power_lumen,
@@ -632,19 +655,31 @@ class PrimaryMajorEventTapeBuilder:
                 initial_directions,
                 "initial_directions",
             )
+            self.initial_source_faces = _owned_vector(
+                (
+                    np.full(self.primary_count, -1, dtype=np.int64)
+                    if initial_source_faces is None
+                    else initial_source_faces
+                ),
+                np.int64,
+                "initial_source_faces",
+            )
         else:
             self.initial_origins = np.empty((0, 3), dtype=np.float64)
             self.initial_directions = np.empty((0, 3), dtype=np.float64)
+            self.initial_source_faces = np.empty(0, dtype=np.int64)
         if any(
             len(values) != self.primary_count
-            for values in (
-                self.reflection_seeds,
-            )
+            for values in (self.reflection_seeds,)
         ):
             raise ValueError("initial arrays must have the same row count")
         if self.include_path_payload and any(
             len(values) != self.primary_count
-            for values in (self.initial_origins, self.initial_directions)
+            for values in (
+                self.initial_origins,
+                self.initial_directions,
+                self.initial_source_faces,
+            )
         ):
             raise ValueError("initial arrays must have the same row count")
         self.max_depth = int(max_depth)
@@ -699,6 +734,7 @@ class PrimaryMajorEventTapeBuilder:
         return _array_bytes(
             self.initial_origins,
             self.initial_directions,
+            self.initial_source_faces,
             self.initial_power_lumen,
             self.reflection_seeds,
         )
@@ -711,6 +747,7 @@ class PrimaryMajorEventTapeBuilder:
         return _array_bytes(
             self.initial_origins,
             self.initial_directions,
+            self.initial_source_faces,
             self.initial_power_lumen,
             self.reflection_seeds,
             self.terminal_kind_codes,
@@ -1078,6 +1115,7 @@ class PrimaryMajorEventTapeBuilder:
             offsets=_readonly(offsets),
             initial_origins=_readonly(self.initial_origins),
             initial_directions=_readonly(self.initial_directions),
+            initial_source_faces=_readonly(self.initial_source_faces),
             initial_power_lumen=_readonly(self.initial_power_lumen),
             reflection_seeds=_readonly(self.reflection_seeds),
             face_indices=_readonly(face_indices),
