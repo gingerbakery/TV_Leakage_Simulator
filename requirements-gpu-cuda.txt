@@ -1,0 +1,4 @@
+# Optional PERF-3C desktop/runtime dependencies.
+# Keep these separate so the default CPU/lite edition stays small.
+numba==0.66.0
+llvmlite==0.48.0

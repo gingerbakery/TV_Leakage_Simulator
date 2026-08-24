@@ -1,6 +1,7 @@
 export { apiClient, createApiClient } from './client'
 export type {
   ApiRequestOptions,
+  GpuCudaStatusRequestOptions,
   LeakageApiClient,
 } from './client'
 export { ApiError, isApiError } from './errors'
@@ -14,6 +15,7 @@ export type {
 export {
   useDevStatusQuery,
   useDirectRayTraceMutation,
+  useGpuCudaStatusQuery,
   useRayTraceJobQuery,
   useSceneQuery,
   useStartRayTraceMutation,
@@ -27,6 +29,7 @@ export type {
 export {
   apiQueryKeys,
   devStatusQueryOptions,
+  gpuCudaStatusQueryOptions,
   getRayTracePollingInterval,
   rayTraceJobQueryOptions,
   sceneQueryOptions,

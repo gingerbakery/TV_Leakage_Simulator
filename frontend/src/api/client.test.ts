@@ -68,4 +68,37 @@ describe('createApiClient', () => {
     expect(url).toBe('/api/raytrace/status?job_id=job+1')
     expect(init?.signal).toBe(controller.signal)
   })
+
+  it('probes GPU CUDA readiness only through the explicit status endpoint', async () => {
+    const response = {
+      available: true,
+      reason_code: null,
+      device_name: 'NVIDIA RTX Test',
+      compute_capability: '8.6',
+      device_id: 0,
+      numba_version: '0.66.0',
+      toolkit_layout: 'windows_cuda13_x64_compat',
+      strict_float64: true,
+      kernel_executed: true,
+      kernel_verified: true,
+      preflight_scope: 'production_ray_bvh',
+      provider_contract: 'strict_float64_bvh_v1',
+    } as const
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        new Response(JSON.stringify(response), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.getGpuCudaStatus()).resolves.toEqual(response)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/gpu-cuda/status')
+
+    await client.getGpuCudaStatus({ refresh: true })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      '/api/gpu-cuda/status?refresh=true',
+    )
+  })
 })

@@ -359,15 +359,18 @@ export function ViewerWorkspace({
     >
       <div className="border-b border-border bg-background/65 px-3 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-sm font-semibold">3D Viewer</h1>
             <p className="text-xs text-muted-foreground">
               Three.js Mesh · ROI, Emitter, Receiver and Ray Overlays · Step 11
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div
+            className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[390px]:w-auto"
+            data-viewer-toolbar
+          >
             <div
-              className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 dark:border-blue-900/70 dark:bg-blue-950/30"
+              className="grid w-full min-w-0 grid-cols-4 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 min-[390px]:flex min-[390px]:w-auto dark:border-blue-900/70 dark:bg-blue-950/30"
               aria-label="Camera presets"
             >
               {cameraPresets.map((preset) => (
@@ -397,7 +400,7 @@ export function ViewerWorkspace({
               ))}
             </div>
             <div
-              className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 dark:border-blue-900/70 dark:bg-blue-950/30"
+              className="flex max-w-full min-w-0 flex-wrap items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 dark:border-blue-900/70 dark:bg-blue-950/30"
               aria-label="Render modes"
             >
               {renderModes.map((mode) => (
@@ -415,7 +418,7 @@ export function ViewerWorkspace({
                 </Button>
               ))}
             </div>
-            <label className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground dark:border-blue-900/70 dark:bg-blue-950/30">
+            <label className="flex h-8 max-w-full min-w-0 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground dark:border-blue-900/70 dark:bg-blue-950/30">
               <span className="font-medium whitespace-nowrap">
                 Axis size
               </span>
@@ -438,7 +441,7 @@ export function ViewerWorkspace({
               </span>
             </label>
             <label
-              className="flex h-8 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45 dark:border-blue-900/70 dark:bg-blue-950/30"
+              className="flex h-8 max-w-full min-w-0 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 text-xs text-muted-foreground has-disabled:cursor-not-allowed has-disabled:opacity-45 dark:border-blue-900/70 dark:bg-blue-950/30"
               title={
                 renderMode === 'Wireframe'
                   ? 'Surface 또는 Surface + Edge 모드에서 사용할 수 있습니다.'

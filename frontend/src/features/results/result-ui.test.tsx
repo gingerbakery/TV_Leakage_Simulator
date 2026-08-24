@@ -27,6 +27,42 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('separates the actual compute device from the acceleration structure', () => {
+    const result = createRayTraceResultFixture()
+    result.config.compute_backend = 'gpu_cuda'
+    result.metrics._performance_summary = {
+      ...(result.metrics._performance_summary as Record<string, unknown>),
+      compute_backend: 'gpu_cuda',
+      compute_execution_state: 'gpu_active',
+      compute_execution_reason: null,
+      intersection_provider: 'gpu_cuda',
+      gpu_cuda_used: true,
+      gpu_cuda_device_name: 'NVIDIA RTX Test',
+      gpu_cuda_gpu_attempt_count: 3,
+      gpu_cuda_gpu_success_count: 3,
+    }
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByLabelText('Compute execution status').textContent,
+    ).toContain('Compute device · GPU 활성')
+    expect(screen.getByText('CUDA batches · 3/3')).not.toBeNull()
+    const accelerationHelp = screen.getByRole('button', {
+      name: 'Acceleration structure 설명',
+    })
+    expect(accelerationHelp.closest('p')?.textContent).toContain(
+      'Acceleration structure',
+    )
+    expect(screen.queryByText('Intersection backend')).toBeNull()
+  })
+
   it('shows a formatted Receiver name instead of its internal ID', () => {
     const result = createRayTraceResultFixture()
     result.receivers[0].display_name = 'receiver_001'

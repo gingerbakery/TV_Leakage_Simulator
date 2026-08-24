@@ -16,6 +16,29 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('normalizes CPU-only brute force to BVH whenever GPU is selected', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      compute_backend: 'cpu',
+      intersection_backend: 'brute_force',
+    })
+    expect(store.getState().rayTraceConfig.intersection_backend).toBe(
+      'brute_force',
+    )
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      compute_backend: 'gpu_cuda',
+    })
+
+    expect(store.getState().rayTraceConfig).toMatchObject({
+      compute_backend: 'gpu_cuda',
+      intersection_backend: 'bvh',
+    })
+  })
+
   it('keeps simulation settings isolated when switching CAD cases', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

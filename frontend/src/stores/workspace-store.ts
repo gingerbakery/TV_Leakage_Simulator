@@ -418,6 +418,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   termination_mode: 'threshold',
   contribution_mode: 'summary',
   intersection_backend: 'auto',
+  compute_backend: 'cpu',
   store_ray_paths: true,
   max_stored_paths: 500,
   auto_convergence: false,
@@ -430,6 +431,13 @@ export const maxReflectionDepth = 20
 function normalizeRayTraceConfig(
   config: RayTraceConfigRequest,
 ): RayTraceConfigRequest {
+  const computeBackend =
+    config.compute_backend === 'gpu_cuda' ? 'gpu_cuda' : 'cpu'
+  const requestedIntersectionBackend =
+    config.intersection_backend === 'brute_force' ||
+    config.intersection_backend === 'bvh'
+      ? config.intersection_backend
+      : 'auto'
   return {
     ray_count: Math.max(1, Math.trunc(config.ray_count || 1)),
     max_depth: Math.max(
@@ -448,10 +456,11 @@ function normalizeRayTraceConfig(
     contribution_mode:
       config.contribution_mode === 'detailed' ? 'detailed' : 'summary',
     intersection_backend:
-      config.intersection_backend === 'brute_force' ||
-      config.intersection_backend === 'bvh'
-        ? config.intersection_backend
-        : 'auto',
+      computeBackend === 'gpu_cuda' &&
+      requestedIntersectionBackend === 'brute_force'
+        ? 'bvh'
+        : requestedIntersectionBackend,
+    compute_backend: computeBackend,
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,

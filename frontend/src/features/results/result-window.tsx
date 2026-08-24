@@ -46,6 +46,7 @@ import {
   type ReceiverHeatmapSample,
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
+import { ComputeExecutionStatus } from './compute-execution-status'
 
 // Kill switch for the Ray Section View images in the Ray summary tab.
 // This feature has a known limitation (the true filled-cap cross-section
@@ -2185,14 +2186,19 @@ export function RayTraceResultWindow({
                   help="3D 경로 및 Section View 확인을 위해 저장된 대표 Ray 경로 수입니다. 추적된 모든 Ray 수와 같지 않을 수 있습니다."
                 />
               </div>
+              <ComputeExecutionStatus
+                configuredBackend={result.config.compute_backend}
+                performance={performance}
+              />
               <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
-                Intersection backend
-                <HelpTooltip label="Intersection backend 설명">
-                  Ray와 CAD Mesh의 충돌을 검색한 계산 방식입니다. Cache Hit는 동일 형상 조건의 BVH를 재사용했음을 뜻하며, Rebuilt는 형상 변경으로 새로 생성했음을 뜻합니다.
+                Acceleration structure
+                <HelpTooltip label="Acceleration structure 설명">
+                  Ray와 CAD Mesh의 충돌 후보를 빠르게 찾는 자료구조입니다. GPU 선택과는 별개이며 CUDA 실행도 BVH를 사용합니다. Cache Hit는 동일 형상을 재사용했고 Rebuilt는 새로 생성했음을 뜻합니다.
                 </HelpTooltip>
                 {' · '}
                 {String(
-                  performance.intersection_backend ??
+                  performance.acceleration_structure ??
+                    performance.intersection_backend ??
                     result.config.intersection_backend,
                 ).toUpperCase()}
                 {' · '}BVH build{' '}

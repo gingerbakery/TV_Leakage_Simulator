@@ -1,13 +1,128 @@
 param(
-    [string]$OutputName = "leakage_simulator_desktop_v1.0.0_lite"
+    [ValidateSet("lite", "gpu_cuda")]
+    [string]$Edition = "lite",
+    [string]$OutputName = "",
+    [string]$SourcePythonDirectory = "",
+    [string]$ReleaseDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ReleaseRoot = Join-Path $Root "release"
-$OutputDir = Join-Path $ReleaseRoot $OutputName
-$ZipPath = "$OutputDir.zip"
-$SourcePython = Join-Path $Root "_tools\python313"
+$Root = [System.IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
+$IsGpuCudaEdition = $Edition -eq "gpu_cuda"
+
+function Get-NormalizedFullPath([string]$Path) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Length -gt $pathRoot.Length) {
+        $fullPath = $fullPath.TrimEnd(
+            [char[]]@(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            )
+        )
+    }
+    return $fullPath
+}
+
+function Assert-SafeOutputName([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -in @(".", "..")) {
+        throw "[PATH SAFETY] OutputName must be a non-empty package folder name, not '.' or '..'."
+    }
+    if ($Name.Trim() -ne $Name -or $Name.EndsWith(".")) {
+        throw "[PATH SAFETY] OutputName cannot have leading/trailing whitespace or a trailing dot."
+    }
+    if (
+        [System.IO.Path]::IsPathRooted($Name) -or
+        $Name.Contains([System.IO.Path]::DirectorySeparatorChar) -or
+        $Name.Contains([System.IO.Path]::AltDirectorySeparatorChar) -or
+        $Name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0
+    ) {
+        throw "[PATH SAFETY] OutputName must be one safe leaf name without a root or path separator."
+    }
+    $stem = $Name.Split(".")[0].ToUpperInvariant()
+    $reservedNames = @(
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    )
+    if ($reservedNames -contains $stem) {
+        throw "[PATH SAFETY] OutputName cannot be a reserved Windows device name."
+    }
+}
+
+function Assert-SafeDirectChildPath(
+    [string]$ParentPath,
+    [string]$CandidatePath,
+    [string]$ExpectedLeaf,
+    [string]$Label
+) {
+    $resolvedParent = Get-NormalizedFullPath $ParentPath
+    $resolvedCandidate = Get-NormalizedFullPath $CandidatePath
+    $candidateParent = Get-NormalizedFullPath ([System.IO.Path]::GetDirectoryName($resolvedCandidate))
+    $candidateLeaf = [System.IO.Path]::GetFileName($resolvedCandidate)
+    if (
+        $resolvedCandidate -eq $resolvedParent -or
+        $candidateParent -ne $resolvedParent -or
+        $candidateLeaf -cne $ExpectedLeaf
+    ) {
+        throw "[PATH SAFETY] $Label must be the exact expected direct child of the release folder."
+    }
+    return $resolvedCandidate
+}
+
+function Assert-SafeDescendantPath(
+    [string]$ParentPath,
+    [string]$CandidatePath,
+    [string]$ExpectedLeaf,
+    [string]$Label
+) {
+    $resolvedParent = Get-NormalizedFullPath $ParentPath
+    $resolvedCandidate = Get-NormalizedFullPath $CandidatePath
+    $prefix = $resolvedParent + [System.IO.Path]::DirectorySeparatorChar
+    if (
+        -not $resolvedCandidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [System.IO.Path]::GetFileName($resolvedCandidate) -cne $ExpectedLeaf
+    ) {
+        throw "[PATH SAFETY] $Label must be the exact expected descendant of the package folder."
+    }
+    return $resolvedCandidate
+}
+
+function Assert-NotReparsePoint([string]$Path, [string]$Label) {
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "[PATH SAFETY] Refusing recursive deletion through a reparse point: $Label"
+        }
+    }
+}
+
+if (-not $OutputName) {
+    $OutputName = if ($IsGpuCudaEdition) {
+        "leakage_simulator_desktop_v1.0.0_gpu_cuda"
+    }
+    else {
+        "leakage_simulator_desktop_v1.0.0_lite"
+    }
+}
+$ReleaseRoot = if ($ReleaseDirectory) {
+    Get-NormalizedFullPath $ReleaseDirectory
+}
+else {
+    Get-NormalizedFullPath (Join-Path $Root "release")
+}
+if ($ReleaseRoot -eq [System.IO.Path]::GetPathRoot($ReleaseRoot)) {
+    throw "[PATH SAFETY] ReleaseDirectory cannot be a filesystem root."
+}
+Assert-SafeOutputName $OutputName
+$OutputDir = Assert-SafeDirectChildPath $ReleaseRoot (Join-Path $ReleaseRoot $OutputName) $OutputName "Output directory"
+$ZipPath = Assert-SafeDirectChildPath $ReleaseRoot (Join-Path $ReleaseRoot "$OutputName.zip") "$OutputName.zip" "ZIP path"
+$SourcePython = if ($SourcePythonDirectory) {
+    [System.IO.Path]::GetFullPath($SourcePythonDirectory)
+}
+else {
+    Join-Path $Root "_tools\python313"
+}
 $SourceSitePackages = Join-Path $SourcePython "Lib\site-packages"
 $TargetPython = Join-Path $OutputDir "_tools\python313"
 $TargetSitePackages = Join-Path $TargetPython "Lib\site-packages"
@@ -86,16 +201,16 @@ if (-not (Test-Path -LiteralPath $Compiler)) {
     throw "C# compiler was not found: $Compiler"
 }
 
-$resolvedRelease = [System.IO.Path]::GetFullPath($ReleaseRoot)
-$resolvedOutput = [System.IO.Path]::GetFullPath($OutputDir)
-if (-not $resolvedOutput.StartsWith($resolvedRelease, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Output path must remain inside the release folder."
-}
+$resolvedRelease = Get-NormalizedFullPath $ReleaseRoot
+$OutputDir = Assert-SafeDirectChildPath $resolvedRelease $OutputDir $OutputName "Output directory"
 
 if (Test-Path -LiteralPath $OutputDir) {
+    $OutputDir = Assert-SafeDirectChildPath $resolvedRelease $OutputDir $OutputName "Output directory before recursive deletion"
+    Assert-NotReparsePoint $OutputDir "output directory"
     Remove-Item -LiteralPath $OutputDir -Recurse -Force
 }
 if (Test-Path -LiteralPath $ZipPath) {
+    $ZipPath = Assert-SafeDirectChildPath $resolvedRelease $ZipPath "$OutputName.zip" "ZIP before deletion"
     Remove-Item -LiteralPath $ZipPath -Force
 }
 
@@ -104,6 +219,10 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDir "outputs") -Force | Out
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "_uploads") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "desktop_runtime") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $OutputDir "docs") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $OutputDir ".github") -Force | Out-Null
+if ($IsGpuCudaEdition) {
+    New-Item -ItemType Directory -Path (Join-Path $OutputDir "scripts") -Force | Out-Null
+}
 
 Write-Host "[1/9] Building React production UI..."
 $FrontendDir = Join-Path $Root "frontend"
@@ -166,6 +285,15 @@ $RuntimePackages = @(
     "uvicorn",
     "uvicorn-0.51.0.dist-info"
 )
+if ($IsGpuCudaEdition) {
+    $RuntimePackages += @(
+        "llvmlite",
+        "llvmlite-0.48.0.dist-info",
+        "llvmlite.libs",
+        "numba",
+        "numba-0.66.0.dist-info"
+    )
+}
 foreach ($package in $RuntimePackages) {
     Copy-RequiredPath (Join-Path $SourceSitePackages $package) $TargetSitePackages
 }
@@ -189,11 +317,25 @@ Copy-Item -LiteralPath (Join-Path $Root "run_web.py") -Destination $OutputDir -F
 Copy-Item -LiteralPath (Join-Path $Root "run_api.py") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "check_cad_import.py") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination $OutputDir -Force
+Copy-Item -LiteralPath (Join-Path $Root "AGENTS.md") -Destination $OutputDir -Force
+Copy-Item -LiteralPath (Join-Path $Root "CLAUDE.md") -Destination $OutputDir -Force
+Copy-Item -LiteralPath (Join-Path $Root "GEMINI.md") -Destination $OutputDir -Force
+Copy-Item -LiteralPath (Join-Path $Root ".github\copilot-instructions.md") -Destination (Join-Path $OutputDir ".github") -Force
 Copy-Item -LiteralPath (Join-Path $Root "COMPANY_PC_QUICK_START.md") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "requirements-dev.txt") -Destination $OutputDir -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\cad-intersection-backend-contract.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\performance-acceleration-plan.md") -Destination (Join-Path $OutputDir "docs") -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\desktop-exe-packaging.md") -Destination (Join-Path $OutputDir "docs") -Force
+Copy-Item -LiteralPath (Join-Path $Root "docs\gpu-cuda-user-guide.md") -Destination (Join-Path $OutputDir "docs") -Force
+Copy-Item -LiteralPath (Join-Path $Root "docs\ai-gpu-execution-runbook.md") -Destination (Join-Path $OutputDir "docs") -Force
+Copy-Item -LiteralPath (Join-Path $Root "docs\WINDOWS_GPU_SETUP.md") -Destination (Join-Path $OutputDir "docs") -Force
+if ($IsGpuCudaEdition) {
+    Copy-Item -LiteralPath (Join-Path $Root "requirements-gpu-cuda.txt") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "scripts\verify_gpu_cuda_runtime.py") -Destination (Join-Path $OutputDir "scripts") -Force
+    Copy-Item -LiteralPath (Join-Path $Root "CHECK_GPU_CUDA.bat") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "setup_windows_gpu.bat") -Destination $OutputDir -Force
+    Copy-Item -LiteralPath (Join-Path $Root "setup_windows_gpu.ps1") -Destination $OutputDir -Force
+}
 
 $WebViewCandidates = @(
     (Join-Path $Root "release\leakage_simulator_desktop_v0.1"),
@@ -240,8 +382,26 @@ Copy-Item -LiteralPath $WebViewCore -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewWinForms -Destination $OutputDir -Force
 Copy-Item -LiteralPath $WebViewLoader -Destination $OutputDir -Force
 
+$EditionLabel = if ($IsGpuCudaEdition) { "GPU CUDA" } else { "Lite" }
+$GpuStartNote = if ($IsGpuCudaEdition) {
 @"
-TV Leakage Simulator Desktop Lite v1.0.0
+- NVIDIA GPU mode requires a compatible NVIDIA display driver and local CUDA Toolkit.
+- This build was validated for Numba 0.66.0, llvmlite 0.48.0 and CUDA Toolkit 13.1.
+- If prerequisites are uncertain, run setup_windows_gpu.bat in its default read-only mode and follow docs/WINDOWS_GPU_SETUP.md. Install mode always requires explicit approval.
+- Before selecting GPU mode, double-click CHECK_GPU_CUDA.bat and confirm the GPU name, Ray/BVH kernel PASS and final [OK].
+- After ray tracing, confirm the Compute row shows the GPU name and at least one successful GPU batch.
+- BVH/Rebuilt describes the acceleration structure build; it does not prove that this run used the GPU.
+- If GPU initialization or execution fails, the simulator replays the logical batch on CPU.
+- A git pull does not update this extracted EXE. Use a newly built GPU ZIP in a new folder.
+"@
+}
+else {
+@"
+- This Lite edition intentionally excludes Numba/llvmlite; use CPU compute mode.
+"@
+}
+@"
+TV Leakage Simulator Desktop $EditionLabel v1.0.0
 
 1. Double-click LeakageSimulator.exe.
 2. Wait until the simulator window opens.
@@ -250,8 +410,11 @@ TV Leakage Simulator Desktop Lite v1.0.0
 
 Important:
 - Keep all files and folders together.
+- When using an AI assistant, open this package root and make it read AGENTS.md, docs/WINDOWS_GPU_SETUP.md and docs/ai-gpu-execution-runbook.md before it runs commands.
+- A web AI without access to this folder cannot read those instructions automatically; attach the files or use the prompt in README.md.
 - X_T direct import is not implemented in this lite build.
 - If embedded WebView2 is unavailable, the launcher opens the local UI in the default browser.
+$GpuStartNote
 "@ | Set-Content -LiteralPath (Join-Path $OutputDir "START_HERE.txt") -Encoding utf8
 
 Write-Host "[6/9] Validating minimal runtime, FastAPI and STEP import..."
@@ -259,6 +422,14 @@ $TargetPythonExe = Join-Path $TargetPython "python.exe"
 & $TargetPythonExe -c "import OCP, fastapi, numpy, uvicorn; print('runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
 if ($LASTEXITCODE -ne 0) {
     throw "Minimal Python runtime import validation failed."
+}
+if ($IsGpuCudaEdition) {
+    $GpuSmokeScript = Join-Path $OutputDir "scripts\verify_gpu_cuda_runtime.py"
+    $GpuSmokeManifest = Join-Path $OutputDir "gpu_cuda_runtime_manifest.json"
+    & $TargetPythonExe $GpuSmokeScript --mode device --output $GpuSmokeManifest
+    if ($LASTEXITCODE -ne 0) {
+        throw "GPU CUDA dependency/device kernel validation failed."
+    }
 }
 & $TargetPythonExe (Join-Path $OutputDir "check_cad_import.py") `
     --cad (Join-Path $OutputDir "samples\tv_leakage_full_assembled_no_gap.stp") `
@@ -274,7 +445,9 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[7/9] Cleaning generated cache files..."
 Get-ChildItem -LiteralPath $OutputDir -Recurse -Directory -Filter "__pycache__" | ForEach-Object {
-    Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    $safeCachePath = Assert-SafeDescendantPath $OutputDir $_.FullName "__pycache__" "Python cache directory"
+    Assert-NotReparsePoint $safeCachePath "Python cache directory"
+    Remove-Item -LiteralPath $safeCachePath -Recurse -Force
 }
 Get-ChildItem -LiteralPath (Join-Path $OutputDir "outputs") -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
@@ -299,8 +472,27 @@ try {
         "$OutputName/_tools/python313/python.exe",
         "$OutputName/_tools/python313/Lib/site-packages/OCP/__init__.py",
         "$OutputName/_tools/python313/Lib/site-packages/fastapi/__init__.py",
-        "$OutputName/WebView2Loader.dll"
+        "$OutputName/WebView2Loader.dll",
+        "$OutputName/AGENTS.md",
+        "$OutputName/CLAUDE.md",
+        "$OutputName/GEMINI.md",
+        "$OutputName/.github/copilot-instructions.md",
+        "$OutputName/docs/gpu-cuda-user-guide.md",
+        "$OutputName/docs/ai-gpu-execution-runbook.md",
+        "$OutputName/docs/WINDOWS_GPU_SETUP.md"
     )
+    if ($IsGpuCudaEdition) {
+        $requiredEntries += @(
+            "$OutputName/_tools/python313/Lib/site-packages/numba/__init__.py",
+            "$OutputName/_tools/python313/Lib/site-packages/llvmlite/__init__.py",
+            "$OutputName/_tools/python313/Lib/site-packages/llvmlite/binding/llvmlite.dll",
+            "$OutputName/scripts/verify_gpu_cuda_runtime.py",
+            "$OutputName/CHECK_GPU_CUDA.bat",
+            "$OutputName/setup_windows_gpu.bat",
+            "$OutputName/setup_windows_gpu.ps1",
+            "$OutputName/gpu_cuda_runtime_manifest.json"
+        )
+    }
     $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
     foreach ($entry in $requiredEntries) {
         if ($entryNames -notcontains $entry) {
@@ -313,12 +505,12 @@ finally {
 }
 
 Write-Host "[9/9] Extracting ZIP and validating integrated React server..."
-$VerifyDir = Join-Path $ReleaseRoot ("_verify_" + $OutputName)
-$resolvedVerify = [System.IO.Path]::GetFullPath($VerifyDir)
-if (-not $resolvedVerify.StartsWith($resolvedRelease, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Verification path must remain inside the release folder."
-}
+$VerifyToken = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+$VerifyLeaf = "_verify_" + $VerifyToken
+$VerifyDir = Assert-SafeDirectChildPath $resolvedRelease (Join-Path $resolvedRelease $VerifyLeaf) $VerifyLeaf "Verification directory"
 if (Test-Path -LiteralPath $VerifyDir) {
+    $VerifyDir = Assert-SafeDirectChildPath $resolvedRelease $VerifyDir $VerifyLeaf "Verification directory before recursive deletion"
+    Assert-NotReparsePoint $VerifyDir "verification directory"
     Remove-Item -LiteralPath $VerifyDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $VerifyDir -Force | Out-Null
@@ -329,6 +521,12 @@ try {
     & $ExtractedPython -c "import OCP, fastapi, numpy, uvicorn; print('extracted runtime ok', numpy.__version__, fastapi.__version__, uvicorn.__version__)"
     if ($LASTEXITCODE -ne 0) {
         throw "Extracted ZIP runtime validation failed."
+    }
+    if ($IsGpuCudaEdition) {
+        & $ExtractedPython (Join-Path $ExtractedRoot "scripts\verify_gpu_cuda_runtime.py") --mode device
+        if ($LASTEXITCODE -ne 0) {
+            throw "Extracted ZIP GPU CUDA kernel validation failed."
+        }
     }
     & $ExtractedPython (Join-Path $ExtractedRoot "check_cad_import.py") `
         --cad (Join-Path $ExtractedRoot "samples\tv_leakage_full_assembled_no_gap.stp") `
@@ -341,6 +539,8 @@ try {
 }
 finally {
     if (Test-Path -LiteralPath $VerifyDir) {
+        $VerifyDir = Assert-SafeDirectChildPath $resolvedRelease $VerifyDir $VerifyLeaf "Verification directory before final recursive deletion"
+        Assert-NotReparsePoint $VerifyDir "verification directory"
         Remove-Item -LiteralPath $VerifyDir -Recurse -Force
     }
 }
@@ -351,7 +551,7 @@ $HashPath = "$ZipPath.sha256"
 
 $FolderMB = Get-DirectorySizeMB $OutputDir
 $ZipMB = [math]::Round((Get-Item -LiteralPath $ZipPath).Length / 1MB, 1)
-Write-Host "Lightweight desktop package completed."
+Write-Host "$Edition desktop package completed."
 Write-Host "Folder: $OutputDir ($FolderMB MB)"
 Write-Host "ZIP:    $ZipPath ($ZipMB MB)"
 Write-Host "SHA256: $HashPath"

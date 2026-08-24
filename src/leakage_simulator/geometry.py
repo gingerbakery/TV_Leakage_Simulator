@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 import math
+import threading
 import time
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from .types import Vec3, clamp
 
@@ -94,6 +98,249 @@ class HitRecord:
     triangle: TriangleFace
 
 
+def _ray_vector_array(value: ArrayLike, field_name: str) -> NDArray[np.float64]:
+    array = np.asarray(value, dtype=np.float64)
+    if array.size == 0 and array.shape == (0,):
+        array = array.reshape((0, 3))
+    if array.ndim != 2 or array.shape[1] != 3:
+        raise ValueError(f"{field_name} must have shape (N, 3)")
+    array = np.ascontiguousarray(array, dtype=np.float64)
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{field_name} must contain only finite values")
+    return array
+
+
+def _per_ray_float_array(
+    value: ArrayLike | float | None,
+    ray_count: int,
+    field_name: str,
+    default: float,
+) -> NDArray[np.float64]:
+    if value is None:
+        return np.full(ray_count, default, dtype=np.float64)
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim == 0:
+        array = np.full(ray_count, float(array), dtype=np.float64)
+    elif array.shape == (ray_count,):
+        array = np.ascontiguousarray(array, dtype=np.float64)
+    else:
+        raise ValueError(f"{field_name} must be a scalar or have shape (N,)")
+    if np.any(np.isnan(array)):
+        raise ValueError(f"{field_name} must not contain NaN")
+    return array
+
+
+def _per_ray_face_array(
+    value: ArrayLike | int | None,
+    ray_count: int,
+    field_name: str,
+) -> NDArray[np.int64]:
+    if value is None:
+        return np.full(ray_count, -1, dtype=np.int64)
+    raw = np.asarray(value)
+    if raw.ndim == 0:
+        raw = np.full(ray_count, raw)
+    elif raw.shape != (ray_count,):
+        raise ValueError(f"{field_name} must be a scalar or have shape (N,)")
+    if not np.issubdtype(raw.dtype, np.integer):
+        numeric = np.asarray(raw, dtype=np.float64)
+        if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
+            raise ValueError(f"{field_name} must contain integers")
+    array = np.ascontiguousarray(raw, dtype=np.int64)
+    if np.any(array < -1):
+        raise ValueError(f"{field_name} values must be -1 or a face index")
+    return array
+
+
+@dataclass(slots=True)
+class RayBatch:
+    """GPU-friendly, row-preserving batch of normalized CAD-space rays.
+
+    Per-ray distance limits and ignored faces are always materialized as
+    contiguous arrays. ``-1`` means that no face is ignored.
+    """
+
+    origins: NDArray[np.float64] | ArrayLike
+    directions: NDArray[np.float64] | ArrayLike
+    min_t: NDArray[np.float64] | ArrayLike | float = 1e-8
+    max_t: NDArray[np.float64] | ArrayLike | float | None = None
+    ignore_faces: NDArray[np.int64] | ArrayLike | int | None = None
+
+    def __post_init__(self) -> None:
+        self.origins = _ray_vector_array(self.origins, "origins")
+        self.directions = _ray_vector_array(self.directions, "directions")
+        ray_count = len(self.origins)
+        if len(self.directions) != ray_count:
+            raise ValueError("origins and directions must contain the same number of rows")
+        if ray_count:
+            direction_lengths_squared = np.einsum(
+                "ij,ij->i",
+                self.directions,
+                self.directions,
+            )
+            if not np.allclose(
+                direction_lengths_squared,
+                1.0,
+                rtol=1e-7,
+                atol=1e-9,
+            ):
+                raise ValueError("directions must contain normalized vectors")
+        self.min_t = np.maximum(
+            _per_ray_float_array(self.min_t, ray_count, "min_t", 1e-8),
+            1e-8,
+        )
+        self.max_t = _per_ray_float_array(
+            self.max_t,
+            ray_count,
+            "max_t",
+            float("inf"),
+        )
+        self.ignore_faces = _per_ray_face_array(
+            self.ignore_faces,
+            ray_count,
+            "ignore_faces",
+        )
+
+    def __len__(self) -> int:
+        return int(self.origins.shape[0])
+
+
+@dataclass(slots=True)
+class SurfaceGeometryBatch:
+    """Materialized hit points and oriented normals aligned to ray rows.
+
+    Miss rows contain zeros. The owning :class:`RayHitBatch` remains the
+    source of truth for the hit mask, distance and face index.
+    """
+
+    points: NDArray[np.float64]
+    normals: NDArray[np.float64]
+    hit_count: int
+
+
+@dataclass(slots=True)
+class RayHitBatch:
+    """Compact closest-hit result aligned one-to-one with a :class:`RayBatch`.
+
+    Misses use the unambiguous pair ``(t=+inf, face_index=-1)``. Hit points,
+    normals and TriangleFace objects are materialized only when requested.
+    """
+
+    t: NDArray[np.float64] | ArrayLike
+    face_indices: NDArray[np.int64] | ArrayLike
+
+    def __post_init__(self) -> None:
+        self.t = np.ascontiguousarray(np.asarray(self.t, dtype=np.float64))
+        self.face_indices = np.ascontiguousarray(
+            np.asarray(self.face_indices, dtype=np.int64)
+        )
+        if self.t.ndim != 1 or self.face_indices.ndim != 1:
+            raise ValueError("batch hit arrays must have shape (N,)")
+        if self.t.shape != self.face_indices.shape:
+            raise ValueError("t and face_indices must contain the same number of rows")
+        if np.any(np.isnan(self.t)):
+            raise ValueError("t must not contain NaN")
+        if np.any(self.face_indices < -1):
+            raise ValueError("face_indices values must be -1 or a face index")
+        miss_mask = self.face_indices == -1
+        if np.any(miss_mask & ~np.isposinf(self.t)):
+            raise ValueError("miss rows must use t=+inf and face_index=-1")
+        hit_mask = ~miss_mask
+        if np.any(hit_mask & (~np.isfinite(self.t) | (self.t <= 0.0))):
+            raise ValueError("hit rows must contain a finite positive t")
+
+    def __len__(self) -> int:
+        return int(self.t.shape[0])
+
+    @classmethod
+    def empty(cls) -> "RayHitBatch":
+        return cls(
+            t=np.empty(0, dtype=np.float64),
+            face_indices=np.empty(0, dtype=np.int64),
+        )
+
+    @property
+    def hit_mask(self) -> NDArray[np.bool_]:
+        return self.face_indices >= 0
+
+    def materialize(
+        self,
+        mesh: "TriangleMesh",
+        rays: RayBatch,
+        index: int,
+    ) -> Optional[HitRecord]:
+        """Build the legacy scalar hit object for one row when it is needed."""
+        if len(rays) != len(self):
+            raise ValueError("ray and hit batches must contain the same number of rows")
+        if index < 0 or index >= len(self):
+            raise IndexError("batch hit index is out of range")
+        face_index = int(self.face_indices[index])
+        if face_index < 0:
+            return None
+        if face_index >= len(mesh.faces):
+            raise ValueError("batch hit face index is outside the mesh")
+        mesh._ensure_prepared_triangles()
+        origin = tuple(float(value) for value in rays.origins[index])
+        direction = tuple(float(value) for value in rays.directions[index])
+        return mesh._make_hit_record(
+            face_index,
+            float(self.t[index]),
+            origin,  # type: ignore[arg-type]
+            direction,  # type: ignore[arg-type]
+        )
+
+    def materialize_surface_geometry(
+        self,
+        mesh: "TriangleMesh",
+        rays: RayBatch,
+    ) -> SurfaceGeometryBatch:
+        """Materialize all hit points/normals with one row-preserving batch.
+
+        This is the compact wavefront boundary used before reflection
+        planning. It avoids rebuilding the same validation, tuple and
+        ``HitRecord`` objects once per ray while preserving the scalar point
+        formula and the rule that the normal opposes the incoming direction.
+        """
+        if len(rays) != len(self):
+            raise ValueError("ray and hit batches must contain the same number of rows")
+        ray_count = len(self)
+        points = np.zeros((ray_count, 3), dtype=np.float64)
+        normals = np.zeros((ray_count, 3), dtype=np.float64)
+        hit_rows = np.flatnonzero(self.face_indices >= 0)
+        if not len(hit_rows):
+            return SurfaceGeometryBatch(points=points, normals=normals, hit_count=0)
+        hit_faces = self.face_indices[hit_rows]
+        if np.any(hit_faces >= len(mesh.faces)):
+            raise ValueError("batch hit face index is outside the mesh")
+        distances = self.t[hit_rows]
+        points[hit_rows, 0] = (
+            rays.origins[hit_rows, 0]
+            + rays.directions[hit_rows, 0] * distances
+        )
+        points[hit_rows, 1] = (
+            rays.origins[hit_rows, 1]
+            + rays.directions[hit_rows, 1] * distances
+        )
+        points[hit_rows, 2] = (
+            rays.origins[hit_rows, 2]
+            + rays.directions[hit_rows, 2] * distances
+        )
+        prepared_normals = mesh.prepared_triangle_normals()
+        normals[hit_rows] = prepared_normals[hit_faces]
+        orientation = (
+            normals[hit_rows, 0] * rays.directions[hit_rows, 0]
+            + normals[hit_rows, 1] * rays.directions[hit_rows, 1]
+            + normals[hit_rows, 2] * rays.directions[hit_rows, 2]
+        )
+        flip_rows = hit_rows[orientation > 0.0]
+        normals[flip_rows] = -normals[flip_rows]
+        return SurfaceGeometryBatch(
+            points=points,
+            normals=normals,
+            hit_count=int(len(hit_rows)),
+        )
+
+
 @dataclass(slots=True)
 class _PreparedTriangle:
     v0: Vec3
@@ -127,10 +374,17 @@ class TriangleMesh:
         self.face_metadata: Dict[int, Dict] = {}
         self.intersection_backend = "auto"
         self._prepared_triangles: Optional[List[_PreparedTriangle]] = None
+        self._prepared_triangle_normals: Optional[NDArray[np.float64]] = None
         self._bvh_nodes: Optional[List[_FlatBvhNode]] = None
         self._bvh_face_indices: Optional[List[int]] = None
         self._bvh_build_sec = 0.0
         self._bvh_leaf_count = 0
+        self._native_cpu_scene = None
+        self._native_cpu_scene_build_sec = 0.0
+        self._native_cpu_scene_lock = threading.RLock()
+        self._gpu_cuda_scene = None
+        self._gpu_cuda_scene_build_sec = 0.0
+        self._gpu_cuda_scene_lock = threading.RLock()
 
     def add_vertex(self, vertex: Vec3) -> int:
         self.vertices.append(vertex)
@@ -172,6 +426,20 @@ class TriangleMesh:
     def normal(self, index: int) -> Vec3:
         a, b, c = self.face_vertices(index)
         return face_normal(a, b, c)
+
+    def prepared_triangle_normals(self) -> NDArray[np.float64]:
+        """Return immutable face-aligned normals for batch hit planning."""
+        self._ensure_prepared_triangles()
+        if self._prepared_triangle_normals is None:
+            values = np.ascontiguousarray(
+                [triangle.normal for triangle in (self._prepared_triangles or [])],
+                dtype=np.float64,
+            )
+            if not len(values):
+                values = np.empty((0, 3), dtype=np.float64)
+            values.setflags(write=False)
+            self._prepared_triangle_normals = values
+        return self._prepared_triangle_normals
 
     def material_id(self, index: int) -> str:
         return self.face_material.get(index, "")
@@ -215,10 +483,541 @@ class TriangleMesh:
             maximum_t,
         )
 
-    def set_intersection_backend(self, backend: str) -> None:
+    def intersect_rays(
+        self,
+        rays: RayBatch,
+        backend: Optional[str] = None,
+    ) -> RayHitBatch:
+        """Intersect a row-preserving ray batch using the scalar CPU reference.
+
+        This adapter intentionally delegates every non-empty row to
+        :meth:`intersect_ray`. It freezes batch I/O and closest-hit semantics
+        before a native CPU or GPU implementation is introduced.
+        """
+        if not isinstance(rays, RayBatch):
+            raise TypeError("rays must be a RayBatch")
+        selected_backend = self._resolve_intersection_backend(backend)
+        if len(rays) == 0:
+            return RayHitBatch.empty()
+
+        distances = np.full(len(rays), float("inf"), dtype=np.float64)
+        face_indices = np.full(len(rays), -1, dtype=np.int64)
+        for index in range(len(rays)):
+            minimum_t = float(rays.min_t[index])
+            maximum_t = float(rays.max_t[index])
+            if maximum_t <= minimum_t:
+                continue
+            origin = tuple(float(value) for value in rays.origins[index])
+            direction = tuple(float(value) for value in rays.directions[index])
+            ignored_face = int(rays.ignore_faces[index])
+            hit = self.intersect_ray(
+                origin,  # type: ignore[arg-type]
+                direction,  # type: ignore[arg-type]
+                ignore_face=ignored_face if ignored_face >= 0 else None,
+                min_t=minimum_t,
+                max_t=maximum_t,
+                backend=selected_backend,
+            )
+            if hit is None:
+                continue
+            distances[index] = hit.t
+            face_indices[index] = hit.face_index
+        return RayHitBatch(t=distances, face_indices=face_indices)
+
+    def prepare_native_cpu_scene(self):
+        """Pack the flat BVH into immutable arrays for an optional provider."""
+        from .native_cpu_intersection import NativeCpuScene
+
+        with self._native_cpu_scene_lock:
+            if self._native_cpu_scene is not None:
+                return self._native_cpu_scene
+            started = time.perf_counter()
+            self._ensure_prepared_triangles()
+            self.prepare_acceleration()
+            prepared = self._prepared_triangles or []
+            nodes = self._bvh_nodes or []
+
+            triangle_v0 = np.asarray(
+                [triangle.v0 for triangle in prepared], dtype=np.float64
+            ).reshape((-1, 3))
+            triangle_edge1 = np.asarray(
+                [triangle.edge1 for triangle in prepared], dtype=np.float64
+            ).reshape((-1, 3))
+            triangle_edge2 = np.asarray(
+                [triangle.edge2 for triangle in prepared], dtype=np.float64
+            ).reshape((-1, 3))
+            node_bounds_min = np.asarray(
+                [node.bounds_min for node in nodes], dtype=np.float64
+            ).reshape((-1, 3))
+            node_bounds_max = np.asarray(
+                [node.bounds_max for node in nodes], dtype=np.float64
+            ).reshape((-1, 3))
+            node_left = np.asarray([node.left for node in nodes], dtype=np.int64)
+            node_right = np.asarray([node.right for node in nodes], dtype=np.int64)
+            node_start = np.asarray([node.start for node in nodes], dtype=np.int64)
+            node_count = np.asarray([node.count for node in nodes], dtype=np.int64)
+            ordered_faces = np.asarray(
+                self._bvh_face_indices or [], dtype=np.int64
+            )
+            traceable_face_mask = np.asarray(
+                [
+                    not bool(self.metadata(index).get("trace_excluded", False))
+                    for index in range(len(self.faces))
+                ],
+                dtype=np.bool_,
+            )
+            arrays = (
+                triangle_v0,
+                triangle_edge1,
+                triangle_edge2,
+                node_bounds_min,
+                node_bounds_max,
+                node_left,
+                node_right,
+                node_start,
+                node_count,
+                ordered_faces,
+                traceable_face_mask,
+            )
+            for array in arrays:
+                array.setflags(write=False)
+            self._native_cpu_scene_build_sec = time.perf_counter() - started
+            self._native_cpu_scene = NativeCpuScene(
+                triangle_v0=triangle_v0,
+                triangle_edge1=triangle_edge1,
+                triangle_edge2=triangle_edge2,
+                node_bounds_min=node_bounds_min,
+                node_bounds_max=node_bounds_max,
+                node_left=node_left,
+                node_right=node_right,
+                node_start=node_start,
+                node_count=node_count,
+                ordered_faces=ordered_faces,
+                traceable_face_mask=traceable_face_mask,
+                build_sec=self._native_cpu_scene_build_sec,
+            )
+            return self._native_cpu_scene
+
+    def intersect_rays_native_cpu(
+        self,
+        rays: RayBatch,
+        backend: Optional[str] = None,
+    ):
+        """Run one logical batch through the optional strict-float64 provider."""
+        from .native_cpu_intersection import (
+            NativeCpuCapability,
+            NativeCpuExecution,
+            NativeCpuProviderError,
+            NativeCpuUnavailable,
+            intersect_native_cpu,
+            probe_native_cpu,
+        )
+
+        if not isinstance(rays, RayBatch):
+            raise TypeError("rays must be a RayBatch")
+        if len(rays) == 0:
+            return (
+                RayHitBatch.empty(),
+                NativeCpuExecution(
+                    distances=np.empty(0, dtype=np.float64),
+                    face_indices=np.empty(0, dtype=np.int64),
+                    scene_build_sec=0.0,
+                    jit_compile_sec=0.0,
+                    execute_sec=0.0,
+                    numba_version="not_probed",
+                ),
+            )
+        if self._resolve_intersection_backend(backend) != "bvh":
+            raise NativeCpuUnavailable("native_cpu_requires_bvh")
+        capability: NativeCpuCapability = probe_native_cpu()
+        if not capability.available:
+            raise NativeCpuUnavailable(
+                capability.reason_code or "numba_unavailable"
+            )
+        scene = self.prepare_native_cpu_scene()
+        execution = intersect_native_cpu(
+            scene,
+            rays.origins,
+            rays.directions,
+            rays.min_t,
+            rays.max_t,
+            rays.ignore_faces,
+        )
+        if (
+            not isinstance(execution.distances, np.ndarray)
+            or not isinstance(execution.face_indices, np.ndarray)
+            or execution.distances.dtype != np.float64
+            or execution.face_indices.dtype != np.int64
+            or execution.distances.shape != (len(rays),)
+            or execution.face_indices.shape != (len(rays),)
+        ):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_shape_or_dtype_invalid"
+            )
+        if np.any(execution.face_indices < -1) or np.any(
+            execution.face_indices >= len(self.faces)
+        ):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_face_out_of_range"
+            )
+        hit_mask = execution.face_indices >= 0
+        if np.any(
+            hit_mask
+            & (
+                (execution.distances <= rays.min_t)
+                | (execution.distances > rays.max_t)
+            )
+        ):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_distance_out_of_bounds"
+            )
+        if np.any(hit_mask & (execution.face_indices == rays.ignore_faces)):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_ignored_face"
+            )
+        if np.any(hit_mask):
+            hit_faces = execution.face_indices[hit_mask]
+            if np.any(~scene.traceable_face_mask[hit_faces]):
+                raise NativeCpuProviderError(
+                    "result_validation", "native_result_trace_excluded_face"
+                )
+        try:
+            hits = RayHitBatch(
+                t=execution.distances,
+                face_indices=execution.face_indices,
+            )
+        except (TypeError, ValueError) as exc:
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_invalid"
+            ) from exc
+        return hits, execution
+
+    def prepare_gpu_cuda_scene(self):
+        """Pack and cache a strict-float64 BVH for the explicit CUDA provider.
+
+        The host representation reuses the already immutable native BVH
+        arrays.  This does not import or probe Numba; device discovery and the
+        persistent upload remain lazy inside :mod:`gpu_cuda_intersection`.
+        """
+        from .gpu_cuda_intersection import GpuCudaScene
+
+        with self._gpu_cuda_scene_lock:
+            if self._gpu_cuda_scene is not None:
+                return self._gpu_cuda_scene
+            started = time.perf_counter()
+            packed = self.prepare_native_cpu_scene()
+            node_total = len(packed.node_count)
+            maximum_depth = 0
+            pending: List[Tuple[int, int]] = [(0, 1)] if node_total else []
+            while pending:
+                node_index, depth = pending.pop()
+                maximum_depth = max(maximum_depth, depth)
+                if int(packed.node_count[node_index]) > 0:
+                    continue
+                left = int(packed.node_left[node_index])
+                right = int(packed.node_right[node_index])
+                if left < 0 or right < 0 or left >= node_total or right >= node_total:
+                    raise ValueError("prepared BVH contains an invalid child index")
+                pending.append((left, depth + 1))
+                pending.append((right, depth + 1))
+            # A DFS traversal can retain one sibling for every tree level.
+            # Two spare slots make the bound robust for the push-before-pop
+            # implementation and turn any violated assumption into a checked
+            # provider fallback rather than an out-of-bounds device write.
+            stack_width = max(2, maximum_depth + 2)
+            self._gpu_cuda_scene_build_sec = time.perf_counter() - started
+            self._gpu_cuda_scene = GpuCudaScene(
+                triangle_v0=packed.triangle_v0,
+                triangle_edge1=packed.triangle_edge1,
+                triangle_edge2=packed.triangle_edge2,
+                node_bounds_min=packed.node_bounds_min,
+                node_bounds_max=packed.node_bounds_max,
+                node_left=packed.node_left,
+                node_right=packed.node_right,
+                node_start=packed.node_start,
+                node_count=packed.node_count,
+                ordered_faces=packed.ordered_faces,
+                traceable_face_mask=packed.traceable_face_mask,
+                stack_width=stack_width,
+                build_sec=self._gpu_cuda_scene_build_sec,
+            )
+            return self._gpu_cuda_scene
+
+    def intersect_rays_gpu_cuda(
+        self,
+        rays: RayBatch,
+        backend: Optional[str] = None,
+    ):
+        """Run one complete logical batch through the explicit CUDA provider."""
+        from .gpu_cuda_intersection import (
+            GpuCudaCapability,
+            GpuCudaExecution,
+            GpuCudaProviderError,
+            GpuCudaUnavailable,
+            PROVIDER_CONTRACT,
+            intersect_gpu_cuda,
+            probe_gpu_cuda,
+        )
+
+        if not isinstance(rays, RayBatch):
+            raise TypeError("rays must be a RayBatch")
+        if len(rays) == 0:
+            empty_distances = np.empty(0, dtype=np.float64)
+            empty_faces = np.empty(0, dtype=np.int64)
+            empty_distances.setflags(write=False)
+            empty_faces.setflags(write=False)
+            return (
+                RayHitBatch(
+                    t=empty_distances,
+                    face_indices=empty_faces,
+                ),
+                GpuCudaExecution(
+                    distances=empty_distances,
+                    face_indices=empty_faces,
+                    scene_build_sec=0.0,
+                    scene_upload_sec=0.0,
+                    workspace_prepare_sec=0.0,
+                    input_upload_sec=0.0,
+                    jit_compile_sec=0.0,
+                    kernel_sec=0.0,
+                    output_download_sec=0.0,
+                    numba_version="not_probed",
+                    device_name="not_probed",
+                    compute_capability="not_probed",
+                    device_id=-1,
+                    toolkit_layout="not_probed",
+                    reused_device_scene=True,
+                    reused_workspace=True,
+                ),
+            )
+        if self._resolve_intersection_backend(backend) != "bvh":
+            raise GpuCudaUnavailable("gpu_cuda_requires_bvh")
+        capability: GpuCudaCapability = probe_gpu_cuda()
+        if not capability.available:
+            raise GpuCudaUnavailable(
+                capability.reason_code or "gpu_cuda_unavailable"
+            )
+        scene = self.prepare_gpu_cuda_scene()
+        execution = intersect_gpu_cuda(
+            scene,
+            rays.origins,
+            rays.directions,
+            rays.min_t,
+            rays.max_t,
+            rays.ignore_faces,
+        )
+        if not isinstance(execution, GpuCudaExecution):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_execution_contract_invalid",
+            )
+        timing_names = (
+            "scene_build_sec",
+            "scene_upload_sec",
+            "workspace_prepare_sec",
+            "input_upload_sec",
+            "jit_compile_sec",
+            "kernel_sec",
+            "output_download_sec",
+        )
+        if (
+            execution.strict_float64 is not True
+            or execution.provider_contract != PROVIDER_CONTRACT
+            or type(execution.device_id) is not int
+            or execution.device_id < 0
+            or type(execution.reused_device_scene) is not bool
+            or type(execution.reused_workspace) is not bool
+            or any(
+                not isinstance(getattr(execution, name), float)
+                or not math.isfinite(getattr(execution, name))
+                or getattr(execution, name) < 0.0
+                for name in timing_names
+            )
+            or any(
+                not isinstance(getattr(execution, name), str)
+                or not getattr(execution, name)
+                for name in (
+                    "numba_version",
+                    "device_name",
+                    "compute_capability",
+                    "toolkit_layout",
+                )
+            )
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_execution_contract_invalid",
+            )
+        if (
+            not isinstance(execution.distances, np.ndarray)
+            or not isinstance(execution.face_indices, np.ndarray)
+            or execution.distances.dtype != np.float64
+            or execution.face_indices.dtype != np.int64
+            or execution.distances.shape != (len(rays),)
+            or execution.face_indices.shape != (len(rays),)
+            or not execution.distances.flags.c_contiguous
+            or not execution.face_indices.flags.c_contiguous
+            or not execution.distances.flags.owndata
+            or not execution.face_indices.flags.owndata
+            or execution.distances.flags.writeable
+            or execution.face_indices.flags.writeable
+            or np.shares_memory(execution.distances, execution.face_indices)
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_shape_dtype_or_ownership_invalid",
+            )
+        if np.any(execution.face_indices < -1) or np.any(
+            execution.face_indices >= len(self.faces)
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_face_out_of_range",
+            )
+        hit_mask = execution.face_indices >= 0
+        if np.any(
+            hit_mask
+            & (
+                (execution.distances <= rays.min_t)
+                | (execution.distances > rays.max_t)
+            )
+        ):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_distance_out_of_bounds",
+            )
+        if np.any(hit_mask & (execution.face_indices == rays.ignore_faces)):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_ignored_face",
+            )
+        miss_mask = ~hit_mask
+        if np.any(miss_mask & ~np.isposinf(execution.distances)):
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_invalid_miss",
+            )
+        if np.any(hit_mask):
+            hit_faces = execution.face_indices[hit_mask]
+            if np.any(~scene.traceable_face_mask[hit_faces]):
+                raise GpuCudaProviderError(
+                    "result_validation",
+                    "gpu_cuda_result_trace_excluded_face",
+                )
+        try:
+            hits = RayHitBatch(
+                t=execution.distances,
+                face_indices=execution.face_indices,
+            )
+        except (TypeError, ValueError) as exc:
+            raise GpuCudaProviderError(
+                "result_validation",
+                "gpu_cuda_result_invalid",
+            ) from exc
+        return hits, execution
+
+    def intersect_ray_native_cpu(
+        self,
+        origin: Vec3,
+        direction: Vec3,
+        ignore_face: Optional[int] = None,
+        min_t: float = 1e-8,
+        max_t: Optional[float] = None,
+        backend: Optional[str] = None,
+    ):
+        """Run one scalar query through the same optional native provider."""
+        from .native_cpu_intersection import (
+            NativeCpuCapability,
+            NativeCpuProviderError,
+            NativeCpuScalarExecution,
+            NativeCpuUnavailable,
+            intersect_one_native_cpu,
+            probe_native_cpu,
+        )
+
+        minimum_t = max(1e-8, min_t)
+        maximum_t = float("inf") if max_t is None else max_t
+        if maximum_t <= minimum_t or not self.faces:
+            return (
+                None,
+                NativeCpuScalarExecution(
+                    distance=float("inf"),
+                    face_index=-1,
+                    scene_build_sec=0.0,
+                    jit_compile_sec=0.0,
+                    execute_sec=0.0,
+                    numba_version="not_probed",
+                ),
+            )
+        if self._resolve_intersection_backend(backend) != "bvh":
+            raise NativeCpuUnavailable("native_cpu_requires_bvh")
+        capability: NativeCpuCapability = probe_native_cpu()
+        if not capability.available:
+            raise NativeCpuUnavailable(
+                capability.reason_code or "numba_unavailable"
+            )
+        scene = self.prepare_native_cpu_scene()
+        execution = intersect_one_native_cpu(
+            scene,
+            origin,
+            direction,
+            minimum_t,
+            maximum_t,
+            ignore_face if ignore_face is not None else -1,
+        )
+        face_index = execution.face_index
+        if face_index < -1 or face_index >= len(self.faces):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_face_out_of_range"
+            )
+        if face_index < 0:
+            if not math.isinf(execution.distance) or execution.distance < 0.0:
+                raise NativeCpuProviderError(
+                    "result_validation", "native_result_invalid"
+                )
+            return None, execution
+        if not math.isfinite(execution.distance) or execution.distance <= 0.0:
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_invalid"
+            )
+        if execution.distance <= minimum_t or execution.distance > maximum_t:
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_distance_out_of_bounds"
+            )
+        if ignore_face is not None and face_index == ignore_face:
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_ignored_face"
+            )
+        if bool(self.metadata(face_index).get("trace_excluded", False)):
+            raise NativeCpuProviderError(
+                "result_validation", "native_result_trace_excluded_face"
+            )
+        return (
+            self._make_hit_record(
+                face_index,
+                execution.distance,
+                origin,
+                direction,
+            ),
+            execution,
+        )
+
+    def set_acceleration_structure(self, backend: str) -> None:
         if backend not in {"auto", "brute_force", "bvh"}:
-            raise ValueError("intersection backend must be auto, brute_force, or bvh")
+            if backend == "gpu_cuda":
+                raise ValueError(
+                    "gpu_cuda is a compute backend, not an acceleration "
+                    "structure; select it with compute_backend"
+                )
+            raise ValueError(
+                "acceleration structure must be auto, brute_force, or bvh"
+            )
         self.intersection_backend = backend
+
+    def set_intersection_backend(self, backend: str) -> None:
+        """Compatibility alias for :meth:`set_acceleration_structure`."""
+
+        self.set_acceleration_structure(backend)
 
     def prepare_acceleration(self) -> Dict[str, float | int | str]:
         self._ensure_prepared_triangles()
@@ -235,14 +1034,19 @@ class TriangleMesh:
             self._bvh_build_sec = time.perf_counter() - started
         return self.acceleration_info()
 
-    def acceleration_info(self) -> Dict[str, float | int | str]:
+    def acceleration_info(
+        self,
+        backend: Optional[str] = None,
+    ) -> Dict[str, float | int | str]:
         return {
-            "selected_backend": self._resolve_intersection_backend(None),
+            "selected_backend": self._resolve_intersection_backend(backend),
             "configured_backend": self.intersection_backend,
             "triangle_count": len(self.faces),
             "bvh_node_count": len(self._bvh_nodes or []),
             "bvh_leaf_count": self._bvh_leaf_count,
             "bvh_build_sec": self._bvh_build_sec,
+            "native_cpu_scene_build_sec": self._native_cpu_scene_build_sec,
+            "gpu_cuda_scene_build_sec": self._gpu_cuda_scene_build_sec,
         }
 
     def _resolve_intersection_backend(self, backend: Optional[str]) -> str:
@@ -609,10 +1413,15 @@ class TriangleMesh:
 
     def _invalidate_acceleration(self) -> None:
         self._prepared_triangles = None
+        self._prepared_triangle_normals = None
         self._bvh_nodes = None
         self._bvh_face_indices = None
         self._bvh_build_sec = 0.0
         self._bvh_leaf_count = 0
+        self._native_cpu_scene = None
+        self._native_cpu_scene_build_sec = 0.0
+        self._gpu_cuda_scene = None
+        self._gpu_cuda_scene_build_sec = 0.0
 
     @staticmethod
     def _ray_box_entry_fast(

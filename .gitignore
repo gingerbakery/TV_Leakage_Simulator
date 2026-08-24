@@ -20,6 +20,8 @@ dist/
 
 # Embedded/local runtimes
 _tools/
+.venv/
+.venv-gpu/
 
 # Local backup or scratch files
 run_web_backup_before_replace.py

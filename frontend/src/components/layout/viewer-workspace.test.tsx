@@ -18,6 +18,22 @@ afterEach(() => {
 })
 
 describe('ViewerWorkspace display controls', () => {
+  it('keeps the viewer toolbar bounded and wraps camera presets on narrow screens', () => {
+    const view = render(<ViewerWorkspace />)
+    const toolbar = view.container.querySelector<HTMLElement>(
+      '[data-viewer-toolbar]',
+    )
+    const cameraPresets = screen.getByLabelText('Camera presets')
+    const renderModes = screen.getByLabelText('Render modes')
+
+    expect(toolbar?.className).toContain('w-full')
+    expect(toolbar?.className).toContain('min-w-0')
+    expect(cameraPresets.className).toContain('grid-cols-4')
+    expect(cameraPresets.className).toContain('min-[390px]:flex')
+    expect(renderModes.className).toContain('max-w-full')
+    expect(renderModes.className).toContain('flex-wrap')
+  })
+
   it('enables surface transparency only for surface render modes', () => {
     render(<ViewerWorkspace />)
 

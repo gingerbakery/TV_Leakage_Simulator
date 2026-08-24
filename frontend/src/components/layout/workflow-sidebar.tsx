@@ -6,6 +6,8 @@ import {
   Layers3,
   Move3D,
   Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   ScanSearch,
   Settings2,
@@ -34,7 +36,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { useWorkspaceStore, workspaceSelectors } from '@/stores'
 
@@ -74,6 +75,8 @@ interface WorkflowSection {
 interface WorkflowSidebarProps {
   activeSection: WorkflowSectionId
   onActiveSectionChange(section: WorkflowSectionId): void
+  isWide: boolean
+  onToggleWidth(): void
   scene?: ScenePayload
   cameraFrame: ViewerCameraFrame | null
   isSceneLoading?: boolean
@@ -141,6 +144,8 @@ const workflowSections: WorkflowSection[] = [
 export function WorkflowSidebar({
   activeSection,
   onActiveSectionChange,
+  isWide,
+  onToggleWidth,
   scene,
   cameraFrame,
   isSceneLoading = false,
@@ -297,18 +302,57 @@ export function WorkflowSidebar({
   }
 
   return (
-    <aside className="border-b border-border bg-sidebar lg:min-h-0 lg:border-r lg:border-b-0">
-      <ScrollArea className="h-[38rem] lg:h-full">
-        <div className="space-y-4 p-3">
-          <section aria-labelledby="workflow-navigation-title">
-            <div className="mb-2 flex items-center justify-between px-1">
-              <h2
-                id="workflow-navigation-title"
-                className="text-sm font-semibold tracking-wide text-muted-foreground uppercase"
+    <aside
+      id="workflow-sidebar"
+      className="relative w-full min-w-0 max-w-full overflow-x-clip border-b border-border bg-sidebar lg:min-h-0 lg:overflow-hidden lg:border-r lg:border-b-0"
+      data-workflow-sidebar
+    >
+      <div
+        className="min-w-0 overflow-x-clip outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary lg:h-full lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain"
+        role="region"
+        aria-label="Workflow menu"
+        tabIndex={0}
+      >
+        <div className="workflow-sidebar-content w-full min-w-0 space-y-4 p-3">
+          <section
+            className="min-w-0"
+            aria-labelledby="workflow-navigation-title"
+          >
+            <div className="mb-2 flex min-w-0 items-center justify-between gap-2 px-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Workflow
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <h2
+                  id="workflow-navigation-title"
+                  className="truncate text-sm font-semibold tracking-wide text-muted-foreground uppercase"
+                >
+                  Workflow
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="hidden size-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none lg:inline-flex"
+                aria-label={
+                  isWide
+                    ? '왼쪽 메뉴 기본 폭으로 보기'
+                    : '왼쪽 메뉴 넓게 보기'
+                }
+                aria-pressed={isWide}
+                title={
+                  isWide
+                    ? '왼쪽 메뉴를 기본 폭으로 되돌리기'
+                    : '왼쪽 메뉴를 넓게 보기'
+                }
+                onClick={onToggleWidth}
               >
-                Workflow
-              </h2>
-              <Workflow className="size-3.5 text-muted-foreground" />
+                {isWide ? (
+                  <PanelLeftClose className="size-4" aria-hidden="true" />
+                ) : (
+                  <PanelLeftOpen className="size-4" aria-hidden="true" />
+                )}
+              </button>
             </div>
             <Accordion
               type="single"
@@ -319,7 +363,7 @@ export function WorkflowSidebar({
                 setExpandedSection(nextValue)
                 if (nextValue) onActiveSectionChange(nextValue)
               }}
-              className="rounded-lg border border-border bg-background/25 px-2.5"
+              className="w-full min-w-0 rounded-lg border border-border bg-background/25 p-2.5"
               aria-label="Simulation workflow"
             >
               {workflowSections.map((section) => {
@@ -327,10 +371,14 @@ export function WorkflowSidebar({
                 const isActive = section.id === activeSection
 
                 return (
-                  <AccordionItem key={section.id} value={section.id}>
+                  <AccordionItem
+                    key={section.id}
+                    value={section.id}
+                    className="min-w-0"
+                  >
                     <AccordionTrigger
                       className={cn(
-                        '-mx-1.5 my-1 rounded-lg border px-2.5 py-2.5 shadow-sm',
+                        'my-1 min-w-0 rounded-lg border px-2.5 py-2.5 shadow-sm',
                         isActive
                           ? 'border-blue-300 bg-gradient-to-r from-blue-100 to-sky-50 text-blue-950 shadow-blue-200/40 hover:from-blue-100 hover:to-sky-100 dark:border-blue-500/55 dark:from-blue-950/75 dark:to-sky-900/35 dark:text-blue-50 dark:shadow-blue-950/30 dark:hover:from-blue-900/75 dark:hover:to-sky-900/45'
                           : 'border-slate-200 bg-gradient-to-r from-slate-50 to-white text-slate-700 hover:border-blue-200 hover:from-blue-50 hover:to-white dark:border-slate-700 dark:from-slate-900/80 dark:to-slate-800/55 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:from-blue-950/45 dark:hover:to-slate-800/65',
@@ -375,7 +423,7 @@ export function WorkflowSidebar({
                         </span>
                       </span>
                     </AccordionTrigger>
-                    <AccordionContent className="mt-1.5 rounded-lg border-l-2 border-blue-300 bg-gradient-to-b from-blue-50/55 to-background px-2.5 pt-2.5 dark:border-blue-700/70 dark:from-blue-950/22 dark:to-background">
+                    <AccordionContent className="mt-1.5 min-w-0 rounded-lg border-l-2 border-blue-300 bg-gradient-to-b from-blue-50/55 to-background px-2.5 pt-2.5 dark:border-blue-700/70 dark:from-blue-950/22 dark:to-background">
                       {renderPanel(section.id)}
                     </AccordionContent>
                   </AccordionItem>
@@ -384,7 +432,7 @@ export function WorkflowSidebar({
             </Accordion>
           </section>
         </div>
-      </ScrollArea>
+      </div>
     </aside>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
@@ -25,6 +25,7 @@ import {
 
 import {
   useRayTraceJobQuery,
+  useGpuCudaStatusQuery,
   useStartRayTraceMutation,
   useStopRayTraceMutation,
 } from '@/api'
@@ -55,6 +56,8 @@ import {
   rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
+import { ComputeDeviceSelector } from './compute-device-selector'
+import { isGpuCudaStatusReady } from './gpu-cuda-status'
 
 export interface RayObjectEditRequest {
   id: string
@@ -1210,6 +1213,7 @@ export function RayTracingPanel({
   autoConvergenceCancelToken = 0,
   onEditRequestHandled,
 }: RayTracingPanelProps) {
+  const accelerationStructureId = useId()
   const [emitterMode, setEmitterMode] =
     useState<EmitterCreationMode | null>(null)
   const [receiverMode, setReceiverMode] =
@@ -1224,6 +1228,9 @@ export function RayTracingPanel({
   const autoRetryJobIdRef = useRef<string | null>(null)
   const autoRetryAbortControllerRef = useRef<AbortController | null>(null)
   const autoConvergenceCancelTokenRef = useRef(autoConvergenceCancelToken)
+  const handledAutoConvergenceCancelTokenRef = useRef(
+    autoConvergenceCancelToken,
+  )
   autoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
   const [convergenceHistory, setConvergenceHistory] = useState<
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
@@ -1232,6 +1239,8 @@ export function RayTracingPanel({
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
   >([])
   const [autoConvergenceStatus, setAutoConvergenceStatus] = useState('')
+  const [gpuCompatibilityDialogOpen, setGpuCompatibilityDialogOpen] =
+    useState(false)
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -1266,6 +1275,9 @@ export function RayTracingPanel({
     ) ?? null
   const startMutation = useStartRayTraceMutation()
   const stopMutation = useStopRayTraceMutation()
+  const gpuCudaStatusQuery = useGpuCudaStatusQuery(
+    config.compute_backend === 'gpu_cuda',
+  )
   const jobQuery = useRayTraceJobQuery(activeJobId)
   const job = jobQuery.data
   const latestResult = job?.status === 'completed' ? job.result : null
@@ -1288,14 +1300,35 @@ export function RayTracingPanel({
   const enabledReceiverCount = receivers.filter(
     (receiver) => receiver.enabled,
   ).length
+  const gpuCpuOnlyEmitters = emitters.filter(
+    (emitter) =>
+      emitter.enabled &&
+      (emitter.emitter_type === 'face' ||
+        emitter.surface_construction === 'polygon_auto'),
+  )
+  const gpuCudaProbeReady =
+    gpuCudaStatusQuery.isSuccess &&
+    !gpuCudaStatusQuery.isFetching &&
+    !gpuCudaStatusQuery.isRefreshing &&
+    !gpuCudaStatusQuery.isError &&
+    !gpuCudaStatusQuery.refreshFailed &&
+    isGpuCudaStatusReady(gpuCudaStatusQuery.data)
+  const gpuCudaReady =
+    config.compute_backend !== 'gpu_cuda' ||
+    gpuCudaProbeReady
   const canRun =
     scene !== undefined &&
     enabledEmitterCount > 0 &&
     enabledReceiverCount > 0 &&
+    gpuCudaReady &&
     !isRunning
 
   useEffect(() => {
-    if (autoConvergenceCancelToken <= 0) return
+    if (
+      autoConvergenceCancelToken <=
+      handledAutoConvergenceCancelTokenRef.current
+    ) return
+    handledAutoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
     const hadPendingAutoConvergence =
       autoConvergenceActiveRef.current ||
       autoRetryAbortControllerRef.current !== null ||
@@ -1425,7 +1458,7 @@ export function RayTracingPanel({
     }
   }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
-  const handleRun = async () => {
+  const beginRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
     autoRetryJobIdRef.current = null
     autoRetryAbortControllerRef.current?.abort()
@@ -1438,6 +1471,17 @@ export function RayTracingPanel({
     setConvergenceHistory([])
     convergenceHistoryRef.current = []
     await launchRun(1)
+  }
+
+  const handleRun = async () => {
+    if (
+      config.compute_backend === 'gpu_cuda' &&
+      gpuCpuOnlyEmitters.length > 0
+    ) {
+      setGpuCompatibilityDialogOpen(true)
+      return
+    }
+    await beginRun()
   }
 
   useEffect(() => {
@@ -1512,6 +1556,30 @@ export function RayTracingPanel({
 
   return (
     <div className="space-y-4">
+      <ComputeDeviceSelector
+        value={config.compute_backend}
+        disabled={isRunning}
+        status={gpuCudaStatusQuery.data}
+        pending={
+          gpuCudaStatusQuery.isPending ||
+          gpuCudaStatusQuery.isFetching ||
+          gpuCudaStatusQuery.isRefreshing
+        }
+        failed={
+          gpuCudaStatusQuery.isError || gpuCudaStatusQuery.refreshFailed
+        }
+        onChange={(computeBackend) =>
+          updateConfig({
+            compute_backend: computeBackend,
+            ...(computeBackend === 'gpu_cuda' &&
+            config.intersection_backend === 'brute_force'
+              ? { intersection_backend: 'bvh' as const }
+              : {}),
+          })
+        }
+        onRetry={() => void gpuCudaStatusQuery.refresh()}
+      />
+
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
@@ -1917,25 +1985,80 @@ export function RayTracingPanel({
           </label>
             </div>
             <label className="flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={config.store_ray_paths}
-            disabled={isRunning}
-            onChange={(event) =>
-              updateConfig({
-                store_ray_paths: event.currentTarget.checked,
-              })
-            }
-          />
-          <span className="flex items-center gap-1.5">
-            Store ray paths · Receiver priority
-            <HelpTooltip label="Store ray paths 도움말">
-              Receiver 도달 경로를 최우선으로 저장합니다. 저장 한도가 차면
-              이후 발견된 Receiver 경로가 Blocked/Escaped 경로를 대체합니다.
-              끄면 3D Viewer·Ray Section View의 ray 표시가 비활성화됩니다.
-            </HelpTooltip>
-          </span>
+              <input
+                type="checkbox"
+                checked={config.store_ray_paths}
+                disabled={isRunning}
+                onChange={(event) =>
+                  updateConfig({
+                    store_ray_paths: event.currentTarget.checked,
+                  })
+                }
+              />
+              <span className="flex items-center gap-1.5">
+                Store ray paths · Receiver priority
+                <HelpTooltip label="Store ray paths 도움말">
+                  Receiver 도달 경로를 최우선으로 저장합니다. 저장 한도가 차면
+                  이후 발견된 Receiver 경로가 Blocked/Escaped 경로를 대체합니다.
+                  끄면 3D Viewer·Ray Section View의 ray 표시가 비활성화됩니다.
+                </HelpTooltip>
+              </span>
             </label>
+
+            <details className="group/advanced rounded-lg border border-border bg-muted/20">
+              <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted/45 [&::-webkit-details-marker]:hidden">
+                <span className="min-w-0 flex-1">고급 옵션</span>
+                <span className="text-[11px] font-normal group-open/advanced:hidden">
+                  필요할 때만 변경
+                </span>
+                <span className="hidden text-[11px] font-normal group-open/advanced:inline">
+                  접기
+                </span>
+              </summary>
+              <div className="space-y-2 border-t border-border p-2.5">
+                <label className={fieldLabelClassName}>
+                  <span className="flex items-center gap-1.5">
+                    충돌 계산 방식
+                    <HelpTooltip label="충돌 계산 방식 도움말">
+                      Ray와 CAD Mesh의 충돌 후보를 찾는 전문 설정입니다. 일반
+                      사용자는 자동 최적화(권장)를 사용하면 됩니다. GPU는 고속
+                      공간 인덱스(BVH)를 자동으로 사용합니다.
+                    </HelpTooltip>
+                  </span>
+                  <select
+                    id={accelerationStructureId}
+                    className={inputClassName}
+                    aria-label="Acceleration structure"
+                    value={config.intersection_backend ?? 'auto'}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      updateConfig({
+                        intersection_backend:
+                          event.currentTarget.value === 'brute_force'
+                            ? 'brute_force'
+                            : event.currentTarget.value === 'bvh'
+                              ? 'bvh'
+                              : 'auto',
+                      })
+                    }
+                  >
+                    <option value="auto">자동 최적화 (권장)</option>
+                    <option value="bvh">고속 공간 인덱스 (BVH)</option>
+                    <option
+                      value="brute_force"
+                      disabled={config.compute_backend === 'gpu_cuda'}
+                    >
+                      직접 삼각형 검사 (Brute force · CPU 전용)
+                    </option>
+                  </select>
+                </label>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {config.compute_backend === 'gpu_cuda'
+                    ? 'GPU 선택 시 호환되는 고속 방식이 자동 적용됩니다.'
+                    : '특별한 검증 목적이 없다면 자동 설정을 유지하세요.'}
+                </p>
+              </div>
+            </details>
           </div>
         </details>
       </section>
@@ -1964,6 +2087,11 @@ export function RayTracingPanel({
           <Button
             className="w-full"
             disabled={!canRun}
+            title={
+              config.compute_backend === 'gpu_cuda' && !gpuCudaReady
+                ? 'GPU 준비 상태를 확인한 뒤 실행할 수 있습니다.'
+                : undefined
+            }
             onClick={() => void handleRun()}
           >
             <Play />
@@ -2059,6 +2187,42 @@ export function RayTracingPanel({
           </p>
         ) : null}
       </section>
+
+      <AppDialog
+        open={gpuCompatibilityDialogOpen}
+        onOpenChange={setGpuCompatibilityDialogOpen}
+        title="일부 Emitter는 CPU로 실행됩니다"
+        description="GPU는 요청되지만 아래 Emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setGpuCompatibilityDialogOpen(false)}>
+              설정으로 돌아가기
+            </Button>
+            <Button
+              onClick={() => {
+                setGpuCompatibilityDialogOpen(false)
+                void beginRun()
+              }}
+            >
+              CPU 경로 포함 실행
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          {gpuCpuOnlyEmitters.map((emitter) => (
+            <div
+              key={emitter.emitter_id}
+              className="flex items-center justify-between gap-2 rounded-lg border border-orange-400/35 bg-orange-500/8 px-3 py-2 text-sm"
+            >
+              <span className="font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
+              <Badge variant="outline">
+                {emitter.emitter_type === 'face' ? 'Face · CPU scalar' : 'Polygon auto · CPU scalar'}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      </AppDialog>
 
       <EmitterDialog
         open={emitterMode !== null || editingEmitter !== null}

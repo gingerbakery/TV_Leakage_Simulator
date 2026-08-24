@@ -6,6 +6,7 @@ import type { RayTraceJob } from './types'
 type SceneApi = Pick<LeakageApiClient, 'getScene'>
 type RayTraceJobApi = Pick<LeakageApiClient, 'getRayTraceJob'>
 type SystemApi = Pick<LeakageApiClient, 'getDevStatus'>
+type GpuCudaStatusApi = Pick<LeakageApiClient, 'getGpuCudaStatus'>
 
 const RAY_TRACE_POLL_INTERVAL_MS = 300
 
@@ -13,6 +14,7 @@ export const apiQueryKeys = {
   all: ['leakage-api'] as const,
   system: () => [...apiQueryKeys.all, 'system'] as const,
   devStatus: () => [...apiQueryKeys.system(), 'dev-status'] as const,
+  gpuCudaStatus: () => [...apiQueryKeys.system(), 'gpu-cuda-status'] as const,
   scenes: () => [...apiQueryKeys.all, 'scenes'] as const,
   scene: (cadPath: string) =>
     [...apiQueryKeys.scenes(), cadPath] as const,
@@ -37,6 +39,19 @@ export function devStatusQueryOptions(
     queryKey: apiQueryKeys.devStatus(),
     queryFn: ({ signal }) => client.getDevStatus({ signal }),
     staleTime: 5_000,
+  })
+}
+
+export function gpuCudaStatusQueryOptions(
+  client: GpuCudaStatusApi = apiClient,
+) {
+  return queryOptions({
+    queryKey: apiQueryKeys.gpuCudaStatus(),
+    queryFn: ({ signal }) => client.getGpuCudaStatus({ signal }),
+    // Re-enabling this query means the user explicitly selected GPU again.
+    // Re-read the backend verdict even though the backend may reuse its probe.
+    staleTime: 0,
+    retry: false,
   })
 }
 
