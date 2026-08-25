@@ -94,6 +94,7 @@ CONTRIBUTION_MODES = ("summary", "detailed")
 INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
 COMPUTE_BACKENDS = ("cpu", "gpu_cuda")
 PRIMARY_SAMPLING_STRATEGIES = ("source", "receiver_mis")
+BOUNCE_SAMPLING_STRATEGIES = ("source", "receiver_mis")
 MAX_REFLECTION_DEPTH = 20
 
 
@@ -520,6 +521,8 @@ class RayTraceConfig:
     max_convergence_multiplier: int = 8
     primary_sampling_strategy: str = "source"
     receiver_importance_fraction: float = 0.5
+    bounce_sampling_strategy: str = "source"
+    bounce_receiver_importance_fraction: float = 0.5
 
     def __post_init__(self) -> None:
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
@@ -586,6 +589,18 @@ class RayTraceConfig:
         if not 0.0 < self.receiver_importance_fraction < 1.0:
             raise ValueError(
                 "receiver_importance_fraction must be within (0, 1)"
+            )
+        self.bounce_sampling_strategy = require_choice(
+            self.bounce_sampling_strategy,
+            "bounce_sampling_strategy",
+            BOUNCE_SAMPLING_STRATEGIES,
+        )
+        self.bounce_receiver_importance_fraction = float(
+            self.bounce_receiver_importance_fraction
+        )
+        if not 0.0 < self.bounce_receiver_importance_fraction < 1.0:
+            raise ValueError(
+                "bounce_receiver_importance_fraction must be within (0, 1)"
             )
 
     def to_dict(self) -> Dict:

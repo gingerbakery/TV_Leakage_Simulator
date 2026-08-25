@@ -213,6 +213,26 @@ Auto convergence는 `independent_segment_weighted_v1` 계약으로 독립 구간
 `_convergence_accumulation.segment_rays`, config/Emitter seed와 compute state를
 함께 확인한다.
 
+PERF-4E-B Lambertian bounce MIS 검증:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4e_bounce_mis.py `
+  --rays 20000 --repeats 12 --parity-rays 8192
+```
+
+`bounce_sampling_strategy=receiver_mis`는 순수 Lambertian 반사점에서만
+Receiver 면적 proposal을 원래 cosine 분포와 혼합한다. 반사 Ray 자체가 기존
+CUDA BVH를 통과하므로 중간 차폐물이 있으면 Receiver보다 먼저 차폐면에
+도달한다. Specular는 기존 delta 경로를 유지하고 Gaussian·Mixed는 source
+sampling으로 fallback한다. 결과의 다음 필드를 함께 확인한다.
+
+- `bounce_sampling_strategy`
+- `bounce_sampling_receiver_directed_fraction`
+- `bounce_sampling_unsupported_surface_count`
+- `bounce_sampling_fallback_reasons`
+- `bounce_sampling_weight_min/max`
+- `bounce_sampling_effective_sample_ratio`
+
 ## E. 기존 프로젝트와 지원 범위
 
 - `compute_backend`가 없는 기존 `.bitsam`은 CPU로 열린다.

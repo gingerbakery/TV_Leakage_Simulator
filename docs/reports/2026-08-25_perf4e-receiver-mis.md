@@ -43,8 +43,9 @@ CPU/GPU 이산 결과 exact, strict float64 최대 absolute error `3.33e-15`를
 ## 판정과 제한
 
 Primary Receiver MIS와 convergence sample reuse는 1차 통과했다. 현재 결과는
-Receiver가 직접 보이는 synthetic 장면이다. 차폐 뒤 반사광용 surface NEE/bounce
-MIS는 아직 없으므로 실제 TV ROI의 5% error 달성 시간을 이 수치로 보장하지 않는다.
+Receiver가 직접 보이는 synthetic 장면이다. 차폐 뒤 반사광은 후속
+`PERF-4E-B` 보고서에서 별도로 검증했으며, 어느 synthetic 결과도 실제 TV ROI의
+5% error 달성 시간을 곧바로 보장하지 않는다.
 
 원본: `outputs/perf4e_receiver_mis/benchmark.json`
 확장 원본: `outputs/perf4e_receiver_mis/benchmark_100k.json`

@@ -453,6 +453,19 @@ src/leakage_simulator/raytracing/
 - 다음은 실제 회사 TV ROI 도면의 end-to-end 성능 측정과 RT-2D 결과 분해다.
 - 상세 정책과 CPU/GPU fallback은 `docs/performance-acceleration-plan.md`에서 관리한다.
 
+### PERF-4E 완료 범위
+
+- Primary Receiver MIS로 직접 보이는 작은 Receiver의 표본 분산을 줄인다.
+- 순수 Lambertian 반사점에서는 Receiver-directed continuation-ray MIS를 사용한다.
+- 혼합 PDF `q=(1-alpha)p_source+alpha p_receiver`와 weight
+  `p_source/q`를 CPU reference, Numba CPU, CUDA resident에서 동일하게 계산한다.
+- Receiver 방향 반사 ray도 기존 BVH를 통과하므로 별도 우회 없이 차폐를 판정한다.
+- Specular는 delta 경로를 유지하고 Gaussian·Mixed는 정규화 PDF 계약이 없어
+  source sampling으로 fallback한다.
+- 기본 sampling은 `source`이며 실제 TV ROI 여러 seed 검증 전에는 유지한다.
+- 상세 계약과 synthetic 결과는
+  `docs/perf4e-receiver-importance-sampling.md`를 따른다.
+
 ## 비동기 실행 및 진행률
 - Web UI는 `POST /api/raytrace/start`로 계산 job을 시작하고 `GET /api/raytrace/status`를 주기적으로 조회한다.
 - Ray tracer는 실제 처리 ray 수를 progress callback으로 보고한다.

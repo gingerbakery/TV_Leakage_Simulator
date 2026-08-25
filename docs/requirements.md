@@ -43,9 +43,13 @@
   - random_cosine
 
 ### 5. 경량 ray tracing
-- 단일 반사/산란 중심
-- depth 1~2
+- Specular / Lambertian / Gaussian / Mixed 반사·산란
+- 최대 반사 depth 0~20
 - 누설 경로 누적 및 감쇠 계산
+- CPU와 NVIDIA CUDA 실행 경로
+- 작은 Receiver의 표본 효율을 위한 primary Receiver MIS
+- 순수 Lambertian 반사광의 Receiver-directed bounce MIS
+- MIS는 기본 비활성화하며, 미지원 분포는 source sampling으로 안전 fallback
 
 ### 6. 결과
 - receiver별:
@@ -68,3 +72,8 @@
 2. gap=0일 때 누설 지표가 명확히 감소
 3. 동일 seed/ray에서 설계안 순위가 일관적
 4. 결과 파일(JSON/CSV/PNG)이 자동 생성
+
+## 변경 이력
+
+- 2026-08-25: 다회 반사 0~20, CUDA 실행, primary Receiver MIS,
+  Lambertian bounce MIS와 명시적 fallback 요구사항을 현재 구현에 맞게 반영했다.

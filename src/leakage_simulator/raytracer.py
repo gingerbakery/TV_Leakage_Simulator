@@ -1114,6 +1114,129 @@ class _PrimarySamplingStats:
 
 
 @dataclass(slots=True)
+class _BounceSamplingStats:
+    requested_strategy: str
+    receiver_fraction: float
+    eligible_surface_count: int = 0
+    receiver_directed_ray_count: int = 0
+    zero_weight_count: int = 0
+    unsupported_surface_count: int = 0
+    fallback_reasons: Dict[str, int] = field(default_factory=dict)
+    weight_sum: float = 0.0
+    weight_square_sum: float = 0.0
+    minimum_weight: float = float("inf")
+    maximum_weight: float = 0.0
+
+    def record_fallback(self, reason: str, count: int = 1) -> None:
+        self.fallback_reasons[reason] = (
+            self.fallback_reasons.get(reason, 0) + int(count)
+        )
+
+    def record_plan(self, result: CounterWavefrontPlanResult) -> None:
+        eligible = np.asarray(result.importance_eligible_mask, dtype=np.bool_)
+        unsupported_count = int(
+            np.count_nonzero(result.importance_unsupported_mask)
+        )
+        self.unsupported_surface_count += unsupported_count
+        if unsupported_count:
+            self.record_fallback("unsupported_scatter_model", unsupported_count)
+        count = int(np.count_nonzero(eligible))
+        if not count:
+            return
+        values = np.asarray(result.importance_weights[eligible], dtype=np.float64)
+        self.eligible_surface_count += count
+        self.receiver_directed_ray_count += int(
+            np.count_nonzero(result.importance_directed_mask & eligible)
+        )
+        self.zero_weight_count += int(
+            np.count_nonzero(result.importance_zero_weight_mask & eligible)
+        )
+        self.weight_sum += float(np.sum(values, dtype=np.float64))
+        self.weight_square_sum += float(np.sum(values * values, dtype=np.float64))
+        self.minimum_weight = min(self.minimum_weight, float(np.min(values)))
+        self.maximum_weight = max(self.maximum_weight, float(np.max(values)))
+
+    def record_gpu_execution(self, execution: GpuResidentWavefrontExecution) -> None:
+        count = int(execution.bounce_importance_eligible_count)
+        self.eligible_surface_count += count
+        self.receiver_directed_ray_count += int(
+            execution.bounce_importance_directed_count
+        )
+        self.zero_weight_count += int(execution.bounce_importance_zero_weight_count)
+        unsupported_count = int(execution.bounce_importance_unsupported_count)
+        self.unsupported_surface_count += unsupported_count
+        if unsupported_count:
+            self.record_fallback("unsupported_scatter_model", unsupported_count)
+        if not count:
+            return
+        self.weight_sum += float(execution.bounce_importance_weight_sum)
+        self.weight_square_sum += float(
+            execution.bounce_importance_weight_square_sum
+        )
+        self.minimum_weight = min(
+            self.minimum_weight,
+            float(execution.bounce_importance_weight_min),
+        )
+        self.maximum_weight = max(
+            self.maximum_weight,
+            float(execution.bounce_importance_weight_max),
+        )
+
+    def to_summary(self) -> Dict[str, object]:
+        effective_strategy = "source"
+        if self.eligible_surface_count:
+            effective_strategy = (
+                "receiver_mis"
+                if not self.fallback_reasons and not self.unsupported_surface_count
+                else "mixed"
+            )
+        effective_sample_size = (
+            self.weight_sum * self.weight_sum / self.weight_square_sum
+            if self.weight_square_sum > 0.0
+            else 0.0
+        )
+        return {
+            "bounce_sampling_contract": (
+                "receiver_directed_lambertian_bounce_mis_v1"
+            ),
+            "requested_bounce_sampling_strategy": self.requested_strategy,
+            "bounce_sampling_strategy": effective_strategy,
+            "bounce_receiver_importance_fraction": self.receiver_fraction,
+            "bounce_sampling_eligible_surface_count": self.eligible_surface_count,
+            "bounce_sampling_receiver_directed_ray_count": (
+                self.receiver_directed_ray_count
+            ),
+            "bounce_sampling_receiver_directed_fraction": (
+                self.receiver_directed_ray_count / self.eligible_surface_count
+                if self.eligible_surface_count
+                else 0.0
+            ),
+            "bounce_sampling_zero_weight_count": self.zero_weight_count,
+            "bounce_sampling_unsupported_surface_count": (
+                self.unsupported_surface_count
+            ),
+            "bounce_sampling_fallback_reasons": dict(self.fallback_reasons),
+            "bounce_sampling_weight_mean": (
+                self.weight_sum / self.eligible_surface_count
+                if self.eligible_surface_count
+                else 1.0
+            ),
+            "bounce_sampling_weight_min": (
+                self.minimum_weight if self.eligible_surface_count else 1.0
+            ),
+            "bounce_sampling_weight_max": (
+                self.maximum_weight if self.eligible_surface_count else 1.0
+            ),
+            "bounce_sampling_effective_sample_size": effective_sample_size,
+            "bounce_sampling_effective_sample_ratio": (
+                effective_sample_size / self.eligible_surface_count
+                if self.eligible_surface_count
+                else 1.0
+            ),
+        }
+
+
+@dataclass(slots=True)
 class _WavefrontPlannerStats:
     """Run-local capability, fallback and timing state for reflection planning."""
 
@@ -2065,9 +2188,18 @@ def run_direct_ray_trace(
         requested_strategy=trace_input.config.primary_sampling_strategy,
         receiver_fraction=trace_input.config.receiver_importance_fraction,
     )
+    bounce_sampling_stats = _BounceSamplingStats(
+        requested_strategy=trace_input.config.bounce_sampling_strategy,
+        receiver_fraction=(
+            trace_input.config.bounce_receiver_importance_fraction
+        ),
+    )
     receiver_importance_geometry = (
         _build_receiver_importance_geometry(receiver_frames)
-        if trace_input.config.primary_sampling_strategy == "receiver_mis"
+        if (
+            trace_input.config.primary_sampling_strategy == "receiver_mis"
+            or trace_input.config.bounce_sampling_strategy == "receiver_mis"
+        )
         else None
     )
     receiver_grids = {
@@ -2183,6 +2315,19 @@ def run_direct_ray_trace(
         if wavefront_pipeline == "auto"
         else wavefront_pipeline
     )
+    bounce_sampling_runtime_enabled = bool(
+        trace_input.config.bounce_sampling_strategy == "receiver_mis"
+        and receiver_importance_geometry is not None
+        and selected_wavefront_pipeline == "soa_event_tape"
+        and wavefront_rng == "counter_rng_v2"
+    )
+    if trace_input.config.bounce_sampling_strategy == "receiver_mis":
+        if receiver_importance_geometry is None:
+            bounce_sampling_stats.record_fallback("no_enabled_receivers")
+        elif selected_wavefront_pipeline != "soa_event_tape":
+            bounce_sampling_stats.record_fallback("requires_soa_event_tape")
+        elif wavefront_rng != "counter_rng_v2":
+            bounce_sampling_stats.record_fallback("requires_counter_rng_v2")
     gpu_resident_eligible = bool(
         gpu_compute_requested
         and intersection_provider == "gpu_cuda"
@@ -2457,6 +2602,9 @@ def run_direct_ray_trace(
                             wavefront_planner_stats,
                             wavefront_reducer_stats,
                             wavefront_summary,
+                            receiver_importance_geometry,
+                            bounce_sampling_stats,
+                            bounce_sampling_runtime_enabled,
                         )
                         if use_gpu_resident:
                             assert gpu_resident_context is not None
@@ -2543,6 +2691,8 @@ def run_direct_ray_trace(
             wavefront_summary["commit_sec"] += flush_elapsed
             wavefront_summary["total_sec"] += flush_elapsed
             wavefront_summary["reducer_replay_sec"] += flush_elapsed
+        if trace_input.config.bounce_sampling_strategy == "receiver_mis":
+            bounce_sampling_stats.record_fallback("scalar_emitter_pipeline")
         for ray in _iter_primary_emitter_rays(
             trace_input.mesh,
             emitter,
@@ -3089,6 +3239,7 @@ def run_direct_ray_trace(
         **wavefront_planner_stats.to_summary(),
         **wavefront_reducer_stats.to_summary(),
         **primary_sampling_stats.to_summary(),
+        **bounce_sampling_stats.to_summary(),
         "requested_gpu_workspace": gpu_workspace,
         **gpu_resident_stats.to_summary(),
         **intersection_summary,
@@ -3704,6 +3855,7 @@ def _wavefront_reflection_rng_soa(
 
 def _plan_counter_wavefront_rows(
     active_directions: np.ndarray,
+    surface_points: np.ndarray,
     surface_normals: np.ndarray,
     active_powers: np.ndarray,
     hit_rows: np.ndarray,
@@ -3713,6 +3865,8 @@ def _plan_counter_wavefront_rows(
     config: RayTraceConfig,
     resolved_optical_by_face: List,
     planner_stats: _WavefrontPlannerStats,
+    receiver_importance_geometry: Optional[ReceiverImportanceGeometry],
+    bounce_sampling_enabled: bool,
 ) -> Tuple[CounterWavefrontPlanResult, np.ndarray]:
     """Plan all hit rows under the row-addressable stochastic contract.
 
@@ -3802,6 +3956,59 @@ def _plan_counter_wavefront_rows(
                 if config.termination_mode == "threshold"
                 else NATIVE_WAVEFRONT_TERMINATION_RUSSIAN_ROULETTE
             ),
+            surface_points=(
+                surface_points[hit_rows]
+                if bounce_sampling_enabled
+                else None
+            ),
+            receiver_centers=(
+                receiver_importance_geometry.centers
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_normals=(
+                receiver_importance_geometry.normals
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_u_axes=(
+                receiver_importance_geometry.u_axes
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_v_axes=(
+                receiver_importance_geometry.v_axes
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_half_widths=(
+                receiver_importance_geometry.half_widths
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_half_heights=(
+                receiver_importance_geometry.half_heights
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_minimum_cosines=(
+                receiver_importance_geometry.minimum_cosines
+                if bounce_sampling_enabled
+                and receiver_importance_geometry is not None
+                else None
+            ),
+            receiver_importance_fraction=(
+                config.bounce_receiver_importance_fraction
+                if bounce_sampling_enabled
+                else 0.0
+            ),
+            epsilon_mm=config.epsilon_mm,
         )
     except Exception:
         planner_stats.record_input_prepare_failure(len(hit_rows))
@@ -6195,6 +6402,9 @@ def _trace_multi_bounce_wavefront_batch(
     planner_stats: _WavefrontPlannerStats,
     _reducer_stats: _WavefrontReducerStats,
     wavefront_summary: Dict,
+    receiver_importance_geometry: Optional[ReceiverImportanceGeometry],
+    bounce_sampling_stats: _BounceSamplingStats,
+    bounce_sampling_enabled: bool,
 ) -> Tuple[int, int, int]:
     if config.max_depth <= 1:
         raise ValueError("multi-bounce wavefront requires max_depth >= 2")
@@ -6331,6 +6541,7 @@ def _trace_multi_bounce_wavefront_batch(
             )
             native_plan, native_plan_positions = _plan_counter_wavefront_rows(
                 active_directions,
+                surface_geometry.points,
                 surface_geometry.normals,
                 active_powers,
                 counter_rows,
@@ -6340,7 +6551,11 @@ def _trace_multi_bounce_wavefront_batch(
                 config,
                 resolved_optical_by_face,
                 planner_stats,
+                receiver_importance_geometry,
+                bounce_sampling_enabled,
             )
+            if bounce_sampling_enabled:
+                bounce_sampling_stats.record_plan(native_plan)
         else:
             native_plan, native_plan_positions = (
                 _plan_deterministic_wavefront_rows(
@@ -6508,6 +6723,9 @@ def _trace_multi_bounce_gpu_resident_batch(
     planner_stats: _WavefrontPlannerStats,
     reducer_stats: _WavefrontReducerStats,
     wavefront_summary: Dict,
+    receiver_importance_geometry: Optional[ReceiverImportanceGeometry],
+    bounce_sampling_stats: _BounceSamplingStats,
+    bounce_sampling_enabled: bool,
     resident_context: GpuResidentWavefrontContext,
     resident_stats: _GpuResidentWavefrontStats,
     gpu_accumulator: str,
@@ -6612,6 +6830,10 @@ def _trace_multi_bounce_gpu_resident_batch(
             min_energy=config.min_energy,
             termination_mode=termination_mode,
             include_path_payload=path_payload_enabled,
+            bounce_receiver_mis_enabled=bounce_sampling_enabled,
+            bounce_receiver_importance_fraction=(
+                config.bounce_receiver_importance_fraction
+            ),
         ),
         summary_request=summary_request,
         path_selection=path_selection,
@@ -6619,6 +6841,8 @@ def _trace_multi_bounce_gpu_resident_batch(
     )
     resident_stats.record_success(ray_count, execution)
     intersection_stats.record_gpu_resident_execution(execution)
+    if bounce_sampling_enabled:
+        bounce_sampling_stats.record_gpu_execution(execution)
     tape = execution.tape
     summary_execution = execution.summary_execution
     event_count = (
@@ -6873,6 +7097,9 @@ def _trace_multi_bounce_wavefront_soa_batch(
     planner_stats: _WavefrontPlannerStats,
     reducer_stats: _WavefrontReducerStats,
     wavefront_summary: Dict,
+    receiver_importance_geometry: Optional[ReceiverImportanceGeometry],
+    bounce_sampling_stats: _BounceSamplingStats,
+    bounce_sampling_enabled: bool,
 ) -> Tuple[int, int, int]:
     if config.max_depth <= 1:
         raise ValueError("multi-bounce wavefront requires max_depth >= 2")
@@ -7010,6 +7237,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
             ]
             native_plan, native_plan_positions = _plan_counter_wavefront_rows(
                 active.directions,
+                surface_geometry.points,
                 surface_geometry.normals,
                 active.powers_lumen,
                 counter_rows,
@@ -7019,7 +7247,11 @@ def _trace_multi_bounce_wavefront_soa_batch(
                 config,
                 resolved_optical_by_face,
                 planner_stats,
+                receiver_importance_geometry,
+                bounce_sampling_enabled,
             )
+            if bounce_sampling_enabled:
+                bounce_sampling_stats.record_plan(native_plan)
         else:
             native_plan, native_plan_positions = (
                 _plan_deterministic_wavefront_rows(

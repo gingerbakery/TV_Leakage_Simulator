@@ -244,5 +244,18 @@ tolerance, and finite bounded MIS weights. The variance reduction is a
 synthetic direct-view result, not proof for an occluded TV leakage scene.
 Auto convergence reuse must report
 `independent_segment_weighted_v1`; a `1→2→4→8` schedule processes independent
-segments `1+1+2+4`, not four full reruns. Surface-bounce NEE/MIS remains a
-separate gate.
+segments `1+1+2+4`, not four full reruns.
+
+PERF-4E-B Lambertian bounce MIS is verified with:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4e_bounce_mis.py `
+  --rays 20000 --repeats 12 --parity-rays 8192
+```
+
+Require production preflight, zero discrete CPU/GPU differences, strict
+float64 tolerance, finite weights bounded by `1/(1-alpha)`, a passing occlusion
+gate, and a multi-seed variance reduction report. The implementation is a
+single continuation-ray MIS estimator for pure Lambertian surfaces; it is not
+an extra shadow-ray NEE estimator. Specular remains on its delta path and
+Gaussian/Mixed must report explicit source-sampling fallback.

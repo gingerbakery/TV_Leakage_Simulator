@@ -2105,6 +2105,56 @@ export function RayTracingPanel({
                 ) : null}
                 <label className={fieldLabelClassName}>
                   <span className="flex items-center gap-1.5">
+                    Reflected ray sampling
+                    <HelpTooltip label="Reflected ray sampling 도움말">
+                      Surface distribution은 표면의 원래 반사 분포만
+                      사용합니다. Receiver-directed bounce MIS는 Lambertian
+                      반사점에서 원래 분포와 Receiver 방향을 편향 없이 혼합해
+                      차폐 뒤 희귀 반사광 hit를 늘립니다. Specular는 원래 delta
+                      경로를 유지하고 Gaussian·Mixed 표면은 정확도 보호를 위해
+                      자동으로 Surface 방식으로 실행됩니다.
+                    </HelpTooltip>
+                  </span>
+                  <select
+                    className={inputClassName}
+                    aria-label="Reflected ray sampling"
+                    value={config.bounce_sampling_strategy ?? 'source'}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      updateConfig({
+                        bounce_sampling_strategy:
+                          event.currentTarget.value === 'receiver_mis'
+                            ? 'receiver_mis'
+                            : 'source',
+                      })
+                    }
+                  >
+                    <option value="source">Surface distribution (기본)</option>
+                    <option value="receiver_mis">
+                      Receiver-directed bounce MIS (실험)
+                    </option>
+                  </select>
+                </label>
+                {config.bounce_sampling_strategy === 'receiver_mis' ? (
+                  <NumberField
+                    label="Bounce Receiver sample ratio"
+                    value={
+                      config.bounce_receiver_importance_fraction ?? 0.5
+                    }
+                    min={0.05}
+                    max={0.95}
+                    step={0.05}
+                    disabled={isRunning}
+                    onChange={(value) =>
+                      updateConfig({
+                        bounce_receiver_importance_fraction: value,
+                      })
+                    }
+                    description="Lambertian 반사 표본 중 Receiver 방향으로 제안할 비율입니다. 기본 0.5를 권장합니다."
+                  />
+                ) : null}
+                <label className={fieldLabelClassName}>
+                  <span className="flex items-center gap-1.5">
                     충돌 계산 방식
                     <HelpTooltip label="충돌 계산 방식 도움말">
                       Ray와 CAD Mesh의 충돌 후보를 찾는 전문 설정입니다. 일반

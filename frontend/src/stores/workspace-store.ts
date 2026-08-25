@@ -426,6 +426,8 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   max_convergence_multiplier: 8,
   primary_sampling_strategy: 'source',
   receiver_importance_fraction: 0.5,
+  bounce_sampling_strategy: 'source',
+  bounce_receiver_importance_fraction: 0.5,
 }
 
 export const maxReflectionDepth = 20
@@ -484,6 +486,17 @@ function normalizeRayTraceConfig(
     receiver_importance_fraction: Math.max(
       0.05,
       Math.min(0.95, Number(config.receiver_importance_fraction) || 0.5),
+    ),
+    bounce_sampling_strategy:
+      config.bounce_sampling_strategy === 'receiver_mis'
+        ? 'receiver_mis'
+        : 'source',
+    bounce_receiver_importance_fraction: Math.max(
+      0.05,
+      Math.min(
+        0.95,
+        Number(config.bounce_receiver_importance_fraction) || 0.5,
+      ),
     ),
   }
 }

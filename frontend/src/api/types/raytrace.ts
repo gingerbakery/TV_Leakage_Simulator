@@ -129,6 +129,7 @@ export type ContributionMode = 'summary' | 'detailed'
 export type IntersectionBackend = 'auto' | 'brute_force' | 'bvh'
 export type ComputeBackend = 'cpu' | 'gpu_cuda'
 export type PrimarySamplingStrategy = 'source' | 'receiver_mis'
+export type BounceSamplingStrategy = 'source' | 'receiver_mis'
 
 export interface RayTraceConfig {
   ray_count: number
@@ -150,6 +151,8 @@ export interface RayTraceConfig {
   max_convergence_multiplier?: number
   primary_sampling_strategy?: PrimarySamplingStrategy
   receiver_importance_fraction?: number
+  bounce_sampling_strategy?: BounceSamplingStrategy
+  bounce_receiver_importance_fraction?: number
 }
 
 export type RayTraceConfigRequest = Omit<

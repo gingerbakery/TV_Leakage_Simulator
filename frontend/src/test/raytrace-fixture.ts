@@ -69,6 +69,8 @@ export function createRayTraceResultFixture(): RayTraceResult {
       max_convergence_multiplier: 8,
       primary_sampling_strategy: 'source',
       receiver_importance_fraction: 0.5,
+      bounce_sampling_strategy: 'source',
+      bounce_receiver_importance_fraction: 0.5,
     },
     emitters: [emitter],
     receivers: [receiver],

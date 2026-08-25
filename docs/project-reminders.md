@@ -281,14 +281,16 @@
   `strict_float64_gpu_summary_accumulator_v1`과 accumulator success 1 이상,
   resident fallback 0, 이산 exact, strict `1e-9` 수치 허용오차를 모두 요구한다.
 - PERF-4D compact workspace와 PERF-4E primary Receiver MIS·convergence sample
-  재사용은 2026-08-25 1차 완료했다. 다음 성능 단계는 차폐 뒤 반사광용
-  PERF-4E-B surface NEE/bounce MIS다. 실제 회사 TV ROI 1억 Ray의 열·VRAM·장시간
-  정확도 검증 전에는 synthetic 결과를 운영 성능 보장으로 표현하지 않는다.
+  재사용은 2026-08-25 1차 완료했다. PERF-4E-B 순수 Lambertian bounce MIS도
+  2026-08-25 구현·synthetic 검증을 완료했다. 실제 회사 TV ROI 1억 Ray의
+  열·VRAM·장시간 정확도 검증 전에는 synthetic 결과를 운영 성능 보장으로
+  표현하지 않는다.
 - Receiver hit가 30개 미만이면 Flux 오차도 신뢰 부족이다. Heatmap은 별도로 평균
   `5 hit/cell` 이상을 1차 usable 기준으로 확인한다.
 - Auto convergence는 독립 구간 `1+1+2+4`를 누적하므로 `1→2→4→8배`에서 총
   `8배` Ray를 처리한다. 결과의 `_convergence_accumulation` 계약과 segment seed를
   확인한다. 1,200만 Ray 지연 분석 시 마지막 Ray 수뿐 아니라 segment 처리량,
   triangle 수, depth별 active ray를 함께 기록한다.
-- 다음 대규모 희귀-event 성능 과제는 표면 반사점의 Next Event Estimation 또는
-  bounce MIS다.
+- 다음 희귀-event 정확도 과제는 실제 TV ROI의 여러 seed 검증과 Gaussian·Mixed
+  표면용 정규화 PDF/다중 proposal 확장이다. 별도 shadow ray를 추가하는 전통적
+  NEE는 단일 continuation-ray MIS의 효과가 부족한 장면에서만 다시 검토한다.

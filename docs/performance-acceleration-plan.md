@@ -344,7 +344,7 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
 
 ##### PERF-4E: 필요한 Ray 수 감소
 
-- 상태: 1차 완료 / surface NEE 후속 (2026-08-25)
+- 상태: primary MIS·Lambertian bounce MIS·표본 재사용 완료 (2026-08-25)
 - PERF-4E-A: Lambertian/isotropic CAD face·datum Emitter의 Receiver-directed
   primary MIS를 구현했다. Gaussian/scalar-only는 source sampling으로 fail-safe
   fallback한다.
@@ -352,7 +352,14 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
   기존 15배 재실행 대신 8배 Ray만 처리한다.
 - RTX 3070 직접 가시 synthetic 장면에서 seed 간 Flux 분산은 약 `7,460x`
   감소했고 CPU/GPU strict 정합성을 통과했다.
-- PERF-4E-B: 차폐 뒤 반사광용 surface NEE 또는 bounce MIS는 미구현이다.
+- PERF-4E-B: 순수 Lambertian 반사점에서 원래 cosine 분포와 Receiver 면적
+  proposal을 혼합하는 단일 continuation-ray MIS를 구현했다. Receiver 방향 Ray도
+  기존 BVH를 통과하므로 중간 차폐물은 그대로 판정된다.
+- 반사광 synthetic 장면에서 20,000 Ray×12 seed 기준 Flux 분산은 약 `3,256x`
+  감소했고, 작은각 근사 기준 bias는 `-0.092%`였다. CPU/GPU 이산 결과 exact와
+  strict float64 허용오차를 통과했다.
+- Specular는 기존 delta 경로를 유지하고 Gaussian·Mixed는 정확한 PDF 계약이
+  없으므로 source sampling으로 fail-closed fallback한다.
 - 실제 TV ROI 여러 seed 검증 전까지 primary sampling 기본값은 `source`다.
 - 상세 계약은 `docs/perf4e-receiver-importance-sampling.md`를 따른다.
 

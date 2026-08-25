@@ -39,6 +39,10 @@ from .gpu_cuda_summary_accumulator import (
 from .native_cpu_counter_wavefront import (
     LANE_GAUSSIAN_AZIMUTH_BASE,
     LANE_GAUSSIAN_RADIAL_BASE,
+    LANE_BOUNCE_MIS_RECEIVER,
+    LANE_BOUNCE_MIS_SELECT,
+    LANE_BOUNCE_MIS_U,
+    LANE_BOUNCE_MIS_V,
     LANE_LAMBERTIAN_AZIMUTH,
     LANE_LAMBERTIAN_RADIAL,
     LANE_MIXED_LOBE,
@@ -313,6 +317,8 @@ class GpuResidentWavefrontBatch:
     min_energy: float
     termination_mode: int
     include_path_payload: bool = False
+    bounce_receiver_mis_enabled: bool = False
+    bounce_receiver_importance_fraction: float = 0.5
 
     def __post_init__(self) -> None:
         origins = _owned_array(
@@ -376,6 +382,22 @@ class GpuResidentWavefrontBatch:
         object.__setattr__(self, "min_energy", min_energy)
         object.__setattr__(self, "termination_mode", termination)
         object.__setattr__(self, "include_path_payload", bool(self.include_path_payload))
+        bounce_receiver_mis_enabled = bool(self.bounce_receiver_mis_enabled)
+        bounce_fraction = float(self.bounce_receiver_importance_fraction)
+        if not math.isfinite(bounce_fraction) or not 0.0 < bounce_fraction < 1.0:
+            raise ValueError(
+                "bounce_receiver_importance_fraction must be within (0, 1)"
+            )
+        object.__setattr__(
+            self,
+            "bounce_receiver_mis_enabled",
+            bounce_receiver_mis_enabled,
+        )
+        object.__setattr__(
+            self,
+            "bounce_receiver_importance_fraction",
+            bounce_fraction,
+        )
 
     def __len__(self) -> int:
         return len(self.origins)
@@ -442,6 +464,14 @@ class GpuResidentWavefrontExecution:
     reused_device_scene: bool
     reused_device_bindings: bool
     reused_workspace: bool
+    bounce_importance_eligible_count: int
+    bounce_importance_directed_count: int
+    bounce_importance_zero_weight_count: int
+    bounce_importance_unsupported_count: int
+    bounce_importance_weight_sum: float
+    bounce_importance_weight_square_sum: float
+    bounce_importance_weight_min: float
+    bounce_importance_weight_max: float
     strict_float64: bool = True
     provider_contract: str = PROVIDER_CONTRACT
     state_layout: str = STATE_LAYOUT
@@ -512,6 +542,8 @@ class _Workspace:
     stack_entries: Any
     stack_nodes: Any
     overflow_flags: Any
+    bounce_importance_counts: Any
+    bounce_importance_weight_stats: Any
 
 
 _STATE_LOCK = threading.RLock()
@@ -687,6 +719,11 @@ def _ensure_workspace(
                 dtype=np.int64,
             ),
             overflow_flags=cuda.device_array(capacity, dtype=np.uint8),
+            bounce_importance_counts=cuda.device_array(4, dtype=np.int64),
+            bounce_importance_weight_stats=cuda.device_array(
+                4,
+                dtype=np.float64,
+            ),
         )
     except Exception as exc:
         raise GpuResidentWavefrontProviderError(
@@ -731,6 +768,8 @@ def _workspace_bytes(workspace: _Workspace) -> int:
         workspace.stack_entries,
         workspace.stack_nodes,
         workspace.overflow_flags,
+        workspace.bounce_importance_counts,
+        workspace.bounce_importance_weight_stats,
     )
     return sum(int(array.size) * int(array.dtype.itemsize) for array in arrays)
 
@@ -909,6 +948,171 @@ def _make_kernel() -> Callable[..., None]:
             ) > 1e-9:
                 return direction_x, direction_y, direction_z, (attempt + 1) * 2
         return axis_x, axis_y, axis_z, MAX_GAUSSIAN_ATTEMPTS * 2
+
+    @cuda.jit(device=True, inline=True)
+    def receiver_pdf(
+        origin_x,
+        origin_y,
+        origin_z,
+        direction_x,
+        direction_y,
+        direction_z,
+        epsilon_mm,
+        receiver_centers,
+        receiver_normals,
+        receiver_u_axes,
+        receiver_v_axes,
+        receiver_half_widths,
+        receiver_half_heights,
+        receiver_minimum_cosines,
+    ):
+        receiver_count = receiver_centers.shape[0]
+        probability = 1.0 / float(receiver_count)
+        density = 0.0
+        for receiver_index in range(receiver_count):
+            normal_x = receiver_normals[receiver_index, 0]
+            normal_y = receiver_normals[receiver_index, 1]
+            normal_z = receiver_normals[receiver_index, 2]
+            denominator = (
+                direction_x * normal_x
+                + direction_y * normal_y
+                + direction_z * normal_z
+            )
+            if abs(denominator) < 1e-12:
+                continue
+            numerator = (
+                (receiver_centers[receiver_index, 0] - origin_x) * normal_x
+                + (receiver_centers[receiver_index, 1] - origin_y) * normal_y
+                + (receiver_centers[receiver_index, 2] - origin_z) * normal_z
+            )
+            distance = numerator / denominator
+            acceptance_cosine = -denominator
+            if (
+                distance <= epsilon_mm
+                or acceptance_cosine <= 0.0
+                or acceptance_cosine < receiver_minimum_cosines[receiver_index]
+            ):
+                continue
+            point_x = origin_x + direction_x * distance
+            point_y = origin_y + direction_y * distance
+            point_z = origin_z + direction_z * distance
+            local_x = point_x - receiver_centers[receiver_index, 0]
+            local_y = point_y - receiver_centers[receiver_index, 1]
+            local_z = point_z - receiver_centers[receiver_index, 2]
+            local_u = (
+                local_x * receiver_u_axes[receiver_index, 0]
+                + local_y * receiver_u_axes[receiver_index, 1]
+                + local_z * receiver_u_axes[receiver_index, 2]
+            )
+            local_v = (
+                local_x * receiver_v_axes[receiver_index, 0]
+                + local_y * receiver_v_axes[receiver_index, 1]
+                + local_z * receiver_v_axes[receiver_index, 2]
+            )
+            half_width = receiver_half_widths[receiver_index]
+            half_height = receiver_half_heights[receiver_index]
+            if (
+                abs(local_u) > half_width + 1e-9
+                or abs(local_v) > half_height + 1e-9
+            ):
+                continue
+            area = 4.0 * half_width * half_height
+            density += (
+                probability
+                * distance
+                * distance
+                / (area * acceptance_cosine)
+            )
+        return density
+
+    @cuda.jit(device=True, inline=True)
+    def lambertian_receiver_mis(
+        key,
+        depth,
+        origin_x,
+        origin_y,
+        origin_z,
+        normal_x,
+        normal_y,
+        normal_z,
+        source_x,
+        source_y,
+        source_z,
+        fraction,
+        epsilon_mm,
+        receiver_centers,
+        receiver_normals,
+        receiver_u_axes,
+        receiver_v_axes,
+        receiver_half_widths,
+        receiver_half_heights,
+        receiver_minimum_cosines,
+    ):
+        direction_x = source_x
+        direction_y = source_y
+        direction_z = source_z
+        directed = uniform(key, depth, LANE_BOUNCE_MIS_SELECT) < fraction
+        if directed:
+            receiver_count = receiver_centers.shape[0]
+            receiver_index = int(
+                uniform(key, depth, LANE_BOUNCE_MIS_RECEIVER)
+                * receiver_count
+            )
+            if receiver_index >= receiver_count:
+                receiver_index = receiver_count - 1
+            u_offset = (
+                uniform(key, depth, LANE_BOUNCE_MIS_U) * 2.0 - 1.0
+            ) * receiver_half_widths[receiver_index]
+            v_offset = (
+                uniform(key, depth, LANE_BOUNCE_MIS_V) * 2.0 - 1.0
+            ) * receiver_half_heights[receiver_index]
+            target_x = (
+                receiver_centers[receiver_index, 0]
+                + u_offset * receiver_u_axes[receiver_index, 0]
+                + v_offset * receiver_v_axes[receiver_index, 0]
+            )
+            target_y = (
+                receiver_centers[receiver_index, 1]
+                + u_offset * receiver_u_axes[receiver_index, 1]
+                + v_offset * receiver_v_axes[receiver_index, 1]
+            )
+            target_z = (
+                receiver_centers[receiver_index, 2]
+                + u_offset * receiver_u_axes[receiver_index, 2]
+                + v_offset * receiver_v_axes[receiver_index, 2]
+            )
+            direction_x, direction_y, direction_z = normalize(
+                target_x - origin_x,
+                target_y - origin_y,
+                target_z - origin_z,
+            )
+        source_pdf = (
+            direction_x * normal_x
+            + direction_y * normal_y
+            + direction_z * normal_z
+        )
+        if source_pdf < 0.0:
+            source_pdf = 0.0
+        source_pdf /= math.pi
+        proposal_pdf = receiver_pdf(
+            origin_x,
+            origin_y,
+            origin_z,
+            direction_x,
+            direction_y,
+            direction_z,
+            epsilon_mm,
+            receiver_centers,
+            receiver_normals,
+            receiver_u_axes,
+            receiver_v_axes,
+            receiver_half_widths,
+            receiver_half_heights,
+            receiver_minimum_cosines,
+        )
+        mixture_pdf = (1.0 - fraction) * source_pdf + fraction * proposal_pdf
+        weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
+        return direction_x, direction_y, direction_z, weight, directed
 
     @cuda.jit(device=True, inline=True)
     def ray_box_entry(
@@ -1167,6 +1371,8 @@ def _make_kernel() -> Callable[..., None]:
         epsilon_mm,
         min_energy,
         termination_mode,
+        bounce_receiver_mis_enabled,
+        bounce_receiver_importance_fraction,
         record_geometry,
         origins,
         directions,
@@ -1228,6 +1434,8 @@ def _make_kernel() -> Callable[..., None]:
         stack_entries,
         stack_nodes,
         overflow_flags,
+        bounce_importance_counts,
+        bounce_importance_weight_stats,
     ):
         ray_index = cuda.grid(1)
         if ray_index >= ray_count:
@@ -1505,6 +1713,12 @@ def _make_kernel() -> Callable[..., None]:
                 terminal_power[ray_index] = current_power
                 terminal_ray_kind[ray_index] = current_ray_kind
                 return
+            if bounce_receiver_mis_enabled and (
+                scatter == SCATTER_SPECULAR
+                or scatter == SCATTER_GAUSSIAN
+                or scatter == SCATTER_MIXED
+            ):
+                cuda.atomic.add(bounce_importance_counts, 3, 1)
 
             specular_x, specular_y, specular_z = specular(
                 direction_x,
@@ -1530,6 +1744,67 @@ def _make_kernel() -> Callable[..., None]:
                 )
                 lobe = LOBE_LAMBERTIAN
                 next_kind = RAY_KIND_LAMBERTIAN
+                if bounce_receiver_mis_enabled:
+                    (
+                        next_x,
+                        next_y,
+                        next_z,
+                        importance_weight,
+                        importance_directed,
+                    ) = lambertian_receiver_mis(
+                        key,
+                        depth,
+                        point_x,
+                        point_y,
+                        point_z,
+                        normal_x,
+                        normal_y,
+                        normal_z,
+                        next_x,
+                        next_y,
+                        next_z,
+                        bounce_receiver_importance_fraction,
+                        epsilon_mm,
+                        receiver_centers,
+                        receiver_normals,
+                        receiver_u_axes,
+                        receiver_v_axes,
+                        receiver_half_widths,
+                        receiver_half_heights,
+                        receiver_minimum_cosines,
+                    )
+                    cuda.atomic.add(bounce_importance_counts, 0, 1)
+                    if importance_directed:
+                        cuda.atomic.add(bounce_importance_counts, 1, 1)
+                    cuda.atomic.add(
+                        bounce_importance_weight_stats,
+                        0,
+                        importance_weight,
+                    )
+                    cuda.atomic.add(
+                        bounce_importance_weight_stats,
+                        1,
+                        importance_weight * importance_weight,
+                    )
+                    cuda.atomic.min(
+                        bounce_importance_weight_stats,
+                        2,
+                        importance_weight,
+                    )
+                    cuda.atomic.max(
+                        bounce_importance_weight_stats,
+                        3,
+                        importance_weight,
+                    )
+                    if importance_weight <= 0.0:
+                        cuda.atomic.add(bounce_importance_counts, 2, 1)
+                        event_status[ray_index, depth] = status
+                        terminal_kind[ray_index] = TERMINAL_BLOCKED
+                        terminal_depth[ray_index] = depth
+                        terminal_power[ray_index] = current_power
+                        terminal_ray_kind[ray_index] = current_ray_kind
+                        return
+                    emitted_power *= importance_weight
             elif scatter == SCATTER_GAUSSIAN:
                 stochastic_primary[ray_index] = 1
                 next_x, next_y, next_z, _ = gaussian(
@@ -1636,6 +1911,12 @@ def _launch_resident_kernel(
         performance_warning = Warning
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", performance_warning)
+        workspace.bounce_importance_counts.copy_to_device(
+            np.zeros(4, dtype=np.int64)
+        )
+        workspace.bounce_importance_weight_stats.copy_to_device(
+            np.asarray([0.0, 0.0, math.inf, 0.0], dtype=np.float64)
+        )
         kernel[block_count, THREADS_PER_BLOCK](
             ray_count,
             depth_count,
@@ -1644,6 +1925,8 @@ def _launch_resident_kernel(
             batch.epsilon_mm,
             batch.min_energy,
             batch.termination_mode,
+            int(batch.bounce_receiver_mis_enabled),
+            batch.bounce_receiver_importance_fraction,
             int(record_geometry),
             workspace.origins,
             workspace.directions,
@@ -1705,6 +1988,8 @@ def _launch_resident_kernel(
             workspace.stack_entries,
             workspace.stack_nodes,
             workspace.overflow_flags,
+            workspace.bounce_importance_counts,
+            workspace.bounce_importance_weight_stats,
         )
     cuda.synchronize()
 
@@ -2050,6 +2335,10 @@ def _retrace_selected_path_tape(
         min_energy=batch.min_energy,
         termination_mode=batch.termination_mode,
         include_path_payload=True,
+        bounce_receiver_mis_enabled=batch.bounce_receiver_mis_enabled,
+        bounce_receiver_importance_fraction=(
+            batch.bounce_receiver_importance_fraction
+        ),
     )
     selected_count = len(selected_batch)
     if selected_count > workspace.geometry_capacity:
@@ -2432,6 +2721,10 @@ def _selected_path_tape(
         min_energy=batch.min_energy,
         termination_mode=batch.termination_mode,
         include_path_payload=True,
+        bounce_receiver_mis_enabled=batch.bounce_receiver_mis_enabled,
+        bounce_receiver_importance_fraction=(
+            batch.bounce_receiver_importance_fraction
+        ),
     )
     try:
         tape = _build_tape(selected_batch, **compact)
@@ -2578,6 +2871,8 @@ def trace_resident_wavefront_gpu_cuda(
         raise ValueError("resident wavefront batch must not be empty")
     if np.any(batch.source_faces >= len(context.scene.triangle_v0)):
         raise ValueError("source_faces contains an out-of-range face")
+    if batch.bounce_receiver_mis_enabled and len(context.receiver_centers) == 0:
+        raise ValueError("bounce Receiver MIS requires an enabled receiver")
     if summary_request is None and path_selection is not None:
         raise ValueError("path_selection requires summary_request")
     if summary_request is not None and batch.include_path_payload:
@@ -2667,6 +2962,73 @@ def trace_resident_wavefront_gpu_cuda(
         ) from exc
     kernel_elapsed = time.perf_counter() - kernel_started
     _KERNEL_COMPILED = True
+
+    importance_download_started = time.perf_counter()
+    try:
+        bounce_importance_counts = _copy_host(
+            workspace.bounce_importance_counts,
+            slice(0, 4),
+            np.int64,
+        )
+        bounce_importance_weight_stats = _copy_host(
+            workspace.bounce_importance_weight_stats,
+            slice(0, 4),
+            np.float64,
+        )
+    except Exception as exc:
+        raise GpuResidentWavefrontProviderError(
+            "result_validation",
+            "gpu_resident_bounce_importance_download_failed",
+        ) from exc
+    importance_download_sec = time.perf_counter() - importance_download_started
+    bounce_eligible_count = int(bounce_importance_counts[0])
+    bounce_directed_count = int(bounce_importance_counts[1])
+    bounce_zero_weight_count = int(bounce_importance_counts[2])
+    bounce_unsupported_count = int(bounce_importance_counts[3])
+    if (
+        bounce_eligible_count < 0
+        or bounce_directed_count < 0
+        or bounce_directed_count > bounce_eligible_count
+        or bounce_zero_weight_count < 0
+        or bounce_zero_weight_count > bounce_eligible_count
+        or bounce_unsupported_count < 0
+    ):
+        raise GpuResidentWavefrontProviderError(
+            "result_validation",
+            "gpu_resident_bounce_importance_counts_invalid",
+        )
+    bounce_weight_sum = float(bounce_importance_weight_stats[0])
+    bounce_weight_square_sum = float(bounce_importance_weight_stats[1])
+    bounce_weight_min = (
+        float(bounce_importance_weight_stats[2])
+        if bounce_eligible_count
+        else 1.0
+    )
+    bounce_weight_max = (
+        float(bounce_importance_weight_stats[3])
+        if bounce_eligible_count
+        else 1.0
+    )
+    maximum_weight = 1.0 / (1.0 - batch.bounce_receiver_importance_fraction)
+    if (
+        not all(
+            math.isfinite(value)
+            for value in (
+                bounce_weight_sum,
+                bounce_weight_square_sum,
+                bounce_weight_min,
+                bounce_weight_max,
+            )
+        )
+        or bounce_weight_sum < 0.0
+        or bounce_weight_square_sum < 0.0
+        or bounce_weight_min < 0.0
+        or bounce_weight_max > maximum_weight + 1e-9
+    ):
+        raise GpuResidentWavefrontProviderError(
+            "result_validation",
+            "gpu_resident_bounce_importance_weights_invalid",
+        )
 
     if summary_request is not None:
         try:
@@ -2784,6 +3146,7 @@ def trace_resident_wavefront_gpu_cuda(
                 summary_execution.output_download_sec
                 + active_download_sec
                 + path_download_sec
+                + importance_download_sec
             ),
             tape_build_sec=0.0,
             total_sec=time.perf_counter() - total_started,
@@ -2795,6 +3158,14 @@ def trace_resident_wavefront_gpu_cuda(
             reused_device_scene=reused_device_scene,
             reused_device_bindings=reused_bindings,
             reused_workspace=reused_workspace,
+            bounce_importance_eligible_count=bounce_eligible_count,
+            bounce_importance_directed_count=bounce_directed_count,
+            bounce_importance_zero_weight_count=bounce_zero_weight_count,
+            bounce_importance_unsupported_count=bounce_unsupported_count,
+            bounce_importance_weight_sum=bounce_weight_sum,
+            bounce_importance_weight_square_sum=bounce_weight_square_sum,
+            bounce_importance_weight_min=bounce_weight_min,
+            bounce_importance_weight_max=bounce_weight_max,
         )
 
     download_started = time.perf_counter()
@@ -3004,7 +3375,7 @@ def trace_resident_wavefront_gpu_cuda(
         input_upload_sec=input_upload_sec,
         jit_compile_sec=kernel_elapsed if not was_compiled else 0.0,
         kernel_sec=kernel_elapsed if was_compiled else 0.0,
-        output_download_sec=output_download_sec,
+        output_download_sec=output_download_sec + importance_download_sec,
         tape_build_sec=tape_build_sec,
         total_sec=time.perf_counter() - total_started,
         numba_version=capability.numba_version or "unknown",
@@ -3015,6 +3386,14 @@ def trace_resident_wavefront_gpu_cuda(
         reused_device_scene=reused_device_scene,
         reused_device_bindings=reused_bindings,
         reused_workspace=reused_workspace,
+        bounce_importance_eligible_count=bounce_eligible_count,
+        bounce_importance_directed_count=bounce_directed_count,
+        bounce_importance_zero_weight_count=bounce_zero_weight_count,
+        bounce_importance_unsupported_count=bounce_unsupported_count,
+        bounce_importance_weight_sum=bounce_weight_sum,
+        bounce_importance_weight_square_sum=bounce_weight_square_sum,
+        bounce_importance_weight_min=bounce_weight_min,
+        bounce_importance_weight_max=bounce_weight_max,
     )
 
 

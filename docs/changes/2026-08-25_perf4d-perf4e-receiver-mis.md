@@ -38,6 +38,7 @@
 
 ## 미완료·다음 작업
 
-- PERF-4E-B surface reflection NEE 또는 bounce MIS
+- PERF-4E-B surface reflection MIS는 후속 변경
+  `2026-08-25_perf4e-b-lambertian-bounce-mis.md`에서 완료했다.
 - 실제 회사 TV ROI에서 1억 Ray·10회 반사 장시간 VRAM/열/오차 검증
 - 실제 장면에서 Receiver MIS 기본 활성화 여부 결정
