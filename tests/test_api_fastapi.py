@@ -29,10 +29,25 @@ class _FakeTraceResult:
 def _scene_loader(cad_path: str):
     return {
         "schema_version": "mesh-scene.v1",
+        "units": {"length": "mm"},
+        "coordinate_system": {
+            "handedness": "right",
+            "axes": {"x": "model_x", "y": "model_y", "z": "model_z"},
+        },
         "mesh": {
             "vertices": [],
             "faces": [],
+            "face_ids": [],
+            "face_component_ids": [],
+            "face_material_ids": [],
+            "face_source_ids": [],
+            "face_normals": [],
+            "face_centroids": [],
+            "face_areas_mm2": [],
+            "feature_edge_segments": [],
         },
+        "objects": [],
+        "components": [],
         "metadata": {
             "source_file": cad_path,
         },
@@ -209,6 +224,23 @@ class FastApiLayerTests(unittest.TestCase):
         )
         self.assertTrue(
             payload["metadata"]["scene_token"].startswith("scene_")
+        )
+
+    def test_scene_endpoint_streams_binary_manifest_and_arrays(self):
+        response = self.client.get(
+            "/api/scene",
+            params={"cad": "fixture.step", "format": "binary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["content-type"],
+            "application/vnd.bitsam.scene-binary",
+        )
+        self.assertEqual(response.content[:8], b"BITSAMSC")
+        self.assertEqual(
+            int(response.headers["content-length"]),
+            len(response.content),
         )
 
     def test_duplicate_scene_loads_share_one_active_import(self):

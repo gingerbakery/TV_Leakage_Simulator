@@ -16,7 +16,7 @@ describe('createApiClient', () => {
     await client.getScene('C:\\CAD files\\TV & frame.step')
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      '/api/scene?cad=C%3A%5CCAD+files%5CTV+%26+frame.step',
+      '/api/scene?cad=C%3A%5CCAD+files%5CTV+%26+frame.step&format=binary',
     )
   })
 

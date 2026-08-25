@@ -8,6 +8,7 @@ import type {
   RayTraceResult,
   ScenePayload,
 } from './types'
+import { decodeSceneBinary } from './scene-binary'
 
 export interface ApiRequestOptions {
   signal?: AbortSignal
@@ -49,11 +50,29 @@ export function createApiClient(
   const http = createHttpClient(options)
 
   return {
-    getScene(cadPath, requestOptions) {
-      const query = new URLSearchParams({ cad: cadPath })
-      return http.requestJson<ScenePayload>(`/api/scene?${query}`, {
-        signal: requestOptions?.signal,
-      })
+    async getScene(cadPath, requestOptions) {
+      const binaryQuery = new URLSearchParams({ cad: cadPath, format: 'binary' })
+      try {
+        const buffer = await http.requestArrayBuffer(
+          `/api/scene?${binaryQuery}`,
+          {
+            headers: { Accept: 'application/vnd.bitsam.scene-binary' },
+            signal: requestOptions?.signal,
+          },
+        )
+        const magic = new TextDecoder().decode(
+          new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)),
+        )
+        if (magic === 'BITSAMSC') return decodeSceneBinary(buffer)
+        return JSON.parse(new TextDecoder().decode(buffer)) as ScenePayload
+      } catch (error) {
+        if (requestOptions?.signal?.aborted) throw error
+        console.warn('CAD Binary scene load failed; retrying JSON.', error)
+        const jsonQuery = new URLSearchParams({ cad: cadPath })
+        return http.requestJson<ScenePayload>(`/api/scene?${jsonQuery}`, {
+          signal: requestOptions?.signal,
+        })
+      }
     },
 
     uploadCad(file, filename, requestOptions) {

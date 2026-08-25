@@ -15,6 +15,7 @@ export interface JsonRequestOptions extends Omit<RequestInit, 'body'> {
 export interface HttpClient {
   requestJson<T>(path: string, options?: JsonRequestOptions): Promise<T>
   requestText(path: string, options?: RequestInit): Promise<string>
+  requestArrayBuffer(path: string, options?: RequestInit): Promise<ArrayBuffer>
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -168,6 +169,14 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
     ): Promise<string> {
       const response = await request(path, requestOptions)
       return response.text()
+    },
+
+    async requestArrayBuffer(
+      path: string,
+      requestOptions: RequestInit = {},
+    ): Promise<ArrayBuffer> {
+      const response = await request(path, requestOptions)
+      return response.arrayBuffer()
     },
   }
 }

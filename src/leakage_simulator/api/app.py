@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import time
@@ -7,8 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
+
+from leakage_simulator.scene_binary import (
+    MEDIA_TYPE,
+    iter_scene_binary,
+    prepare_scene_binary,
+)
 
 from .runtime import ApiRuntime
 
@@ -109,13 +121,37 @@ def create_app(
             "provider_contract": PROVIDER_CONTRACT,
         }
 
-    @application.get("/api/scene", response_class=JSONResponse)
-    def scene(cad: str = "") -> Any:
+    @application.get("/api/scene")
+    def scene(cad: str = "", format: str = "json") -> Any:
         if not cad.strip():
             return _error(400, "CAD file is required")
         try:
             scene_started_at = time.perf_counter()
             payload = api_runtime.load_scene(cad)
+            if format.strip().lower() == "binary":
+                binary_started_at = time.perf_counter()
+                manifest, blocks = prepare_scene_binary(payload)
+                binary_bytes = (
+                    16
+                    + len(manifest)
+                    + int(json.loads(manifest)["binary"]["byte_length"])
+                )
+                print(
+                    "[CAD] {:<24} {:>8.3f}s | {:.2f} MB".format(
+                        "Binary manifest",
+                        time.perf_counter() - binary_started_at,
+                        binary_bytes / (1024.0 * 1024.0),
+                    ),
+                    flush=True,
+                )
+                return StreamingResponse(
+                    iter_scene_binary(manifest, blocks),
+                    media_type=MEDIA_TYPE,
+                    headers={
+                        "Content-Length": str(binary_bytes),
+                        "X-Bitsam-Scene-Format": "mesh-scene.v2-binary",
+                    },
+                )
             serialization_started_at = time.perf_counter()
             print(
                 "[CAD] {:<24} {:>8}".format(
