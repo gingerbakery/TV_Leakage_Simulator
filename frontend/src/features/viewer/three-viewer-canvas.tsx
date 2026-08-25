@@ -309,7 +309,9 @@ function disposeMaterial(material: Material | Material[]): void {
 function disposeObject(object: Object3D): void {
   object.traverse((child) => {
     if (child instanceof Mesh || child instanceof LineSegments) {
-      child.geometry.dispose()
+      if (child.userData.sharedGeometry !== true) {
+        child.geometry.dispose()
+      }
       disposeMaterial(child.material)
     } else if (child instanceof Sprite) {
       child.material.map?.dispose()
@@ -1441,7 +1443,8 @@ export function ThreeViewerCanvas({
     }
 
     setRendererError('')
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    const nativePixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+    renderer.setPixelRatio(nativePixelRatio)
     renderer.outputColorSpace = SRGBColorSpace
     renderer.toneMapping = ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.05
@@ -1605,20 +1608,77 @@ export function ThreeViewerCanvas({
     const emitCameraFrame = () => {
       onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
     }
-    controls.addEventListener('end', emitCameraFrame)
 
     let animationFrame = 0
+    const largeScene = scene.metadata.face_count >= 2_000_000
     const largeSceneFrameInterval =
       scene.metadata.face_count >= 5_000_000
         ? 100
         : scene.metadata.face_count >= 2_000_000
           ? 50
           : 0
+    const interactiveFrameInterval =
+      scene.metadata.face_count >= 5_000_000 ? 24 : 0
+    const interactivePixelRatio =
+      scene.metadata.face_count >= 5_000_000
+        ? Math.min(nativePixelRatio, 0.75)
+        : Math.min(nativePixelRatio, 1)
+    let controlsInteracting = false
+    const interactionVisibility = new Map<
+      number,
+      { edges: boolean; hiddenEdges: boolean; selection: boolean }
+    >()
+    const handleControlsStart = () => {
+      if (controlsInteracting) return
+      controlsInteracting = true
+      lastMainFrameTime = -Infinity
+      if (!largeScene) return
+
+      renderer.setPixelRatio(interactivePixelRatio)
+      resize()
+      interactionVisibility.clear()
+      for (const [componentId, node] of runtime.nodes) {
+        interactionVisibility.set(componentId, {
+          edges: node.edges.visible,
+          hiddenEdges: node.hiddenEdges.visible,
+          selection: node.selectionOverlayRoot.visible,
+        })
+        // Dense B-rep edge and selection-overlay passes are restored as soon
+        // as the camera stops. Omitting them only while dragging/wheeling
+        // keeps large CAD navigation responsive without changing CAD data.
+        node.edges.visible = false
+        node.hiddenEdges.visible = false
+        node.selectionOverlayRoot.visible = false
+      }
+    }
+    const handleControlsEnd = () => {
+      if (controlsInteracting && largeScene) {
+        renderer.setPixelRatio(nativePixelRatio)
+        resize()
+        for (const [componentId, visibility] of interactionVisibility) {
+          const node = runtime.nodes.get(componentId)
+          if (!node) continue
+          node.edges.visible = visibility.edges
+          node.hiddenEdges.visible = visibility.hiddenEdges
+          node.selectionOverlayRoot.visible = visibility.selection
+        }
+        interactionVisibility.clear()
+      }
+      controlsInteracting = false
+      lastMainFrameTime = -Infinity
+      emitCameraFrame()
+    }
+    controls.addEventListener('start', handleControlsStart)
+    controls.addEventListener('end', handleControlsEnd)
+
     let lastMainFrameTime = -Infinity
     const animate = (frameTime = 0) => {
-      const frameInterval = runtime.roiPreviewRoot.visible
-        ? Math.min(largeSceneFrameInterval || 33, 33)
-        : largeSceneFrameInterval
+      controls.update()
+      const frameInterval = controlsInteracting
+        ? interactiveFrameInterval
+        : runtime.roiPreviewRoot.visible
+          ? Math.min(largeSceneFrameInterval || 33, 33)
+          : largeSceneFrameInterval
       if (
         frameInterval > 0 &&
         frameTime - lastMainFrameTime < frameInterval
@@ -1627,7 +1687,6 @@ export function ThreeViewerCanvas({
         return
       }
       lastMainFrameTime = frameTime
-      controls.update()
       renderer.setScissorTest(false)
       renderer.setViewport(0, 0, viewportWidth, viewportHeight)
       renderer.clear()
@@ -1749,8 +1808,9 @@ export function ThreeViewerCanvas({
 
           const pipRefreshInterval = fullViewCameraSyncRef.current ? 200 : 1000
           if (
-            runtime.pipLastRenderTime === 0 ||
-            frameTime - runtime.pipLastRenderTime >= pipRefreshInterval
+            !controlsInteracting &&
+            (runtime.pipLastRenderTime === 0 ||
+              frameTime - runtime.pipLastRenderTime >= pipRefreshInterval)
           ) {
             if (
               runtime.pipRenderTarget.width !== pipWidth ||
@@ -2704,7 +2764,8 @@ export function ThreeViewerCanvas({
         capture: true,
       })
       window.removeEventListener('keydown', handleKeyDown)
-      controls.removeEventListener('end', emitCameraFrame)
+      controls.removeEventListener('start', handleControlsStart)
+      controls.removeEventListener('end', handleControlsEnd)
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
@@ -3731,7 +3792,7 @@ export function ThreeViewerCanvas({
 
       if (isSelected && !emitterFaceSelectionArmed && !datumFacePickArmed) {
         const targetSurface = new Mesh(
-          node.surface.geometry.clone(),
+          node.surface.geometry,
           new MeshBasicMaterial({
             color: selectedComponentSurfaceColor,
             side: DoubleSide,
@@ -3745,12 +3806,13 @@ export function ThreeViewerCanvas({
             toneMapped: false,
           }),
         )
+        targetSurface.userData.sharedGeometry = true
         targetSurface.name = `editor-target-surface-${componentId}`
         targetSurface.renderOrder = 88
 
         node.selectionOverlayRoot.add(targetSurface)
         const targetEdges = new LineSegments(
-          node.edges.geometry.clone(),
+          node.edges.geometry,
           new LineBasicMaterial({
             color: selectedComponentEdgeColor,
             transparent: true,
@@ -3764,6 +3826,7 @@ export function ThreeViewerCanvas({
             toneMapped: false,
           }),
         )
+        targetEdges.userData.sharedGeometry = true
         targetEdges.name = `component-selection-edges-${componentId}`
         targetEdges.renderOrder = 89
         node.selectionOverlayRoot.add(targetEdges)
