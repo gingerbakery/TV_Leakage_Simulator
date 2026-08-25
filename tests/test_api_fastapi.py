@@ -130,6 +130,104 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertFalse(third.geometry_cache_hit)
         self.assertIsNot(first.mesh, third.mesh)
 
+    def test_dual_mesh_expands_viewer_face_references_to_trace_faces(self):
+        scene_mesh = {
+            "face_source_ids": [10, 10, 20, 30],
+            "_viewer_face_source_ids": [10, 20, 30],
+        }
+        request = {
+            "emitters": [{
+                "emitter_type": "face",
+                "face_indices": [0],
+            }],
+            "roi_faces": [1],
+            "optical_assignments": [{
+                "target_type": "faces",
+                "face_indices": [0, 2],
+            }],
+        }
+
+        mapped = ApiRuntime._map_viewer_faces_to_trace(scene_mesh, request)
+
+        self.assertEqual(mapped["emitters"][0]["face_indices"], [0, 1])
+        self.assertEqual(mapped["roi_faces"], [2])
+        self.assertEqual(
+            mapped["optical_assignments"][0]["face_indices"],
+            [0, 1, 3],
+        )
+        self.assertEqual(request["emitters"][0]["face_indices"], [0])
+
+    def test_scene_response_never_exposes_private_trace_mesh(self):
+        def dual_mesh_loader(cad_path: str):
+            payload = _scene_loader(cad_path)
+            payload["mesh"]["face_source_ids"] = [7]
+            payload["_trace_mesh"] = {
+                "vertices": [],
+                "faces": [],
+                "face_component_ids": [],
+                "face_material_ids": [],
+                "face_source_ids": [7, 7],
+            }
+            return payload
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name),
+            scene_loader=dual_mesh_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=_trace_runner,
+        )
+        response = runtime.load_scene("dual.step")
+        token = response["metadata"]["scene_token"]
+
+        self.assertNotIn("_trace_mesh", response)
+        self.assertEqual(
+            runtime._scene_mesh_cache[token]["face_source_ids"],
+            [7, 7],
+        )
+        self.assertEqual(
+            runtime._scene_mesh_cache[token]["_viewer_face_source_ids"],
+            [7],
+        )
+
+    def test_deferred_trace_mesh_builds_once_on_first_trace_use(self):
+        calls = []
+
+        def deferred_loader(cad_path: str):
+            payload = _scene_loader(cad_path)
+            payload["mesh"]["face_source_ids"] = [5]
+
+            def load_trace_mesh():
+                calls.append("loaded")
+                return {
+                    "vertices": [],
+                    "faces": [],
+                    "face_component_ids": [],
+                    "face_material_ids": [],
+                    "face_source_ids": [5, 5],
+                }
+
+            payload["_trace_mesh_loader"] = load_trace_mesh
+            return payload
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name),
+            scene_loader=deferred_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=_trace_runner,
+        )
+        response = runtime.load_scene("deferred.step")
+        token = response["metadata"]["scene_token"]
+        cached = runtime._scene_mesh_cache[token]
+
+        self.assertEqual(calls, [])
+        first = runtime._resolve_deferred_trace_mesh(cached)
+        second = runtime._resolve_deferred_trace_mesh(cached)
+
+        self.assertIs(first, second)
+        self.assertEqual(calls, ["loaded"])
+        self.assertEqual(first["face_source_ids"], [5, 5])
+        self.assertEqual(first["_viewer_face_source_ids"], [5])
+
     def tearDown(self):
         self.client.close()
         self.temp_dir.cleanup()

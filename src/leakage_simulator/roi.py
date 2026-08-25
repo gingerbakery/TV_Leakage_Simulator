@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Set
+import threading
 import time
 
 from .components import build_face_groups
@@ -36,7 +37,9 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     total_started_at = time.perf_counter()
     import_started_at = time.perf_counter()
     _scene_stage_start("geometry import")
-    import_result = import_geometry(cad_path)
+    # The interactive scene is returned first. STEP trace tessellation is
+    # retained as a server-side lazy loader and runs only when tracing starts.
+    import_result = import_geometry(cad_path, defer_trace_mesh=True)
     import_sec = time.perf_counter() - import_started_at
     print(
         "[CAD] {:<24} {:>8.3f}s | {} faces".format(
@@ -46,7 +49,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         ),
         flush=True,
     )
-    mesh = import_result.mesh
+    mesh = import_result.viewer_mesh or import_result.mesh
     grouping_started_at = time.perf_counter()
     _scene_stage_start("component grouping")
     objects = build_face_groups(mesh, max_faces_per_object=None)
@@ -93,6 +96,65 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         step_component_id = mesh.metadata(face_index).get("step_component_id")
         if step_component_id is not None:
             step_component_to_component[int(step_component_id)] = component_id
+
+    # The browser receives only the lighter display tessellation. Ray tracing
+    # keeps the precision tessellation server-side and links both levels by
+    # the stable authored B-rep face ID stored in `face_source_ids`.
+    def trace_mesh_payload(trace_mesh: TriangleMesh) -> Dict:
+        trace_face_component_ids = []
+        trace_face_material_ids = []
+        trace_face_source_ids = []
+        for face_index in range(len(trace_mesh.faces)):
+            metadata = trace_mesh.metadata(face_index)
+            step_component_id = metadata.get("step_component_id")
+            trace_face_component_ids.append(
+                step_component_to_component.get(int(step_component_id))
+                if step_component_id is not None
+                else None
+            )
+            trace_face_material_ids.append(trace_mesh.material_id(face_index))
+            trace_face_source_ids.append(
+                int(metadata.get("face_index", face_index))
+            )
+        return {
+            "vertices": [
+                [round(v[0], 6), round(v[1], 6), round(v[2], 6)]
+                for v in trace_mesh.vertices
+            ],
+            "faces": [
+                [face.v0, face.v1, face.v2] for face in trace_mesh.faces
+            ],
+            "face_component_ids": trace_face_component_ids,
+            "face_material_ids": trace_face_material_ids,
+            "face_source_ids": trace_face_source_ids,
+        }
+
+    deferred_trace_loader = import_result.trace_mesh_loader
+    immediate_trace_mesh = (
+        None if deferred_trace_loader is not None else import_result.mesh
+    )
+    viewer_first_face_by_source: Dict[int, int] = {}
+    for viewer_face_index, source_id in enumerate(face_source_ids):
+        viewer_first_face_by_source.setdefault(int(source_id), viewer_face_index)
+    viewer_receiver_hint = []
+    for imported_face_index in import_result.receiver_face_indices:
+        if deferred_trace_loader is not None:
+            viewer_face_index = imported_face_index
+        elif immediate_trace_mesh is not None and (
+            0 <= imported_face_index < len(immediate_trace_mesh.faces)
+        ):
+            source_id = int(
+                immediate_trace_mesh.metadata(imported_face_index).get(
+                    "face_index", imported_face_index
+                )
+            )
+            viewer_face_index = viewer_first_face_by_source.get(source_id)
+        else:
+            viewer_face_index = None
+        if viewer_face_index is not None and viewer_face_index not in viewer_receiver_hint:
+            viewer_receiver_hint.append(int(viewer_face_index))
+        if len(viewer_receiver_hint) >= 30:
+            break
     arrays_sec = time.perf_counter() - arrays_started_at
     print(
         "[CAD] {:<24} {:>8.3f}s".format(
@@ -176,16 +238,41 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         "metadata": {
             "face_count": len(mesh.faces),
             "vertex_count": len(mesh.vertices),
+            "trace_face_count": (
+                len(immediate_trace_mesh.faces)
+                if immediate_trace_mesh is not None
+                else 0
+            ),
+            "trace_vertex_count": (
+                len(immediate_trace_mesh.vertices)
+                if immediate_trace_mesh is not None
+                else 0
+            ),
+            "trace_mesh_deferred": deferred_trace_loader is not None,
+            "dual_mesh": deferred_trace_loader is not None or mesh is not immediate_trace_mesh,
             "component_count": len(objects),
             "source_file": cad_path or "",
             "synthetic": import_result.synthetic,
             "import_note": import_result.note,
             "import_timings_sec": timings,
-            "receiver_face_hint": import_result.receiver_face_indices[
-                : min(30, len(import_result.receiver_face_indices))
-            ],
+            "receiver_face_hint": viewer_receiver_hint,
         },
     }
+    if deferred_trace_loader is not None:
+        deferred_payload_lock = threading.Lock()
+        deferred_payload_cache: Dict[str, Dict] = {}
+
+        def load_trace_payload() -> Dict:
+            with deferred_payload_lock:
+                cached = deferred_payload_cache.get("mesh")
+                if cached is None:
+                    cached = trace_mesh_payload(deferred_trace_loader())
+                    deferred_payload_cache["mesh"] = cached
+                return cached
+
+        payload["_trace_mesh_loader"] = load_trace_payload
+    elif immediate_trace_mesh is not None:
+        payload["_trace_mesh"] = trace_mesh_payload(immediate_trace_mesh)
     print(
         "[CAD] {:<24} {:>8.3f}s | payload ready".format(
             "scene payload total",

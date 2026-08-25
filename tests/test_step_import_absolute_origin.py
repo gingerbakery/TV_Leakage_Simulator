@@ -119,6 +119,21 @@ class StepImportPreservesAbsoluteOriginTests(unittest.TestCase):
             payload["metadata"]["import_note"],
         )
 
+    def test_viewer_and_trace_meshes_share_authored_face_ids(self) -> None:
+        payload = build_scene_payload(str(SAMPLE_STEP))
+        trace_mesh = payload["_trace_mesh_loader"]()
+
+        self.assertTrue(payload["metadata"]["dual_mesh"])
+        self.assertTrue(payload["metadata"]["trace_mesh_deferred"])
+        self.assertLess(
+            payload["metadata"]["face_count"],
+            len(trace_mesh["faces"]),
+        )
+        self.assertEqual(
+            set(payload["mesh"]["face_source_ids"]),
+            set(trace_mesh["face_source_ids"]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

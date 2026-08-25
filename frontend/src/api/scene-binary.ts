@@ -23,8 +23,10 @@ interface BinaryManifest {
   coordinate_system: ScenePayload['coordinate_system']
   components: Array<
     Omit<SceneComponent, 'face_indices'> & {
-      binary_face_offset: number
       binary_face_count: number
+      binary_face_encoding: 'range' | 'array'
+      binary_face_start?: number
+      binary_face_offset?: number
     }
   >
   metadata: ScenePayload['metadata']
@@ -85,6 +87,56 @@ function scalarFacade<T>(view: NumericView, map: (value: number) => T): T[] {
   return arrayFacade(view.length, (index) => map(view[index]))
 }
 
+function sequenceFacade(length: number): number[] {
+  return arrayFacade(length, (index) => index)
+}
+
+function offsetSequenceFacade(start: number, length: number): number[] {
+  return arrayFacade(length, (index) => start + index)
+}
+
+function centroidFacade(
+  faces: [number, number, number][],
+  vertices: [number, number, number][],
+): [number, number, number][] {
+  return arrayFacade(faces.length, (index) => {
+    const face = faces[index]
+    if (!face) return [0, 0, 0]
+    const first = vertices[face[0]] ?? [0, 0, 0]
+    const second = vertices[face[1]] ?? [0, 0, 0]
+    const third = vertices[face[2]] ?? [0, 0, 0]
+    return [
+      (first[0] + second[0] + third[0]) / 3,
+      (first[1] + second[1] + third[1]) / 3,
+      (first[2] + second[2] + third[2]) / 3,
+    ]
+  })
+}
+
+function normalFacade(
+  faces: [number, number, number][],
+  vertices: [number, number, number][],
+): [number, number, number][] {
+  return arrayFacade(faces.length, (index) => {
+    const face = faces[index]
+    if (!face) return [0, 0, 1]
+    const first = vertices[face[0]] ?? [0, 0, 0]
+    const second = vertices[face[1]] ?? [0, 0, 0]
+    const third = vertices[face[2]] ?? [0, 0, 0]
+    const abx = second[0] - first[0]
+    const aby = second[1] - first[1]
+    const abz = second[2] - first[2]
+    const acx = third[0] - first[0]
+    const acy = third[1] - first[1]
+    const acz = third[2] - first[2]
+    const x = aby * acz - abz * acy
+    const y = abz * acx - abx * acz
+    const z = abx * acy - aby * acx
+    const length = Math.hypot(x, y, z)
+    return length > 1e-12 ? [x / length, y / length, z / length] : [0, 0, 1]
+  })
+}
+
 function tuple3Facade(view: NumericView): [number, number, number][] {
   return arrayFacade(view.length / 3, (index) => {
     const offset = index * 3
@@ -140,39 +192,53 @@ export function decodeSceneBinary(buffer: ArrayBuffer): ScenePayload {
   ) as Record<string, NumericView>
   const componentFaces = views.component_face_indices
   const components = manifest.components.map((component) => {
-    const { binary_face_offset, binary_face_count, ...metadata } = component
+    const {
+      binary_face_offset,
+      binary_face_count,
+      binary_face_encoding,
+      binary_face_start,
+      ...metadata
+    } = component
+    const faceIndices =
+      binary_face_encoding === 'range'
+        ? offsetSequenceFacade(binary_face_start ?? 0, binary_face_count)
+        : scalarFacade(
+            componentFaces.subarray(
+              binary_face_offset ?? 0,
+              (binary_face_offset ?? 0) + binary_face_count,
+            ) as NumericView,
+            (value) => value,
+          )
     return {
       ...metadata,
-      face_indices: scalarFacade(
-        componentFaces.subarray(
-          binary_face_offset,
-          binary_face_offset + binary_face_count,
-        ) as NumericView,
-        (value) => value,
-      ),
+      face_indices: faceIndices,
     }
   })
   const materials = manifest.binary.face_material_table
+  const vertices = tuple3Facade(views.vertices)
+  const faces = tuple3Facade(views.faces)
 
   return {
     schema_version: 'mesh-scene.v1',
     units: manifest.units,
     coordinate_system: manifest.coordinate_system,
     mesh: {
-      vertices: tuple3Facade(views.vertices),
-      faces: tuple3Facade(views.faces),
-      face_ids: scalarFacade(views.face_ids, (value) => value),
+      vertices,
+      faces,
+      face_ids: sequenceFacade(faces.length),
       face_component_ids: scalarFacade(
         views.face_component_ids,
         (value) => (value < 0 ? null : value),
       ),
-      face_material_ids: scalarFacade(
-        views.face_material_codes,
-        (value) => materials[value] ?? '',
-      ),
+      face_material_ids: views.face_material_codes
+        ? scalarFacade(
+            views.face_material_codes,
+            (value) => materials[value] ?? '',
+          )
+        : arrayFacade(faces.length, () => materials[0] ?? ''),
       face_source_ids: scalarFacade(views.face_source_ids, (value) => value),
-      face_normals: tuple3Facade(views.face_normals),
-      face_centroids: tuple3Facade(views.face_centroids),
+      face_normals: normalFacade(faces, vertices),
+      face_centroids: centroidFacade(faces, vertices),
       face_areas_mm2: scalarFacade(views.face_areas_mm2, (value) => value),
       feature_edge_segments: edgeFacade(
         views.feature_edge_points,
@@ -184,4 +250,3 @@ export function decodeSceneBinary(buffer: ArrayBuffer): ScenePayload {
     metadata: manifest.metadata,
   }
 }
-

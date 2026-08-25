@@ -40,19 +40,29 @@ def _component_faces(
     components: Sequence[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], Iterator[int]]:
     manifest_components: list[dict[str, Any]] = []
+    array_encoded_faces: list[Sequence[int]] = []
     offset = 0
     for component in components:
         face_indices = component.get("face_indices") or []
         item = {key: value for key, value in component.items() if key != "face_indices"}
-        item["binary_face_offset"] = offset
         item["binary_face_count"] = len(face_indices)
+        first_face = int(face_indices[0]) if face_indices else 0
+        is_contiguous = all(
+            int(face_id) == first_face + index
+            for index, face_id in enumerate(face_indices)
+        )
+        if is_contiguous:
+            item["binary_face_encoding"] = "range"
+            item["binary_face_start"] = first_face
+        else:
+            item["binary_face_encoding"] = "array"
+            item["binary_face_offset"] = offset
+            array_encoded_faces.append(face_indices)
+            offset += len(face_indices)
         manifest_components.append(item)
-        offset += len(face_indices)
     return manifest_components, (
         int(value)
-        for value in chain.from_iterable(
-            component.get("face_indices") or [] for component in components
-        )
+        for value in chain.from_iterable(array_encoded_faces)
     )
 
 
@@ -79,17 +89,18 @@ def prepare_scene_binary(
     blocks: list[tuple[str, str, int, Iterable[Any]]] = [
         ("vertices", "float64", 3, _flatten(mesh.get("vertices") or [])),
         ("faces", "uint32", 3, _flatten(mesh.get("faces") or [])),
-        ("face_ids", "uint32", 1, iter(mesh.get("face_ids") or [])),
         (
             "face_component_ids",
             "int32",
             1,
             (int(value) if value is not None else -1 for value in (mesh.get("face_component_ids") or [])),
         ),
-        ("face_material_codes", "uint32", 1, material_values),
+        *(
+            [("face_material_codes", "uint32", 1, material_values)]
+            if len(material_table) > 1
+            else []
+        ),
         ("face_source_ids", "uint32", 1, iter(mesh.get("face_source_ids") or [])),
-        ("face_normals", "float64", 3, _flatten(mesh.get("face_normals") or [])),
-        ("face_centroids", "float64", 3, _flatten(mesh.get("face_centroids") or [])),
         ("face_areas_mm2", "float64", 1, iter(mesh.get("face_areas_mm2") or [])),
         (
             "feature_edge_points",
@@ -114,16 +125,19 @@ def prepare_scene_binary(
     counts = {
         "vertices": len(mesh.get("vertices") or []),
         "faces": len(mesh.get("faces") or []),
-        "face_ids": len(mesh.get("face_ids") or []),
         "face_component_ids": len(mesh.get("face_component_ids") or []),
-        "face_material_codes": len(mesh.get("face_material_ids") or []),
+        "face_material_codes": (
+            len(mesh.get("face_material_ids") or []) if len(material_table) > 1 else 0
+        ),
         "face_source_ids": len(mesh.get("face_source_ids") or []),
-        "face_normals": len(mesh.get("face_normals") or []),
-        "face_centroids": len(mesh.get("face_centroids") or []),
         "face_areas_mm2": len(mesh.get("face_areas_mm2") or []),
         "feature_edge_points": len(edges),
         "feature_edge_component_ids": len(edges),
-        "component_face_indices": sum(item["binary_face_count"] for item in manifest_components),
+        "component_face_indices": sum(
+            item["binary_face_count"]
+            for item in manifest_components
+            if item["binary_face_encoding"] == "array"
+        ),
     }
     offset = 0
     descriptors: dict[str, dict[str, Any]] = {}

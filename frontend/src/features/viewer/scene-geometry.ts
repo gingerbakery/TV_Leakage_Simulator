@@ -1,6 +1,7 @@
 import {
   BufferGeometry,
   Float32BufferAttribute,
+  Uint32BufferAttribute,
   Vector3,
 } from 'three'
 
@@ -48,55 +49,33 @@ export function createFaceGeometry(
   scene: ScenePayload,
   faceIds: Iterable<number>,
   center = new Vector3(),
+  reusableFaceIds?: number[],
 ): ViewerGeometryBundle {
-  const requestedFaceIds = [...faceIds]
-  const positions: number[] = []
-  const normals: number[] = []
-  const includedFaceIds: number[] = []
-  const smoothNormals = new Map<string, Vector3>()
-  const normalKeysByFace = new Map<number, string[]>()
+  const requestedFaceIds = reusableFaceIds ?? [...faceIds]
+  const includedFaceIds: number[] = reusableFaceIds ?? []
+  const vertexIndices = new Map<number, number>()
+  const vertexStride = scene.mesh.vertices.length + 1
 
-  // Smooth only inside each original CAD/B-rep face. Triangles belonging
-  // to the same curved surface share averaged vertex normals, while a real
-  // CAD edge (different source face id) remains sharp like NX shaded mode.
+  const vertexKey = (sourceFaceId: number, vertexId: number): number =>
+    sourceFaceId * vertexStride + vertexId
+
+  // First count the exact number of display vertices. Large STEP assemblies
+  // can contain millions of triangles; growing ordinary number[] arrays and
+  // then copying them into WebGL typed arrays temporarily used several times
+  // the final geometry memory and could make the whole UI unresponsive.
   for (const faceId of requestedFaceIds) {
     const face = scene.mesh.faces[faceId]
-    const faceNormal = scene.mesh.face_normals[faceId]
-    if (!face || !faceNormal) continue
-    const triangleVertices = face.map(
-      (vertexId) => scene.mesh.vertices[vertexId],
-    )
-    const areaWeightedNormal =
-      triangleVertices.length === 3 &&
-      triangleVertices.every((vertex) => vertex !== undefined)
-        ? new Vector3()
-            .subVectors(
-              new Vector3(...triangleVertices[1]),
-              new Vector3(...triangleVertices[0]),
-            )
-            .cross(
-              new Vector3().subVectors(
-                new Vector3(...triangleVertices[2]),
-                new Vector3(...triangleVertices[0]),
-              ),
-            )
-        : new Vector3(...faceNormal)
+    if (!face || face.some((vertexId) => !scene.mesh.vertices[vertexId])) continue
     const sourceFaceId = scene.mesh.face_source_ids?.[faceId] ?? faceId
-    const keys: string[] = []
     for (const vertexId of face) {
-      const vertex = scene.mesh.vertices[vertexId]
-      if (!vertex) continue
-      const key = `${sourceFaceId}:${vertex[0].toFixed(6)},${vertex[1].toFixed(6)},${vertex[2].toFixed(6)}`
-      keys.push(key)
-      const sum = smoothNormals.get(key) ?? new Vector3()
-      // Area weighting prevents a cluster of tiny tessellation triangles
-      // from skewing the visual normal on compound R-surfaces.
-      sum.add(areaWeightedNormal)
-      smoothNormals.set(key, sum)
+      const key = vertexKey(sourceFaceId, vertexId)
+      if (!vertexIndices.has(key)) vertexIndices.set(key, vertexIndices.size)
     }
-    normalKeysByFace.set(faceId, keys)
   }
 
+  const positions = new Float32Array(vertexIndices.size * 3)
+  const indices = new Uint32Array(requestedFaceIds.length * 3)
+  let indexOffset = 0
   for (const faceId of requestedFaceIds) {
     const face = scene.mesh.faces[faceId]
     if (!face) continue
@@ -104,26 +83,22 @@ export function createFaceGeometry(
     const vertices = face.map((vertexId) => scene.mesh.vertices[vertexId])
     if (vertices.some((vertex) => vertex === undefined)) continue
 
-    const normal = scene.mesh.face_normals[faceId]
-    const normalKeys = normalKeysByFace.get(faceId)
-
-    for (const vertex of vertices) {
+    const sourceFaceId = scene.mesh.face_source_ids?.[faceId] ?? faceId
+    for (let corner = 0; corner < vertices.length; corner += 1) {
+      const vertex = vertices[corner]
       if (!vertex) continue
-      positions.push(
-        vertex[0] - center.x,
-        vertex[1] - center.y,
-        vertex[2] - center.z,
-      )
-      const key = normalKeys?.shift()
-      const smoothNormal = key ? smoothNormals.get(key) : undefined
-      if (smoothNormal && smoothNormal.lengthSq() > 1e-12) {
-        smoothNormal.normalize()
-        normals.push(smoothNormal.x, smoothNormal.y, smoothNormal.z)
-      } else if (normal) {
-        normals.push(normal[0], normal[1], normal[2])
-      }
+      const vertexId = face[corner]
+      const key = vertexKey(sourceFaceId, vertexId)
+      const vertexIndex = vertexIndices.get(key)
+      if (vertexIndex === undefined) continue
+      const positionOffset = vertexIndex * 3
+      positions[positionOffset] = vertex[0] - center.x
+      positions[positionOffset + 1] = vertex[1] - center.y
+      positions[positionOffset + 2] = vertex[2] - center.z
+      indices[indexOffset] = vertexIndex
+      indexOffset += 1
     }
-    includedFaceIds.push(faceId)
+    if (!reusableFaceIds) includedFaceIds.push(faceId)
   }
 
   const geometry = new BufferGeometry()
@@ -131,15 +106,12 @@ export function createFaceGeometry(
     'position',
     new Float32BufferAttribute(positions, 3),
   )
+  geometry.setIndex(new Uint32BufferAttribute(indices.subarray(0, indexOffset), 1))
 
-  if (normals.length === positions.length) {
-    geometry.setAttribute(
-      'normal',
-      new Float32BufferAttribute(normals, 3),
-    )
-  } else {
-    geometry.computeVertexNormals()
-  }
+  // Vertices are shared only inside the same authored B-rep face, so Three's
+  // indexed-normal calculation smooths curved CAD surfaces without smoothing
+  // across real design edges.
+  geometry.computeVertexNormals()
 
   geometry.computeBoundingBox()
   geometry.computeBoundingSphere()
@@ -157,7 +129,12 @@ export function createComponentGeometry(
   component: SceneComponent,
 ): ViewerGeometryBundle {
   const center = componentCenter(component)
-  return createFaceGeometry(scene, component.face_indices, center)
+  return createFaceGeometry(
+    scene,
+    component.face_indices,
+    center,
+    component.face_indices,
+  )
 }
 
 export function createFeatureEdgeGeometry(

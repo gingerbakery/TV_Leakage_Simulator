@@ -25,6 +25,7 @@ import {
   MOUSE,
   OrthographicCamera,
   Plane,
+  PlaneGeometry,
   PerspectiveCamera,
   Quaternion,
   Raycaster,
@@ -36,6 +37,7 @@ import {
   Vector2,
   Vector3,
   WebGLRenderer,
+  WebGLRenderTarget,
   type Material,
   type Object3D,
 } from 'three'
@@ -164,7 +166,11 @@ interface ViewerRuntime {
   nodes: Map<number, ComponentRenderNode>
   originAxisBaseScale: number
   pipCamera: PerspectiveCamera
+  pipCompositeCamera: OrthographicCamera
+  pipCompositeScene: Scene
   pipDistance: number
+  pipLastRenderTime: number
+  pipRenderTarget: WebGLRenderTarget
   pipTarget: Vector3
   pipUserAdjusted: boolean
   pipViewportRect: { x: number; y: number; width: number; height: number } | null
@@ -1190,7 +1196,7 @@ function createComponentNode(
   edges.name = `component-edges-${component.component_id}`
   edges.renderOrder = 100 + index
   const hiddenEdges = new LineSegments(
-    edgeGeometry.clone(),
+    edgeGeometry,
     new LineBasicMaterial({
       color: 0x8aa4b8,
       transparent: true,
@@ -1203,7 +1209,7 @@ function createComponentNode(
   hiddenEdges.renderOrder = 80 + index
   hiddenEdges.visible = false
   const wireframeFill = new Mesh(
-    bundle.geometry.clone(),
+    bundle.geometry,
     new MeshBasicMaterial({
       color: 0x263b4d,
       transparent: true,
@@ -1465,6 +1471,21 @@ export function ThreeViewerCanvas({
     // camera so the PIP always frames the whole model, not the ROI.
     const pipCamera = new PerspectiveCamera(45, 1, 0.01, 100000)
     pipCamera.up.set(0, 0, 1)
+    const pipRenderTarget = new WebGLRenderTarget(220, 160)
+    const pipCompositeScene = new Scene()
+    const pipCompositeCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 2)
+    pipCompositeCamera.position.z = 1
+    pipCompositeScene.add(
+      new Mesh(
+        new PlaneGeometry(2, 2),
+        new MeshBasicMaterial({
+          map: pipRenderTarget.texture,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      ),
+    )
     const controls = new TrackballControls(camera, canvas)
     controls.staticMoving = true
     controls.rotateSpeed = 2.3
@@ -1539,7 +1560,11 @@ export function ThreeViewerCanvas({
       nodes,
       originAxisBaseScale,
       pipCamera,
+      pipCompositeCamera,
+      pipCompositeScene,
       pipDistance: 0,
+      pipLastRenderTime: 0,
+      pipRenderTarget,
       pipTarget: new Vector3(),
       pipUserAdjusted: false,
       pipViewportRect: null,
@@ -1583,7 +1608,25 @@ export function ThreeViewerCanvas({
     controls.addEventListener('end', emitCameraFrame)
 
     let animationFrame = 0
-    const animate = () => {
+    const largeSceneFrameInterval =
+      scene.metadata.face_count >= 5_000_000
+        ? 100
+        : scene.metadata.face_count >= 2_000_000
+          ? 50
+          : 0
+    let lastMainFrameTime = -Infinity
+    const animate = (frameTime = 0) => {
+      const frameInterval = runtime.roiPreviewRoot.visible
+        ? Math.min(largeSceneFrameInterval || 33, 33)
+        : largeSceneFrameInterval
+      if (
+        frameInterval > 0 &&
+        frameTime - lastMainFrameTime < frameInterval
+      ) {
+        animationFrame = window.requestAnimationFrame(animate)
+        return
+      }
+      lastMainFrameTime = frameTime
       controls.update()
       renderer.setScissorTest(false)
       renderer.setViewport(0, 0, viewportWidth, viewportHeight)
@@ -1704,20 +1747,41 @@ export function ThreeViewerCanvas({
           pipCamera.far = Math.max(runtime.pipDistance * 20, 1000)
           pipCamera.updateProjectionMatrix()
 
-          runtime.modelRoot.visible = true
-          runtime.roiPreviewRoot.visible = false
-          runtime.roiBoundsMarker.visible = true
+          const pipRefreshInterval = fullViewCameraSyncRef.current ? 200 : 1000
+          if (
+            runtime.pipLastRenderTime === 0 ||
+            frameTime - runtime.pipLastRenderTime >= pipRefreshInterval
+          ) {
+            if (
+              runtime.pipRenderTarget.width !== pipWidth ||
+              runtime.pipRenderTarget.height !== pipHeight
+            ) {
+              runtime.pipRenderTarget.setSize(pipWidth, pipHeight)
+            }
+            runtime.modelRoot.visible = true
+            runtime.roiPreviewRoot.visible = false
+            runtime.roiBoundsMarker.visible = true
+            renderer.setRenderTarget(runtime.pipRenderTarget)
+            renderer.setScissorTest(false)
+            renderer.setViewport(0, 0, pipWidth, pipHeight)
+            renderer.clear()
+            renderer.render(threeScene, pipCamera)
+            renderer.setRenderTarget(null)
+            runtime.modelRoot.visible = false
+            runtime.roiPreviewRoot.visible = true
+            runtime.roiBoundsMarker.visible = false
+            runtime.pipLastRenderTime = frameTime
+          }
 
           renderer.setScissorTest(true)
           renderer.setScissor(pipX, pipY, pipWidth, pipHeight)
           renderer.setViewport(pipX, pipY, pipWidth, pipHeight)
           renderer.clear(true, true, false)
-          renderer.render(threeScene, pipCamera)
+          renderer.render(
+            runtime.pipCompositeScene,
+            runtime.pipCompositeCamera,
+          )
           renderer.setScissorTest(false)
-
-          runtime.modelRoot.visible = false
-          runtime.roiPreviewRoot.visible = true
-          runtime.roiBoundsMarker.visible = false
         } else {
           runtime.pipViewportRect = null
         }
@@ -2644,6 +2708,8 @@ export function ThreeViewerCanvas({
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
+      disposeObject(pipCompositeScene)
+      pipRenderTarget.dispose()
       renderer.dispose()
       runtimeRef.current = null
     }

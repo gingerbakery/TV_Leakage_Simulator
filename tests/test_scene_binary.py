@@ -58,7 +58,11 @@ def test_scene_binary_preserves_geometry_metadata_and_alignment() -> None:
     data_start = HEADER.size + manifest_length
     source = arrays["face_source_ids"]
     assert struct.unpack_from("<I", body, data_start + source["byte_offset"])[0] == 42
+    assert "face_ids" not in arrays
+    assert "face_centroids" not in arrays
+    assert "face_normals" not in arrays
+    assert "face_material_codes" not in arrays
+    assert manifest["components"][0]["binary_face_encoding"] == "range"
     component_faces = arrays["component_face_indices"]
-    assert struct.unpack_from("<I", body, data_start + component_faces["byte_offset"])[0] == 0
+    assert component_faces["count"] == 0
     assert len(body) == data_start + manifest["binary"]["byte_length"]
-

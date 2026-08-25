@@ -6,12 +6,8 @@ function createBinaryFixture(): ArrayBuffer {
   const arrays = [
     { name: 'vertices', dtype: 'float64', width: 3, values: [0, 0, 0, 1, 0, 0, 0, 1, 0] },
     { name: 'faces', dtype: 'uint32', width: 3, values: [0, 1, 2] },
-    { name: 'face_ids', dtype: 'uint32', width: 1, values: [0] },
     { name: 'face_component_ids', dtype: 'int32', width: 1, values: [3] },
-    { name: 'face_material_codes', dtype: 'uint32', width: 1, values: [0] },
     { name: 'face_source_ids', dtype: 'uint32', width: 1, values: [99] },
-    { name: 'face_normals', dtype: 'float64', width: 3, values: [0, 0, 1] },
-    { name: 'face_centroids', dtype: 'float64', width: 3, values: [1 / 3, 1 / 3, 0] },
     { name: 'face_areas_mm2', dtype: 'float64', width: 1, values: [0.5] },
     { name: 'feature_edge_points', dtype: 'float64', width: 6, values: [0, 0, 0, 1, 0, 0] },
     { name: 'feature_edge_component_ids', dtype: 'int32', width: 1, values: [3] },
@@ -38,7 +34,7 @@ function createBinaryFixture(): ArrayBuffer {
     components: [{
       object_id: 3, component_id: 3, object_name: 'Panel', component_name: 'Panel',
       face_count: 1, area_mm2: 0.5, bbox_min: [0, 0, 0], bbox_max: [1, 1, 0],
-      is_truncated: false, color: '#abcdef', binary_face_offset: 0, binary_face_count: 1,
+      is_truncated: false, color: '#abcdef', binary_face_encoding: 'range', binary_face_start: 0, binary_face_count: 1,
     }],
     metadata: {
       face_count: 1, vertex_count: 3, component_count: 1, source_file: 'fixture.step',
@@ -78,6 +74,10 @@ describe('decodeSceneBinary', () => {
     expect(scene.mesh.vertices[1]).toEqual([1, 0, 0])
     expect(scene.mesh.faces[0]).toEqual([0, 1, 2])
     expect(scene.mesh.face_source_ids?.[0]).toBe(99)
+    expect(scene.mesh.face_ids[0]).toBe(0)
+    expect(scene.mesh.face_centroids[0]).toEqual([1 / 3, 1 / 3, 0])
+    expect(scene.mesh.face_normals[0]).toEqual([0, 0, 1])
+    expect(scene.mesh.face_material_ids[0]).toBe('PC')
     expect(scene.mesh.feature_edge_segments[0].component_id).toBe(3)
     expect(scene.objects).toBe(scene.components)
     expect(scene.mesh.faces.includes([0, 1, 2])).toBe(false)

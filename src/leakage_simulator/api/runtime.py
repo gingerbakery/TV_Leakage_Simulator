@@ -123,18 +123,39 @@ class ApiRuntime:
                 self._scene_loads.pop(cache_key, None)
             load_state.event.set()
 
-        mesh = payload.get("mesh")
-        if not isinstance(mesh, dict):
+        viewer_mesh = payload.get("mesh")
+        if not isinstance(viewer_mesh, dict):
             raise ValueError("Scene payload is missing mesh data")
+        trace_loader = payload.get("_trace_mesh_loader")
+        trace_mesh = payload.get("_trace_mesh") or viewer_mesh
+        if callable(trace_loader):
+            trace_mesh = {
+                "_deferred_trace_loader": trace_loader,
+                "_deferred_trace_lock": threading.Lock(),
+                "_viewer_face_source_ids": viewer_mesh.get(
+                    "face_source_ids"
+                ) or [],
+            }
+        elif not isinstance(trace_mesh, dict):
+            raise ValueError("Scene payload trace mesh must be an object")
+        elif trace_mesh is not viewer_mesh:
+            trace_mesh = dict(trace_mesh)
+            trace_mesh["_viewer_face_source_ids"] = viewer_mesh.get(
+                "face_source_ids"
+            ) or []
 
         scene_token = "scene_{}".format(time.time_ns())
         with self._state_lock:
-            self._scene_mesh_cache[scene_token] = mesh
+            self._scene_mesh_cache[scene_token] = trace_mesh
             while len(self._scene_mesh_cache) > self._max_cached_scenes:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
 
         response_payload = dict(payload)
+        # Trace tessellation can be hundreds of MB and must never be serialized
+        # to the browser. It remains in the short-lived server scene cache.
+        response_payload.pop("_trace_mesh", None)
+        response_payload.pop("_trace_mesh_loader", None)
         raw_metadata = payload.get("metadata")
         if not isinstance(raw_metadata, dict):
             raise ValueError("Scene payload metadata must be an object")
@@ -318,6 +339,11 @@ class ApiRuntime:
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
     ) -> Any:
+        scene_mesh = self._resolve_deferred_trace_mesh(scene_mesh)
+        request_payload = self._map_viewer_faces_to_trace(
+            scene_mesh,
+            request_payload,
+        )
         if self._trace_input_builder is not build_direct_trace_input:
             return self._trace_input_builder(scene_mesh, request_payload)
         cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
@@ -337,6 +363,133 @@ class ApiRuntime:
             prepared_geometry=prepared,
             geometry_cache_hit=cache_hit,
         )
+
+    @staticmethod
+    def _resolve_deferred_trace_mesh(
+        scene_mesh: dict[str, Any],
+    ) -> dict[str, Any]:
+        loader = scene_mesh.get("_deferred_trace_loader")
+        if not callable(loader):
+            return scene_mesh
+        lock = scene_mesh.get("_deferred_trace_lock")
+        if lock is None:
+            raise RuntimeError("Deferred trace mesh lock is unavailable")
+        with lock:
+            loader = scene_mesh.get("_deferred_trace_loader")
+            if not callable(loader):
+                return scene_mesh
+            viewer_sources = scene_mesh.get("_viewer_face_source_ids") or []
+            print("[CAD] deferred trace mesh      START", flush=True)
+            started_at = time.perf_counter()
+            resolved = loader()
+            if not isinstance(resolved, dict):
+                raise RuntimeError("Deferred trace mesh loader returned invalid data")
+            scene_mesh.clear()
+            scene_mesh.update(resolved)
+            scene_mesh["_viewer_face_source_ids"] = viewer_sources
+            print(
+                "[CAD] deferred trace mesh   {:>8.3f}s | {} faces".format(
+                    time.perf_counter() - started_at,
+                    len(scene_mesh.get("faces") or []),
+                ),
+                flush=True,
+            )
+            return scene_mesh
+
+    @staticmethod
+    def _map_viewer_faces_to_trace(
+        scene_mesh: dict[str, Any],
+        request_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Expand display-face references to precision trace triangles.
+
+        Both tessellations carry the same authored B-rep source-face ID. This
+        keeps ROI, face emitters and face-level material assignments exact even
+        when one display triangle represents many simulation triangles.
+        """
+        viewer_sources = scene_mesh.get("_viewer_face_source_ids")
+        trace_sources = scene_mesh.get("face_source_ids")
+        if not viewer_sources or not trace_sources:
+            return request_payload
+
+        normalized = dict(request_payload)
+        emitters = [
+            dict(item) if isinstance(item, dict) else item
+            for item in request_payload.get("emitters", [])
+        ]
+        assignments = [
+            dict(item) if isinstance(item, dict) else item
+            for item in request_payload.get("optical_assignments", [])
+        ]
+
+        referenced_viewer_faces: set[int] = set()
+        for emitter in emitters:
+            if (
+                isinstance(emitter, dict)
+                and str(emitter.get("emitter_type") or "face") == "face"
+            ):
+                referenced_viewer_faces.update(
+                    int(value) for value in emitter.get("face_indices", [])
+                )
+        referenced_viewer_faces.update(
+            int(value) for value in request_payload.get("roi_faces", [])
+        )
+        for assignment in assignments:
+            if (
+                isinstance(assignment, dict)
+                and assignment.get("target_type") == "faces"
+            ):
+                referenced_viewer_faces.update(
+                    int(value) for value in assignment.get("face_indices", [])
+                )
+        if not referenced_viewer_faces:
+            return request_payload
+
+        requested_sources = {
+            int(viewer_sources[face_index])
+            for face_index in referenced_viewer_faces
+            if 0 <= face_index < len(viewer_sources)
+        }
+        source_to_trace: dict[int, list[int]] = {
+            source_id: [] for source_id in requested_sources
+        }
+        for trace_face_index, source_id in enumerate(trace_sources):
+            target = source_to_trace.get(int(source_id))
+            if target is not None:
+                target.append(trace_face_index)
+
+        def expand(face_indices: Any) -> list[int]:
+            source_ids = {
+                int(viewer_sources[int(face_index)])
+                for face_index in (face_indices or [])
+                if 0 <= int(face_index) < len(viewer_sources)
+            }
+            return [
+                trace_face_index
+                for source_id in source_ids
+                for trace_face_index in source_to_trace.get(source_id, [])
+            ]
+
+        for emitter in emitters:
+            if (
+                isinstance(emitter, dict)
+                and str(emitter.get("emitter_type") or "face") == "face"
+            ):
+                emitter["face_indices"] = expand(emitter.get("face_indices"))
+        for assignment in assignments:
+            if (
+                isinstance(assignment, dict)
+                and assignment.get("target_type") == "faces"
+            ):
+                assignment["face_indices"] = expand(
+                    assignment.get("face_indices")
+                )
+
+        normalized["emitters"] = emitters
+        normalized["optical_assignments"] = assignments
+        if request_payload.get("roi_faces"):
+            normalized["roi_faces"] = expand(request_payload.get("roi_faces"))
+        return normalized
 
     @staticmethod
     def _scene_cache_key(cad_path: str) -> str:

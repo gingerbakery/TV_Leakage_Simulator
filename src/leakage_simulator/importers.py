@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Callable, Dict, Optional, Tuple, List
 
 from .geometry import (
     TriangleMesh,
@@ -19,6 +20,7 @@ from .types import EmitterConfig
 cq = None
 _cadquery_checked = False
 BRep_Tool = None
+BRepTools = None
 BRepMesh_IncrementalMesh = None
 IFSelect_RetDone = None
 STEPControl_Reader = None
@@ -59,15 +61,19 @@ ROI_SUBDIVISION_MAX_DEPTH = 9
 ROI_SUBDIVISION_AUTO_SKIP_RAW_FACES = 50_000
 ROI_SUBDIVISION_SKIPPED_FAST = -1.0
 ROI_SUBDIVISION_SKIPPED_DENSE_MESH = -2.0
+ROI_SUBDIVISION_SKIPPED_DEFERRED = -3.0
 CAD_FAST_IMPORT_ENV = "LEAKAGE_CAD_FAST_IMPORT"
 CAD_FORCE_ROI_SUBDIVISION_ENV = "LEAKAGE_CAD_FORCE_ROI_SUBDIVISION"
 CAD_SKIP_PRODUCT_METADATA_ENV = "LEAKAGE_CAD_SKIP_PRODUCT_METADATA"
 
-# Interactive CAD display tessellation. The tighter angular tolerance is
-# especially important for small fillets and compound R-surfaces: linear
-# deflection alone can still leave visibly faceted curvature.
-VIEWER_LINEAR_DEFLECTION_MM = 0.08
-VIEWER_ANGULAR_DEFLECTION_RAD = 0.10
+# Keep the simulation tessellation independent from the interactive display.
+# A 0.2 mm / ~9 degree display mesh remains visually smooth at TV-mechanism
+# scale, while the denser 0.08 mm / ~5.7 degree trace mesh is retained for ray
+# intersection. Both levels preserve the same authored B-rep face IDs.
+VIEWER_LINEAR_DEFLECTION_MM = 0.20
+VIEWER_ANGULAR_DEFLECTION_RAD = 0.16
+TRACE_LINEAR_DEFLECTION_MM = 0.08
+TRACE_ANGULAR_DEFLECTION_RAD = 0.10
 
 
 def _cad_stage(
@@ -117,6 +123,7 @@ def _ensure_cadquery_available() -> bool:
 
 def _ensure_ocp_available() -> bool:
     global BRep_Tool
+    global BRepTools
     global BRepMesh_IncrementalMesh
     global IFSelect_RetDone
     global STEPControl_Reader
@@ -131,6 +138,7 @@ def _ensure_ocp_available() -> bool:
         return ocp_available
     try:
         from OCP.BRep import BRep_Tool as ocp_brep_tool
+        from OCP.BRepTools import BRepTools as ocp_brep_tools
         from OCP.BRepMesh import BRepMesh_IncrementalMesh as ocp_mesh_builder
         from OCP.IFSelect import IFSelect_RetDone as ocp_read_done
         from OCP.STEPControl import STEPControl_Reader as ocp_step_reader
@@ -140,6 +148,7 @@ def _ensure_ocp_available() -> bool:
         from OCP.TopoDS import TopoDS as ocp_topods
 
         BRep_Tool = ocp_brep_tool
+        BRepTools = ocp_brep_tools
         BRepMesh_IncrementalMesh = ocp_mesh_builder
         IFSelect_RetDone = ocp_read_done
         STEPControl_Reader = ocp_step_reader
@@ -263,26 +272,63 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
                 pass
         return None
 
-    def get_shape_or_face_color(shape) -> Optional[str]:
-        if shape is None or shape.IsNull():
+    def preferred_name(*labels) -> Optional[str]:
+        names = [get_name(label) for label in labels if label is not None]
+        names = [name.strip() for name in names if name and name.strip()]
+        if not names:
             return None
-        direct_color = get_color(shape)
-        if direct_color:
-            return direct_color
+        # NAUO names are automatically generated assembly-occurrence IDs in
+        # many STEP files, not the NX/SolidWorks component name users expect.
+        for name in names:
+            if not re.match(r"^(NAUO|NEXT_ASSEMBLY_USAGE_OCCURRENCE)[ _-]*\d*$", name, re.I):
+                return name
+        return names[0]
 
-        # Several AP214 writers store a body's display color on its faces
-        # instead of the product/solid. Use the most frequent face color so a
-        # uniformly colored component retains its authored appearance.
-        face_colors: Dict[str, int] = {}
-        explorer = TopExp_Explorer(shape, TopAbs_FACE)
-        while explorer.More():
-            face_color = get_color(TopoDS.Face_s(explorer.Current()))
-            if face_color:
-                face_colors[face_color] = face_colors.get(face_color, 0) + 1
-            explorer.Next()
-        if not face_colors:
-            return None
-        return max(face_colors, key=face_colors.get)
+    label_color_cache: Dict[Tuple[int, ...], Optional[str]] = {}
+
+    def label_key(label) -> Tuple[int, ...]:
+        tags = []
+        current = label
+        while current is not None and not current.IsNull():
+            tags.append(int(current.Tag()))
+            if current.IsRoot():
+                break
+            current = current.Father()
+        return tuple(reversed(tags))
+
+    def get_label_or_subshape_color(label, shape) -> Optional[str]:
+        cache_key = label_key(label)
+        if cache_key in label_color_cache:
+            return label_color_cache[cache_key]
+        direct = get_color(label) or get_color(shape)
+        if direct:
+            label_color_cache[cache_key] = direct
+            return direct
+        # Some NX/AP214 exports attach presentation colors to XCAF subshape
+        # labels only; querying TopoDS faces directly does not find them.
+        subshape_colors: Dict[str, int] = {}
+        subshape_labels = TDF_LabelSequence()
+        try:
+            shape_tool.GetSubShapes_s(label, subshape_labels)
+        except Exception:
+            subshape_labels = TDF_LabelSequence()
+        for index in range(1, subshape_labels.Length() + 1):
+            subshape_label = subshape_labels.Value(index)
+            color = get_color(subshape_label)
+            if not color:
+                try:
+                    color = get_color(shape_tool.GetShape_s(subshape_label))
+                except Exception:
+                    color = None
+            if color:
+                subshape_colors[color] = subshape_colors.get(color, 0) + 1
+        resolved = (
+            max(subshape_colors, key=subshape_colors.get)
+            if subshape_colors
+            else None
+        )
+        label_color_cache[cache_key] = resolved
+        return resolved
 
     results: List[Tuple[object, str, Optional[str]]] = []
     part_counter = 0
@@ -304,10 +350,9 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
                 walk(
                     target_label,
                     combined_location,
-                    get_name(component_label) or get_name(target_label),
+                    preferred_name(component_label, target_label),
                     get_color(component_label)
-                    or get_color(target_label)
-                    or get_shape_or_face_color(component_shape),
+                    or get_label_or_subshape_color(target_label, component_shape),
                 )
             return
 
@@ -317,24 +362,16 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
         located_shape = prototype_shape.Moved(accumulated_location)
 
         part_counter += 1
-        name = inherited_name or get_name(label) or "STEP Part {}".format(part_counter)
+        name = inherited_name or preferred_name(label) or "STEP Part {}".format(part_counter)
         color = (
             inherited_color
-            or get_color(label)
-            or get_shape_or_face_color(prototype_shape)
+            or get_label_or_subshape_color(label, prototype_shape)
         )
-
-        solid_explorer = TopExp_Explorer(located_shape, TopAbs_SOLID)
-        found_solid = False
-        while solid_explorer.More():
-            results.append((TopoDS.Solid_s(solid_explorer.Current()), name, color))
-            found_solid = True
-            solid_explorer.Next()
-        if not found_solid:
-            try:
-                results.append((TopoDS.Solid_s(located_shape), name, color))
-            except Exception:
-                pass
+        # Preserve one component per product/assembly occurrence. Exploding a
+        # multi-body ITEM into separate solids loses its authored component
+        # identity and can duplicate the same name in the UI. Shell/surface
+        # STEP components are also valid even when they contain no solid.
+        results.append((located_shape, name, color))
 
     free_shapes = TDF_LabelSequence()
     shape_tool.GetFreeShapes(free_shapes)
@@ -459,6 +496,12 @@ def _step_import_note(
             "STEP parsed with {} without ROI subdivision "
             "(fast import diagnostic, {} faces{})."
         ).format(engine, face_count, detail_suffix)
+    if target_area == ROI_SUBDIVISION_SKIPPED_DEFERRED:
+        return (
+            "STEP parsed with {} using a display tessellation; precision "
+            "trace tessellation will be prepared on the first ray run "
+            "({} viewer faces{})."
+        ).format(engine, face_count, detail_suffix)
     return (
         "STEP parsed with {} and adaptively tessellated "
         "(target area {:.4g} mm^2, {} faces{})."
@@ -474,9 +517,15 @@ class ImportResult:
     note: str
     feature_edge_segments: Optional[List[Dict]] = None
     timings_sec: Optional[Dict[str, float]] = None
+    viewer_mesh: Optional[TriangleMesh] = None
+    trace_mesh_loader: Optional[Callable[[], TriangleMesh]] = None
 
 
-def import_geometry(file_path: Optional[str]) -> ImportResult:
+def import_geometry(
+    file_path: Optional[str],
+    *,
+    defer_trace_mesh: bool = False,
+) -> ImportResult:
     if not file_path:
         mesh, emitters, receiver = generate_synthetic_leakage_scene()
         return ImportResult(
@@ -503,7 +552,7 @@ def import_geometry(file_path: Optional[str]) -> ImportResult:
             if suffix == ".stl":
                 return _import_stl_ascii(path)
             if suffix in {".step", ".stp"}:
-                return _import_step(path)
+                return _import_step(path, defer_trace_mesh=defer_trace_mesh)
         except Exception as exc:
             mesh, emitters, receiver = generate_synthetic_leakage_scene()
             return ImportResult(
@@ -608,7 +657,11 @@ def _import_stl_ascii(path: Path) -> ImportResult:
     )
 
 
-def _import_step(path: Path) -> ImportResult:
+def _import_step(
+    path: Path,
+    *,
+    defer_trace_mesh: bool = False,
+) -> ImportResult:
     total_started_at = time.perf_counter()
     print(
         "[CAD] STEP import start       | {} ({:.2f} MB)".format(
@@ -627,7 +680,10 @@ def _import_step(path: Path) -> ImportResult:
     )
     if has_ocp:
         try:
-            result = _import_step_ocp(path)
+            result = _import_step_ocp(
+                path,
+                defer_trace_mesh=defer_trace_mesh,
+            )
             timings = dict(result.timings_sec or {})
             timings["ocp_runtime_load"] = runtime_sec
             timings["step_import_total"] = time.perf_counter() - total_started_at
@@ -747,7 +803,11 @@ def _import_step(path: Path) -> ImportResult:
     )
 
 
-def _import_step_ocp(path: Path) -> ImportResult:
+def _import_step_ocp(
+    path: Path,
+    *,
+    defer_trace_mesh: bool = False,
+) -> ImportResult:
     timings: Dict[str, float] = {}
     structure_started_at = time.perf_counter()
     named_colored_solids = None
@@ -769,33 +829,42 @@ def _import_step_ocp(path: Path) -> ImportResult:
     )
 
     shape = None
+
+    def component_leaf_shapes(component_shape) -> List[object]:
+        """Return solids for fast meshing/extraction but preserve shells.
+
+        The caller retains the product component ID, name and color while
+        expensive OCP operations run on smaller leaf shapes.
+        """
+        solids: List[object] = []
+        solid_explorer = TopExp_Explorer(component_shape, TopAbs_SOLID)
+        while solid_explorer.More():
+            solids.append(TopoDS.Solid_s(solid_explorer.Current()))
+            solid_explorer.Next()
+        return solids or [component_shape]
     if named_colored_solids:
         # Each solid was parsed independently via the XCAF document, so its
         # triangulation has to be computed on that same solid - meshing the
         # plain-reader shape below would not populate these faces at all.
         tessellation_started_at = time.perf_counter()
         _cad_stage_start(
-            "OCP tessellation",
+            "OCP viewer tessellation",
             "components={}".format(len(named_colored_solids)),
         )
-        for solid, _name, _color in named_colored_solids:
-            try:
-                # Viewer-quality tessellation: keep curved STEP surfaces
-                # within 0.08 mm and about 5.7 degrees. Ray tracing still
-                # consumes triangles internally, but the interactive CAD
-                # presentation no longer inherits the old coarse 0.5 mm /
-                # 0.5 rad approximation that made round parts look faceted.
-                BRepMesh_IncrementalMesh(
-                    solid,
-                    VIEWER_LINEAR_DEFLECTION_MM,
-                    False,
-                    VIEWER_ANGULAR_DEFLECTION_RAD,
-                    True,
-                ).Perform()
-            except Exception:
-                pass
-        timings["ocp_tessellation"] = _cad_stage(
-            "OCP tessellation",
+        for component_shape, _name, _color in named_colored_solids:
+            for solid in component_leaf_shapes(component_shape):
+                try:
+                    BRepMesh_IncrementalMesh(
+                        solid,
+                        VIEWER_LINEAR_DEFLECTION_MM,
+                        False,
+                        VIEWER_ANGULAR_DEFLECTION_RAD,
+                        True,
+                    ).Perform()
+                except Exception:
+                    pass
+        timings["ocp_viewer_tessellation"] = _cad_stage(
+            "OCP viewer tessellation",
             tessellation_started_at,
         )
     else:
@@ -819,7 +888,7 @@ def _import_step_ocp(path: Path) -> ImportResult:
         )
 
         tessellation_started_at = time.perf_counter()
-        _cad_stage_start("OCP tessellation")
+        _cad_stage_start("OCP viewer tessellation")
         mesh_builder = BRepMesh_IncrementalMesh(
             shape,
             VIEWER_LINEAR_DEFLECTION_MM,
@@ -831,107 +900,124 @@ def _import_step_ocp(path: Path) -> ImportResult:
             mesh_builder.Perform()
         except Exception:
             pass
-        timings["ocp_tessellation"] = _cad_stage(
-            "OCP tessellation",
+        timings["ocp_viewer_tessellation"] = _cad_stage(
+            "OCP viewer tessellation",
             tessellation_started_at,
         )
 
-    mesh = TriangleMesh()
     emitters: List[EmitterConfig] = []
-    receiver_faces: List[int] = []
     material_library = default_material_library()
     default_material = material_library["black_pc_resin"].material_id
-    global_vertex_map: Dict[Tuple[int, int, int], int] = {}
+    def extract_current_triangulation() -> Tuple[TriangleMesh, List[int], int]:
+        extracted_mesh = TriangleMesh()
+        receiver_faces: List[int] = []
+        global_vertex_map: Dict[Tuple[int, int, int], int] = {}
+        face_counter = 0
 
-    def add_deduped_vertex(x: float, y: float, z: float) -> int:
-        key = (round(x * 1000000), round(y * 1000000), round(z * 1000000))
-        existing = global_vertex_map.get(key)
-        if existing is not None:
-            return existing
-        vertex_index = mesh.add_vertex((x, y, z))
-        global_vertex_map[key] = vertex_index
-        return vertex_index
+        def add_deduped_vertex(x: float, y: float, z: float) -> int:
+            key = (round(x * 1000000), round(y * 1000000), round(z * 1000000))
+            existing = global_vertex_map.get(key)
+            if existing is not None:
+                return existing
+            vertex_index = extracted_mesh.add_vertex((x, y, z))
+            global_vertex_map[key] = vertex_index
+            return vertex_index
 
-    face_counter = 0
+        def import_face(
+            face,
+            component_index: int,
+            component_name: str,
+            component_color: Optional[str],
+        ) -> None:
+            nonlocal face_counter
+            location = TopLoc_Location()
+            triangulation = BRep_Tool.Triangulation_s(face, location)
+            if (
+                triangulation is not None
+                and triangulation.NbNodes() > 0
+                and triangulation.NbTriangles() > 0
+            ):
+                transform = location.Transformation()
+                vertex_map = {}
+                for node_index in range(1, triangulation.NbNodes() + 1):
+                    point = triangulation.Node(node_index).Transformed(transform)
+                    vertex_map[node_index] = add_deduped_vertex(
+                        point.X(), point.Y(), point.Z()
+                    )
 
-    def import_face(
-        face,
-        component_index: int,
-        component_name: str,
-        component_color: Optional[str],
-    ) -> None:
-        nonlocal face_counter
-        location = TopLoc_Location()
-        triangulation = BRep_Tool.Triangulation_s(face, location)
-        if triangulation is not None and triangulation.NbNodes() > 0 and triangulation.NbTriangles() > 0:
-            transform = location.Transformation()
-            vertex_map = {}
-            for node_index in range(1, triangulation.NbNodes() + 1):
-                point = triangulation.Node(node_index).Transformed(transform)
-                vertex_map[node_index] = add_deduped_vertex(point.X(), point.Y(), point.Z())
+                metadata = {
+                    "source": "step_ocp",
+                    "face_index": face_counter,
+                    "step_component_id": component_index,
+                    "step_component_name": component_name,
+                }
+                if component_color:
+                    metadata["step_component_color"] = component_color
 
-            metadata = {
-                "source": "step_ocp",
-                "face_index": face_counter,
-                "step_component_id": component_index,
-                "step_component_name": component_name,
-            }
-            if component_color:
-                metadata["step_component_color"] = component_color
+                for tri_index in range(1, triangulation.NbTriangles() + 1):
+                    a, b, c = triangulation.Triangle(tri_index).Get()
+                    face_id = extracted_mesh.add_face(
+                        vertex_map[a],
+                        vertex_map[b],
+                        vertex_map[c],
+                        default_material,
+                        dict(metadata),
+                    )
+                    if face_id % 13 == 0:
+                        receiver_faces.append(face_id)
+            # This counter is the stable bridge between display and trace
+            # tessellations: one ID per authored B-rep face, independent of
+            # how many triangles that face produces at each resolution.
+            face_counter += 1
 
-            for tri_index in range(1, triangulation.NbTriangles() + 1):
-                a, b, c = triangulation.Triangle(tri_index).Get()
-                face_id = mesh.add_face(
-                    vertex_map[a],
-                    vertex_map[b],
-                    vertex_map[c],
-                    default_material,
-                    dict(metadata),
-                )
-                if face_id % 13 == 0:
-                    receiver_faces.append(face_id)
-        face_counter += 1
+        solid_counter = 0
+        if named_colored_solids:
+            for component_shape, component_name, component_color in named_colored_solids:
+                solid_counter += 1
+                for solid in component_leaf_shapes(component_shape):
+                    face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+                    while face_explorer.More():
+                        import_face(
+                            TopoDS.Face_s(face_explorer.Current()),
+                            solid_counter - 1,
+                            component_name,
+                            component_color,
+                        )
+                        face_explorer.Next()
+        else:
+            solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+            while solid_explorer.More():
+                solid_counter += 1
+                solid = solid_explorer.Current()
+                component_name = "STEP Solid {}".format(solid_counter)
+                face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+                while face_explorer.More():
+                    import_face(
+                        TopoDS.Face_s(face_explorer.Current()),
+                        solid_counter - 1,
+                        component_name,
+                        None,
+                    )
+                    face_explorer.Next()
+                solid_explorer.Next()
+
+        if solid_counter == 0:
+            explorer = TopExp_Explorer(shape, TopAbs_FACE)
+            while explorer.More():
+                import_face(TopoDS.Face_s(explorer.Current()), 0, "STEP Body", None)
+                explorer.Next()
+        return extracted_mesh, receiver_faces, solid_counter
 
     extraction_started_at = time.perf_counter()
-    _cad_stage_start("triangle extraction")
-    solid_counter = 0
-    if named_colored_solids:
-        # Product-structure path: solid/name/color came from the STEP file's
-        # XCAF tree (e.g. NX "Component Name" and body color), so each solid
-        # already carries its real identity - no re-exploration needed.
-        for solid, component_name, component_color in named_colored_solids:
-            solid_counter += 1
-            face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
-            while face_explorer.More():
-                face = TopoDS.Face_s(face_explorer.Current())
-                import_face(face, solid_counter - 1, component_name, component_color)
-                face_explorer.Next()
-    else:
-        solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-        while solid_explorer.More():
-            solid_counter += 1
-            solid = solid_explorer.Current()
-            component_name = "STEP Solid {}".format(solid_counter)
-            face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
-            while face_explorer.More():
-                face = TopoDS.Face_s(face_explorer.Current())
-                import_face(face, solid_counter - 1, component_name, None)
-                face_explorer.Next()
-            solid_explorer.Next()
-
-    if solid_counter == 0:
-        explorer = TopExp_Explorer(shape, TopAbs_FACE)
-        while explorer.More():
-            face = TopoDS.Face_s(explorer.Current())
-            import_face(face, 0, "STEP Body", None)
-            explorer.Next()
-    timings["triangle_extraction"] = _cad_stage(
-        "triangle extraction",
+    _cad_stage_start("viewer triangle extract")
+    viewer_mesh, _viewer_receiver_faces, solid_counter = extract_current_triangulation()
+    timings["viewer_triangle_extraction"] = _cad_stage(
+        "viewer triangle extract",
         extraction_started_at,
-        "{} raw faces".format(len(mesh.faces)),
+        "{} faces".format(len(viewer_mesh.faces)),
     )
 
-    if not mesh.faces:
+    if not viewer_mesh.faces:
         fallback_mesh, fallback_emitters, fallback_receivers = generate_synthetic_leakage_scene()
         return ImportResult(
             mesh=fallback_mesh,
@@ -941,16 +1027,70 @@ def _import_step_ocp(path: Path) -> ImportResult:
             note="STEP parsed with OCP but tessellation produced no triangles; synthetic fallback used.",
         )
 
+    trace_state: Dict[str, float] = {}
+
+    def build_trace_mesh() -> TriangleMesh:
+        # Remove only cached triangulations, never B-rep topology or XCAF
+        # product metadata, then remesh the same shapes at trace accuracy.
+        trace_tessellation_started_at = time.perf_counter()
+        _cad_stage_start("OCP trace tessellation")
+        trace_shapes = (
+            [component_shape for component_shape, _name, _color in named_colored_solids]
+            if named_colored_solids
+            else [shape]
+        )
+        for trace_shape in trace_shapes:
+            try:
+                BRepTools.Clean_s(trace_shape)
+                BRepMesh_IncrementalMesh(
+                    trace_shape,
+                    TRACE_LINEAR_DEFLECTION_MM,
+                    False,
+                    TRACE_ANGULAR_DEFLECTION_RAD,
+                    True,
+                ).Perform()
+            except Exception:
+                pass
+        timings["ocp_trace_tessellation"] = _cad_stage(
+            "OCP trace tessellation",
+            trace_tessellation_started_at,
+        )
+
+        trace_extraction_started_at = time.perf_counter()
+        _cad_stage_start("trace triangle extract")
+        trace_mesh, _trace_receiver_faces, _trace_solid_count = (
+            extract_current_triangulation()
+        )
+        timings["trace_triangle_extraction"] = _cad_stage(
+            "trace triangle extract",
+            trace_extraction_started_at,
+            "{} faces".format(len(trace_mesh.faces)),
+        )
+        if not trace_mesh.faces:
+            raise RuntimeError("Trace tessellation produced no triangles")
+
+        subdivision_started_at = time.perf_counter()
+        _cad_stage_start("ROI mesh subdivision")
+        trace_mesh, target_area = _subdivide_step_mesh(trace_mesh)
+        timings["roi_mesh_subdivision"] = _cad_stage(
+            "ROI mesh subdivision",
+            subdivision_started_at,
+            "{} faces".format(len(trace_mesh.faces)),
+        )
+        trace_state["target_area"] = target_area
+        return trace_mesh
+
     feature_started_at = time.perf_counter()
     _cad_stage_start("B-rep feature edges")
     feature_edge_segments: List[Dict] = []
     if named_colored_solids:
-        for component_index, (solid, _name, _color) in enumerate(
+        for component_index, (component_shape, _name, _color) in enumerate(
             named_colored_solids
         ):
-            feature_edge_segments.extend(
-                _extract_brep_edge_segments(solid, component_index)
-            )
+            for solid in component_leaf_shapes(component_shape):
+                feature_edge_segments.extend(
+                    _extract_brep_edge_segments(solid, component_index)
+                )
     elif shape is not None:
         edge_solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
         edge_component_index = 0
@@ -969,22 +1109,19 @@ def _import_step_ocp(path: Path) -> ImportResult:
     edge_source = "STEP B-rep topology"
     if not feature_edge_segments:
         # Defensive fallback for malformed/non-B-rep STEP representations.
-        feature_edge_segments = build_feature_edge_segments(mesh)
+        feature_edge_segments = build_feature_edge_segments(viewer_mesh)
         edge_source = "mesh-angle fallback"
     timings["feature_edges"] = _cad_stage(
         "B-rep feature edges",
         feature_started_at,
         "{} segments | {}".format(len(feature_edge_segments), edge_source),
     )
-    subdivision_started_at = time.perf_counter()
-    _cad_stage_start("ROI mesh subdivision")
-    mesh, target_area = _subdivide_step_mesh(mesh)
-    timings["roi_mesh_subdivision"] = _cad_stage(
-        "ROI mesh subdivision",
-        subdivision_started_at,
-        "{} faces".format(len(mesh.faces)),
+    mesh = viewer_mesh if defer_trace_mesh else build_trace_mesh()
+    target_area = (
+        ROI_SUBDIVISION_SKIPPED_DEFERRED
+        if defer_trace_mesh
+        else trace_state.get("target_area", ROI_SUBDIVISION_SKIPPED_DENSE_MESH)
     )
-
     receiver_started_at = time.perf_counter()
     guessed_receivers = _guess_receiver_faces(mesh)
     timings["receiver_hint"] = _cad_stage(
@@ -1012,6 +1149,8 @@ def _import_step_ocp(path: Path) -> ImportResult:
         ),
         feature_edge_segments=feature_edge_segments,
         timings_sec=timings,
+        viewer_mesh=viewer_mesh,
+        trace_mesh_loader=build_trace_mesh if defer_trace_mesh else None,
     )
 
 

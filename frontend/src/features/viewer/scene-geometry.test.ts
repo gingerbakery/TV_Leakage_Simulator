@@ -53,6 +53,18 @@ describe('Three.js scene geometry', () => {
     bundle.geometry.dispose()
   })
 
+  it('shares indexed vertices inside one authored CAD face', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const bundle = createComponentGeometry(scene, scene.components[0])
+
+    expect(bundle.geometry.getAttribute('position').count).toBe(7)
+    expect(bundle.geometry.getIndex()?.count).toBe(9)
+    expect(bundle.faceIds).toBe(scene.components[0].face_indices)
+
+    bundle.geometry.dispose()
+  })
+
   it('builds clean feature edge segments in component-local space', () => {
     const scene = createSceneFixture()
     const bundle = createComponentGeometry(scene, scene.components[0])
