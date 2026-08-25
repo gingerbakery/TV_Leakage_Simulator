@@ -189,3 +189,60 @@ Require `passed=true`, `semantic_exact=true`, `contract_valid=true`, and
 Receiver hits is still statistically insufficient even when CPU/GPU parity is
 exact. Report `heatmap_quality` and `heatmap_hits_per_bin` separately from
 Flux convergence.
+
+The command above intentionally locks the PERF-4A `host_roundtrip` baseline.
+For the production PERF-4B resident wavefront, also run:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4b_resident_wavefront.py `
+  --rays 100000 --repeats 3
+```
+
+Require `passed=true`, `parity.discrete_exact=true`,
+`parity.float64_tolerance_passed=true`, resident success greater than zero,
+resident fallback zero, and the resident provider contract
+`strict_float64_resident_wavefront_v1`. Do not claim bit-exact CPU/CUDA
+transcendental math when the strict tolerance report shows only a few ULPs.
+
+The production summary path also uses the PERF-4C device accumulator. Run:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4c_gpu_accumulator.py `
+  --rays 100000 --repeats 3
+```
+
+Require every case to report `passed=true`, `discrete_exact=true`,
+`float64_tolerance_passed=true`, accumulator contract
+`strict_float64_gpu_summary_accumulator_v1`, accumulator success greater than
+zero, and resident fallback zero. The GPU atomic accumulation order is not
+bit-exact to the host ordered reducer; do not report `semantic_exact=false` as
+a failure when all discrete results are exact and the strict `1e-9` physical
+tolerance passes. `gpu_accumulator=host` is a diagnostic PERF-4B baseline, not
+the normal production selection.
+
+PERF-4D compact workspace is verified with:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4d_compact_workspace.py `
+  --rays 100000 --repeats 3
+```
+
+Require discrete exactness, strict float64 tolerance, resident fallback zero,
+`compact_summary_sparse_path_retrace_v1`, and fewer compact workspace bytes
+than the full diagnostic workspace. Do not claim a speedup when only the VRAM
+workspace decreased.
+
+PERF-4E primary Receiver MIS is verified with:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4e_receiver_mis.py `
+  --rays 20000 --repeats 12
+```
+
+Require production preflight, CPU/GPU discrete exactness, strict float64
+tolerance, and finite bounded MIS weights. The variance reduction is a
+synthetic direct-view result, not proof for an occluded TV leakage scene.
+Auto convergence reuse must report
+`independent_segment_weighted_v1`; a `1→2→4→8` schedule processes independent
+segments `1+1+2+4`, not four full reruns. Surface-bounce NEE/MIS remains a
+separate gate.

@@ -93,6 +93,7 @@ TERMINATION_MODES = ("threshold", "russian_roulette")
 CONTRIBUTION_MODES = ("summary", "detailed")
 INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
 COMPUTE_BACKENDS = ("cpu", "gpu_cuda")
+PRIMARY_SAMPLING_STRATEGIES = ("source", "receiver_mis")
 MAX_REFLECTION_DEPTH = 20
 
 
@@ -517,6 +518,8 @@ class RayTraceConfig:
     auto_convergence: bool = False
     convergence_target_percent: float = 5.0
     max_convergence_multiplier: int = 8
+    primary_sampling_strategy: str = "source"
+    receiver_importance_fraction: float = 0.5
 
     def __post_init__(self) -> None:
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
@@ -572,6 +575,18 @@ class RayTraceConfig:
         self.max_convergence_multiplier = require_positive_int(
             self.max_convergence_multiplier, "max_convergence_multiplier"
         )
+        self.primary_sampling_strategy = require_choice(
+            self.primary_sampling_strategy,
+            "primary_sampling_strategy",
+            PRIMARY_SAMPLING_STRATEGIES,
+        )
+        self.receiver_importance_fraction = float(
+            self.receiver_importance_fraction
+        )
+        if not 0.0 < self.receiver_importance_fraction < 1.0:
+            raise ValueError(
+                "receiver_importance_fraction must be within (0, 1)"
+            )
 
     def to_dict(self) -> Dict:
         return asdict(self)

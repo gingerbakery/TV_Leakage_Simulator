@@ -273,10 +273,22 @@
   요구한다.
 - `scripts/verify_gpu_cpu_accuracy.py --rays 100000` 결과의 모든 case가 exact여야
   한다.
+- 위 exact gate는 PERF-4A `host_roundtrip` 기준선이다. PERF-4B resident는
+  `scripts/benchmark_perf4b_resident_wavefront.py --rays 100000 --repeats 3`의
+  이산 exact, strict float64 tolerance, resident success와 fallback 0을 함께
+  확인한다.
+- PERF-4C GPU accumulator는 2026-08-25 완료했다. 프로덕션 summary 실행은
+  `strict_float64_gpu_summary_accumulator_v1`과 accumulator success 1 이상,
+  resident fallback 0, 이산 exact, strict `1e-9` 수치 허용오차를 모두 요구한다.
+- PERF-4D compact workspace와 PERF-4E primary Receiver MIS·convergence sample
+  재사용은 2026-08-25 1차 완료했다. 다음 성능 단계는 차폐 뒤 반사광용
+  PERF-4E-B surface NEE/bounce MIS다. 실제 회사 TV ROI 1억 Ray의 열·VRAM·장시간
+  정확도 검증 전에는 synthetic 결과를 운영 성능 보장으로 표현하지 않는다.
 - Receiver hit가 30개 미만이면 Flux 오차도 신뢰 부족이다. Heatmap은 별도로 평균
   `5 hit/cell` 이상을 1차 usable 기준으로 확인한다.
-- Auto convergence `1→2→4→8배`는 누적 `15배` Ray를 처리한다. 1,200만 Ray 지연
-  분석 시 마지막 Ray 수뿐 아니라 반복 실행, triangle 수, depth별 active ray를 함께
-  기록한다.
-- 다음 대규모 희귀-event 성능 과제는 Importance Sampling/Next Event Estimation과
-  누적 sample 재사용이다.
+- Auto convergence는 독립 구간 `1+1+2+4`를 누적하므로 `1→2→4→8배`에서 총
+  `8배` Ray를 처리한다. 결과의 `_convergence_accumulation` 계약과 segment seed를
+  확인한다. 1,200만 Ray 지연 분석 시 마지막 Ray 수뿐 아니라 segment 처리량,
+  triangle 수, depth별 active ray를 함께 기록한다.
+- 다음 대규모 희귀-event 성능 과제는 표면 반사점의 Next Event Estimation 또는
+  bounce MIS다.

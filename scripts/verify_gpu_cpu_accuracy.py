@@ -144,7 +144,10 @@ def _run(builder: Callable[[int], DirectRayTraceInput], ray_count: int, backend:
     trace_input = builder(ray_count)
     trace_input.config.compute_backend = backend
     started = time.perf_counter()
-    result = run_direct_ray_trace(trace_input)
+    result = run_direct_ray_trace(
+        trace_input,
+        wavefront_residency="host_roundtrip",
+    )
     return result, time.perf_counter() - started
 
 
@@ -170,12 +173,22 @@ def _verify_case(
         cpu_performance["monte_carlo_contract"] == MONTE_CARLO_CONTRACT
         and gpu_performance["monte_carlo_contract"] == MONTE_CARLO_CONTRACT
     )
+    residency_valid = (
+        cpu_performance["wavefront_residency"] == "host_roundtrip"
+        and gpu_performance["wavefront_residency"] == "host_roundtrip"
+    )
     return {
         "name": name,
         "ray_count": ray_count,
-        "passed": semantic_exact and gpu_execution_proven and contract_valid,
+        "passed": (
+            semantic_exact
+            and gpu_execution_proven
+            and contract_valid
+            and residency_valid
+        ),
         "semantic_exact": semantic_exact,
         "contract_valid": contract_valid,
+        "residency_valid": residency_valid,
         "gpu_execution_proven": gpu_execution_proven,
         "cpu_runtime_sec": cpu_sec,
         "gpu_runtime_sec": gpu_sec,
@@ -183,6 +196,7 @@ def _verify_case(
         "cpu": _receiver_snapshot(cpu_result),
         "gpu": _receiver_snapshot(gpu_result),
         "gpu_execution_state": gpu_performance["compute_execution_state"],
+        "gpu_wavefront_residency": gpu_performance["wavefront_residency"],
         "gpu_cuda_gpu_success_count": gpu_performance[
             "gpu_cuda_gpu_success_count"
         ],

@@ -128,6 +128,7 @@ export type TerminationMode = 'threshold' | 'russian_roulette'
 export type ContributionMode = 'summary' | 'detailed'
 export type IntersectionBackend = 'auto' | 'brute_force' | 'bvh'
 export type ComputeBackend = 'cpu' | 'gpu_cuda'
+export type PrimarySamplingStrategy = 'source' | 'receiver_mis'
 
 export interface RayTraceConfig {
   ray_count: number
@@ -147,6 +148,8 @@ export interface RayTraceConfig {
   auto_convergence?: boolean
   convergence_target_percent?: number
   max_convergence_multiplier?: number
+  primary_sampling_strategy?: PrimarySamplingStrategy
+  receiver_importance_fraction?: number
 }
 
 export type RayTraceConfigRequest = Omit<

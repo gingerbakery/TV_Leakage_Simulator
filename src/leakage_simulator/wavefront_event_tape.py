@@ -156,7 +156,7 @@ class StableActiveRaySoA:
         cls,
         origins: np.ndarray,
         directions: np.ndarray,
-        ray_power_lumen: float,
+        ray_power_lumen: float | np.ndarray,
         primary_start_index: int,
         reflection_seeds: np.ndarray,
         *,
@@ -183,6 +183,22 @@ class StableActiveRaySoA:
             raise ValueError("source_faces must have one value per ray")
         if np.any(owned_source_faces < -1):
             raise ValueError("source_faces values must be -1 or a face index")
+        if np.isscalar(ray_power_lumen):
+            owned_powers = np.full(
+                row_count,
+                float(ray_power_lumen),
+                dtype=np.float64,
+            )
+        else:
+            owned_powers = _owned_vector(
+                ray_power_lumen,
+                np.float64,
+                "ray_power_lumen",
+            )
+            if len(owned_powers) != row_count:
+                raise ValueError("ray_power_lumen must have one value per ray")
+        if not np.all(np.isfinite(owned_powers)) or np.any(owned_powers < 0.0):
+            raise ValueError("ray_power_lumen must be finite and non-negative")
         return cls(
             primary_slots=np.arange(row_count, dtype=np.int64),
             primary_indices=np.arange(
@@ -192,7 +208,7 @@ class StableActiveRaySoA:
             ),
             origins=owned_origins,
             directions=owned_directions,
-            powers_lumen=np.full(row_count, ray_power_lumen, dtype=np.float64),
+            powers_lumen=owned_powers,
             source_faces=owned_source_faces,
             ray_kind_codes=np.full(row_count, RAY_KIND_DIRECT, dtype=np.int8),
             reflection_seeds=seeds,

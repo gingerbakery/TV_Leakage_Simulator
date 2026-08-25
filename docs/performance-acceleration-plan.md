@@ -276,6 +276,86 @@ probe하지 않는다. 사용자가 project를 `gpu_cuda`로 선택한 경우에
 - 이번 단계의 retained/resident는 CPU numeric reducer accumulator만 뜻한다.
   전체 ray state GPU residency나 fused CUDA depth kernel은 후속이다.
 
+#### PERF-4: 1억 Ray·10회 반사 목표
+
+- 2026-08-25 RTX 3070의 1M primary·depth 10 all-survive warm 측정은
+  `13.14~14.48초`, 약 `69k~76k primary ray/s`였다.
+- 현재 구조의 1억 Ray 선형 환산은 약 `21.9~24.1분`이다. 10분 이하는
+  device-resident wavefront, GPU Receiver/Heatmap accumulator와 fused
+  traversal/shading이 필요하다.
+- 5% Error 달성에 필요한 Ray 자체를 줄이기 위해 Receiver-directed importance
+  sampling/Next Event Estimation과 Auto convergence sample 재사용을 병행한다.
+- 상세 타당성 및 단계별 Gate는
+  `docs/reports/2026-08-25_gpu-100m-ray-feasibility.md`를 따른다.
+
+##### PERF-4A: 고정 성능 계약
+
+- 상태: 완료 (2026-08-25)
+- Face direct, stochastic two-bounce, trapped corridor depth 10을 scene hash가 있는
+  고정 workload로 등록했다.
+- 기준선은 `host_roundtrip`으로 고정하고 cold/warm, logical intersection,
+  Receiver hit, CUDA 증거, 1억 Ray 선형 환산을 기록한다.
+- 상세 계약은 `docs/perf4a-benchmark-contract.md`를 따른다.
+
+##### PERF-4B: GPU 상주형 Wavefront
+
+- 상태: 1차 완료 (2026-08-25)
+- primary Ray 상태, Receiver 판정, CUDA BVH, optical lookup, 반사 방향, 감쇄와
+  종료 판정을 한 CUDA kernel 안에서 처리한다.
+- Provider 계약은 `strict_float64_resident_wavefront_v1`이며 실패한 chunk는 기존
+  host-roundtrip으로 정확히 한 번 replay한다.
+- RTX 3070 100k warm p50에서 stochastic depth 2는 `1.41x`, all-survive depth 10은
+  `1.57x` 개선했다. Depth-10 1억 Ray 선형 환산은 `21.6분 -> 13.8분`이다.
+- 공개 결과는 GPU host-roundtrip과 exact했고 fallback은 0회였다.
+- CPU/CUDA 확률 수학함수 차이는 이산 exact + abs/rel `1e-12` + ULP `8` 계약으로
+  검증한다. 실제 8,192-Ray 회귀 최대 ULP는 2였다.
+- event tape 다운로드와 CPU ordered reducer는 남아 있으며 PERF-4C 대상이다.
+- 상세 계약과 측정은 `docs/perf4b-device-resident-wavefront.md`,
+  `docs/reports/2026-08-25_perf4a-perf4b-benchmark.md`를 따른다.
+
+##### PERF-4C: GPU Receiver/Heatmap·결과 누적기
+
+- 상태: 1차 완료 (2026-08-25)
+- Provider 계약은 `strict_float64_gpu_summary_accumulator_v1`이다.
+- PERF-4B event 배열을 device에 유지한 채 optical/reflection/contribution,
+  Receiver flux와 heatmap을 CUDA에서 직접 누적한다.
+- 일반 summary 실행은 전체 event tape 대신 compact summary와 path quota가 선택한
+  경로만 CPU로 전송한다. 진단용 `gpu_accumulator="host"`는 4B 기준선을 유지한다.
+- RTX 3070 100k warm p50에서 stochastic depth 2는 `1.858x`, trapped depth 10은
+  `7.715x` 개선했고 전송량은 `99.925~99.978%` 감소했다.
+- 이산 결과는 exact이며 GPU atomic 합산에 따른 최대 absolute error
+  `5.239e-10`은 strict `1e-9` 계약을 통과했다. fallback은 0회였다.
+- 100k p50 단순 선형 환산은 1억 Ray에서 약 `60.9초`와 `102.0초`지만, 실제 TV
+  CAD·열·VRAM을 포함한 실측값이 아니므로 목표 달성 증거로 사용하지 않는다.
+- 상세 계약과 측정은 `docs/perf4c-gpu-accumulator.md`,
+  `docs/reports/2026-08-25_perf4c-gpu-accumulator.md`를 따른다.
+
+##### PERF-4D: Compact GPU workspace
+
+- 상태: 1차 완료 (2026-08-25)
+- summary 실행의 전체 event geometry workspace를 compact scalar workspace와
+  선택 path sparse retrace로 교체했다.
+- RTX 3070 100k에서 workspace는 depth 2 `46.11%`, depth 10 `56.22%` 감소했다.
+- wall time은 `0.970x`, `0.998x`로 동등하거나 소폭 느렸으므로 속도 개선으로
+  표현하지 않는다.
+- 이산 exact, strict float64 통과, fallback 0을 확인했다.
+- 실제 TV ROI 장시간 VRAM·열 검증은 남아 있다.
+- 상세 계약은 `docs/perf4d-compact-workspace.md`를 따른다.
+
+##### PERF-4E: 필요한 Ray 수 감소
+
+- 상태: 1차 완료 / surface NEE 후속 (2026-08-25)
+- PERF-4E-A: Lambertian/isotropic CAD face·datum Emitter의 Receiver-directed
+  primary MIS를 구현했다. Gaussian/scalar-only는 source sampling으로 fail-safe
+  fallback한다.
+- PERF-4E-C: Auto convergence를 독립 구간 누적으로 바꿨다. `1→2→4→8배`는
+  기존 15배 재실행 대신 8배 Ray만 처리한다.
+- RTX 3070 직접 가시 synthetic 장면에서 seed 간 Flux 분산은 약 `7,460x`
+  감소했고 CPU/GPU strict 정합성을 통과했다.
+- PERF-4E-B: 차폐 뒤 반사광용 surface NEE 또는 bounce MIS는 미구현이다.
+- 실제 TV ROI 여러 seed 검증 전까지 primary sampling 기본값은 `source`다.
+- 상세 계약은 `docs/perf4e-receiver-importance-sampling.md`를 따른다.
+
 ## 정합성 기준
 - Random draw가 없는 같은-seed wavefront는 legacy scalar와 exact해야 한다.
 - Stochastic wavefront는 같은 seed에서 chunk 크기, 반복 실행과 provider가

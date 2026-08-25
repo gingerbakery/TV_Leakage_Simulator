@@ -4,6 +4,8 @@ import type {
   OpticalProfile,
   RayTraceConfigRequest,
   RayTraceRequest,
+  RayTraceResult,
+  ReceiverGrid,
   ReceiverSpec,
   ScenePayload,
   Vec3,
@@ -35,6 +37,477 @@ export interface RayTraceRequestSource {
   deletedComponentIds: number[]
   roiScopes: RoiScope[]
   config: RayTraceConfigRequest
+}
+
+const convergenceAccumulationContract =
+  'independent_segment_weighted_v1'
+
+interface ConvergenceAccumulationEvidence {
+  contract: typeof convergenceAccumulationContract
+  segment_count: number
+  segment_rays: number[]
+  segment_seeds: number[]
+  segment_emitter_seeds: Record<string, (number | null)[]>
+  segment_compute_states: string[]
+  total_rays: number
+  avoided_retrace_rays: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+
+function convergenceEvidence(result: RayTraceResult): ConvergenceAccumulationEvidence {
+  const stored = result.metrics._convergence_accumulation
+  if (isRecord(stored) && stored.contract === convergenceAccumulationContract) {
+    const segmentRays = Array.isArray(stored.segment_rays)
+      ? stored.segment_rays.map((value) => Math.max(0, Math.trunc(finiteNumber(value))))
+      : [result.total_rays]
+    const segmentSeeds = Array.isArray(stored.segment_seeds)
+      ? stored.segment_seeds.map((value) => Math.trunc(finiteNumber(value)))
+      : [result.config.seed]
+    const segmentComputeStates = Array.isArray(stored.segment_compute_states)
+      ? stored.segment_compute_states.map(String)
+      : [String(result.metrics._performance_summary && isRecord(result.metrics._performance_summary)
+        ? result.metrics._performance_summary.compute_execution_state ?? 'unknown'
+        : 'unknown')]
+    const storedEmitterSeeds = isRecord(stored.segment_emitter_seeds)
+      ? stored.segment_emitter_seeds
+      : {}
+    const segmentEmitterSeeds = Object.fromEntries(
+      Object.entries(storedEmitterSeeds).map(([emitterId, values]) => [
+        emitterId,
+        Array.isArray(values)
+          ? values.map((value) => value === null ? null : Math.trunc(finiteNumber(value)))
+          : [],
+      ]),
+    )
+    return {
+      contract: convergenceAccumulationContract,
+      segment_count: segmentRays.length,
+      segment_rays: segmentRays,
+      segment_seeds: segmentSeeds,
+      segment_emitter_seeds: segmentEmitterSeeds,
+      segment_compute_states: segmentComputeStates,
+      total_rays: segmentRays.reduce((sum, value) => sum + value, 0),
+      avoided_retrace_rays: Math.max(
+        0,
+        Math.trunc(finiteNumber(stored.avoided_retrace_rays)),
+      ),
+    }
+  }
+  const performance = result.metrics._performance_summary
+  return {
+    contract: convergenceAccumulationContract,
+    segment_count: 1,
+    segment_rays: [result.total_rays],
+    segment_seeds: [result.config.seed],
+    segment_emitter_seeds: Object.fromEntries(
+      result.emitters.map((emitter) => [emitter.emitter_id, [emitter.seed]]),
+    ),
+    segment_compute_states: [
+      isRecord(performance)
+        ? String(performance.compute_execution_state ?? 'unknown')
+        : 'unknown',
+    ],
+    total_rays: result.total_rays,
+    avoided_retrace_rays: 0,
+  }
+}
+
+function withAccumulationEvidence(result: RayTraceResult): RayTraceResult {
+  const next = structuredClone(result)
+  next.metrics._convergence_accumulation = convergenceEvidence(next)
+  return next
+}
+
+function mergeWeightedNumber(
+  key: string,
+  previous: number,
+  current: number,
+  previousRays: number,
+  currentRays: number,
+): number {
+  if (key.endsWith('count') || key.endsWith('_count')) {
+    return previous + current
+  }
+  if (key.includes('flux_lumen') || key.endsWith('_lumen')) {
+    return (
+      previous * previousRays + current * currentRays
+    ) / (previousRays + currentRays)
+  }
+  if (key.startsWith('max_')) return Math.max(previous, current)
+  return current
+}
+
+function mergeContributionRecord(
+  previous: Record<string, unknown> | undefined,
+  current: Record<string, unknown> | undefined,
+  previousRays: number,
+  currentRays: number,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {}
+  const keys = new Set([
+    ...Object.keys(previous ?? {}),
+    ...Object.keys(current ?? {}),
+  ])
+  for (const key of keys) {
+    const previousValue = previous?.[key]
+    const currentValue = current?.[key]
+    if (isRecord(previousValue) || isRecord(currentValue)) {
+      merged[key] = mergeContributionRecord(
+        isRecord(previousValue) ? previousValue : undefined,
+        isRecord(currentValue) ? currentValue : undefined,
+        previousRays,
+        currentRays,
+      )
+      continue
+    }
+    if (typeof previousValue === 'number' || typeof currentValue === 'number') {
+      merged[key] = mergeWeightedNumber(
+        key,
+        finiteNumber(previousValue),
+        finiteNumber(currentValue),
+        previousRays,
+        currentRays,
+      )
+      continue
+    }
+    merged[key] = structuredClone(currentValue ?? previousValue)
+  }
+  return merged
+}
+
+function assertCompatibleReceiverGrid(
+  previous: ReceiverGrid,
+  current: ReceiverGrid,
+): void {
+  if (
+    previous.resolution[0] !== current.resolution[0] ||
+    previous.resolution[1] !== current.resolution[1] ||
+    Math.abs(previous.bin_area_mm2 - current.bin_area_mm2) > 1e-12
+  ) {
+    throw new Error(
+      `Receiver grid changed during convergence: ${current.receiver_id}`,
+    )
+  }
+}
+
+function mergeReceiverGrid(
+  previous: ReceiverGrid,
+  current: ReceiverGrid,
+  previousRays: number,
+  currentRays: number,
+): ReceiverGrid {
+  assertCompatibleReceiverGrid(previous, current)
+  const totalRays = previousRays + currentRays
+  const previousScale = previousRays / totalRays
+  const currentScale = currentRays / totalRays
+  const rows = current.resolution[1]
+  const columns = current.resolution[0]
+  const previousSquared = previous.flux_squared_lumen2_grid ?? []
+  const currentSquared = current.flux_squared_lumen2_grid ?? []
+  return {
+    ...structuredClone(current),
+    flux_lumen: Array.from({ length: rows }, (_, row) =>
+      Array.from({ length: columns }, (_, column) =>
+        finiteNumber(previous.flux_lumen[row]?.[column]) * previousScale +
+        finiteNumber(current.flux_lumen[row]?.[column]) * currentScale,
+      ),
+    ),
+    hit_count: previous.hit_count + current.hit_count,
+    flux_squared_lumen2:
+      finiteNumber(previous.flux_squared_lumen2) * previousScale ** 2 +
+      finiteNumber(current.flux_squared_lumen2) * currentScale ** 2,
+    flux_squared_lumen2_grid: Array.from({ length: rows }, (_, row) =>
+      Array.from({ length: columns }, (_, column) =>
+        finiteNumber(previousSquared[row]?.[column]) * previousScale ** 2 +
+        finiteNumber(currentSquared[row]?.[column]) * currentScale ** 2,
+      ),
+    ),
+  }
+}
+
+function receiverMetrics(
+  grid: ReceiverGrid,
+  totalRays: number,
+  kAbs: number,
+  kBrdf: number,
+): Record<string, unknown> {
+  const values = grid.flux_lumen.flat()
+  const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
+  const nits = values.map((flux) => kAbs * kBrdf * flux / binAreaM2 / Math.PI)
+  const sortedNits = [...nits].sort((left, right) => left - right)
+  const totalFlux = values.reduce((sum, value) => sum + value, 0)
+  const relativeErrorPercent = (flux: number, squared: number) => {
+    if (totalRays <= 1 || flux <= 0) return 100
+    const relativeVariance = Math.max(
+      0,
+      (totalRays * squared / (flux * flux) - 1) / (totalRays - 1),
+    )
+    return Math.sqrt(relativeVariance) * 100
+  }
+  const peakThreshold = Math.max(...values, 0) * 0.05
+  let peakAreaFlux = 0
+  let peakAreaSquaredFlux = 0
+  for (let row = 0; row < grid.resolution[1]; row += 1) {
+    for (let column = 0; column < grid.resolution[0]; column += 1) {
+      const flux = finiteNumber(grid.flux_lumen[row]?.[column])
+      if (flux >= peakThreshold && flux > 0) {
+        peakAreaFlux += flux
+        peakAreaSquaredFlux += finiteNumber(
+          grid.flux_squared_lumen2_grid?.[row]?.[column],
+        )
+      }
+    }
+  }
+  const minimumConvergenceHits = 30
+  const heatmapBinCount = values.length
+  const hitsPerBin = heatmapBinCount > 0 ? grid.hit_count / heatmapBinCount : 0
+  const recommendedHitCount = Math.ceil(heatmapBinCount * 5)
+  const estimatedRays = (targetHits: number) =>
+    totalRays > 0 && grid.hit_count > 0
+      ? Math.ceil(totalRays * targetHits / grid.hit_count)
+      : null
+  const heatmapQuality = grid.hit_count <= 0
+    ? 'no_hits'
+    : hitsPerBin < 1
+      ? 'sparse'
+      : hitsPerBin < 5
+        ? 'noisy'
+        : hitsPerBin < 20
+          ? 'usable'
+          : 'stable'
+  return {
+    peak_nit_est: Math.max(...nits, 0),
+    mean_nit_est: nits.length > 0
+      ? nits.reduce((sum, value) => sum + value, 0) / nits.length
+      : 0,
+    p95_nit_est: sortedNits.length > 0
+      ? sortedNits[Math.min(
+          sortedNits.length - 1,
+          Math.ceil(sortedNits.length * 0.95) - 1,
+        )]
+      : 0,
+    total_flux_lumen: totalFlux,
+    hit_count: grid.hit_count,
+    area_above_zero_mm2:
+      values.filter((value) => value > 0).length * grid.bin_area_mm2,
+    error_estimate_percent: relativeErrorPercent(
+      totalFlux,
+      finiteNumber(grid.flux_squared_lumen2),
+    ),
+    peak_area_error_estimate_percent: relativeErrorPercent(
+      peakAreaFlux,
+      peakAreaSquaredFlux,
+    ),
+    error_estimate_sample_count: totalRays,
+    receiver_hit_rate: totalRays > 0 ? grid.hit_count / totalRays : 0,
+    minimum_convergence_hits: minimumConvergenceHits,
+    estimated_rays_for_minimum_hits: estimatedRays(minimumConvergenceHits),
+    statistical_quality: grid.hit_count <= 0
+      ? 'no_hits'
+      : grid.hit_count < minimumConvergenceHits
+        ? 'insufficient_hits'
+        : 'estimated',
+    heatmap_bin_count: heatmapBinCount,
+    heatmap_hits_per_bin: hitsPerBin,
+    minimum_usable_heatmap_hits_per_bin: 5,
+    recommended_heatmap_hit_count: recommendedHitCount,
+    estimated_rays_for_usable_heatmap: estimatedRays(recommendedHitCount),
+    heatmap_quality: heatmapQuality,
+  }
+}
+
+export function convergenceSegmentSeed(
+  baseSeed: number,
+  segmentIndex: number,
+): number {
+  const modulus = 2_147_483_647
+  const normalizedBase = ((Math.trunc(baseSeed) % modulus) + modulus) % modulus
+  return (normalizedBase + Math.max(0, Math.trunc(segmentIndex)) * 1_000_003) % modulus
+}
+
+export function mergeConvergenceRayTraceResults(
+  previous: RayTraceResult | null | undefined,
+  current: RayTraceResult,
+): RayTraceResult {
+  if (!previous) return withAccumulationEvidence(current)
+  const previousRays = previous.total_rays
+  const currentRays = current.total_rays
+  if (previousRays <= 0 || currentRays <= 0) {
+    throw new Error('Convergence segments must contain positive ray counts')
+  }
+  const totalRays = previousRays + currentRays
+  const previousGrids = new Map(
+    previous.receiver_grids.map((grid) => [grid.receiver_id, grid]),
+  )
+  const receiverGrids = current.receiver_grids.map((grid) => {
+    const previousGrid = previousGrids.get(grid.receiver_id)
+    if (!previousGrid) {
+      throw new Error(`Receiver changed during convergence: ${grid.receiver_id}`)
+    }
+    return mergeReceiverGrid(previousGrid, grid, previousRays, currentRays)
+  })
+  if (receiverGrids.length !== previous.receiver_grids.length) {
+    throw new Error('Receiver set changed during convergence')
+  }
+
+  const previousEvidence = convergenceEvidence(previous)
+  const currentEvidence = convergenceEvidence(current)
+  const segmentRays = [
+    ...previousEvidence.segment_rays,
+    ...currentEvidence.segment_rays,
+  ]
+  const segmentSeeds = [
+    ...previousEvidence.segment_seeds,
+    ...currentEvidence.segment_seeds,
+  ]
+  const segmentComputeStates = [
+    ...previousEvidence.segment_compute_states,
+    ...currentEvidence.segment_compute_states,
+  ]
+  const emitterIds = new Set([
+    ...Object.keys(previousEvidence.segment_emitter_seeds),
+    ...Object.keys(currentEvidence.segment_emitter_seeds),
+  ])
+  const segmentEmitterSeeds = Object.fromEntries(
+    [...emitterIds].map((emitterId) => [
+      emitterId,
+      [
+        ...(previousEvidence.segment_emitter_seeds[emitterId] ?? []),
+        ...(currentEvidence.segment_emitter_seeds[emitterId] ?? []),
+      ],
+    ]),
+  )
+  let cumulativeRays = 0
+  let legacyFullRerunRays = 0
+  for (const rays of segmentRays) {
+    cumulativeRays += rays
+    legacyFullRerunRays += cumulativeRays
+  }
+  const contributionSummary = mergeContributionRecord(
+    previous.contribution_summary as unknown as Record<string, unknown>,
+    current.contribution_summary as unknown as Record<string, unknown>,
+    previousRays,
+    currentRays,
+  ) as unknown as RayTraceResult['contribution_summary']
+  const metrics = structuredClone(current.metrics)
+  for (const summaryKey of ['_reflection_summary', '_optical_summary']) {
+    const previousSummary = previous.metrics[summaryKey]
+    const currentSummary = current.metrics[summaryKey]
+    if (isRecord(previousSummary) || isRecord(currentSummary)) {
+      metrics[summaryKey] = mergeContributionRecord(
+        isRecord(previousSummary) ? previousSummary : undefined,
+        isRecord(currentSummary) ? currentSummary : undefined,
+        previousRays,
+        currentRays,
+      )
+    }
+  }
+  for (const grid of receiverGrids) {
+    const currentMetric = metrics[grid.receiver_id]
+    metrics[grid.receiver_id] = {
+      ...(isRecord(currentMetric) ? currentMetric : {}),
+      ...receiverMetrics(
+        grid,
+        totalRays,
+        current.config.k_abs,
+        current.config.k_brdf,
+      ),
+    }
+  }
+  metrics._contribution_summary = structuredClone(contributionSummary)
+  const previousPerformance = isRecord(previous.metrics._performance_summary)
+    ? previous.metrics._performance_summary
+    : {}
+  const currentPerformance = isRecord(current.metrics._performance_summary)
+    ? current.metrics._performance_summary
+    : {}
+  const gpuUsed = segmentComputeStates.some((state) =>
+    state === 'gpu_active' || state === 'gpu_mixed')
+  const aggregateComputeState = gpuUsed
+    ? segmentComputeStates.every((state) => state === 'gpu_active')
+      ? 'gpu_active'
+      : 'gpu_mixed'
+    : segmentComputeStates.at(-1) ?? 'unknown'
+  const cumulativeCount = (key: string) =>
+    finiteNumber(previousPerformance[key]) + finiteNumber(currentPerformance[key])
+  metrics._performance_summary = {
+    ...structuredClone(currentPerformance),
+    rays_per_sec: totalRays / Math.max(previous.runtime_sec + current.runtime_sec, 1e-12),
+    compute_execution_state: aggregateComputeState,
+    compute_execution_reason: 'convergence_segment_aggregate',
+    gpu_cuda_gpu_attempt_count: cumulativeCount('gpu_cuda_gpu_attempt_count'),
+    gpu_cuda_gpu_attempt_ray_count: cumulativeCount('gpu_cuda_gpu_attempt_ray_count'),
+    gpu_cuda_gpu_success_count: cumulativeCount('gpu_cuda_gpu_success_count'),
+    gpu_cuda_gpu_success_ray_count: cumulativeCount('gpu_cuda_gpu_success_ray_count'),
+    gpu_cuda_hybrid_cpu_attempt_count: cumulativeCount('gpu_cuda_hybrid_cpu_attempt_count'),
+    gpu_cuda_hybrid_cpu_attempt_ray_count: cumulativeCount('gpu_cuda_hybrid_cpu_attempt_ray_count'),
+    gpu_cuda_hybrid_cpu_success_count: cumulativeCount('gpu_cuda_hybrid_cpu_success_count'),
+    gpu_cuda_hybrid_cpu_success_ray_count: cumulativeCount('gpu_cuda_hybrid_cpu_success_ray_count'),
+    gpu_resident_wavefront_success_count: cumulativeCount('gpu_resident_wavefront_success_count'),
+    gpu_resident_wavefront_success_primary_count: cumulativeCount('gpu_resident_wavefront_success_primary_count'),
+    gpu_resident_wavefront_fallback_count: cumulativeCount('gpu_resident_wavefront_fallback_count'),
+    gpu_resident_wavefront_fallback_primary_count: cumulativeCount('gpu_resident_wavefront_fallback_primary_count'),
+    gpu_summary_accumulator_success_count: cumulativeCount('gpu_summary_accumulator_success_count'),
+    convergence_accumulation_contract: convergenceAccumulationContract,
+    convergence_segment_count: segmentRays.length,
+    convergence_total_rays: totalRays,
+    convergence_total_runtime_sec: previous.runtime_sec + current.runtime_sec,
+  }
+  metrics._convergence_accumulation = {
+    contract: convergenceAccumulationContract,
+    segment_count: segmentRays.length,
+    segment_rays: segmentRays,
+    segment_seeds: segmentSeeds,
+    segment_emitter_seeds: segmentEmitterSeeds,
+    segment_compute_states: segmentComputeStates,
+    total_rays: totalRays,
+    avoided_retrace_rays: Math.max(0, legacyFullRerunRays - totalRays),
+  } satisfies ConvergenceAccumulationEvidence
+  const maxStoredPaths = Math.max(0, current.config.max_stored_paths)
+  const storedPaths = [
+    ...previous.stored_paths.map((path) => structuredClone(path)),
+    ...current.stored_paths.map((path) => structuredClone(path)),
+  ].slice(0, maxStoredPaths)
+  const previousEmitters = new Map(
+    previous.emitters.map((emitter) => [emitter.emitter_id, emitter]),
+  )
+  const emitters = current.emitters.map((emitter) => {
+    const previousEmitter = previousEmitters.get(emitter.emitter_id)
+    return {
+      ...structuredClone(emitter),
+      ray_count: emitter.ray_count + (previousEmitter?.ray_count ?? 0),
+      seed: previousEmitter ? previousEmitter.seed : emitter.seed,
+    }
+  })
+
+  return {
+    ...structuredClone(current),
+    config: {
+      ...structuredClone(current.config),
+      ray_count: totalRays,
+      seed: previous.config.seed,
+    },
+    emitters,
+    receiver_grids: receiverGrids,
+    total_rays: totalRays,
+    receiver_hit_count:
+      previous.receiver_hit_count + current.receiver_hit_count,
+    surface_hit_count: previous.surface_hit_count + current.surface_hit_count,
+    terminated_ray_count:
+      previous.terminated_ray_count + current.terminated_ray_count,
+    contribution_summary: contributionSummary,
+    runtime_sec: previous.runtime_sec + current.runtime_sec,
+    stored_paths: storedPaths,
+    metrics,
+  }
 }
 
 function toRadians(value: number): number {

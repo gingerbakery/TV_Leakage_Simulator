@@ -43,6 +43,21 @@ from .gpu_cuda_intersection import (
     GpuCudaUnavailable,
     PROVIDER_CONTRACT as GPU_CUDA_INTERSECTION_CONTRACT,
 )
+from .gpu_cuda_resident_wavefront import (
+    GpuResidentPathSelection,
+    GpuResidentWavefrontBatch,
+    GpuResidentWavefrontContext,
+    GpuResidentWavefrontExecution,
+    GpuResidentWavefrontProviderError,
+    GpuResidentWavefrontUnavailable,
+    PROVIDER_CONTRACT as GPU_RESIDENT_WAVEFRONT_CONTRACT,
+    STATE_LAYOUT as GPU_RESIDENT_WAVEFRONT_STATE_LAYOUT,
+    trace_resident_wavefront_gpu_cuda,
+)
+from .gpu_cuda_summary_accumulator import (
+    GpuSummaryAccumulatorRequest,
+    PROVIDER_CONTRACT as GPU_SUMMARY_ACCUMULATOR_CONTRACT,
+)
 from .native_cpu_wavefront import (
     LOBE_GAUSSIAN as NATIVE_WAVEFRONT_LOBE_GAUSSIAN,
     LOBE_LAMBERTIAN as NATIVE_WAVEFRONT_LOBE_LAMBERTIAN,
@@ -76,8 +91,11 @@ from .reflection import (
     sample_reflection_direction,
 )
 from .fast_sampling import (
+    ReceiverImportanceGeometry,
     build_face_emitter_batch_geometry,
+    iter_face_emitter_receiver_mis_batches,
     iter_face_emitter_ray_batches,
+    iter_virtual_plane_receiver_mis_batches,
     iter_virtual_plane_ray_batches,
     supports_fast_virtual_plane_sampling,
 )
@@ -325,6 +343,47 @@ class _IntersectionDispatchStats:
     gpu_cuda_gpu_success_ray_count: int = 0
     gpu_cuda_available_state: Optional[bool] = None
     gpu_cuda_numba_version: Optional[str] = None
+
+    def record_gpu_resident_execution(
+        self,
+        execution: GpuResidentWavefrontExecution,
+    ) -> None:
+        """Account one fused resident launch as committed CUDA work."""
+
+        logical_rows = int(execution.logical_intersection_rows)
+        max_active = max(execution.active_ray_count_by_depth, default=0)
+        self.batch_count += 1
+        self.batch_max_size = max(self.batch_max_size, max_active)
+        self.batch_ray_count += logical_rows
+        self.elapsed_sec += execution.total_sec
+        self.native_attempt_count += 1
+        self.native_attempt_ray_count += logical_rows
+        self.native_success_count += 1
+        self.native_success_ray_count += logical_rows
+        self.native_batch_success_count += 1
+        self.native_execute_sec += execution.kernel_sec
+        self.native_jit_compile_sec += execution.jit_compile_sec
+        self.native_provider_version = execution.numba_version
+        self.native_available = True
+        self.gpu_cuda_available_state = True
+        self.gpu_cuda_gpu_attempt_count += 1
+        self.gpu_cuda_gpu_attempt_ray_count += logical_rows
+        self.gpu_cuda_gpu_success_count += 1
+        self.gpu_cuda_gpu_success_ray_count += logical_rows
+        self.gpu_cuda_numba_version = execution.numba_version
+        self.gpu_cuda_scene_upload_sec += execution.scene_upload_sec
+        self.gpu_cuda_workspace_prepare_sec += execution.workspace_prepare_sec
+        self.gpu_cuda_input_upload_sec += execution.input_upload_sec
+        self.gpu_cuda_kernel_sec += execution.kernel_sec
+        self.gpu_cuda_output_download_sec += execution.output_download_sec
+        self.gpu_cuda_device_name = execution.device_name
+        self.gpu_cuda_compute_capability = execution.compute_capability
+        self.gpu_cuda_device_id = execution.device_id
+        self.gpu_cuda_toolkit_layout = execution.toolkit_layout
+        self.gpu_cuda_device_scene_reuse_count += int(
+            execution.reused_device_scene
+        )
+        self.gpu_cuda_workspace_reuse_count += int(execution.reused_workspace)
 
     def compute_execution_diagnosis(
         self,
@@ -758,6 +817,303 @@ class _IntersectionDispatchStats:
 
 
 @dataclass(slots=True)
+class _GpuResidentWavefrontStats:
+    requested_mode: str
+    effective_mode: str
+    selection_reason: str
+    attempt_count: int = 0
+    attempt_primary_count: int = 0
+    success_count: int = 0
+    success_primary_count: int = 0
+    logical_intersection_rows: int = 0
+    fallback_count: int = 0
+    fallback_primary_count: int = 0
+    fallback_phase: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    provider_disabled: bool = False
+    bindings_upload_sec: float = 0.0
+    workspace_prepare_sec: float = 0.0
+    input_upload_sec: float = 0.0
+    jit_compile_sec: float = 0.0
+    kernel_sec: float = 0.0
+    output_download_sec: float = 0.0
+    tape_build_sec: float = 0.0
+    total_sec: float = 0.0
+    device_name: Optional[str] = None
+    compute_capability: Optional[str] = None
+    reused_bindings_count: int = 0
+    reused_workspace_count: int = 0
+    accumulator_success_count: int = 0
+    accumulator_jit_compile_sec: float = 0.0
+    accumulator_state_upload_sec: float = 0.0
+    accumulator_kernel_sec: float = 0.0
+    accumulator_output_download_sec: float = 0.0
+    accumulator_input_bytes: int = 0
+    accumulator_output_bytes: int = 0
+    accumulator_reused_state_count: int = 0
+    selected_path_count: int = 0
+    skipped_path_count: int = 0
+    path_select_sec: float = 0.0
+    path_retrace_sec: float = 0.0
+    path_download_sec: float = 0.0
+    workspace_contract: Optional[str] = None
+    workspace_peak_bytes: int = 0
+    event_geometry_capacity: int = 0
+
+    def record_attempt(self, primary_count: int) -> None:
+        self.attempt_count += 1
+        self.attempt_primary_count += int(primary_count)
+
+    def record_success(
+        self,
+        primary_count: int,
+        execution: GpuResidentWavefrontExecution,
+    ) -> None:
+        self.success_count += 1
+        self.success_primary_count += int(primary_count)
+        self.logical_intersection_rows += execution.logical_intersection_rows
+        self.bindings_upload_sec += execution.bindings_upload_sec
+        self.workspace_prepare_sec += execution.workspace_prepare_sec
+        self.input_upload_sec += execution.input_upload_sec
+        self.jit_compile_sec += execution.jit_compile_sec
+        self.kernel_sec += execution.kernel_sec
+        self.output_download_sec += execution.output_download_sec
+        self.tape_build_sec += execution.tape_build_sec
+        self.total_sec += execution.total_sec
+        self.device_name = execution.device_name
+        self.compute_capability = execution.compute_capability
+        self.reused_bindings_count += int(execution.reused_device_bindings)
+        self.reused_workspace_count += int(execution.reused_workspace)
+        self.selected_path_count += execution.selected_path_count
+        self.skipped_path_count += execution.skipped_path_count
+        self.path_select_sec += execution.path_select_sec
+        self.path_retrace_sec += execution.path_retrace_sec
+        self.path_download_sec += execution.path_download_sec
+        self.workspace_contract = execution.workspace_contract
+        self.workspace_peak_bytes = max(
+            self.workspace_peak_bytes,
+            execution.workspace_bytes,
+        )
+        self.event_geometry_capacity = max(
+            self.event_geometry_capacity,
+            execution.event_geometry_capacity,
+        )
+        if execution.summary_execution is not None:
+            accumulator = execution.summary_execution
+            self.accumulator_success_count += 1
+            self.accumulator_jit_compile_sec += accumulator.jit_compile_sec
+            self.accumulator_state_upload_sec += accumulator.state_upload_sec
+            self.accumulator_kernel_sec += accumulator.kernel_sec
+            self.accumulator_output_download_sec += (
+                accumulator.output_download_sec
+            )
+            self.accumulator_input_bytes += accumulator.input_bytes
+            self.accumulator_output_bytes += accumulator.output_bytes
+            self.accumulator_reused_state_count += int(
+                accumulator.reused_device_state
+            )
+
+    def record_failure(
+        self,
+        primary_count: int,
+        phase: str,
+        reason: str,
+    ) -> None:
+        self.fallback_count += 1
+        self.fallback_primary_count += int(primary_count)
+        self.fallback_phase = phase
+        self.fallback_reason = reason
+        self.provider_disabled = True
+        self.effective_mode = "host_roundtrip"
+        self.selection_reason = "gpu_resident_failed_closed_to_host"
+
+    def to_summary(self) -> Dict[str, object]:
+        return {
+            "requested_wavefront_residency": self.requested_mode,
+            "wavefront_residency": (
+                "gpu_resident"
+                if self.success_count > 0 and self.fallback_count == 0
+                else (
+                    "mixed"
+                    if self.success_count > 0 and self.fallback_count > 0
+                    else self.effective_mode
+                )
+            ),
+            "wavefront_residency_selection_reason": self.selection_reason,
+            "gpu_resident_wavefront_contract": GPU_RESIDENT_WAVEFRONT_CONTRACT,
+            "gpu_resident_wavefront_strict_float64": True,
+            "gpu_resident_wavefront_attempt_count": self.attempt_count,
+            "gpu_resident_wavefront_attempt_primary_count": (
+                self.attempt_primary_count
+            ),
+            "gpu_resident_wavefront_success_count": self.success_count,
+            "gpu_resident_wavefront_success_primary_count": (
+                self.success_primary_count
+            ),
+            "gpu_resident_wavefront_logical_intersection_rows": (
+                self.logical_intersection_rows
+            ),
+            "gpu_resident_wavefront_fallback_count": self.fallback_count,
+            "gpu_resident_wavefront_fallback_primary_count": (
+                self.fallback_primary_count
+            ),
+            "gpu_resident_wavefront_fallback_phase": self.fallback_phase,
+            "gpu_resident_wavefront_fallback_reason": self.fallback_reason,
+            "gpu_resident_wavefront_provider_disabled": self.provider_disabled,
+            "gpu_resident_wavefront_bindings_upload_sec": (
+                self.bindings_upload_sec
+            ),
+            "gpu_resident_wavefront_workspace_prepare_sec": (
+                self.workspace_prepare_sec
+            ),
+            "gpu_resident_wavefront_input_upload_sec": self.input_upload_sec,
+            "gpu_resident_wavefront_jit_compile_sec": self.jit_compile_sec,
+            "gpu_resident_wavefront_kernel_sec": self.kernel_sec,
+            "gpu_resident_wavefront_output_download_sec": (
+                self.output_download_sec
+            ),
+            "gpu_resident_wavefront_tape_build_sec": self.tape_build_sec,
+            "gpu_resident_wavefront_total_sec": self.total_sec,
+            "gpu_resident_wavefront_device_name": self.device_name,
+            "gpu_resident_wavefront_compute_capability": (
+                self.compute_capability
+            ),
+            "gpu_resident_wavefront_reused_bindings_count": (
+                self.reused_bindings_count
+            ),
+            "gpu_resident_wavefront_reused_workspace_count": (
+                self.reused_workspace_count
+            ),
+            "gpu_summary_accumulator_contract": (
+                GPU_SUMMARY_ACCUMULATOR_CONTRACT
+            ),
+            "gpu_summary_accumulator_success_count": (
+                self.accumulator_success_count
+            ),
+            "gpu_summary_accumulator_state_upload_sec": (
+                self.accumulator_state_upload_sec
+            ),
+            "gpu_summary_accumulator_jit_compile_sec": (
+                self.accumulator_jit_compile_sec
+            ),
+            "gpu_summary_accumulator_kernel_sec": self.accumulator_kernel_sec,
+            "gpu_summary_accumulator_output_download_sec": (
+                self.accumulator_output_download_sec
+            ),
+            "gpu_summary_accumulator_input_bytes": (
+                self.accumulator_input_bytes
+            ),
+            "gpu_summary_accumulator_output_bytes": (
+                self.accumulator_output_bytes
+            ),
+            "gpu_summary_accumulator_reused_state_count": (
+                self.accumulator_reused_state_count
+            ),
+            "gpu_summary_selected_path_count": self.selected_path_count,
+            "gpu_summary_skipped_path_count": self.skipped_path_count,
+            "gpu_summary_path_select_sec": self.path_select_sec,
+            "gpu_summary_path_retrace_sec": self.path_retrace_sec,
+            "gpu_summary_path_download_sec": self.path_download_sec,
+            "gpu_resident_workspace_contract": self.workspace_contract,
+            "gpu_resident_workspace_peak_bytes": self.workspace_peak_bytes,
+            "gpu_resident_event_geometry_capacity": (
+                self.event_geometry_capacity
+            ),
+        }
+
+
+@dataclass(slots=True)
+class _PrimarySamplingStats:
+    requested_strategy: str
+    receiver_fraction: float
+    applied_emitter_count: int = 0
+    fallback_emitter_count: int = 0
+    fallback_reasons: Dict[str, int] = field(default_factory=dict)
+    sampled_ray_count: int = 0
+    receiver_directed_ray_count: int = 0
+    weight_sum: float = 0.0
+    weight_square_sum: float = 0.0
+    minimum_weight: float = float("inf")
+    maximum_weight: float = 0.0
+
+    def record_fallback(self, reason: str) -> None:
+        self.fallback_emitter_count += 1
+        self.fallback_reasons[reason] = self.fallback_reasons.get(reason, 0) + 1
+
+    def record_batch(self, weights: np.ndarray, directed_count: int) -> None:
+        values = np.ascontiguousarray(weights, dtype=np.float64)
+        if values.ndim != 1 or not np.all(np.isfinite(values)):
+            raise ValueError("primary sampling weights must be a finite vector")
+        self.sampled_ray_count += len(values)
+        self.receiver_directed_ray_count += int(directed_count)
+        if not len(values):
+            return
+        self.weight_sum += float(np.sum(values, dtype=np.float64))
+        self.weight_square_sum += float(
+            np.sum(values * values, dtype=np.float64)
+        )
+        self.minimum_weight = min(self.minimum_weight, float(np.min(values)))
+        self.maximum_weight = max(self.maximum_weight, float(np.max(values)))
+
+    def to_summary(self) -> Dict[str, object]:
+        effective_strategy = "source"
+        if self.applied_emitter_count:
+            effective_strategy = (
+                "receiver_mis"
+                if self.fallback_emitter_count == 0
+                else "mixed"
+            )
+        effective_sample_size = (
+            self.weight_sum * self.weight_sum / self.weight_square_sum
+            if self.weight_square_sum > 0.0
+            else 0.0
+        )
+        return {
+            "primary_sampling_contract": "receiver_directed_primary_mis_v1",
+            "requested_primary_sampling_strategy": self.requested_strategy,
+            "primary_sampling_strategy": effective_strategy,
+            "receiver_importance_fraction": self.receiver_fraction,
+            "primary_sampling_applied_emitter_count": (
+                self.applied_emitter_count
+            ),
+            "primary_sampling_fallback_emitter_count": (
+                self.fallback_emitter_count
+            ),
+            "primary_sampling_fallback_reasons": dict(self.fallback_reasons),
+            "primary_sampling_ray_count": self.sampled_ray_count,
+            "primary_sampling_receiver_directed_ray_count": (
+                self.receiver_directed_ray_count
+            ),
+            "primary_sampling_receiver_directed_fraction": (
+                self.receiver_directed_ray_count / self.sampled_ray_count
+                if self.sampled_ray_count
+                else 0.0
+            ),
+            "primary_sampling_weight_mean": (
+                self.weight_sum / self.sampled_ray_count
+                if self.sampled_ray_count
+                else 1.0
+            ),
+            "primary_sampling_weight_min": (
+                self.minimum_weight
+                if self.sampled_ray_count
+                else 1.0
+            ),
+            "primary_sampling_weight_max": (
+                self.maximum_weight
+                if self.sampled_ray_count
+                else 1.0
+            ),
+            "primary_sampling_effective_sample_size": effective_sample_size,
+            "primary_sampling_effective_sample_ratio": (
+                effective_sample_size / self.sampled_ray_count
+                if self.sampled_ray_count
+                else 1.0
+            ),
+        }
+
+
+@dataclass(slots=True)
 class _WavefrontPlannerStats:
     """Run-local capability, fallback and timing state for reflection planning."""
 
@@ -1078,6 +1434,14 @@ class _OrderedReducerBindings:
     profile_slot_by_id: Dict[str, int]
     receiver_columns: np.ndarray
     grid_offsets: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class _OrderedSummaryLayout:
+    profile_count: int
+    receiver_count: int
+    depth_count: int
+    grid_cell_count: int
 
 
 @dataclass(slots=True)
@@ -1501,6 +1865,21 @@ def _stored_path_payload_required(
     return any(not _path_reaches_receiver(path) for path in stored_paths)
 
 
+def _ray_power_values(
+    ray_power: float | np.ndarray,
+    ray_count: int,
+) -> np.ndarray:
+    if np.isscalar(ray_power):
+        values = np.full(ray_count, float(ray_power), dtype=np.float64)
+    else:
+        values = np.ascontiguousarray(ray_power, dtype=np.float64)
+        if values.shape != (ray_count,):
+            raise ValueError("ray_power must have one value per primary ray")
+    if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+        raise ValueError("ray_power must be finite and non-negative")
+    return values
+
+
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -1514,6 +1893,9 @@ def run_direct_ray_trace(
     wavefront_reducer: str = "auto",
     wavefront_rng: str = "auto",
     wavefront_reducer_commit: str = "auto",
+    wavefront_residency: str = "auto",
+    gpu_accumulator: str = "auto",
+    gpu_workspace: str = "auto",
 ) -> RayTraceResult:
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
@@ -1554,6 +1936,18 @@ def run_direct_ray_trace(
         raise ValueError(
             "wavefront_reducer_commit must be auto, per_tape, or run_accumulator"
         )
+    if wavefront_residency not in {
+        "auto",
+        "host_roundtrip",
+        "gpu_resident",
+    }:
+        raise ValueError(
+            "wavefront_residency must be auto, host_roundtrip, or gpu_resident"
+        )
+    if gpu_accumulator not in {"auto", "host", "gpu"}:
+        raise ValueError("gpu_accumulator must be auto, host, or gpu")
+    if gpu_workspace not in {"auto", "compact", "full"}:
+        raise ValueError("gpu_workspace must be auto, compact, or full")
 
     gpu_compute_requested = (
         getattr(trace_input.config, "compute_backend", "cpu") == "gpu_cuda"
@@ -1588,7 +1982,8 @@ def run_direct_ray_trace(
     requested_wavefront_reducer = wavefront_reducer
     requested_wavefront_rng = wavefront_rng
     requested_wavefront_reducer_commit = wavefront_reducer_commit
-    production_auto_requested = all(
+    requested_wavefront_residency = wavefront_residency
+    production_pipeline_auto_requested = all(
         value == "auto"
         for value in (
             intersection_dispatch,
@@ -1608,7 +2003,7 @@ def run_direct_ray_trace(
     # diagnostic path explicitly, but the production all-``auto`` call selects
     # this shared deterministic contract and changes only the intersection
     # device.
-    if gpu_compute_requested or production_auto_requested:
+    if gpu_compute_requested or production_pipeline_auto_requested:
         if intersection_dispatch == "auto":
             intersection_dispatch = "batch"
         if intersection_provider == "auto":
@@ -1630,6 +2025,12 @@ def run_direct_ray_trace(
             wavefront_rng = "per_primary_seeded_v1"
         if wavefront_reducer_commit == "auto":
             wavefront_reducer_commit = "per_tape"
+    if wavefront_residency == "auto":
+        wavefront_residency = (
+            "gpu_resident"
+            if gpu_compute_requested and production_pipeline_auto_requested
+            else "host_roundtrip"
+        )
     monte_carlo_contract = (
         "cpu_gpu_deterministic_batch_v1"
         if (
@@ -1660,6 +2061,15 @@ def run_direct_ray_trace(
         commit_policy=wavefront_reducer_commit,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
+    primary_sampling_stats = _PrimarySamplingStats(
+        requested_strategy=trace_input.config.primary_sampling_strategy,
+        receiver_fraction=trace_input.config.receiver_importance_fraction,
+    )
+    receiver_importance_geometry = (
+        _build_receiver_importance_geometry(receiver_frames)
+        if trace_input.config.primary_sampling_strategy == "receiver_mis"
+        else None
+    )
     receiver_grids = {
         receiver.receiver_id: ReceiverGrid.empty(receiver)
         for receiver in trace_input.receivers
@@ -1773,6 +2183,41 @@ def run_direct_ray_trace(
         if wavefront_pipeline == "auto"
         else wavefront_pipeline
     )
+    gpu_resident_eligible = bool(
+        gpu_compute_requested
+        and intersection_provider == "gpu_cuda"
+        and selected_wavefront_pipeline == "soa_event_tape"
+        and wavefront_rng == "counter_rng_v2"
+        and trace_input.config.max_depth > 1
+    )
+    if wavefront_residency == "gpu_resident" and gpu_resident_eligible:
+        resident_effective_mode = "gpu_resident"
+        resident_selection_reason = "eligible_gpu_production_wavefront"
+    elif wavefront_residency == "gpu_resident":
+        resident_effective_mode = "host_roundtrip"
+        resident_selection_reason = "gpu_resident_ineligible_runtime_contract"
+    else:
+        resident_effective_mode = "host_roundtrip"
+        resident_selection_reason = "host_roundtrip_requested"
+    gpu_resident_stats = _GpuResidentWavefrontStats(
+        requested_mode=requested_wavefront_residency,
+        effective_mode=resident_effective_mode,
+        selection_reason=resident_selection_reason,
+    )
+    gpu_resident_context: Optional[GpuResidentWavefrontContext] = None
+    if resident_effective_mode == "gpu_resident":
+        try:
+            gpu_resident_context = _build_gpu_resident_wavefront_context(
+                trace_input.mesh,
+                receiver_frames,
+                resolved_optical_by_face,
+            )
+        except Exception:
+            gpu_resident_stats.record_failure(
+                0,
+                "input_prepare",
+                "gpu_resident_context_prepare_failed",
+            )
     wavefront_reducer_stats.configure_selection(
         pipeline=selected_wavefront_pipeline,
         detailed_contributions=detailed_contributions,
@@ -1823,17 +2268,74 @@ def run_direct_ray_trace(
                 or use_face_batch_sampling
             )
         )
+        receiver_mis_enabled = bool(
+            trace_input.config.primary_sampling_strategy == "receiver_mis"
+            and receiver_importance_geometry is not None
+            and use_batch_dispatch
+            and emitter.direction_distribution in {"lambertian", "isotropic"}
+        )
+        if trace_input.config.primary_sampling_strategy == "receiver_mis":
+            if receiver_mis_enabled:
+                primary_sampling_stats.applied_emitter_count += 1
+            elif receiver_importance_geometry is None:
+                primary_sampling_stats.record_fallback("no_enabled_receivers")
+            elif emitter.direction_distribution not in {"lambertian", "isotropic"}:
+                primary_sampling_stats.record_fallback(
+                    "unsupported_emitter_distribution"
+                )
+            else:
+                primary_sampling_stats.record_fallback(
+                    "emitter_requires_batch_sampling"
+                )
         if use_batch_dispatch:
             if should_stop is not None and should_stop():
                 stopped_early = True
                 break
-            if use_face_batch_sampling:
+            if use_face_batch_sampling and receiver_mis_enabled:
                 assert face_batch_geometry is not None
-                ray_batches = iter_face_emitter_ray_batches(
+                assert receiver_importance_geometry is not None
+                ray_batches = iter_face_emitter_receiver_mis_batches(
                     emitter,
                     face_batch_geometry,
+                    receiver_importance_geometry,
                     trace_input.config.epsilon_mm,
                     emitter_seed,
+                    trace_input.config.receiver_importance_fraction,
+                )
+            elif use_face_batch_sampling:
+                assert face_batch_geometry is not None
+                ray_batches = (
+                    (
+                        origins,
+                        directions,
+                        source_faces,
+                        np.ones(len(origins), dtype=np.float64),
+                        0,
+                    )
+                    for origins, directions, source_faces in iter_face_emitter_ray_batches(
+                        emitter,
+                        face_batch_geometry,
+                        trace_input.config.epsilon_mm,
+                        emitter_seed,
+                    )
+                )
+            elif receiver_mis_enabled:
+                assert receiver_importance_geometry is not None
+                ray_batches = (
+                    (
+                        origins,
+                        directions,
+                        np.full(len(origins), -1, dtype=np.int64),
+                        weights,
+                        directed_count,
+                    )
+                    for origins, directions, weights, directed_count in iter_virtual_plane_receiver_mis_batches(
+                        emitter,
+                        receiver_importance_geometry,
+                        trace_input.config.epsilon_mm,
+                        emitter_seed,
+                        trace_input.config.receiver_importance_fraction,
+                    )
                 )
             else:
                 ray_batches = (
@@ -1841,6 +2343,8 @@ def run_direct_ray_trace(
                         origins,
                         directions,
                         np.full(len(origins), -1, dtype=np.int64),
+                        np.ones(len(origins), dtype=np.float64),
+                        0,
                     )
                     for origins, directions in iter_virtual_plane_ray_batches(
                         emitter,
@@ -1854,11 +2358,21 @@ def run_direct_ray_trace(
                     stopped_early = True
                     break
                 try:
-                    origin_batch, direction_batch, source_face_batch = next(
-                        ray_batches
-                    )
+                    (
+                        origin_batch,
+                        direction_batch,
+                        source_face_batch,
+                        power_weight_batch,
+                        directed_count,
+                    ) = next(ray_batches)
                 except StopIteration:
                     break
+                if receiver_mis_enabled:
+                    primary_sampling_stats.record_batch(
+                        power_weight_batch,
+                        directed_count,
+                    )
+                ray_power_batch = ray_power * power_weight_batch
                 for start in range(0, len(origin_batch), intersection_batch_size):
                     if should_stop is not None and should_stop():
                         stopped_early = True
@@ -1869,7 +2383,7 @@ def run_direct_ray_trace(
                             trace_input.mesh,
                             origin_batch[start:end],
                             direction_batch[start:end],
-                            ray_power,
+                            ray_power_batch[start:end],
                             source_face_batch[start:end],
                             receiver_frames,
                             receiver_grids,
@@ -1886,16 +2400,29 @@ def run_direct_ray_trace(
                         )
                     else:
                         multi_bounce_wavefront_used = True
+                        use_gpu_resident = False
                         if selected_wavefront_pipeline == "soa_event_tape":
-                            wavefront_summary["pipeline"] = "soa_event_tape"
+                            use_gpu_resident = bool(
+                                gpu_resident_context is not None
+                                and not gpu_resident_stats.provider_disabled
+                            )
+                            wavefront_summary["pipeline"] = (
+                                "soa_event_tape_gpu_resident"
+                                if use_gpu_resident
+                                else "soa_event_tape"
+                            )
                             wavefront_summary["state_layout"] = (
-                                WAVEFRONT_STATE_LAYOUT
+                                GPU_RESIDENT_WAVEFRONT_STATE_LAYOUT
+                                if use_gpu_resident
+                                else WAVEFRONT_STATE_LAYOUT
                             )
                             wavefront_summary["event_tape_contract"] = (
                                 WAVEFRONT_EVENT_TAPE_CONTRACT
                             )
                             trace_wavefront_batch = (
-                                _trace_multi_bounce_wavefront_soa_batch
+                                _trace_multi_bounce_gpu_resident_batch
+                                if use_gpu_resident
+                                else _trace_multi_bounce_wavefront_soa_batch
                             )
                         else:
                             wavefront_summary["pipeline"] = "object_reference"
@@ -1908,11 +2435,11 @@ def run_direct_ray_trace(
                             trace_wavefront_batch = (
                                 _trace_multi_bounce_wavefront_batch
                             )
-                        batch_counts = trace_wavefront_batch(
+                        wavefront_arguments = (
                             trace_input.mesh,
                             origin_batch[start:end],
                             direction_batch[start:end],
-                            ray_power,
+                            ray_power_batch[start:end],
                             source_face_batch[start:end],
                             emitter_seed,
                             emitter_ray_offset + start,
@@ -1931,6 +2458,57 @@ def run_direct_ray_trace(
                             wavefront_reducer_stats,
                             wavefront_summary,
                         )
+                        if use_gpu_resident:
+                            assert gpu_resident_context is not None
+                            try:
+                                batch_counts = trace_wavefront_batch(
+                                    *wavefront_arguments,
+                                    gpu_resident_context,
+                                    gpu_resident_stats,
+                                    gpu_accumulator,
+                                    gpu_workspace,
+                                )
+                            except (
+                                GpuResidentWavefrontUnavailable,
+                                GpuResidentWavefrontProviderError,
+                            ) as exc:
+                                gpu_resident_stats.record_failure(
+                                    end - start,
+                                    exc.phase,
+                                    exc.reason_code,
+                                )
+                                wavefront_summary["pipeline"] = (
+                                    "soa_event_tape"
+                                )
+                                wavefront_summary["state_layout"] = (
+                                    WAVEFRONT_STATE_LAYOUT
+                                )
+                                batch_counts = (
+                                    _trace_multi_bounce_wavefront_soa_batch(
+                                        *wavefront_arguments
+                                    )
+                                )
+                            except Exception:
+                                gpu_resident_stats.record_failure(
+                                    end - start,
+                                    "execute",
+                                    "gpu_resident_unexpected_failure",
+                                )
+                                wavefront_summary["pipeline"] = (
+                                    "soa_event_tape"
+                                )
+                                wavefront_summary["state_layout"] = (
+                                    WAVEFRONT_STATE_LAYOUT
+                                )
+                                batch_counts = (
+                                    _trace_multi_bounce_wavefront_soa_batch(
+                                        *wavefront_arguments
+                                    )
+                                )
+                        else:
+                            batch_counts = trace_wavefront_batch(
+                                *wavefront_arguments
+                            )
                     chunk_ray_count = end - start
                     total_rays += chunk_ray_count
                     receiver_hit_count += batch_counts[0]
@@ -2510,6 +3088,9 @@ def run_direct_ray_trace(
         ],
         **wavefront_planner_stats.to_summary(),
         **wavefront_reducer_stats.to_summary(),
+        **primary_sampling_stats.to_summary(),
+        "requested_gpu_workspace": gpu_workspace,
+        **gpu_resident_stats.to_summary(),
         **intersection_summary,
         "requested_intersection_provider": requested_intersection_provider,
         "effective_intersection_provider_request": intersection_provider,
@@ -4273,7 +4854,7 @@ def _prepare_ordered_summary_batch(
 
 
 def _prepare_ordered_summary_accumulator(
-    batch: native_ordered_reducer.OrderedSummaryBatch,
+    batch: native_ordered_reducer.OrderedSummaryBatch | _OrderedSummaryLayout,
     bindings: _OrderedReducerBindings,
     receiver_frames: List[ReceiverFrame],
     receiver_grids: Dict[str, ReceiverGrid],
@@ -5114,8 +5695,11 @@ def _publish_ordered_summary_commit(
 
 def _retain_ordered_summary_result(
     reducer_stats: _WavefrontReducerStats,
-    tape: PrimaryMajorEventTape,
+    tape: Optional[PrimaryMajorEventTape],
     result: native_ordered_reducer.OrderedSummaryResult,
+    *,
+    primary_count: Optional[int] = None,
+    event_count: Optional[int] = None,
 ) -> None:
     reducer_stats.retained_result = result
     reducer_stats.retained_profile_touch_slots.extend(
@@ -5137,8 +5721,12 @@ def _retain_ordered_summary_result(
         int(value) for value in result.receiver_depth_first_touch_depths
     )
     reducer_stats.retained_tape_count += 1
-    reducer_stats.retained_primary_count += len(tape)
-    reducer_stats.retained_event_count += tape.event_count
+    reducer_stats.retained_primary_count += (
+        len(tape) if tape is not None else int(primary_count or 0)
+    )
+    reducer_stats.retained_event_count += (
+        tape.event_count if tape is not None else int(event_count or 0)
+    )
 
 
 def _retained_ordered_summary_result(
@@ -5589,7 +6177,7 @@ def _trace_multi_bounce_wavefront_batch(
     mesh: TriangleMesh,
     origins: np.ndarray,
     directions: np.ndarray,
-    ray_power: float,
+    ray_power: float | np.ndarray,
     source_faces: np.ndarray,
     emitter_seed: int,
     primary_start_index: int,
@@ -5616,6 +6204,7 @@ def _trace_multi_bounce_wavefront_batch(
     source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
     if source_face_values.shape != (ray_count,):
         raise ValueError("source_faces must have one value per primary ray")
+    power_values = _ray_power_values(ray_power, ray_count)
 
     wavefront_started = time.perf_counter()
     state_build_started = time.perf_counter()
@@ -5636,13 +6225,13 @@ def _trace_multi_bounce_wavefront_batch(
                 primary_index=primary_start_index + index,
                 initial_origin=origin,  # type: ignore[arg-type]
                 initial_direction=direction,  # type: ignore[arg-type]
-                initial_power_lumen=ray_power,
+                initial_power_lumen=float(power_values[index]),
                 initial_source_face=int(source_face_values[index]),
                 reflection_seed=int(reflection_seeds[index]),
                 reflection_rng=None,
                 current_origin=origin,  # type: ignore[arg-type]
                 current_direction=direction,  # type: ignore[arg-type]
-                current_power_lumen=ray_power,
+                current_power_lumen=float(power_values[index]),
                 current_source_face=int(source_face_values[index]),
             )
         )
@@ -5897,11 +6486,376 @@ def _trace_multi_bounce_wavefront_batch(
     return receiver_hit_count, surface_hit_count, terminated_ray_count
 
 
+def _trace_multi_bounce_gpu_resident_batch(
+    mesh: TriangleMesh,
+    origins: np.ndarray,
+    directions: np.ndarray,
+    ray_power: float | np.ndarray,
+    source_faces: np.ndarray,
+    emitter_seed: int,
+    primary_start_index: int,
+    receivers: List[ReceiverFrame],
+    receiver_grids: Dict[str, ReceiverGrid],
+    config: RayTraceConfig,
+    resolved_optical_by_face: List,
+    optical_summary: Dict,
+    reflection_summary: Dict,
+    contribution_summary: RayTraceContributionSummary,
+    face_contribution_cache: List[Optional[Dict]],
+    detailed_contributions: bool,
+    stored_paths: List[List[RayHit]],
+    intersection_stats: _IntersectionDispatchStats,
+    planner_stats: _WavefrontPlannerStats,
+    reducer_stats: _WavefrontReducerStats,
+    wavefront_summary: Dict,
+    resident_context: GpuResidentWavefrontContext,
+    resident_stats: _GpuResidentWavefrontStats,
+    gpu_accumulator: str,
+    gpu_workspace: str,
+) -> Tuple[int, int, int]:
+    ray_count = len(origins)
+    if ray_count == 0:
+        return 0, 0, 0
+    source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
+    if source_face_values.shape != (ray_count,):
+        raise ValueError("source_faces must have one value per primary ray")
+    power_values = _ray_power_values(ray_power, ray_count)
+
+    wavefront_started = time.perf_counter()
+    reflection_seeds = _wavefront_reflection_seeds(
+        emitter_seed,
+        primary_start_index,
+        ray_count,
+    )
+    path_payload_requested = (
+        config.store_ray_paths and config.max_stored_paths > 0
+    )
+    gpu_accumulator_enabled = bool(
+        gpu_accumulator != "host"
+        and
+        not detailed_contributions
+        and reducer_stats.commit_policy == "run_accumulator"
+    )
+    summary_request = None
+    path_selection = None
+    if gpu_accumulator_enabled:
+        bindings = _prepare_ordered_reducer_bindings(
+            resolved_optical_by_face,
+            receivers,
+            reducer_stats,
+        )
+        if reducer_stats.retained_result is not None:
+            accumulator = native_ordered_reducer.clone_ordered_summary_accumulator(
+                reducer_stats.retained_result.state
+            )
+        else:
+            accumulator = _prepare_ordered_summary_accumulator(
+                _OrderedSummaryLayout(
+                    profile_count=len(bindings.profile_unassigned),
+                    receiver_count=len(bindings.receiver_columns),
+                    depth_count=config.max_depth + 1,
+                    grid_cell_count=int(bindings.grid_offsets[-1]),
+                ),
+                bindings,
+                receivers,
+                receiver_grids,
+                optical_summary,
+                reflection_summary,
+                contribution_summary,
+            )
+        summary_request = GpuSummaryAccumulatorRequest(
+            state=accumulator,
+            face_profile_slots=bindings.face_profile_slots,
+            profile_unassigned=bindings.profile_unassigned,
+            receiver_columns=bindings.receiver_columns,
+            grid_offsets=bindings.grid_offsets,
+            max_depth=config.max_depth,
+        )
+        if path_payload_requested:
+            path_quota = _WavefrontStoredPathQuota.from_paths(
+                stored_paths,
+                config.max_stored_paths,
+            )
+            path_selection = GpuResidentPathSelection(
+                existing_path_count=len(stored_paths),
+                existing_dead_end_count=len(path_quota.dead_end_indices),
+                max_paths=config.max_stored_paths,
+            )
+    path_payload_enabled = bool(
+        not gpu_accumulator_enabled
+        and path_payload_requested
+        and _stored_path_payload_required(
+            stored_paths,
+            config.max_stored_paths,
+        )
+    )
+    if path_payload_requested and not path_payload_enabled and not gpu_accumulator_enabled:
+        wavefront_summary[
+            "event_tape_path_payload_suppressed_chunk_count"
+        ] += 1
+    termination_mode = (
+        NATIVE_WAVEFRONT_TERMINATION_RUSSIAN_ROULETTE
+        if config.termination_mode == "russian_roulette"
+        else NATIVE_WAVEFRONT_TERMINATION_THRESHOLD
+    )
+    resident_stats.record_attempt(ray_count)
+    execution = trace_resident_wavefront_gpu_cuda(
+        resident_context,
+        GpuResidentWavefrontBatch(
+            origins=origins,
+            directions=directions,
+            initial_power_lumen=power_values,
+            source_faces=source_face_values,
+            reflection_seeds=reflection_seeds,
+            max_depth=config.max_depth,
+            epsilon_mm=config.epsilon_mm,
+            min_energy=config.min_energy,
+            termination_mode=termination_mode,
+            include_path_payload=path_payload_enabled,
+        ),
+        summary_request=summary_request,
+        path_selection=path_selection,
+        compact_summary_workspace=(gpu_workspace != "full"),
+    )
+    resident_stats.record_success(ray_count, execution)
+    intersection_stats.record_gpu_resident_execution(execution)
+    tape = execution.tape
+    summary_execution = execution.summary_execution
+    event_count = (
+        summary_execution.result.surface_hit_count
+        if summary_execution is not None
+        else (tape.event_count if tape is not None else 0)
+    )
+    planner_stats.logical_row_count += event_count
+
+    active_by_depth = execution.active_ray_count_by_depth
+    active_depth_count = 0
+    for depth, active_count in enumerate(active_by_depth):
+        if active_count <= 0:
+            continue
+        active_depth_count += 1
+        depth_key = str(depth)
+        wavefront_summary["active_ray_count_by_depth"][depth_key] = (
+            wavefront_summary["active_ray_count_by_depth"].get(depth_key, 0)
+            + active_count
+        )
+        wavefront_summary["batch_count_by_depth"][depth_key] = (
+            wavefront_summary["batch_count_by_depth"].get(depth_key, 0) + 1
+        )
+        wavefront_summary["max_observed_depth"] = max(
+            wavefront_summary["max_observed_depth"],
+            depth,
+        )
+        wavefront_summary["max_active_ray_count"] = max(
+            wavefront_summary["max_active_ray_count"],
+            active_count,
+        )
+
+    wavefront_summary["chunk_count"] += 1
+    wavefront_summary["primary_ray_count"] += ray_count
+    wavefront_summary["depth_batch_count"] += active_depth_count
+    wavefront_summary["receiver_dispatch"] = "cuda_resident_plane_batch_v1"
+    wavefront_summary["surface_geometry_dispatch"] = (
+        "cuda_resident_bvh_geometry_v1"
+    )
+    wavefront_summary["reflection_seed_dispatch"] = (
+        "numpy_splitmix64_batch_v1"
+    )
+    wavefront_summary["counter_apply_dispatch"] = (
+        "cuda_resident_counter_rng_v2"
+    )
+    wavefront_summary["stochastic_primary_ray_count"] += (
+        execution.stochastic_primary_ray_count
+    )
+    wavefront_summary["state_build_sec"] += execution.input_upload_sec
+    wavefront_summary["state_init_sec"] += execution.input_upload_sec
+    wavefront_summary["geometry_ray_count"] += execution.logical_intersection_rows
+    wavefront_summary["geometry_hit_count"] += event_count
+    wavefront_summary["plan_sec"] += (
+        execution.kernel_sec
+        + execution.output_download_sec
+        + execution.tape_build_sec
+    )
+    wavefront_summary["event_tape_seal_sec"] += execution.tape_build_sec
+    wavefront_summary["event_tape_path_payload_requested"] = (
+        TAPE_PATH_PAYLOAD_FULL
+        if path_payload_requested
+        else TAPE_PATH_PAYLOAD_OMITTED
+    )
+    wavefront_summary["event_count"] += event_count
+    wavefront_summary["compacted_ray_count"] += int(
+        np.sum(
+            np.maximum(
+                0,
+                np.asarray(active_by_depth[:-1], dtype=np.int64)
+                - np.asarray(active_by_depth[1:], dtype=np.int64),
+            )
+        )
+    )
+
+    if summary_execution is not None:
+        selected_tape = execution.selected_path_tape
+        selected_tape_bytes = selected_tape.nbytes if selected_tape is not None else 0
+        wavefront_summary["event_tape_validation_mode"] = (
+            "gpu_accumulator_strict_v1"
+        )
+        wavefront_summary["event_tape_copy_bytes"] += (
+            summary_execution.output_bytes + selected_tape_bytes
+        )
+        wavefront_summary["event_tape_copy_contract"] = (
+            GPU_SUMMARY_ACCUMULATOR_CONTRACT
+        )
+        wavefront_summary["event_tape_peak_scope"] = (
+            "gpu_summary_plus_selected_path_tape_v1"
+        )
+        wavefront_summary["event_tape_peak_bytes"] = max(
+            wavefront_summary["event_tape_peak_bytes"],
+            selected_tape.peak_bytes if selected_tape is not None else 0,
+        )
+        selected_payload = (
+            TAPE_PATH_PAYLOAD_FULL
+            if selected_tape is not None
+            else TAPE_PATH_PAYLOAD_OMITTED
+        )
+        prior_path_payload = wavefront_summary["event_tape_path_payload"]
+        if prior_path_payload == "not_used":
+            wavefront_summary["event_tape_path_payload"] = selected_payload
+        elif prior_path_payload != selected_payload:
+            wavefront_summary["event_tape_path_payload"] = "mixed_v1"
+        if selected_tape is not None:
+            wavefront_summary["event_tape_path_payload_full_chunk_count"] += 1
+            wavefront_summary["event_tape_path_payload_full_primary_count"] += len(
+                selected_tape
+            )
+            wavefront_summary["event_tape_path_payload_full_event_count"] += (
+                selected_tape.event_count
+            )
+        else:
+            wavefront_summary["event_tape_path_payload_omitted_chunk_count"] += 1
+            wavefront_summary["event_tape_path_payload_omitted_primary_count"] += (
+                ray_count
+            )
+            wavefront_summary["event_tape_path_payload_omitted_event_count"] += (
+                event_count
+            )
+
+        commit_started = time.perf_counter()
+        try:
+            if selected_tape is not None:
+                path_commit = _stage_ordered_paths_only(
+                    selected_tape,
+                    mesh,
+                    config,
+                    receivers,
+                    receiver_grids,
+                    resolved_optical_by_face,
+                    stored_paths,
+                )
+            else:
+                path_commit = _NativeOrderedPathCommit(
+                    stored_paths=list(stored_paths),
+                    materialized_count=0,
+                    skipped_count=0,
+                    path_sec=0.0,
+                )
+        except Exception as exc:
+            raise GpuResidentWavefrontProviderError(
+                "apply_prepare",
+                "gpu_summary_selected_path_apply_failed",
+            ) from exc
+        stored_paths[:] = path_commit.stored_paths
+        reducer_stats.record_logical(ray_count, event_count)
+        reducer_stats.selection_reason = "gpu_summary_accumulator"
+        _retain_ordered_summary_result(
+            reducer_stats,
+            None,
+            summary_execution.result,
+            primary_count=ray_count,
+            event_count=event_count,
+        )
+        path_skipped_count = (
+            execution.skipped_path_count + path_commit.skipped_count
+            if path_payload_requested
+            else 0
+        )
+        reducer_stats.native_path_sec += path_commit.path_sec
+        wavefront_summary["path_materialized_count"] += (
+            path_commit.materialized_count
+        )
+        wavefront_summary["path_materialization_skipped_count"] += (
+            path_skipped_count
+        )
+        wavefront_summary["reducer_hydrate_sec"] += path_commit.path_sec
+        wavefront_summary["reducer_logical_event_count"] += event_count
+        _set_wavefront_reducer_contract(
+            wavefront_summary,
+            GPU_SUMMARY_ACCUMULATOR_CONTRACT,
+        )
+        wavefront_summary["commit_sec"] += time.perf_counter() - commit_started
+        wavefront_summary["total_sec"] += time.perf_counter() - wavefront_started
+        return (
+            summary_execution.result.receiver_hit_count,
+            summary_execution.result.surface_hit_count,
+            summary_execution.result.terminated_ray_count,
+        )
+
+    if tape is None:
+        raise GpuResidentWavefrontProviderError(
+            "result_validation",
+            "gpu_resident_result_payload_missing",
+        )
+    wavefront_summary["event_tape_validation_mode"] = "strict_v1"
+    wavefront_summary["event_tape_copy_bytes"] += tape.nbytes
+    wavefront_summary["event_tape_copy_contract"] = (
+        "gpu_resident_single_download_v1"
+    )
+    prior_path_payload = wavefront_summary["event_tape_path_payload"]
+    if prior_path_payload == "not_used":
+        wavefront_summary["event_tape_path_payload"] = tape.path_payload
+    elif prior_path_payload != tape.path_payload:
+        wavefront_summary["event_tape_path_payload"] = "mixed_v1"
+    if tape.path_payload == TAPE_PATH_PAYLOAD_FULL:
+        wavefront_summary["event_tape_path_payload_full_chunk_count"] += 1
+        wavefront_summary["event_tape_path_payload_full_primary_count"] += len(tape)
+        wavefront_summary["event_tape_path_payload_full_event_count"] += tape.event_count
+    else:
+        wavefront_summary["event_tape_path_payload_omitted_chunk_count"] += 1
+        wavefront_summary["event_tape_path_payload_omitted_primary_count"] += len(tape)
+        wavefront_summary["event_tape_path_payload_omitted_event_count"] += tape.event_count
+    wavefront_summary["event_tape_peak_scope"] = (
+        "gpu_download_plus_tape_owned_ndarray_v1"
+    )
+    wavefront_summary["event_tape_peak_bytes"] = max(
+        wavefront_summary["event_tape_peak_bytes"],
+        tape.peak_bytes,
+    )
+    commit_started = time.perf_counter()
+    counts = _reduce_wavefront_event_tape_ordered(
+        tape,
+        mesh,
+        config,
+        receivers,
+        receiver_grids,
+        optical_summary,
+        reflection_summary,
+        contribution_summary,
+        face_contribution_cache,
+        resolved_optical_by_face,
+        detailed_contributions,
+        stored_paths,
+        reducer_stats,
+        wavefront_summary,
+    )
+    wavefront_summary["commit_sec"] += time.perf_counter() - commit_started
+    wavefront_summary["total_sec"] += time.perf_counter() - wavefront_started
+    return counts
+
+
 def _trace_multi_bounce_wavefront_soa_batch(
     mesh: TriangleMesh,
     origins: np.ndarray,
     directions: np.ndarray,
-    ray_power: float,
+    ray_power: float | np.ndarray,
     source_faces: np.ndarray,
     emitter_seed: int,
     primary_start_index: int,
@@ -5928,6 +6882,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
     if source_face_values.shape != (ray_count,):
         raise ValueError("source_faces must have one value per primary ray")
+    power_values = _ray_power_values(ray_power, ray_count)
 
     wavefront_started = time.perf_counter()
     state_init_started = time.perf_counter()
@@ -5942,7 +6897,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     active = StableActiveRaySoA.initialize(
         origins,
         directions,
-        ray_power,
+        power_values,
         primary_start_index,
         reflection_seeds,
         source_faces=source_face_values,
@@ -5971,7 +6926,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     tape_builder = PrimaryMajorEventTapeBuilder(
         origins if path_payload_enabled else None,
         directions if path_payload_enabled else None,
-        np.full(ray_count, ray_power, dtype=np.float64),
+        power_values,
         reflection_seeds,
         config.max_depth,
         include_path_payload=path_payload_enabled,
@@ -6471,7 +7426,7 @@ def _trace_single_bounce_batch(
     mesh: TriangleMesh,
     origins: np.ndarray,
     directions: np.ndarray,
-    ray_power: float,
+    ray_power: float | np.ndarray,
     source_faces: np.ndarray,
     receivers: List[ReceiverFrame],
     receiver_grids: Dict[str, ReceiverGrid],
@@ -6494,6 +7449,7 @@ def _trace_single_bounce_batch(
     source_face_values = np.ascontiguousarray(source_faces, dtype=np.int64)
     if source_face_values.shape != (ray_count,):
         raise ValueError("source_faces must have one value per primary ray")
+    power_values = _ray_power_values(ray_power, ray_count)
 
     origin_values: List[Vec3] = [
         tuple(float(value) for value in origin)  # type: ignore[misc]
@@ -6509,7 +7465,7 @@ def _trace_single_bounce_batch(
         candidate = _find_first_receiver_hit(
             origin=origin,
             direction=direction,
-            power_lumen=ray_power,
+            power_lumen=float(power_values[index]),
             source_face=int(source_face_values[index]),
             receivers=receivers,
             grids=receiver_grids,
@@ -6546,7 +7502,7 @@ def _trace_single_bounce_batch(
             mesh,
             origin,
             direction,
-            ray_power,
+            float(power_values[index]),
             int(source_face_values[index]),
             direct_receivers[index],
             primary_surface_hit,
@@ -6598,7 +7554,7 @@ def _trace_single_bounce_batch(
                 plan.source_face,
                 plan.origin,
                 plan.direction,
-                ray_power,
+                plan.ray_power,
             )
             if store_path
             else None
@@ -7702,6 +8658,138 @@ def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
         u_axis=u_axis,
         v_axis=v_axis,
         **frame_fields,
+    )
+
+
+def _build_receiver_importance_geometry(
+    receiver_frames: List[ReceiverFrame],
+) -> Optional[ReceiverImportanceGeometry]:
+    if not receiver_frames:
+        return None
+    return ReceiverImportanceGeometry(
+        centers=np.asarray(
+            [frame.receiver.center for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        normals=np.asarray(
+            [frame.normal for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        u_axes=np.asarray(
+            [frame.u_axis for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        v_axes=np.asarray(
+            [frame.v_axis for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        half_widths=np.asarray(
+            [frame.half_width for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        half_heights=np.asarray(
+            [frame.half_height for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        minimum_cosines=np.asarray(
+            [frame.minimum_acceptance_cosine for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+    )
+
+
+def _gpu_resident_receiver_vectors(
+    receiver_frames: List[ReceiverFrame],
+    attribute: str,
+) -> np.ndarray:
+    values = np.asarray(
+        [getattr(frame, attribute) for frame in receiver_frames],
+        dtype=np.float64,
+    )
+    return np.ascontiguousarray(values.reshape((-1, 3)), dtype=np.float64)
+
+
+def _build_gpu_resident_wavefront_context(
+    mesh: TriangleMesh,
+    receiver_frames: List[ReceiverFrame],
+    resolved_optical_by_face: List,
+) -> GpuResidentWavefrontContext:
+    return GpuResidentWavefrontContext(
+        scene=mesh.prepare_gpu_cuda_scene(),
+        triangle_normals=mesh.prepared_triangle_normals(),
+        face_reflectance=np.asarray(
+            [resolved.profile.reflectance for resolved in resolved_optical_by_face],
+            dtype=np.float64,
+        ),
+        face_roughness=np.asarray(
+            [resolved.profile.roughness for resolved in resolved_optical_by_face],
+            dtype=np.float64,
+        ),
+        face_scatter=scatter_codes_from_names(
+            resolved.profile.scatter_model
+            for resolved in resolved_optical_by_face
+        ),
+        face_specular_ratio=np.asarray(
+            [
+                resolved.profile.specular_ratio
+                for resolved in resolved_optical_by_face
+            ],
+            dtype=np.float64,
+        ),
+        face_gaussian_sigma_deg=np.asarray(
+            [
+                resolved.profile.gaussian_sigma_deg
+                for resolved in resolved_optical_by_face
+            ],
+            dtype=np.float64,
+        ),
+        receiver_centers=np.ascontiguousarray(
+            np.asarray(
+                [frame.receiver.center for frame in receiver_frames],
+                dtype=np.float64,
+            ).reshape((-1, 3)),
+            dtype=np.float64,
+        ),
+        receiver_normals=_gpu_resident_receiver_vectors(
+            receiver_frames,
+            "normal",
+        ),
+        receiver_u_axes=_gpu_resident_receiver_vectors(
+            receiver_frames,
+            "u_axis",
+        ),
+        receiver_v_axes=_gpu_resident_receiver_vectors(
+            receiver_frames,
+            "v_axis",
+        ),
+        receiver_half_widths=np.asarray(
+            [frame.half_width for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        receiver_half_heights=np.asarray(
+            [frame.half_height for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        receiver_inverse_widths=np.asarray(
+            [frame.inverse_width for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        receiver_inverse_heights=np.asarray(
+            [frame.inverse_height for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        receiver_minimum_cosines=np.asarray(
+            [frame.minimum_acceptance_cosine for frame in receiver_frames],
+            dtype=np.float64,
+        ),
+        receiver_columns=np.asarray(
+            [frame.columns for frame in receiver_frames],
+            dtype=np.int32,
+        ),
+        receiver_rows=np.asarray(
+            [frame.rows for frame in receiver_frames],
+            dtype=np.int32,
+        ),
     )
 
 
