@@ -55,6 +55,22 @@ class FeatureEdgeSegmentTests(unittest.TestCase):
 
 
 class SubdivideFlatMeshTests(unittest.TestCase):
+    def test_uniform_material_and_shared_metadata_are_stored_compactly(self) -> None:
+        mesh = TriangleMesh()
+        v0 = mesh.add_vertex((0.0, 0.0, 0.0))
+        v1 = mesh.add_vertex((1.0, 0.0, 0.0))
+        v2 = mesh.add_vertex((0.0, 1.0, 0.0))
+        metadata = {"step_component_id": 2, "step_component_name": "Cover"}
+
+        mesh.add_face(v0, v1, v2, "black_pc_resin", metadata)
+        mesh.add_face(v0, v2, v1, "black_pc_resin", metadata)
+
+        self.assertEqual(mesh.face_material, {})
+        self.assertEqual(mesh.material_id(0), "black_pc_resin")
+        self.assertEqual(mesh.material_id(1), "black_pc_resin")
+        self.assertIs(mesh.metadata(0), metadata)
+        self.assertIs(mesh.metadata(1), metadata)
+
     def test_dense_native_mesh_skips_global_roi_subdivision(self) -> None:
         mesh = TriangleMesh()
         v0 = mesh.add_vertex((0.0, 0.0, 0.0))

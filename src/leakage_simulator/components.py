@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from math import inf
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[Dict]:
+def build_face_groups(
+    mesh,
+    max_faces_per_object: Optional[int] = None,
+    face_areas: Optional[Sequence[float]] = None,
+) -> List[Dict]:
     face_count = len(mesh.faces)
     if face_count == 0:
         return []
@@ -31,6 +35,7 @@ def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[
             [step_names[key] for key in sorted(step_groups.keys())],
             max_faces_per_object,
             [step_colors[key] for key in sorted(step_groups.keys())],
+            face_areas,
         )
 
     adjacency: List[Set[int]] = [set() for _ in range(face_count)]
@@ -69,7 +74,13 @@ def build_face_groups(mesh, max_faces_per_object: Optional[int] = None) -> List[
 
         components.append(face_indices)
 
-    return _build_group_items(mesh, components, None, max_faces_per_object)
+    return _build_group_items(
+        mesh,
+        components,
+        None,
+        max_faces_per_object,
+        face_areas=face_areas,
+    )
 
 
 def _build_group_items(
@@ -78,6 +89,7 @@ def _build_group_items(
     names: Optional[List[str]],
     max_faces_per_object: Optional[int],
     colors: Optional[List[Optional[str]]] = None,
+    face_areas: Optional[Sequence[float]] = None,
 ) -> List[Dict]:
     components: List[Dict] = []
     for group_index, face_indices in enumerate(face_groups):
@@ -91,7 +103,11 @@ def _build_group_items(
         area = 0.0
         for fidx in face_indices:
             a, b, c = mesh.face_vertices(fidx)
-            area += mesh.area(fidx)
+            area += (
+                face_areas[fidx]
+                if face_areas is not None
+                else mesh.area(fidx)
+            )
             for vx, vy, vz in (a, b, c):
                 min_x = min(min_x, vx)
                 max_x = max(max_x, vx)

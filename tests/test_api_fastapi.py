@@ -383,6 +383,12 @@ class FastApiLayerTests(unittest.TestCase):
             content=b"STEP-DATA",
             headers={"Content-Type": "application/octet-stream"},
         )
+        duplicate_response = self.client.post(
+            "/api/upload",
+            params={"filename": "TV frame.step"},
+            content=b"STEP-DATA",
+            headers={"Content-Type": "application/octet-stream"},
+        )
         invalid_response = self.client.post(
             "/api/upload",
             params={"filename": "notes.txt"},
@@ -397,6 +403,11 @@ class FastApiLayerTests(unittest.TestCase):
             Path(payload["path"]).read_bytes(),
             b"STEP-DATA",
         )
+        self.assertEqual(
+            duplicate_response.json()["path"],
+            payload["path"],
+        )
+        self.assertTrue(duplicate_response.json()["cache_hit"])
         self.assertEqual(invalid_response.status_code, 400)
         self.assertIn(
             "Supported CAD formats",

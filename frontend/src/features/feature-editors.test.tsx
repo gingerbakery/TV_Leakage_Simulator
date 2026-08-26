@@ -309,6 +309,7 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('button', { name: 'ROI 1-1 ROI 좌표 복사' }),
     ).not.toBeNull()
     expect(screen.queryByText('1,800 mm²')).toBeNull()
+    expect(screen.queryByText('STEP Solid 1')).toBeNull()
   })
 
   it('pastes copied ROI corner coordinates into both coordinate rows', async () => {

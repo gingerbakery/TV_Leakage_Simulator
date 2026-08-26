@@ -7,10 +7,10 @@ import type {
 const MAGIC = 'BITSAMSC'
 const HEADER_BYTES = 16
 
-type NumericView = Float64Array | Uint32Array | Int32Array
+type NumericView = Float32Array | Float64Array | Uint32Array | Int32Array
 
 interface BinaryDescriptor {
-  dtype: 'float64' | 'uint32' | 'int32'
+  dtype: 'float32' | 'float64' | 'uint32' | 'int32'
   width: number
   count: number
   byte_offset: number
@@ -46,6 +46,9 @@ function numericView(
 ): NumericView {
   const byteOffset = dataOffset + descriptor.byte_offset
   const length = descriptor.count * descriptor.width
+  if (descriptor.dtype === 'float32') {
+    return new Float32Array(buffer, byteOffset, length)
+  }
   if (descriptor.dtype === 'float64') {
     return new Float64Array(buffer, byteOffset, length)
   }

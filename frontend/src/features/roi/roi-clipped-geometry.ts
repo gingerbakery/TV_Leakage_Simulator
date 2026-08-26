@@ -227,6 +227,56 @@ export function clipTriangleToRoiBox(
   return polygon
 }
 
+/** Area-weighted center of the exact CAD surface portion visible inside ROI.
+ * Source triangles are clipped first, so a coarse triangle crossing the ROI
+ * boundary cannot pull a Datum Plane center outside the selected region. */
+export function roiClippedSurfaceCentroid(
+  scene: ScenePayload,
+  faceIds: Iterable<number>,
+  boxes: RoiClipBox[],
+): [number, number, number] | null {
+  const clipBoxes = normalizeRoiClipBoxes(boxes)
+  if (clipBoxes.length === 0) return null
+  const weightedCenter = new Vector3()
+  let totalArea = 0
+
+  for (const faceId of faceIds) {
+    const face = scene.mesh.faces[faceId]
+    if (!face) continue
+    const triangle = face.map((vertexIndex) =>
+      scene.mesh.vertices[vertexIndex]
+        ? ([...scene.mesh.vertices[vertexIndex]] as Point3)
+        : null,
+    )
+    if (triangle.some((point) => point === null)) continue
+    const trianglePoints = triangle as Point3[]
+    for (const box of clipBoxes) {
+      const polygon = clipTriangleToRoiBox(trianglePoints, box)
+      if (polygon.length < 3) continue
+      const anchor = new Vector3(...polygon[0])
+      for (let index = 1; index < polygon.length - 1; index += 1) {
+        const second = new Vector3(...polygon[index])
+        const third = new Vector3(...polygon[index + 1])
+        const area = second
+          .clone()
+          .sub(anchor)
+          .cross(third.clone().sub(anchor))
+          .length() * 0.5
+        if (area <= 1e-12) continue
+        weightedCenter.addScaledVector(
+          anchor.clone().add(second).add(third).multiplyScalar(1 / 3),
+          area,
+        )
+        totalArea += area
+      }
+    }
+  }
+
+  return totalArea > 0
+    ? weightedCenter.multiplyScalar(1 / totalArea).toArray()
+    : null
+}
+
 function clipVertexKey(
   componentId: number,
   point: Point3,

@@ -370,8 +370,13 @@ class TriangleMesh:
     def __init__(self) -> None:
         self.vertices: List[Vec3] = []
         self.faces: List[TriangleFace] = []
+        self.default_material_id = ""
         self.face_material: Dict[int, str] = {}
-        self.face_metadata: Dict[int, Dict] = {}
+        # Face metadata is index-aligned and commonly shared by every
+        # tessellated triangle of one authored B-rep face. A list avoids the
+        # very large integer-key dictionary overhead on multi-million-face
+        # viewer meshes.
+        self.face_metadata: List[Dict] = []
         self.intersection_backend = "auto"
         self._prepared_triangles: Optional[List[_PreparedTriangle]] = None
         self._prepared_triangle_normals: Optional[NDArray[np.float64]] = None
@@ -388,7 +393,7 @@ class TriangleMesh:
 
     def add_vertex(self, vertex: Vec3) -> int:
         self.vertices.append(vertex)
-        self._invalidate_acceleration()
+        self._invalidate_acceleration_if_built()
         return len(self.vertices) - 1
 
     def add_face(
@@ -402,9 +407,12 @@ class TriangleMesh:
         face = TriangleFace(v0=v0, v1=v1, v2=v2)
         self.faces.append(face)
         idx = len(self.faces) - 1
-        self.face_material[idx] = material_id
-        self.face_metadata[idx] = metadata if metadata is not None else {}
-        self._invalidate_acceleration()
+        if idx == 0 and not self.default_material_id:
+            self.default_material_id = material_id
+        if material_id != self.default_material_id:
+            self.face_material[idx] = material_id
+        self.face_metadata.append(metadata if metadata is not None else {})
+        self._invalidate_acceleration_if_built()
         return idx
 
     def face_vertices(self, index: int) -> Tuple[Vec3, Vec3, Vec3]:
@@ -442,10 +450,12 @@ class TriangleMesh:
         return self._prepared_triangle_normals
 
     def material_id(self, index: int) -> str:
-        return self.face_material.get(index, "")
+        return self.face_material.get(index, self.default_material_id)
 
     def metadata(self, index: int) -> Dict:
-        return self.face_metadata.get(index, {})
+        if 0 <= index < len(self.face_metadata):
+            return self.face_metadata[index]
+        return {}
 
     def intersect_ray(
         self,
@@ -1423,6 +1433,17 @@ class TriangleMesh:
         self._gpu_cuda_scene = None
         self._gpu_cuda_scene_build_sec = 0.0
 
+    def _invalidate_acceleration_if_built(self) -> None:
+        if (
+            self._prepared_triangles is not None
+            or self._prepared_triangle_normals is not None
+            or self._bvh_nodes is not None
+            or self._bvh_face_indices is not None
+            or self._native_cpu_scene is not None
+            or self._gpu_cuda_scene is not None
+        ):
+            self._invalidate_acceleration()
+
     @staticmethod
     def _ray_box_entry_fast(
         origin: Vec3,
@@ -1604,6 +1625,7 @@ def subdivide_flat_mesh(
     that metadata across many faces per component).
     """
     result = TriangleMesh()
+    result.default_material_id = mesh.default_material_id
     vertex_map: Dict[Tuple[int, int, int], int] = {}
 
     def dedup_vertex(point: Vec3) -> int:
@@ -1621,7 +1643,7 @@ def subdivide_flat_mesh(
     def emit(a: Vec3, b: Vec3, c: Vec3, material_id: str, metadata: Dict, depth: int) -> None:
         area = face_area(a, b, c)
         if area <= max_area_mm2 or depth <= 0 or area <= 1e-9:
-            result.add_face(dedup_vertex(a), dedup_vertex(b), dedup_vertex(c), material_id, dict(metadata))
+            result.add_face(dedup_vertex(a), dedup_vertex(b), dedup_vertex(c), material_id, metadata)
             return
         ab = edge_midpoint(a, b)
         bc = edge_midpoint(b, c)

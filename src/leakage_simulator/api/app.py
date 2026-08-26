@@ -21,6 +21,7 @@ from leakage_simulator.scene_binary import (
     iter_scene_binary,
     prepare_scene_binary,
 )
+from leakage_simulator.roi import materialize_scene_derived_geometry
 
 from .runtime import ApiRuntime
 
@@ -160,7 +161,9 @@ def create_app(
                 ),
                 flush=True,
             )
-            response = JSONResponse(content=payload)
+            response = JSONResponse(
+                content=materialize_scene_derived_geometry(payload)
+            )
             serialization_sec = (
                 time.perf_counter() - serialization_started_at
             )

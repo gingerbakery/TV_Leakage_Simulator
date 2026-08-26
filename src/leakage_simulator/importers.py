@@ -993,7 +993,7 @@ def _import_step_ocp(
                         vertex_map[b],
                         vertex_map[c],
                         default_material,
-                        dict(metadata),
+                        metadata,
                     )
                     if face_id % 13 == 0:
                         receiver_faces.append(face_id)
@@ -1189,16 +1189,22 @@ def _import_step_ocp(
 def _guess_receiver_faces(mesh: TriangleMesh) -> List[int]:
     if not mesh.faces:
         return []
-    centroids = [mesh.centroid(idx) for idx in range(len(mesh.faces))]
-    max_y = max(center[1] for center in centroids)
-    min_y = min(center[1] for center in centroids)
+    # Receiver hints are only a UI convenience; scanning and retaining every
+    # triangle centroid on a multi-million-face CAD scene wastes substantial
+    # import time and memory. Sample at most ~4k faces against exact vertex
+    # bounds, then return a compact representative set.
+    max_y = max(vertex[1] for vertex in mesh.vertices)
+    min_y = min(vertex[1] for vertex in mesh.vertices)
     span_y = max(1e-6, max_y - min_y)
     threshold = max_y - span_y * 0.05
-    candidates = [idx for idx, center in enumerate(centroids) if center[1] >= threshold]
+    sample_step = max(1, len(mesh.faces) // 4096)
+    candidates = []
+    for face_index in range(0, len(mesh.faces), sample_step):
+        if mesh.centroid(face_index)[1] >= threshold:
+            candidates.append(face_index)
+            if len(candidates) >= 256:
+                break
     if not candidates:
         step = max(1, len(mesh.faces) // 32)
         return list(range(0, len(mesh.faces), step))[:64]
-    if len(candidates) > 256:
-        step = max(1, len(candidates) // 128)
-        candidates = candidates[::step]
     return candidates

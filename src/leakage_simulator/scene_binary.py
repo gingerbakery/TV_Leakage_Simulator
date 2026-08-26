@@ -47,9 +47,11 @@ def _component_faces(
         item = {key: value for key, value in component.items() if key != "face_indices"}
         item["binary_face_count"] = len(face_indices)
         first_face = int(face_indices[0]) if face_indices else 0
-        is_contiguous = all(
-            int(face_id) == first_face + index
-            for index, face_id in enumerate(face_indices)
+        # Component grouping emits sorted, unique face IDs. The span check is
+        # therefore sufficient and avoids another full pass over millions of
+        # IDs during Binary manifest preparation.
+        is_contiguous = not face_indices or (
+            int(face_indices[-1]) - first_face + 1 == len(face_indices)
         )
         if is_contiguous:
             item["binary_face_encoding"] = "range"
@@ -87,7 +89,7 @@ def prepare_scene_binary(
     edges = mesh.get("feature_edge_segments") or []
 
     blocks: list[tuple[str, str, int, Iterable[Any]]] = [
-        ("vertices", "float64", 3, _flatten(mesh.get("vertices") or [])),
+        ("vertices", "float32", 3, _flatten(mesh.get("vertices") or [])),
         ("faces", "uint32", 3, _flatten(mesh.get("faces") or [])),
         (
             "face_component_ids",
@@ -101,10 +103,10 @@ def prepare_scene_binary(
             else []
         ),
         ("face_source_ids", "uint32", 1, iter(mesh.get("face_source_ids") or [])),
-        ("face_areas_mm2", "float64", 1, iter(mesh.get("face_areas_mm2") or [])),
+        ("face_areas_mm2", "float32", 1, iter(mesh.get("face_areas_mm2") or [])),
         (
             "feature_edge_points",
-            "float64",
+            "float32",
             6,
             (
                 coordinate
@@ -121,7 +123,7 @@ def prepare_scene_binary(
         ("component_face_indices", "uint32", 1, component_face_values),
     ]
 
-    dtype_sizes = {"float64": 8, "uint32": 4, "int32": 4}
+    dtype_sizes = {"float32": 4, "uint32": 4, "int32": 4}
     counts = {
         "vertices": len(mesh.get("vertices") or []),
         "faces": len(mesh.get("faces") or []),
@@ -184,8 +186,8 @@ def iter_scene_binary(
 ) -> Iterator[bytes]:
     yield HEADER.pack(MAGIC, VERSION, len(manifest))
     yield manifest
-    typecodes = {"float64": "d", "uint32": "I", "int32": "i"}
-    expected_sizes = {"float64": 8, "uint32": 4, "int32": 4}
+    typecodes = {"float32": "f", "uint32": "I", "int32": "i"}
+    expected_sizes = {"float32": 4, "uint32": 4, "int32": 4}
     emitted_data_bytes = 0
     for _name, dtype, _width, values in blocks:
         padding = (-emitted_data_bytes) % 8

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from array import array
 from typing import Dict, List, Optional, Sequence, Set
 import threading
 import time
@@ -8,6 +9,54 @@ from .components import build_face_groups
 from .geometry import TriangleMesh, build_feature_edge_segments
 from .importers import import_geometry
 from .types import ReceiverPatchConfig, ROIComponentClip, ROIPointSelection, ROIRegionResult, Vec3
+
+
+class _TriangleFaceRows(Sequence):
+    def __init__(self, faces) -> None:
+        self._faces = faces
+
+    def __len__(self) -> int:
+        return len(self._faces)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        face = self._faces[index]
+        return (face.v0, face.v1, face.v2)
+
+
+class _MeshMaterialIds(Sequence):
+    def __init__(self, mesh: TriangleMesh) -> None:
+        self._mesh = mesh
+
+    def __len__(self) -> int:
+        return len(self._mesh.faces)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._mesh.material_id(index)
+
+
+class _FaceSourceIds(Sequence):
+    def __init__(self, mesh: TriangleMesh) -> None:
+        self._mesh = mesh
+
+    def __len__(self) -> int:
+        return len(self._mesh.faces)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return int(self._mesh.metadata(index).get("face_index", index))
 
 
 def _scene_stage_start(stage: str) -> None:
@@ -52,7 +101,18 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     mesh = import_result.viewer_mesh or import_result.mesh
     grouping_started_at = time.perf_counter()
     _scene_stage_start("component grouping")
-    objects = build_face_groups(mesh, max_faces_per_object=None)
+    # Viewer/Binary V2 consumes float32 values. Building the same data as
+    # millions of boxed Python floats costs far more memory and makes the
+    # post-STEP payload stage noticeably slower on large assemblies.
+    face_areas = array(
+        "f",
+        (mesh.area(face_index) for face_index in range(len(mesh.faces))),
+    )
+    objects = build_face_groups(
+        mesh,
+        max_faces_per_object=None,
+        face_areas=face_areas,
+    )
     grouping_sec = time.perf_counter() - grouping_started_at
     print(
         "[CAD] {:<24} {:>8.3f}s | {} components".format(
@@ -64,35 +124,23 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
     )
     arrays_started_at = time.perf_counter()
     _scene_stage_start("scene mesh arrays")
-    face_to_component: Dict[int, int] = {}
+    face_component_ids: List[Optional[int]] = [None] * len(mesh.faces)
     for item in objects:
         component_id = item["object_id"]
         item["component_id"] = component_id
         item["component_name"] = item["object_name"]
         for face_index in item["face_indices"]:
-            face_to_component[face_index] = component_id
+            face_component_ids[face_index] = component_id
 
-    face_ids = list(range(len(mesh.faces)))
-    face_component_ids = [face_to_component.get(face_index) for face_index in face_ids]
-    face_material_ids = [mesh.material_id(face_index) for face_index in face_ids]
+    face_material_ids = _MeshMaterialIds(mesh)
     # One CAD/B-rep face may be tessellated (and later ROI-subdivided) into
     # many triangles. Preserve its authored face identity for UI selection
     # counts and whole-surface picking.
-    face_source_ids = [
-        int(mesh.metadata(face_index).get("face_index", face_index))
-        for face_index in face_ids
-    ]
-    face_normals = [
-        [round(value, 6) for value in mesh.normal(face_index)]
-        for face_index in face_ids
-    ]
-    face_centroids = [
-        [round(value, 6) for value in mesh.centroid(face_index)]
-        for face_index in face_ids
-    ]
-    face_areas = [round(mesh.area(face_index), 6) for face_index in face_ids]
+    face_source_ids = _FaceSourceIds(mesh)
     step_component_to_component: Dict[int, int] = {}
-    for face_index, component_id in face_to_component.items():
+    for face_index, component_id in enumerate(face_component_ids):
+        if component_id is None:
+            continue
         step_component_id = mesh.metadata(face_index).get("step_component_id")
         if step_component_id is not None:
             step_component_to_component[int(step_component_id)] = component_id
@@ -117,13 +165,8 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
                 int(metadata.get("face_index", face_index))
             )
         return {
-            "vertices": [
-                [round(v[0], 6), round(v[1], 6), round(v[2], 6)]
-                for v in trace_mesh.vertices
-            ],
-            "faces": [
-                [face.v0, face.v1, face.v2] for face in trace_mesh.faces
-            ],
+            "vertices": trace_mesh.vertices,
+            "faces": _TriangleFaceRows(trace_mesh.faces),
             "face_component_ids": trace_face_component_ids,
             "face_material_ids": trace_face_material_ids,
             "face_source_ids": trace_face_source_ids,
@@ -180,7 +223,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         if component_id is None:
             adjacent_faces = segment.get("adjacent_face_indices") or []
             if adjacent_faces:
-                component_id = face_to_component.get(int(adjacent_faces[0]))
+                component_id = face_component_ids[int(adjacent_faces[0])]
         feature_edge_segments.append(
             {
                 "start": [round(float(value), 6) for value in segment["start"]],
@@ -222,14 +265,19 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
             },
         },
         "mesh": {
-            "vertices": [[round(v[0], 6), round(v[1], 6), round(v[2], 6)] for v in mesh.vertices],
-            "faces": [[face.v0, face.v1, face.v2] for face in mesh.faces],
-            "face_ids": face_ids,
+            "vertices": mesh.vertices,
+            "faces": _TriangleFaceRows(mesh.faces),
+            # Binary clients create this monotonic sequence without sending
+            # millions of redundant integers. JSON fallback materializes it
+            # only on explicit request.
+            "face_ids": [],
             "face_component_ids": face_component_ids,
             "face_material_ids": face_material_ids,
             "face_source_ids": face_source_ids,
-            "face_normals": face_normals,
-            "face_centroids": face_centroids,
+            # Derived lazily in the browser (or by the JSON fallback helper)
+            # from vertices/faces. They are not transmitted in Binary V2.
+            "face_normals": [],
+            "face_centroids": [],
             "face_areas_mm2": face_areas,
             "feature_edge_segments": feature_edge_segments,
         },
@@ -281,6 +329,78 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         flush=True,
     )
     return payload
+
+
+def materialize_scene_derived_geometry(payload: Dict) -> Dict:
+    """Populate JSON-only face sequences omitted from the Binary fast path."""
+    mesh_value = payload.get("mesh")
+    if not isinstance(mesh_value, dict):
+        return payload
+    vertices = mesh_value.get("vertices") or []
+    faces = mesh_value.get("faces") or []
+    face_count = len(faces)
+    if (
+        len(mesh_value.get("face_ids") or []) == face_count
+        and len(mesh_value.get("face_normals") or []) == face_count
+        and len(mesh_value.get("face_centroids") or []) == face_count
+    ):
+        return payload
+
+    face_normals = []
+    face_centroids = []
+    for face in faces:
+        first = vertices[int(face[0])]
+        second = vertices[int(face[1])]
+        third = vertices[int(face[2])]
+        ab = (
+            second[0] - first[0],
+            second[1] - first[1],
+            second[2] - first[2],
+        )
+        ac = (
+            third[0] - first[0],
+            third[1] - first[1],
+            third[2] - first[2],
+        )
+        normal = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        length = sum(value * value for value in normal) ** 0.5
+        face_normals.append(
+            [value / length for value in normal]
+            if length > 1e-12
+            else [0.0, 0.0, 1.0]
+        )
+        face_centroids.append(
+            [
+                (first[axis] + second[axis] + third[axis]) / 3.0
+                for axis in range(3)
+            ]
+        )
+
+    response = dict(payload)
+    response_mesh = dict(mesh_value)
+    response_mesh["vertices"] = [list(vertex) for vertex in vertices]
+    response_mesh["faces"] = [list(face) for face in faces]
+    response_mesh["face_component_ids"] = list(
+        mesh_value.get("face_component_ids") or []
+    )
+    response_mesh["face_material_ids"] = list(
+        mesh_value.get("face_material_ids") or []
+    )
+    response_mesh["face_source_ids"] = list(
+        mesh_value.get("face_source_ids") or []
+    )
+    response_mesh["face_areas_mm2"] = list(
+        mesh_value.get("face_areas_mm2") or []
+    )
+    response_mesh["face_ids"] = list(range(face_count))
+    response_mesh["face_normals"] = face_normals
+    response_mesh["face_centroids"] = face_centroids
+    response["mesh"] = response_mesh
+    return response
 
 
 # ---------------------------------------------------------------------------

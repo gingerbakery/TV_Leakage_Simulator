@@ -61,6 +61,7 @@ import {
 } from '@/features/materials'
 import {
   buildRoiClippedGeometries,
+  roiClippedSurfaceCentroid,
   type RoiComponentPointTransform,
 } from '@/features/roi/roi-clipped-geometry'
 import {
@@ -1130,6 +1131,157 @@ function orbitPipCamera(
   camera.lookAt(target)
 }
 
+function panPipCamera(
+  runtime: ViewerRuntime,
+  dx: number,
+  dy: number,
+): void {
+  if (!dx && !dy) return
+  const camera = runtime.pipCamera
+  const viewportHeight = Math.max(
+    runtime.pipViewportRect?.height ?? 160,
+    1,
+  )
+  const distance = Math.max(
+    camera.position.distanceTo(runtime.pipTarget),
+    1e-6,
+  )
+  const worldUnitsPerPixel =
+    (2 * distance * Math.tan(MathUtils.degToRad(camera.fov) / 2)) /
+    viewportHeight
+  camera.updateMatrixWorld(true)
+  const right = new Vector3()
+    .setFromMatrixColumn(camera.matrixWorld, 0)
+    .normalize()
+  const up = camera.up.clone().normalize()
+  const translation = right
+    .multiplyScalar(-dx * worldUnitsPerPixel)
+    .addScaledVector(up, dy * worldUnitsPerPixel)
+  camera.position.add(translation)
+  runtime.pipTarget.add(translation)
+  camera.lookAt(runtime.pipTarget)
+}
+
+function zoomPipCamera(
+  runtime: ViewerRuntime,
+  delta: number,
+): void {
+  if (!delta) return
+  const camera = runtime.pipCamera
+  const offset = new Vector3().subVectors(
+    camera.position,
+    runtime.pipTarget,
+  )
+  const zoomFactor = Math.exp(delta * 0.001)
+  const minDistance = Math.max(runtime.originAxisBaseScale * 0.1, 1e-3)
+  const maxDistance = runtime.originAxisBaseScale * 1000
+  const nextDistance = MathUtils.clamp(
+    offset.length() * zoomFactor,
+    minDistance,
+    maxDistance,
+  )
+  offset.setLength(nextDistance)
+  camera.position.copy(runtime.pipTarget).add(offset)
+  runtime.pipDistance = nextDistance
+}
+
+function fitPipCameraToBounds(
+  runtime: ViewerRuntime,
+  bounds: Box3,
+  aspect: number,
+): void {
+  if (bounds.isEmpty()) return
+  const camera = runtime.pipCamera
+  const center = bounds.getCenter(new Vector3())
+  const size = bounds.getSize(new Vector3())
+  const maxDimension = Math.max(size.x, size.y, size.z, 1)
+  const cameraOffsetDirection = new Vector3(
+    ...ISO_CAMERA_AXES.direction,
+  ).normalize()
+  const forward = cameraOffsetDirection.clone().negate()
+  const requestedUp = new Vector3(...ISO_CAMERA_AXES.up).normalize()
+  const right = new Vector3()
+    .crossVectors(forward, requestedUp)
+    .normalize()
+  const up = new Vector3().crossVectors(right, forward).normalize()
+  const verticalTangent = Math.tan(MathUtils.degToRad(camera.fov) / 2)
+  const horizontalTangent =
+    verticalTangent * Math.max(aspect, 0.1)
+  const corners: Vector3[] = []
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) {
+        corners.push(new Vector3(x, y, z))
+      }
+    }
+  }
+
+  const requiredDistance = (target: Vector3) => {
+    let distance = maxDimension * 0.05
+    for (const corner of corners) {
+      const relative = corner.clone().sub(target)
+      const towardCamera = relative.dot(cameraOffsetDirection)
+      distance = Math.max(
+        distance,
+        towardCamera + Math.abs(relative.dot(right)) / horizontalTangent,
+        towardCamera + Math.abs(relative.dot(up)) / verticalTangent,
+      )
+    }
+    return Math.max(distance * 1.06, maxDimension * 0.05)
+  }
+
+  const target = center.clone()
+  // Perspective depth can make the projected box slightly asymmetric even
+  // when looking at its 3D midpoint. Re-center the actual screen projection
+  // twice, then perform one final tight fit from that corrected target.
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    const distance = requiredDistance(target)
+    camera.aspect = aspect
+    camera.position
+      .copy(target)
+      .addScaledVector(cameraOffsetDirection, distance)
+    camera.up.copy(up)
+    camera.near = Math.max(distance / 1000, 0.01)
+    camera.far = Math.max(distance * 20, maxDimension * 10, 1000)
+    camera.lookAt(target)
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld(true)
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+    for (const corner of corners) {
+      const projected = corner.clone().project(camera)
+      minX = Math.min(minX, projected.x)
+      maxX = Math.max(maxX, projected.x)
+      minY = Math.min(minY, projected.y)
+      maxY = Math.max(maxY, projected.y)
+    }
+    target
+      .addScaledVector(
+        right,
+        ((minX + maxX) / 2) * distance * horizontalTangent,
+      )
+      .addScaledVector(
+        up,
+        ((minY + maxY) / 2) * distance * verticalTangent,
+      )
+  }
+
+  const distance = requiredDistance(target)
+  camera.aspect = aspect
+  camera.position
+    .copy(target)
+    .addScaledVector(cameraOffsetDirection, distance)
+  camera.up.copy(up)
+  camera.near = Math.max(distance / 1000, 0.01)
+  camera.far = Math.max(distance * 20, maxDimension * 10, 1000)
+  camera.lookAt(target)
+  camera.updateProjectionMatrix()
+  runtime.pipTarget.copy(target)
+  runtime.pipDistance = distance
+}
+
 function restoreRoiSelectionCameraPose(
   runtime: ViewerRuntime,
 ): boolean {
@@ -1479,6 +1631,11 @@ export function ThreeViewerCanvas({
         new PlaneGeometry(2, 2),
         new MeshBasicMaterial({
           map: pipRenderTarget.texture,
+          // The render target is cleared with alpha=0. Without transparent
+          // compositing those pixels become opaque black, hiding black CAD
+          // components and making a correctly fitted model look cropped.
+          transparent: true,
+          opacity: 1,
           depthTest: false,
           depthWrite: false,
           toneMapped: false,
@@ -1736,34 +1893,19 @@ export function ThreeViewerCanvas({
 
           pipCamera.aspect = pipWidth / pipHeight
           if (!runtime.pipUserAdjusted) {
-            runtime.modelRoot.updateMatrixWorld(true)
-            const fullBounds = new Box3().setFromObject(runtime.modelRoot)
+            // Full View must always frame the imported CAD itself. Runtime
+            // object bounds can be distorted by temporary ROI/selection/
+            // transform overlays, producing a close-up of one corner.
+            const fullBounds = new Box3().setFromCenterAndSize(
+              bounds.center,
+              bounds.size,
+            )
             if (!fullBounds.isEmpty()) {
-              const center = fullBounds.getCenter(new Vector3())
-              const size = fullBounds.getSize(new Vector3())
-              const maxDimension = Math.max(size.x, size.y, size.z, 1)
-              const verticalFov = MathUtils.degToRad(pipCamera.fov)
-              const horizontalFov =
-                2 *
-                Math.atan(
-                  Math.tan(verticalFov / 2) *
-                    Math.max(pipCamera.aspect, 0.1),
-                )
-              const distance =
-                Math.max(
-                  maxDimension / (2 * Math.tan(verticalFov / 2)),
-                  maxDimension / (2 * Math.tan(horizontalFov / 2)),
-                ) * 1.35
-              runtime.pipTarget.copy(center)
-              runtime.pipDistance = distance
-              pipCamera.position
-                .copy(center)
-                .addScaledVector(
-                  new Vector3(...ISO_CAMERA_AXES.direction).normalize(),
-                  distance,
-                )
-              pipCamera.up.set(...ISO_CAMERA_AXES.up)
-              pipCamera.lookAt(center)
+              fitPipCameraToBounds(
+                runtime,
+                fullBounds,
+                pipCamera.aspect,
+              )
             }
           }
           if (fullViewCameraSyncRef.current) {
@@ -1849,7 +1991,7 @@ export function ThreeViewerCanvas({
     }
     animationFrame = window.requestAnimationFrame(animate)
 
-    const canvasPoint = (event: PointerEvent) => {
+    const canvasPoint = (event: MouseEvent) => {
       const rect = canvas.getBoundingClientRect()
       return {
         x: Math.min(
@@ -2126,7 +2268,11 @@ export function ThreeViewerCanvas({
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
     let rollDrag: { lastX: number } | null = null
-    let pipDrag: { lastX: number; lastY: number } | null = null
+    let pipDrag: {
+      lastX: number
+      lastY: number
+      mode: 'rotate' | 'pan' | 'zoom'
+    } | null = null
     let pointerInPip = false
     const pointInPipViewport = (point: { x: number; y: number }) => {
       const rect = runtime.pipViewportRect
@@ -2139,18 +2285,15 @@ export function ThreeViewerCanvas({
       )
     }
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.button === 2) {
-        rightPointerDown = { x: event.clientX, y: event.clientY }
-        rightPointerMoved = false
-        return
-      }
-      if (event.button !== 0) return
       if (
         runtime.roiPreviewRoot.visible &&
-        pointInPipViewport(canvasPoint(event))
+        pointInPipViewport(canvasPoint(event)) &&
+        (event.button === 0 || event.button === 1 || event.button === 2)
       ) {
         event.preventDefault()
         pointerDown = null
+        rightPointerDown = null
+        rightPointerMoved = event.button === 2
         if (controlsInteracting) handleControlsEnd()
         controls.enabled = false
         if (fullViewCameraSyncRef.current) {
@@ -2160,12 +2303,27 @@ export function ThreeViewerCanvas({
           setFullViewCameraSync(false)
           onStatusMessage('Full View camera sync · OFF · manual control')
         }
-        pipDrag = { lastX: event.clientX, lastY: event.clientY }
+        pipDrag = {
+          lastX: event.clientX,
+          lastY: event.clientY,
+          mode:
+            event.button === 2
+              ? 'pan'
+              : event.button === 1
+                ? 'zoom'
+                : 'rotate',
+        }
         runtime.pipUserAdjusted = true
         runtime.pipLastRenderTime = 0
         canvas.setPointerCapture(event.pointerId)
         return
       }
+      if (event.button === 2) {
+        rightPointerDown = { x: event.clientX, y: event.clientY }
+        rightPointerMoved = false
+        return
+      }
+      if (event.button !== 0) return
       if (roiBoxSelectionArmedRef.current) {
         // Shift/Alt+drag stays free to roll the camera even while armed -
         // orbit is locked so a plain drag always draws the box, but the
@@ -2218,7 +2376,13 @@ export function ThreeViewerCanvas({
         const dy = event.clientY - pipDrag.lastY
         pipDrag.lastX = event.clientX
         pipDrag.lastY = event.clientY
-        orbitPipCamera(runtime, dx, dy)
+        if (pipDrag.mode === 'pan') {
+          panPipCamera(runtime, dx, dy)
+        } else if (pipDrag.mode === 'zoom') {
+          zoomPipCamera(runtime, dy * 3)
+        } else {
+          orbitPipCamera(runtime, dx, dy)
+        }
         runtime.pipLastRenderTime = 0
         return
       }
@@ -2234,6 +2398,14 @@ export function ThreeViewerCanvas({
       setBoxDrag(nextSelection)
     }
     const handlePointerUp = (event: PointerEvent) => {
+      if (pipDrag) {
+        pipDrag = null
+        controls.enabled = true
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId)
+        }
+        return
+      }
       if (event.button === 2) {
         if (
           rightPointerDown &&
@@ -2250,14 +2422,6 @@ export function ThreeViewerCanvas({
       if (event.button !== 0) return
       if (rollDrag) {
         rollDrag = null
-        if (canvas.hasPointerCapture(event.pointerId)) {
-          canvas.releasePointerCapture(event.pointerId)
-        }
-        return
-      }
-      if (pipDrag) {
-        pipDrag = null
-        controls.enabled = true
         if (canvas.hasPointerCapture(event.pointerId)) {
           canvas.releasePointerCapture(event.pointerId)
         }
@@ -2441,6 +2605,16 @@ export function ThreeViewerCanvas({
           candidateFaceIds,
           hit.faceId,
         )
+        const activeClipBoxes = runtime.roiPreviewRoot.visible
+          ? roiScopesRef.current.flatMap((scope) =>
+              scope.active && scope.clipBox ? [scope.clipBox] : [],
+            )
+          : []
+        const clippedCenter = roiClippedSurfaceCentroid(
+          scene,
+          patchFaceIds,
+          activeClipBoxes,
+        )
         let weightedX = 0
         let weightedY = 0
         let weightedZ = 0
@@ -2454,14 +2628,14 @@ export function ThreeViewerCanvas({
           weightedZ += centroid[2] * area
           totalArea += area
         }
-        const center =
-          totalArea > 0
+        const center = clippedCenter ??
+          (totalArea > 0
             ? [
                 weightedX / totalArea,
                 weightedY / totalArea,
                 weightedZ / totalArea,
               ]
-            : hit.point
+            : hit.point)
         const normalVector = scene.mesh.face_normals[hit.faceId]
         actions.setDatumFacePickResult({
           center: { x: center[0], y: center[1], z: center[2] },
@@ -2617,22 +2791,7 @@ export function ThreeViewerCanvas({
       // main camera instead.
       event.preventDefault()
       event.stopImmediatePropagation()
-      const camera = runtime.pipCamera
-      const offset = new Vector3().subVectors(
-        camera.position,
-        runtime.pipTarget,
-      )
-      const zoomFactor = Math.exp(event.deltaY * 0.001)
-      const minDistance = Math.max(runtime.originAxisBaseScale * 0.1, 1e-3)
-      const maxDistance = runtime.originAxisBaseScale * 1000
-      const nextDistance = MathUtils.clamp(
-        offset.length() * zoomFactor,
-        minDistance,
-        maxDistance,
-      )
-      offset.setLength(nextDistance)
-      camera.position.copy(runtime.pipTarget).add(offset)
-      runtime.pipDistance = nextDistance
+      zoomPipCamera(runtime, event.deltaY)
       runtime.pipUserAdjusted = true
       runtime.pipLastRenderTime = 0
     }
@@ -2683,6 +2842,16 @@ export function ThreeViewerCanvas({
       setBoxDrag(null)
     }
     const handleContextMenu = (event: MouseEvent) => {
+      if (
+        runtime.roiPreviewRoot.visible &&
+        pointInPipViewport(canvasPoint(event))
+      ) {
+        rightPointerDown = null
+        rightPointerMoved = false
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       const suppressMenu =
         rightPointerMoved ||
         roiBoxSelectionArmedRef.current ||
@@ -2807,6 +2976,13 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
     fitCamera(runtime, cameraPreset)
+    if (cameraPreset === 'Fit' && runtime.roiPreviewRoot.visible) {
+      // The toolbar Fit command applies to both visible viewports. Without
+      // this reset the PIP can remain at a stale manual zoom/pan while only
+      // the ROI camera is fitted.
+      runtime.pipUserAdjusted = false
+      runtime.pipLastRenderTime = 0
+    }
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
     if (
       roiBoxSelectionArmed &&
@@ -2906,13 +3082,11 @@ export function ThreeViewerCanvas({
       // Next time an ROI preview appears, reframe the PIP fresh instead of
       // keeping wherever the user last dragged it.
       runtime.pipUserAdjusted = false
+      clearGroup(runtime.roiBoundsMarker)
     }
-    // The exact ROI face overlay already lives under modelRoot and is also
-    // rendered by the Full View PIP. Do not add a component bounding box:
-    // for a small ROI on a large part that box incorrectly highlights the
-    // entire drawing instead of the selected ROI faces.
-    clearGroup(runtime.roiBoundsMarker)
-
+    // Full View needs a separately clipped ROI overlay. Reusing the source
+    // triangle selection makes a large triangle extend far outside a small
+    // rectangular ROI and look like a broken orange tail.
     const roiPointTransform = createRoiPointTransform(
       runtime,
       transformRules,
@@ -2952,13 +3126,22 @@ export function ThreeViewerCanvas({
         })),
     })
 
+    const roiGeometryChanged = runtime.roiPreviewKey !== previewKey
     if (
       showRoiPreview &&
-      (runtime.roiPreviewKey !== previewKey ||
-        runtime.roiPreviewRoot.children.length === 0)
+      (roiGeometryChanged ||
+        runtime.roiPreviewRoot.children.length === 0 ||
+        runtime.roiBoundsMarker.children.length === 0)
     ) {
       const shouldInitialFit = runtime.roiPreviewKey.length === 0
+      if (roiGeometryChanged) {
+        // A new/edited ROI must start with the complete CAD fitted in Full
+        // View; manual PIP navigation from the previous ROI is not reusable.
+        runtime.pipUserAdjusted = false
+        runtime.pipLastRenderTime = 0
+      }
       clearGroup(runtime.roiPreviewRoot)
+      clearGroup(runtime.roiBoundsMarker)
       const boxFaceIds = [
         ...new Set(
           activeBoxScopes.flatMap((scope) =>
@@ -2978,6 +3161,26 @@ export function ThreeViewerCanvas({
         [...hiddenComponentIds, ...deletedComponentIds],
         roiPointTransform,
       )
+      if (clipped) {
+        const fullViewRoi = new Mesh(
+          clipped.surfaceGeometry.clone(),
+          new MeshBasicMaterial({
+            color: 0xffa21a,
+            transparent: true,
+            opacity: 0.72,
+            side: DoubleSide,
+            depthTest: true,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -3,
+            polygonOffsetUnits: -3,
+            toneMapped: false,
+          }),
+        )
+        fullViewRoi.name = 'full-view-roi-clipped-highlight'
+        fullViewRoi.renderOrder = 84
+        runtime.roiBoundsMarker.add(fullViewRoi)
+      }
       if (clipped && clipped.openChainCount === 0) {
         const isWireframe = renderMode === 'Wireframe'
         const surfaceMaterial = isWireframe
@@ -3512,8 +3715,8 @@ export function ThreeViewerCanvas({
         emitterOverlayColor,
         emitterDirectionColor,
         emitter.normal_flip,
-        emitter === placementPreviewEmitter ? 0.4 : 0.2,
-        emitter === placementPreviewEmitter,
+        emitter === placementPreviewEmitter ? 0.42 : 0.28,
+        true,
       )
       emitterPlane.userData.rayObjectKind = 'emitter'
       emitterPlane.userData.rayObjectId = emitter.emitter_id
@@ -3995,7 +4198,10 @@ export function ThreeViewerCanvas({
 
       const componentRoiFaceIds =
         roiFaceIdsByComponent.get(componentId) ?? []
-      if (componentRoiFaceIds.length > 0) {
+      // During ROI View the Full View PIP uses the exact clipped geometry
+      // built above. Do not also paint the intersecting source triangles,
+      // which can protrude well beyond the requested ROI box.
+      if (componentRoiFaceIds.length > 0 && !showRoiPreview) {
         const bundle = createFaceGeometry(
           scene,
           componentRoiFaceIds,
@@ -4278,9 +4484,13 @@ export function ThreeViewerCanvas({
               fullViewCameraSyncRef.current = next
               fullViewSyncBaseMainDistanceRef.current = null
               fullViewSyncBasePipDistanceRef.current = null
-              if (next) {
-                const runtime = runtimeRef.current
-                if (runtime) runtime.pipUserAdjusted = true
+              const runtime = runtimeRef.current
+              if (runtime) {
+                runtime.pipUserAdjusted = next
+                // Explicitly switching sync OFF means "return to independent
+                // Full View", so discard the last ROI-synced zoom/pan and
+                // immediately fit the complete CAD again.
+                if (!next) runtime.pipLastRenderTime = 0
               }
               setFullViewCameraSync(next)
               onStatusMessage(

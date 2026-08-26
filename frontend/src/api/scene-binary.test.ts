@@ -4,12 +4,12 @@ import { decodeSceneBinary } from './scene-binary'
 
 function createBinaryFixture(): ArrayBuffer {
   const arrays = [
-    { name: 'vertices', dtype: 'float64', width: 3, values: [0, 0, 0, 1, 0, 0, 0, 1, 0] },
+    { name: 'vertices', dtype: 'float32', width: 3, values: [0, 0, 0, 1, 0, 0, 0, 1, 0] },
     { name: 'faces', dtype: 'uint32', width: 3, values: [0, 1, 2] },
     { name: 'face_component_ids', dtype: 'int32', width: 1, values: [3] },
     { name: 'face_source_ids', dtype: 'uint32', width: 1, values: [99] },
-    { name: 'face_areas_mm2', dtype: 'float64', width: 1, values: [0.5] },
-    { name: 'feature_edge_points', dtype: 'float64', width: 6, values: [0, 0, 0, 1, 0, 0] },
+    { name: 'face_areas_mm2', dtype: 'float32', width: 1, values: [0.5] },
+    { name: 'feature_edge_points', dtype: 'float32', width: 6, values: [0, 0, 0, 1, 0, 0] },
     { name: 'feature_edge_component_ids', dtype: 'int32', width: 1, values: [3] },
     { name: 'component_face_indices', dtype: 'uint32', width: 1, values: [0] },
   ] as const
@@ -17,7 +17,7 @@ function createBinaryFixture(): ArrayBuffer {
   const descriptors: Record<string, object> = {}
   for (const block of arrays) {
     offset = (offset + 7) & ~7
-    const bytes = block.values.length * (block.dtype === 'float64' ? 8 : 4)
+    const bytes = block.values.length * 4
     descriptors[block.name] = {
       dtype: block.dtype,
       width: block.width,
@@ -58,9 +58,9 @@ function createBinaryFixture(): ArrayBuffer {
   let dataOffset = 16 + manifestBytes.length
   for (const block of arrays) {
     dataOffset = (dataOffset + 7) & ~7
-    const View = block.dtype === 'float64' ? Float64Array : block.dtype === 'int32' ? Int32Array : Uint32Array
+    const View = block.dtype === 'float32' ? Float32Array : block.dtype === 'int32' ? Int32Array : Uint32Array
     new View(buffer, dataOffset, block.values.length).set(block.values)
-    dataOffset += block.values.length * (block.dtype === 'float64' ? 8 : 4)
+    dataOffset += block.values.length * 4
   }
   return buffer
 }

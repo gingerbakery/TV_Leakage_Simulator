@@ -171,15 +171,27 @@ class ApiRuntime:
     ) -> dict[str, Any]:
         if not content:
             raise ValueError("Uploaded file is empty")
+        safe_name = self._safe_upload_filename(raw_name)
+        digest = hashlib.sha256(content).hexdigest()
         with self._state_lock:
-            target_path, display_name = self._prepare_upload_path(
-                raw_name
+            self.upload_dir.mkdir(parents=True, exist_ok=True)
+            target_path = self.upload_dir / "{}{}".format(
+                digest,
+                Path(safe_name).suffix.lower(),
             )
-            target_path.write_bytes(content)
+            cache_hit = target_path.exists()
+            if not cache_hit:
+                temporary_path = target_path.with_suffix(
+                    target_path.suffix + ".uploading"
+                )
+                temporary_path.write_bytes(content)
+                temporary_path.replace(target_path)
         return {
             "ok": True,
-            "display_name": display_name,
+            "display_name": safe_name,
             "path": str(target_path),
+            "content_hash": digest,
+            "cache_hit": cache_hit,
         }
 
     def start_raytrace_job(

@@ -471,18 +471,6 @@ export function RoiSelectionPanel({
                       </div>
                     </div>
                   ) : null}
-                  <div className="mt-2 space-y-1 border-t border-border/60 pt-2">
-                    {scope.components.map((component) => (
-                      <div
-                        key={component.componentId}
-                        className="text-xs text-muted-foreground"
-                      >
-                        <span className="truncate">
-                          {component.componentName}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
                 </article>
               )
             })
