@@ -311,6 +311,164 @@ describe('Step 11 result UI', () => {
     expect(dialog.style.height).toBe('880px')
   })
 
+  it('maximizes, restores, and exposes Windows-style resize edges', () => {
+    vi.stubGlobal('innerWidth', 1200)
+    vi.stubGlobal('innerHeight', 1000)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={createRayTraceResultFixture()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Ray Tracing Analysis Result',
+    })
+    expect(
+      dialog.querySelectorAll('[data-result-resize-edge]'),
+    ).toHaveLength(8)
+
+    const maximizeButton = screen.getByRole('button', {
+      name: 'Maximize result window',
+    })
+    const maximizeIcon = maximizeButton.querySelector('svg')
+    expect(maximizeIcon).not.toBeNull()
+    fireEvent.pointerDown(maximizeIcon!, { clientX: 1100, clientY: 72 })
+    fireEvent.pointerMove(window, { clientX: 800, clientY: 300 })
+    fireEvent.pointerUp(window)
+    expect(dialog.style.left).toBe('24px')
+    expect(dialog.style.top).toBe('58px')
+
+    fireEvent.click(maximizeButton)
+    expect(dialog.getAttribute('data-window-state')).toBe('maximized')
+    expect(dialog.style.left).toBe('0px')
+    expect(dialog.style.top).toBe('0px')
+    expect(dialog.style.width).toBe('1200px')
+    expect(dialog.style.height).toBe('1000px')
+    expect(
+      dialog.querySelectorAll('[data-result-resize-edge]'),
+    ).toHaveLength(0)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Restore result window' }),
+    )
+    expect(dialog.getAttribute('data-window-state')).toBe('windowed')
+    expect(dialog.style.left).toBe('24px')
+    expect(dialog.style.top).toBe('58px')
+    expect(dialog.style.width).toBe('1120px')
+    expect(dialog.style.height).toBe('880px')
+
+    const titlebar = screen.getByTestId('result-window-titlebar')
+    fireEvent.doubleClick(titlebar)
+    expect(dialog.getAttribute('data-window-state')).toBe('maximized')
+    fireEvent.doubleClick(titlebar)
+    expect(dialog.getAttribute('data-window-state')).toBe('windowed')
+  })
+
+  it('resizes from either side and keeps the window inside the viewport', () => {
+    vi.stubGlobal('innerWidth', 1200)
+    vi.stubGlobal('innerHeight', 1000)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={createRayTraceResultFixture()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Ray Tracing Analysis Result',
+    })
+    const eastHandle = dialog.querySelector<HTMLElement>(
+      '[data-result-resize-edge="e"]',
+    )
+    expect(eastHandle).not.toBeNull()
+    fireEvent.pointerDown(eastHandle!, { clientX: 1100, clientY: 400 })
+    fireEvent.pointerMove(window, { clientX: 980, clientY: 400 })
+    fireEvent.pointerUp(window)
+    expect(dialog.style.width).toBe('1000px')
+
+    const westHandle = dialog.querySelector<HTMLElement>(
+      '[data-result-resize-edge="w"]',
+    )
+    fireEvent.pointerDown(westHandle!, { clientX: 24, clientY: 400 })
+    fireEvent.pointerMove(window, { clientX: 124, clientY: 400 })
+    fireEvent.pointerUp(window)
+    expect(dialog.style.left).toBe('124px')
+    expect(dialog.style.width).toBe('900px')
+  })
+
+  it('clamps the complete result window when the viewport is smaller', () => {
+    vi.stubGlobal('innerWidth', 1000)
+    vi.stubGlobal('innerHeight', 700)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={createRayTraceResultFixture()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Ray Tracing Analysis Result',
+    })
+    const left = Number.parseFloat(dialog.style.left)
+    const top = Number.parseFloat(dialog.style.top)
+    const width = Number.parseFloat(dialog.style.width)
+    const height = Number.parseFloat(dialog.style.height)
+    expect(left + width).toBeLessThanOrEqual(992)
+    expect(top + height).toBeLessThanOrEqual(692)
+  })
+
+  it('tracks viewport changes and cancels a stale resize operation', () => {
+    vi.stubGlobal('innerWidth', 1200)
+    vi.stubGlobal('innerHeight', 1000)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={createRayTraceResultFixture()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'Ray Tracing Analysis Result',
+    })
+    const eastHandle = dialog.querySelector<HTMLElement>(
+      '[data-result-resize-edge="e"]',
+    )
+    fireEvent.pointerDown(eastHandle!, { clientX: 1144, clientY: 400 })
+
+    vi.stubGlobal('innerWidth', 900)
+    vi.stubGlobal('innerHeight', 600)
+    fireEvent(window, new Event('resize'))
+    expect(dialog.style.left).toBe('8px')
+    expect(dialog.style.top).toBe('8px')
+    expect(dialog.style.width).toBe('884px')
+    expect(dialog.style.height).toBe('584px')
+
+    fireEvent.pointerMove(window, { clientX: 800, clientY: 400 })
+    fireEvent.pointerUp(window)
+    expect(dialog.style.left).toBe('8px')
+    expect(dialog.style.width).toBe('884px')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Maximize result window' }),
+    )
+    vi.stubGlobal('innerWidth', 1024)
+    vi.stubGlobal('innerHeight', 768)
+    fireEvent(window, new Event('resize'))
+    expect(dialog.style.left).toBe('0px')
+    expect(dialog.style.top).toBe('0px')
+    expect(dialog.style.width).toBe('1024px')
+    expect(dialog.style.height).toBe('768px')
+  })
+
   it('shows result KPIs and applies ray path presets', () => {
     const onOpenAnalysis = vi.fn()
     render(
@@ -466,6 +624,20 @@ describe('Step 11 result UI', () => {
     expect(yProfileFrame.firstElementChild?.className).toContain(
       'absolute inset-0',
     )
+    const xProfileCard = document.querySelector<HTMLElement>(
+      '[data-profile-axis="X"]',
+    )
+    const yProfileCard = document.querySelector<HTMLElement>(
+      '[data-profile-axis="Y"]',
+    )
+    const yProfileSummary = document.querySelector<HTMLElement>(
+      '[data-profile-summary="Y"]',
+    )
+    expect(xProfileCard?.textContent).toContain('Y =')
+    expect(yProfileCard?.textContent).toContain('X =')
+    expect(yProfileSummary?.className).toContain('text-[10px]')
+    expect(yProfileSummary?.textContent).toContain('Peak')
+    expect(yProfileSummary?.textContent).toContain('Scale')
     expect(screen.getByText('X (mm)')).not.toBeNull()
     expect(screen.getByText('Y (mm)')).not.toBeNull()
     expect(screen.getByText('Error Estimate')).not.toBeNull()
@@ -519,7 +691,8 @@ describe('Step 11 result UI', () => {
       clientY: 180,
       pointerId: 1,
     })
-    expect(screen.getByText(/Y=.*mm · Peak/)).not.toBeNull()
+    expect(xProfileCard?.textContent).toContain('mm')
+    expect(xProfileCard?.textContent).toContain('nit')
     fireEvent.click(screen.getByRole('button', { name: 'Error map' }))
     expect(screen.getByRole('button', { name: 'Error map' }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Analyze area' }))

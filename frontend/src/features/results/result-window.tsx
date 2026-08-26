@@ -20,6 +20,8 @@ import {
   Download,
   Grip,
   Layers3,
+  Maximize2,
+  Minimize2,
   Move,
   Trash2,
   Upload,
@@ -444,12 +446,158 @@ interface WindowFrame {
   height: number
 }
 
+type ResizeEdge = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
+
 interface PointerOperation {
   kind: 'drag' | 'resize'
+  edge?: ResizeEdge
   startX: number
   startY: number
   frame: WindowFrame
 }
+
+const resultWindowMargin = 8
+const resultWindowMinimumWidth = 440
+const resultWindowMinimumHeight = 260
+
+function maximizedResultWindowFrame(
+  viewportWidth: number,
+  viewportHeight: number,
+): WindowFrame {
+  return {
+    x: 0,
+    y: 0,
+    width: Math.max(1, viewportWidth),
+    height: Math.max(1, viewportHeight),
+  }
+}
+
+function clampResultWindowFrame(
+  frame: WindowFrame,
+  viewportWidth: number,
+  viewportHeight: number,
+): WindowFrame {
+  const horizontalMargin = Math.min(
+    resultWindowMargin,
+    Math.max(0, (viewportWidth - 1) / 2),
+  )
+  const verticalMargin = Math.min(
+    resultWindowMargin,
+    Math.max(0, (viewportHeight - 1) / 2),
+  )
+  const maximumWidth = Math.max(1, viewportWidth - horizontalMargin * 2)
+  const maximumHeight = Math.max(1, viewportHeight - verticalMargin * 2)
+  const minimumWidth = Math.min(resultWindowMinimumWidth, maximumWidth)
+  const minimumHeight = Math.min(resultWindowMinimumHeight, maximumHeight)
+  const width = Math.max(
+    minimumWidth,
+    Math.min(frame.width, maximumWidth),
+  )
+  const height = Math.max(
+    minimumHeight,
+    Math.min(frame.height, maximumHeight),
+  )
+  return {
+    x: Math.max(
+      horizontalMargin,
+      Math.min(frame.x, viewportWidth - width - horizontalMargin),
+    ),
+    y: Math.max(
+      verticalMargin,
+      Math.min(frame.y, viewportHeight - height - verticalMargin),
+    ),
+    width,
+    height,
+  }
+}
+
+function resizeResultWindowFrame(
+  frame: WindowFrame,
+  edge: ResizeEdge,
+  deltaX: number,
+  deltaY: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): WindowFrame {
+  let left = frame.x
+  let right = frame.x + frame.width
+  let top = frame.y
+  let bottom = frame.y + frame.height
+  const minimumWidth = Math.min(
+    resultWindowMinimumWidth,
+    Math.max(1, viewportWidth - resultWindowMargin * 2),
+  )
+  const minimumHeight = Math.min(
+    resultWindowMinimumHeight,
+    Math.max(1, viewportHeight - resultWindowMargin * 2),
+  )
+
+  if (edge.includes('w')) {
+    left = Math.max(
+      resultWindowMargin,
+      Math.min(left + deltaX, right - minimumWidth),
+    )
+  }
+  if (edge.includes('e')) {
+    right = Math.min(
+      viewportWidth - resultWindowMargin,
+      Math.max(right + deltaX, left + minimumWidth),
+    )
+  }
+  if (edge.includes('n')) {
+    top = Math.max(
+      resultWindowMargin,
+      Math.min(top + deltaY, bottom - minimumHeight),
+    )
+  }
+  if (edge.includes('s')) {
+    bottom = Math.min(
+      viewportHeight - resultWindowMargin,
+      Math.max(bottom + deltaY, top + minimumHeight),
+    )
+  }
+
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
+const resultWindowResizeHandles: ReadonlyArray<{
+  edge: Exclude<ResizeEdge, 'se'>
+  className: string
+}> = [
+  {
+    edge: 'n',
+    className: 'top-0 right-3 left-3 h-1.5 cursor-ns-resize',
+  },
+  {
+    edge: 'ne',
+    className: 'top-0 right-0 size-3 cursor-nesw-resize',
+  },
+  {
+    edge: 'e',
+    className: 'top-3 right-0 bottom-3 w-1.5 cursor-ew-resize',
+  },
+  {
+    edge: 's',
+    className: 'right-3 bottom-0 left-3 h-1.5 cursor-ns-resize',
+  },
+  {
+    edge: 'sw',
+    className: 'bottom-0 left-0 size-3 cursor-nesw-resize',
+  },
+  {
+    edge: 'w',
+    className: 'top-3 bottom-3 left-0 w-1.5 cursor-ew-resize',
+  },
+  {
+    edge: 'nw',
+    className: 'top-0 left-0 size-3 cursor-nwse-resize',
+  },
+]
 
 interface ReceiverHeatmapHover extends ReceiverHeatmapSample {
   pointerXPercent: number
@@ -1409,12 +1557,42 @@ function ReceiverProfileChart({
     })
     .join(' ')
   return (
-    <div className={`h-full rounded-lg border border-border bg-muted/15 p-2 ${axis === 'Y' ? 'flex min-h-0 flex-col' : ''}`}>
-      <div className={`mb-1 gap-1 text-sm ${axis === 'X' ? 'flex items-center justify-between' : 'space-y-0.5'}`}>
-        <span className="font-semibold">{axis}축 휘도 프로파일</span>
-        <span className="font-mono text-muted-foreground">
-          {axis === 'X' ? 'Y' : 'X'}={formatReceiverCoordinate(fixedCoordinateMm)} mm · Peak {formatMetric(peak)} nit · Scale {formatMetric(luminanceScale.minNit)}–{formatMetric(luminanceScale.maxNit)} nit
-        </span>
+    <div
+      data-profile-axis={axis}
+      className={`h-full rounded-lg border border-border bg-muted/15 p-2 ${axis === 'Y' ? 'flex min-h-0 flex-col' : ''}`}
+    >
+      <div className="mb-1.5 min-w-0">
+        <div
+          className={
+            axis === 'X'
+              ? 'flex min-w-0 items-center justify-between gap-2'
+              : 'flex min-w-0 flex-col items-start gap-0.5'
+          }
+        >
+          <span className="truncate text-xs leading-4 font-semibold">
+            {axis}축 휘도 프로파일
+          </span>
+          <span className="shrink-0 rounded bg-background/70 px-1 py-0.5 font-mono text-[10px] leading-3 tabular-nums text-muted-foreground">
+            {axis === 'X' ? 'Y' : 'X'} ={' '}
+            {formatReceiverCoordinate(fixedCoordinateMm)} mm
+          </span>
+        </div>
+        <div
+          data-profile-summary={axis}
+          className={`mt-0.5 font-mono text-[10px] leading-3 tabular-nums text-muted-foreground ${
+            axis === 'X'
+              ? 'flex flex-wrap gap-x-2 gap-y-0.5'
+              : 'grid gap-y-0.5'
+          }`}
+        >
+          <span className="whitespace-nowrap">
+            Peak {formatMetric(peak)} nit
+          </span>
+          <span className="whitespace-nowrap">
+            Scale {formatMetric(luminanceScale.minNit)}–
+            {formatMetric(luminanceScale.maxNit)} nit
+          </span>
+        </div>
       </div>
       <div className={`relative ${axis === 'X' ? 'h-20 w-full' : 'min-h-0 w-full flex-1'}`}>
         <svg
@@ -1448,12 +1626,12 @@ function ReceiverProfileChart({
         ) : null}
       </div>
       {axis === 'X' ? (
-        <div className="flex justify-between font-mono text-xs text-muted-foreground">
+        <div className="flex justify-between font-mono text-[10px] leading-3 tabular-nums text-muted-foreground">
           <span>{formatReceiverCoordinate(minimumMm)} mm</span>
           <span>{formatReceiverCoordinate(maximumMm)} mm</span>
         </div>
       ) : (
-        <div className="flex justify-between font-mono text-xs text-muted-foreground">
+        <div className="flex justify-between font-mono text-[10px] leading-3 tabular-nums text-muted-foreground">
           <span>{formatMetric(luminanceScale.minNit)}</span><span>{formatMetric(luminanceScale.maxNit)} nit</span>
         </div>
       )}
@@ -1497,6 +1675,7 @@ export function RayTraceResultWindow({
 }: RayTraceResultWindowProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const operationRef = useRef<PointerOperation | null>(null)
+  const restoreFrameRef = useRef<WindowFrame | null>(null)
   const [tab, setTab] = useState<ResultTab>('summary')
   const [analysisCases, setAnalysisCases] = useState<AnalysisCase[]>([])
   const [baselineCaseId, setBaselineCaseId] = useState<string | null>(null)
@@ -1508,6 +1687,7 @@ export function RayTraceResultWindow({
     useState<LuminanceScaleMode>('auto')
   const [customScaleMinNit, setCustomScaleMinNit] = useState(0)
   const [customScaleMaxNit, setCustomScaleMaxNit] = useState(10)
+  const [isMaximized, setIsMaximized] = useState(false)
   const caseFileInputRef = useRef<HTMLInputElement>(null)
   const [frame, setFrame] = useState<WindowFrame>({
     x: 24,
@@ -1549,18 +1729,25 @@ export function RayTraceResultWindow({
 
   useEffect(() => {
     if (!open) return
-    const viewportWidth = window.innerWidth
-    const viewportHeight = window.innerHeight
-    setFrame((current) => ({
-      x: Math.max(12, Math.min(current.x, viewportWidth - 340)),
-      y: Math.max(12, Math.min(current.y, viewportHeight - 260)),
-      width: Math.min(current.width, Math.max(320, viewportWidth - 24)),
-      height: Math.min(
-        current.height,
-        Math.max(260, viewportHeight - 24),
-      ),
-    }))
-  }, [open])
+    const fitToViewport = () => {
+      operationRef.current = null
+      setFrame((current) =>
+        isMaximized
+          ? maximizedResultWindowFrame(
+              window.innerWidth,
+              window.innerHeight,
+            )
+          : clampResultWindowFrame(
+              current,
+              window.innerWidth,
+              window.innerHeight,
+            ),
+      )
+    }
+    fitToViewport()
+    window.addEventListener('resize', fitToViewport)
+    return () => window.removeEventListener('resize', fitToViewport)
+  }, [isMaximized, open])
 
   useEffect(() => {
     if (!open) return
@@ -1572,41 +1759,28 @@ export function RayTraceResultWindow({
       const deltaX = event.clientX - operation.startX
       const deltaY = event.clientY - operation.startY
       if (operation.kind === 'drag') {
-        setFrame({
-          ...operation.frame,
-          x: Math.max(
-            8,
-            Math.min(
-              operation.frame.x + deltaX,
-              viewportWidth - operation.frame.width - 8,
-            ),
+        setFrame(
+          clampResultWindowFrame(
+            {
+              ...operation.frame,
+              x: operation.frame.x + deltaX,
+              y: operation.frame.y + deltaY,
+            },
+            viewportWidth,
+            viewportHeight,
           ),
-          y: Math.max(
-            8,
-            Math.min(
-              operation.frame.y + deltaY,
-              viewportHeight - operation.frame.height - 8,
-            ),
-          ),
-        })
+        )
       } else {
-        setFrame({
-          ...operation.frame,
-          width: Math.max(
-            320,
-            Math.min(
-              operation.frame.width + deltaX,
-              viewportWidth - operation.frame.x - 8,
-            ),
+        setFrame(
+          resizeResultWindowFrame(
+            operation.frame,
+            operation.edge ?? 'se',
+            deltaX,
+            deltaY,
+            viewportWidth,
+            viewportHeight,
           ),
-          height: Math.max(
-            260,
-            Math.min(
-              operation.frame.height + deltaY,
-              viewportHeight - operation.frame.y - 8,
-            ),
-          ),
-        })
+        )
       }
     }
     const stop = () => {
@@ -1616,6 +1790,7 @@ export function RayTraceResultWindow({
     window.addEventListener('pointerup', stop)
     window.addEventListener('pointercancel', stop)
     return () => {
+      operationRef.current = null
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
       window.removeEventListener('pointercancel', stop)
@@ -1641,14 +1816,40 @@ export function RayTraceResultWindow({
   const begin = (
     event: ReactPointerEvent,
     kind: PointerOperation['kind'],
+    edge?: ResizeEdge,
   ) => {
+    if (isMaximized) return
     operationRef.current = {
       kind,
+      edge,
       startX: event.clientX,
       startY: event.clientY,
       frame,
     }
     event.preventDefault()
+    event.stopPropagation()
+  }
+  const toggleMaximized = () => {
+    operationRef.current = null
+    if (isMaximized) {
+      setFrame(
+        clampResultWindowFrame(
+          restoreFrameRef.current ?? frame,
+          window.innerWidth,
+          window.innerHeight,
+        ),
+      )
+      setIsMaximized(false)
+      return
+    }
+    restoreFrameRef.current = frame
+    setFrame(
+      maximizedResultWindowFrame(
+        window.innerWidth,
+        window.innerHeight,
+      ),
+    )
+    setIsMaximized(true)
   }
   const contribution = result.contribution_summary
   const performance = metricGroup(result, '_performance_summary')
@@ -1789,7 +1990,10 @@ export function RayTraceResultWindow({
       ref={rootRef}
       role="dialog"
       aria-label="Ray Tracing Analysis Result"
-      className="simulator-popup-typography fixed z-50 flex overflow-hidden rounded-xl border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl"
+      data-window-state={isMaximized ? 'maximized' : 'windowed'}
+      className={`simulator-popup-typography fixed z-50 flex overflow-hidden border border-border bg-background/96 shadow-2xl shadow-black/55 backdrop-blur-xl ${
+        isMaximized ? 'rounded-none' : 'rounded-xl'
+      }`}
       style={{
         left: frame.x,
         top: frame.y,
@@ -1799,10 +2003,13 @@ export function RayTraceResultWindow({
     >
       <div className="flex min-w-0 flex-1 flex-col">
         <div
-          className="flex cursor-move items-center justify-between gap-3 border-b border-border bg-muted/25 px-3 py-2.5"
+          data-testid="result-window-titlebar"
+          className={`flex items-center justify-between gap-3 border-b border-border bg-muted/25 px-3 py-2.5 ${
+            isMaximized ? 'cursor-default' : 'cursor-move'
+          }`}
           onPointerDown={(event) => {
             if (
-              event.target instanceof HTMLElement &&
+              event.target instanceof Element &&
               event.target.closest(
                 'button, select, input, textarea, option, [role="combobox"]',
               )
@@ -1810,6 +2017,17 @@ export function RayTraceResultWindow({
               return
             }
             begin(event, 'drag')
+          }}
+          onDoubleClick={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest(
+                'button, select, input, textarea, option, [role="combobox"]',
+              )
+            ) {
+              return
+            }
+            toggleMaximized()
           }}
         >
           <div className="min-w-0">
@@ -1820,11 +2038,11 @@ export function RayTraceResultWindow({
               {result.run_id} · {result.runtime_sec.toFixed(3)} s
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
             {analysisCases.length > 0 ? (
               <select
                 aria-label="Report active case"
-                className="h-7 max-w-52 cursor-pointer rounded-md border border-border bg-background px-2 text-sm"
+                className="h-7 w-40 min-w-0 max-w-52 cursor-pointer rounded-md border border-border bg-background px-2 text-sm"
                 value={reportCaseId ?? ''}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
@@ -1838,6 +2056,19 @@ export function RayTraceResultWindow({
               </select>
             ) : null}
             <Badge className="bg-primary/12 text-primary">Complete</Badge>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label={
+                isMaximized
+                  ? 'Restore result window'
+                  : 'Maximize result window'
+              }
+              title={isMaximized ? 'Restore' : 'Maximize'}
+              onClick={toggleMaximized}
+            >
+              {isMaximized ? <Minimize2 /> : <Maximize2 />}
+            </Button>
             <Button
               size="icon-xs"
               variant="ghost"
@@ -1870,7 +2101,7 @@ export function RayTraceResultWindow({
           ))}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="min-h-0 flex-1 overflow-auto p-3">
           {tab === 'compare' ? (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2636,14 +2867,30 @@ export function RayTraceResultWindow({
           ) : null}
         </div>
       </div>
-      <button
-        type="button"
-        aria-label="Resize result window"
-        className="absolute right-0 bottom-0 flex size-6 cursor-nwse-resize items-center justify-center text-muted-foreground hover:text-foreground"
-        onPointerDown={(event) => begin(event, 'resize')}
-      >
-        <Grip className="size-3.5" />
-      </button>
+      {!isMaximized ? (
+        <>
+          {resultWindowResizeHandles.map((handle) => (
+            <div
+              key={handle.edge}
+              aria-hidden="true"
+              data-result-resize-edge={handle.edge}
+              className={`absolute z-20 bg-transparent transition-colors hover:bg-primary/15 ${handle.className}`}
+              onPointerDown={(event) =>
+                begin(event, 'resize', handle.edge)
+              }
+            />
+          ))}
+          <div
+            aria-hidden="true"
+            title="Drag to resize result window"
+            data-result-resize-edge="se"
+            className="absolute right-0 bottom-0 z-30 flex size-7 cursor-nwse-resize items-center justify-center rounded-tl-md bg-background/70 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-foreground"
+            onPointerDown={(event) => begin(event, 'resize', 'se')}
+          >
+            <Grip className="size-3.5" />
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }
