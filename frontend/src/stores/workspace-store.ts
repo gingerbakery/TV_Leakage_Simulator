@@ -98,7 +98,7 @@ export interface ComponentTransformRule {
 }
 
 export type RoiSelectionSource = 'box' | 'point'
-export type RoiProjectionPlane = 'xy' | 'yz' | 'zx'
+export type RoiProjectionPlane = 'xy' | 'yz' | 'zx' | 'xyz'
 export type RoiView =
   | 'front_xy'
   | 'back_neg_xy'
@@ -381,7 +381,16 @@ function normalizeRoiClipBox(
 
   const plane = clipBox.plane ?? 'xy'
   const values =
-    plane === 'xy'
+    plane === 'xyz'
+      ? [
+          clipBox.xMin,
+          clipBox.xMax,
+          clipBox.yMin,
+          clipBox.yMax,
+          clipBox.zMin,
+          clipBox.zMax,
+        ]
+      : plane === 'xy'
       ? [clipBox.xMin, clipBox.xMax, clipBox.yMin, clipBox.yMax]
       : plane === 'yz'
         ? [clipBox.yMin, clipBox.yMax, clipBox.zMin, clipBox.zMax]

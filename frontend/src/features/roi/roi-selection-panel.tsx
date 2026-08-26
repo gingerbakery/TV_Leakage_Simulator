@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import {
   BoxSelect,
+  Check,
+  ClipboardPaste,
+  Copy,
   Crosshair,
   MapPin,
-  Power,
   Trash2,
 } from 'lucide-react'
 
 import type { ScenePayload } from '@/api'
 import { HelpTooltip } from '@/components/common'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
 import { cn } from '@/lib/utils'
@@ -21,29 +22,32 @@ import {
 
 import {
   groupRoiFacesByComponent,
-  resolveNearestVisibleFace,
-  summarizeActiveRoiScopes,
+  resolveFacesInRoiBox,
 } from './roi-selection'
 
 interface RoiSelectionPanelProps {
   scene?: ScenePayload
 }
 
-function formatArea(value: number): string {
-  return new Intl.NumberFormat('ko-KR', {
-    maximumFractionDigits: 2,
-  }).format(value)
+function formatCoordinate(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(3) : '-'
 }
 
 export function RoiSelectionPanel({
   scene,
 }: RoiSelectionPanelProps) {
-  const [coordinate, setCoordinate] = useState<Vector3Value>({
+  const [coordinate1, setCoordinate1] = useState<Vector3Value>({
+    x: 0,
+    y: 0,
+    z: 0,
+  })
+  const [coordinate2, setCoordinate2] = useState<Vector3Value>({
     x: 0,
     y: 0,
     z: 0,
   })
   const [coordinateResult, setCoordinateResult] = useState('')
+  const [copiedScopeId, setCopiedScopeId] = useState<string | null>(null)
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
@@ -61,48 +65,104 @@ export function RoiSelectionPanel({
     workspaceSelectors.componentNameOverrides,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
-  const summary = useMemo(
-    () => summarizeActiveRoiScopes(roiScopes),
-    [roiScopes],
-  )
+  const copyRoiCoordinates = async (
+    scopeId: string,
+    bounds: {
+      xMin: number
+      xMax: number
+      yMin: number
+      yMax: number
+      zMin: number
+      zMax: number
+    },
+  ) => {
+    const text = [
+      `(X1, Y1, Z1)=(${formatCoordinate(bounds.xMin)}, ${formatCoordinate(bounds.yMin)}, ${formatCoordinate(bounds.zMin)})`,
+      `(X2, Y2, Z2)=(${formatCoordinate(bounds.xMax)}, ${formatCoordinate(bounds.yMax)}, ${formatCoordinate(bounds.zMax)})`,
+    ].join(', ')
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedScopeId(scopeId)
+      window.setTimeout(() => setCopiedScopeId(null), 1600)
+    } catch {
+      setCoordinateResult('ROI 좌표를 복사하지 못했습니다. 값을 직접 선택해 복사해 주세요.')
+    }
+  }
 
   const resolveCoordinate = () => {
     if (!scene) {
       setCoordinateResult('먼저 CAD를 Import하세요.')
       return
     }
-    const point = coordinate
-    if (!Object.values(point).every(Number.isFinite)) {
-      setCoordinateResult('X, Y, Z 좌표를 모두 숫자로 입력하세요.')
+    if (
+      ![...Object.values(coordinate1), ...Object.values(coordinate2)].every(
+        Number.isFinite,
+      )
+    ) {
+      setCoordinateResult('X1, Y1, Z1, X2, Y2, Z2 좌표를 모두 입력하세요.')
       return
     }
 
-    const faceId = resolveNearestVisibleFace(
+    const clipBox = {
+      plane: 'xyz' as const,
+      xMin: Math.min(coordinate1.x, coordinate2.x),
+      xMax: Math.max(coordinate1.x, coordinate2.x),
+      yMin: Math.min(coordinate1.y, coordinate2.y),
+      yMax: Math.max(coordinate1.y, coordinate2.y),
+      zMin: Math.min(coordinate1.z, coordinate2.z),
+      zMax: Math.max(coordinate1.z, coordinate2.z),
+    }
+    const faceIds = resolveFacesInRoiBox(
       scene,
-      point,
+      clipBox,
       hiddenComponentIds,
       deletedComponentIds,
     )
-    if (faceId === null) {
-      setCoordinateResult(
-        '보이는 컴포넌트에서 선택 가능한 face를 찾지 못했습니다.',
-      )
+    if (faceIds.length === 0) {
+      setCoordinateResult('입력한 좌표 범위에서 ROI를 찾지 못했습니다.')
       return
     }
 
     actions.addRoiScope({
       label: roiDraftLabel,
-      source: 'point',
+      source: 'box',
       view: 'coordinate',
-      point,
+      clipBox,
       components: groupRoiFacesByComponent(
         scene,
-        [faceId],
+        faceIds,
         componentNameOverrides,
       ),
     })
-    setCoordinateResult('선택한 face를 ROI List에 추가했습니다.')
-    setCoordinate({ x: 0, y: 0, z: 0 })
+    setCoordinateResult('좌표 범위를 ROI List에 추가했습니다.')
+    setCoordinate1({ x: 0, y: 0, z: 0 })
+    setCoordinate2({ x: 0, y: 0, z: 0 })
+  }
+
+  const pasteRoiCoordinates = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      const numberPattern = '([-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?)'
+      const tuplePattern = new RegExp(
+        `\\(\\s*${numberPattern}\\s*,\\s*${numberPattern}\\s*,\\s*${numberPattern}\\s*\\)`,
+        'g',
+      )
+      const tuples = [...text.matchAll(tuplePattern)]
+      if (tuples.length < 2) throw new Error('invalid ROI coordinates')
+      setCoordinate1({
+        x: Number(tuples[0][1]),
+        y: Number(tuples[0][2]),
+        z: Number(tuples[0][3]),
+      })
+      setCoordinate2({
+        x: Number(tuples[1][1]),
+        y: Number(tuples[1][2]),
+        z: Number(tuples[1][3]),
+      })
+      setCoordinateResult('')
+    } catch {
+      setCoordinateResult('ROI 좌표를 붙여넣지 못했습니다.')
+    }
   }
 
   return (
@@ -163,32 +223,50 @@ export function RoiSelectionPanel({
       <div className="rounded-xl border border-blue-200 bg-blue-50/65 p-3 dark:border-blue-800/65 dark:bg-blue-950/28">
         <div className="flex items-center gap-2">
           <MapPin className="size-4 text-primary" />
-          <div className="text-sm font-semibold">좌표로 Face 찾기</div>
-          <HelpTooltip label="좌표로 Face 찾기 도움말">
-            입력한 X/Y/Z 좌표에서 가장 가까운, 현재 보이는 컴포넌트의
-            face를 찾아 ROI로 추가합니다.
-          </HelpTooltip>
+          <div className="text-sm font-semibold">좌표로 ROI 추가</div>
         </div>
-        <div className="mt-3 grid grid-cols-3 gap-1.5">
-          {(['x', 'y', 'z'] as const).map((axis) => (
-            <label
-              key={axis}
-              className="text-sm font-medium text-muted-foreground uppercase"
-            >
-              {axis} (mm)
-              <NumberInput
-                aria-label={`ROI ${axis.toUpperCase()} coordinate`}
-                value={coordinate[axis]}
-                decimals={1}
-                className="mt-1 h-8 w-full rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none focus:border-primary/60"
-                onValueChange={(value) => {
-                  setCoordinate((current) => ({
-                    ...current,
-                    [axis]: value,
-                  }))
-                }}
-              />
-            </label>
+        <div className="mt-3 space-y-2.5">
+          {[
+            {
+              label: '(X1, Y1, Z1)',
+              pointIndex: 1,
+              value: coordinate1,
+              setter: setCoordinate1,
+            },
+            {
+              label: '(X2, Y2, Z2)',
+              pointIndex: 2,
+              value: coordinate2,
+              setter: setCoordinate2,
+            },
+          ].map((point) => (
+            <div key={point.pointIndex}>
+              <div className="text-xs font-semibold text-muted-foreground">
+                {point.label}
+              </div>
+              <div className="mt-1 grid grid-cols-3 gap-1.5">
+                {(['x', 'y', 'z'] as const).map((axis) => (
+                  <label
+                    key={axis}
+                    className="text-xs font-medium uppercase text-muted-foreground"
+                  >
+                    {axis}{point.pointIndex} (mm)
+                    <NumberInput
+                      aria-label={`ROI ${axis.toUpperCase()}${point.pointIndex} coordinate`}
+                      value={point.value[axis]}
+                      decimals={3}
+                      className="mt-1 h-8 w-full rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none focus:border-primary/60"
+                      onValueChange={(value) => {
+                        point.setter((current) => ({
+                          ...current,
+                          [axis]: value,
+                        }))
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
         <Button
@@ -196,7 +274,18 @@ export function RoiSelectionPanel({
           size="sm"
           variant="outline"
           disabled={!scene}
-          className="mt-2.5 w-full border-blue-200 bg-blue-100/70 text-blue-900 hover:bg-blue-200/70 dark:border-blue-700/70 dark:bg-blue-900/35 dark:text-sky-200 dark:hover:bg-blue-800/50"
+          className="mt-2.5 w-full"
+          onClick={() => void pasteRoiCoordinates()}
+        >
+          <ClipboardPaste className="size-3.5" />
+          ROI 좌표 붙여넣기
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!scene}
+          className="mt-2 w-full border-blue-200 bg-blue-100/70 text-blue-900 hover:bg-blue-200/70 dark:border-blue-700/70 dark:bg-blue-900/35 dark:text-sky-200 dark:hover:bg-blue-800/50"
           onClick={resolveCoordinate}
         >
           좌표로 ROI 추가
@@ -244,10 +333,28 @@ export function RoiSelectionPanel({
             </div>
           ) : (
             roiScopes.map((scope) => {
-              const areaMm2 = scope.components.reduce(
-                (sum, component) => sum + component.areaMm2,
-                0,
-              )
+              const boxCoordinates = scope.clipBox
+                ? {
+                    xMin: scope.clipBox.xMin,
+                    xMax: scope.clipBox.xMax,
+                    yMin: scope.clipBox.yMin,
+                    yMax: scope.clipBox.yMax,
+                    zMin:
+                      scope.clipBox.zMin ??
+                      Math.min(
+                        ...scope.components.map(
+                          (component) => component.bboxMin.z,
+                        ),
+                      ),
+                    zMax:
+                      scope.clipBox.zMax ??
+                      Math.max(
+                        ...scope.components.map(
+                          (component) => component.bboxMax.z,
+                        ),
+                      ),
+                  }
+                : null
 
               return (
                 <article
@@ -279,8 +386,6 @@ export function RoiSelectionPanel({
                         </span>
                         <span className="mt-0.5 block text-xs text-muted-foreground">
                           {scope.source === 'box' ? scope.view : 'coordinate'}
-                          {' · '}
-                          {formatArea(areaMm2)} mm²
                         </span>
                       </span>
                     </label>
@@ -294,17 +399,86 @@ export function RoiSelectionPanel({
                       <Trash2 className="size-3.5" />
                     </Button>
                   </div>
+                  {boxCoordinates ? (
+                    <div className="mt-2 rounded-md border border-primary/15 bg-background/55 p-2">
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-foreground">
+                          ROI 좌표 (mm)
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 gap-1 px-1.5 text-xs"
+                          aria-label={`${scope.scopeId} ROI 좌표 복사`}
+                          onClick={() =>
+                            void copyRoiCoordinates(
+                              scope.id,
+                              boxCoordinates,
+                            )
+                          }
+                        >
+                          {copiedScopeId === scope.id ? (
+                            <Check className="size-3" />
+                          ) : (
+                            <Copy className="size-3" />
+                          )}
+                          {copiedScopeId === scope.id ? '복사됨' : '복사'}
+                        </Button>
+                      </div>
+                      <div className="space-y-1.5 text-xs">
+                        {[
+                          {
+                            label: '(X1, Y1, Z1)',
+                            pointIndex: 1,
+                            values: [
+                              boxCoordinates.xMin,
+                              boxCoordinates.yMin,
+                              boxCoordinates.zMin,
+                            ],
+                          },
+                          {
+                            label: '(X2, Y2, Z2)',
+                            pointIndex: 2,
+                            values: [
+                              boxCoordinates.xMax,
+                              boxCoordinates.yMax,
+                              boxCoordinates.zMax,
+                            ],
+                          },
+                        ].map((point) => (
+                          <div
+                            key={point.pointIndex}
+                            className="grid grid-cols-[5.5rem_repeat(3,minmax(0,1fr))] items-center gap-1.5"
+                          >
+                            <span className="whitespace-nowrap font-semibold text-primary">
+                              {point.label}
+                            </span>
+                            {point.values.map((value, axisIndex) => (
+                              <input
+                                key={axisIndex}
+                                readOnly
+                                aria-label={`${scope.scopeId} ${['X', 'Y', 'Z'][axisIndex]}${point.pointIndex}`}
+                                value={formatCoordinate(value)}
+                                className="h-7 min-w-0 rounded border border-border bg-background px-1.5 text-right font-mono text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/25"
+                                onFocus={(event) =>
+                                  event.currentTarget.select()
+                                }
+                              />
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="mt-2 space-y-1 border-t border-border/60 pt-2">
                     {scope.components.map((component) => (
                       <div
                         key={component.componentId}
-                        className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                        className="text-xs text-muted-foreground"
                       >
                         <span className="truncate">
                           {component.componentName}
-                        </span>
-                        <span className="shrink-0">
-                          {formatArea(component.areaMm2)} mm²
                         </span>
                       </div>
                     ))}
@@ -316,51 +490,6 @@ export function RoiSelectionPanel({
         </div>
       </section>
 
-      <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Power className="size-3.5 text-primary" />
-            활성 ROI
-            <HelpTooltip label="활성 ROI 도움말">
-              박스 ROI는 경계에서 triangle을 실제 절단하고 새 vertex와
-              폐곡선 section cap을 만든 뒤 ROI solid만 표시합니다.
-              좌표 선택은 단일 face 보완 경로라 절단 cap을 만들지
-              않습니다.
-            </HelpTooltip>
-          </div>
-          <Badge variant="outline" className="border-primary/25 text-primary">
-            {summary.scopeCount} scopes
-          </Badge>
-        </div>
-        <div className="mt-2 grid grid-cols-2 gap-2 text-center">
-          {[
-            ['Component', summary.componentCount.toLocaleString()],
-            ['Area', `${formatArea(summary.areaMm2)} mm²`],
-          ].map(([label, value]) => (
-            <div
-              key={label}
-              className="rounded-md bg-background/45 px-1 py-2"
-            >
-              <div className="text-xs text-muted-foreground">
-                {label}
-              </div>
-              <div className="mt-0.5 truncate text-base font-semibold">
-                {value}
-              </div>
-            </div>
-          ))}
-        </div>
-        {summary.bboxMin && summary.bboxMax ? (
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Bounds · X {summary.bboxMin.x.toFixed(1)}~
-            {summary.bboxMax.x.toFixed(1)} · Y{' '}
-            {summary.bboxMin.y.toFixed(1)}~
-            {summary.bboxMax.y.toFixed(1)} · Z{' '}
-            {summary.bboxMin.z.toFixed(1)}~
-            {summary.bboxMax.z.toFixed(1)} mm
-          </p>
-        ) : null}
-      </div>
     </div>
   )
 }

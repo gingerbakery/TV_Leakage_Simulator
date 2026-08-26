@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   Box3,
-  BoxGeometry,
   BufferGeometry,
   CanvasTexture,
   Color,
@@ -2908,61 +2907,11 @@ export function ThreeViewerCanvas({
       // keeping wherever the user last dragged it.
       runtime.pipUserAdjusted = false
     }
-    // Wireframe box(es) marking where the active ROI sits within the full
-    // model - only ever rendered in the "Full View" PIP inset, not the
-    // main ROI-isolated view.
+    // The exact ROI face overlay already lives under modelRoot and is also
+    // rendered by the Full View PIP. Do not add a component bounding box:
+    // for a small ROI on a large part that box incorrectly highlights the
+    // entire drawing instead of the selected ROI faces.
     clearGroup(runtime.roiBoundsMarker)
-    for (const scope of activeBoxScopes) {
-      if (scope.components.length === 0) continue
-      const min = new Vector3(Infinity, Infinity, Infinity)
-      const max = new Vector3(-Infinity, -Infinity, -Infinity)
-      for (const component of scope.components) {
-        min.x = Math.min(min.x, component.bboxMin.x)
-        min.y = Math.min(min.y, component.bboxMin.y)
-        min.z = Math.min(min.z, component.bboxMin.z)
-        max.x = Math.max(max.x, component.bboxMax.x)
-        max.y = Math.max(max.y, component.bboxMax.y)
-        max.z = Math.max(max.z, component.bboxMax.z)
-      }
-      if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) continue
-      const size = new Vector3().subVectors(max, min)
-      const center = new Vector3().addVectors(min, max).multiplyScalar(0.5)
-      const boxGeometry = new BoxGeometry(
-        Math.max(size.x, 1e-3),
-        Math.max(size.y, 1e-3),
-        Math.max(size.z, 1e-3),
-      )
-      const markerEdges = new EdgesGeometry(boxGeometry)
-      const markerFill = new Mesh(
-        boxGeometry,
-        new MeshBasicMaterial({
-          color: 0xff8a00,
-          transparent: true,
-          opacity: 0.22,
-          side: DoubleSide,
-          depthTest: false,
-          depthWrite: false,
-          toneMapped: false,
-        }),
-      )
-      markerFill.renderOrder = 200
-      const markerEdgesObject = new LineSegments(
-        markerEdges,
-        new LineBasicMaterial({
-          color: 0xffa000,
-          transparent: true,
-          opacity: 1,
-          depthTest: false,
-          depthWrite: false,
-          toneMapped: false,
-        }),
-      )
-      markerEdgesObject.renderOrder = 201
-      const marker = new Group()
-      marker.add(markerFill, markerEdgesObject)
-      marker.position.copy(center)
-      runtime.roiBoundsMarker.add(marker)
-    }
 
     const roiPointTransform = createRoiPointTransform(
       runtime,
@@ -3493,6 +3442,18 @@ export function ThreeViewerCanvas({
       }
     }
 
+    const groupFaceIdsByComponent = (faceIds: readonly number[]) => {
+      const grouped = new Map<number, number[]>()
+      for (const faceId of faceIds) {
+        const componentId = scene.mesh.face_component_ids[faceId]
+        if (componentId == null) continue
+        const componentFaceIds = grouped.get(componentId)
+        if (componentFaceIds) componentFaceIds.push(faceId)
+        else grouped.set(componentId, [faceId])
+      }
+      return grouped
+    }
+
     const enabledFaceEmitters = emitters.filter(
       (emitter) =>
         emitter.enabled && emitter.emitter_type === 'face',
@@ -3500,6 +3461,7 @@ export function ThreeViewerCanvas({
     const enabledFaceEmitterSets = enabledFaceEmitters.map((emitter) => ({
       emitter,
       faceIds: new Set(emitter.face_indices),
+      faceIdsByComponent: groupFaceIdsByComponent(emitter.face_indices),
     }))
 
     clearGroup(runtime.placementRoot)
@@ -3716,11 +3678,13 @@ export function ThreeViewerCanvas({
       }
     }
 
-    const emitterFaceSet = new Set(
+    const emitterFaceIdsByComponent = groupFaceIdsByComponent(
       enabledFaceEmitters.flatMap((emitter) => emitter.face_indices),
     )
-    const selectedFaceSet = new Set(selectedFaceIds)
-    const roiFaceSet = new Set(roiFaceIds)
+    const selectedFaceIdsByComponent =
+      groupFaceIdsByComponent(selectedFaceIds)
+    const roiFaceIdsByComponent = groupFaceIdsByComponent(roiFaceIds)
+    const denseScene = scene.mesh.face_component_ids.length >= 1_000_000
     for (const [componentId, node] of runtime.nodes) {
       const isEditing = editingComponentId === componentId
       const isSelected =
@@ -3786,12 +3750,18 @@ export function ThreeViewerCanvas({
       const showHighlightedEdges =
         isSelected &&
         !(isEditing && editingComponentMode === 'material')
-      node.surface.material.color.copy(displayColor)
-      // Selection is communicated by edges/overlays only. Keeping the
-      // surface untouched makes CAD and user-assigned display colors remain
-      // immediately visible while the component is selected or edited.
-      node.surface.material.emissive.set(0x000000)
-      node.surface.material.emissiveIntensity = 0
+      // Reuse the existing CAD surface for whole-component selection. A
+      // second multi-million-triangle overlay made large models react very
+      // slowly to every click.
+      node.surface.material.color.set(
+        showHighlightedEdges ? selectedComponentSurfaceColor : displayColor,
+      )
+      node.surface.material.emissive.set(
+        showHighlightedEdges ? 0x8a2d00 : 0x000000,
+      )
+      node.surface.material.emissiveIntensity = showHighlightedEdges
+        ? 0.28
+        : 0
       node.surface.material.metalness = style.metalness
       node.surface.material.roughness = style.roughness
       const isWireframe = renderMode === 'Wireframe'
@@ -3824,7 +3794,9 @@ export function ThreeViewerCanvas({
         ? 1
         : isWireframe
           ? 0.82
-          : 0.72
+          : denseScene
+            ? 0.32
+            : 0.62
 
       clearGroup(node.emitterOverlayRoot)
       clearGroup(node.materialOverlayRoot)
@@ -3833,51 +3805,8 @@ export function ThreeViewerCanvas({
       clearGroup(node.transformOverlayRoot)
       node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
 
-      if (isSelected && !emitterFaceSelectionArmed && !datumFacePickArmed) {
-        const targetSurface = new Mesh(
-          node.surface.geometry,
-          new MeshBasicMaterial({
-            color: selectedComponentSurfaceColor,
-            side: DoubleSide,
-            transparent: true,
-            opacity: 0.36,
-            depthTest: true,
-            depthWrite: false,
-            polygonOffset: true,
-            polygonOffsetFactor: -4,
-            polygonOffsetUnits: -4,
-            toneMapped: false,
-          }),
-        )
-        targetSurface.userData.sharedGeometry = true
-        targetSurface.name = `editor-target-surface-${componentId}`
-        targetSurface.renderOrder = 88
-
-        node.selectionOverlayRoot.add(targetSurface)
-        const targetEdges = new LineSegments(
-          node.edges.geometry,
-          new LineBasicMaterial({
-            color: selectedComponentEdgeColor,
-            transparent: true,
-            opacity: 1,
-            // NX-style selection must highlight only edges that are visible
-            // from the current camera. Disabling the depth test made every
-            // rear/internal B-rep edge bleed through the solid surface as an
-            // irregular line overlay after selecting a component.
-            depthTest: true,
-            depthWrite: false,
-            toneMapped: false,
-          }),
-        )
-        targetEdges.userData.sharedGeometry = true
-        targetEdges.name = `component-selection-edges-${componentId}`
-        targetEdges.renderOrder = 89
-        node.selectionOverlayRoot.add(targetEdges)
-      }
-
-      const componentEmitterFaceIds = node.component.face_indices.filter(
-        (faceId) => emitterFaceSet.has(faceId),
-      )
+      const componentEmitterFaceIds =
+        emitterFaceIdsByComponent.get(componentId) ?? []
       if (componentEmitterFaceIds.length > 0) {
         const bundle = createFaceGeometry(
           scene,
@@ -3909,10 +3838,8 @@ export function ThreeViewerCanvas({
           bundle.geometry.dispose()
         }
       }
-      for (const { emitter, faceIds } of enabledFaceEmitterSets) {
-        const emitterFaceIds = node.component.face_indices.filter(
-          (faceId) => faceIds.has(faceId),
-        )
+      for (const { emitter, faceIdsByComponent } of enabledFaceEmitterSets) {
+        const emitterFaceIds = faceIdsByComponent.get(componentId) ?? []
         const frame = resolveFacePlacementFrame(scene, emitterFaceIds)
         if (!frame) continue
         const normal = new Vector3(...frame.normal).multiplyScalar(
@@ -3949,9 +3876,8 @@ export function ThreeViewerCanvas({
         node.emitterOverlayRoot.add(reference)
       }
 
-      const componentSelectedFaceIds = node.component.face_indices.filter(
-        (faceId) => selectedFaceSet.has(faceId),
-      )
+      const componentSelectedFaceIds =
+        selectedFaceIdsByComponent.get(componentId) ?? []
       if (componentSelectedFaceIds.length > 0) {
         const isEmitterSurfaceDraft = emitterFaceSelectionArmed
         const isMaterialSurfaceDraft = materialFacePickArmed
@@ -3990,9 +3916,8 @@ export function ThreeViewerCanvas({
             }),
           )
           overlay.name = `selected-face-highlight-${componentId}`
-          // Must draw after (render-order-wise) the whole-part "editing"
-          // tint (targetSurface, order 88) - otherwise that amber overlay
-          // paints over this face highlight and the blue never shows.
+          // Draw after the base CAD surface so the exact selected face is
+          // immediately distinguishable.
           overlay.renderOrder = isEmitterSurfaceDraft ? 94 : 92
           node.selectionOverlayRoot.add(overlay)
 
@@ -4068,9 +3993,8 @@ export function ThreeViewerCanvas({
         }
       }
 
-      const componentRoiFaceIds = node.component.face_indices.filter(
-        (faceId) => roiFaceSet.has(faceId),
-      )
+      const componentRoiFaceIds =
+        roiFaceIdsByComponent.get(componentId) ?? []
       if (componentRoiFaceIds.length > 0) {
         const bundle = createFaceGeometry(
           scene,
@@ -4081,13 +4005,13 @@ export function ThreeViewerCanvas({
           const overlay = new Mesh(
             bundle.geometry,
             new MeshStandardMaterial({
-              color: 0xfacc15,
-              emissive: 0x713f12,
-              emissiveIntensity: 0.55,
+              color: 0xff8a00,
+              emissive: 0x9a3412,
+              emissiveIntensity: 0.72,
               roughness: 0.58,
               side: DoubleSide,
               transparent: true,
-              opacity: renderMode === 'Wireframe' ? 0.76 : 0.58,
+              opacity: renderMode === 'Wireframe' ? 0.86 : 0.72,
               depthWrite: false,
               polygonOffset: true,
               polygonOffsetFactor: -2,

@@ -65,7 +65,8 @@ function roiPlane(box: RoiClipBox): RoiProjectionPlane {
   return box.plane ?? 'xy'
 }
 
-function planeAxes(plane: RoiProjectionPlane): [AxisIndex, AxisIndex] {
+function planeAxes(plane: RoiProjectionPlane): AxisIndex[] {
+  if (plane === 'xyz') return [0, 1, 2]
   if (plane === 'yz') return [1, 2]
   if (plane === 'zx') return [2, 0]
   return [0, 1]
@@ -127,10 +128,7 @@ export function normalizeRoiClipBoxes(
       }
     })
     .filter((box) => {
-      const [firstAxis, secondAxis] = planeAxes(
-        box.plane ?? 'xy',
-      )
-      return [firstAxis, secondAxis].every((axisIndex) => {
+      return planeAxes(box.plane ?? 'xy').every((axisIndex) => {
         const [minimum, maximum] = axisBounds(box, axisIndex)
         return (
           Number.isFinite(minimum) &&

@@ -214,14 +214,23 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(screen.getByLabelText('ROI 이름'), {
       target: { value: 'rear-point' },
     })
-    fireEvent.change(screen.getByLabelText('ROI X coordinate'), {
-      target: { value: '38' },
+    fireEvent.change(screen.getByLabelText('ROI X1 coordinate'), {
+      target: { value: '5' },
     })
-    fireEvent.change(screen.getByLabelText('ROI Y coordinate'), {
-      target: { value: '22' },
+    fireEvent.change(screen.getByLabelText('ROI Y1 coordinate'), {
+      target: { value: '5' },
     })
-    fireEvent.change(screen.getByLabelText('ROI Z coordinate'), {
-      target: { value: '13' },
+    fireEvent.change(screen.getByLabelText('ROI Z1 coordinate'), {
+      target: { value: '11' },
+    })
+    fireEvent.change(screen.getByLabelText('ROI X2 coordinate'), {
+      target: { value: '55' },
+    })
+    fireEvent.change(screen.getByLabelText('ROI Y2 coordinate'), {
+      target: { value: '55' },
+    })
+    fireEvent.change(screen.getByLabelText('ROI Z2 coordinate'), {
+      target: { value: '20' },
     })
     fireEvent.click(
       screen.getByRole('button', { name: '좌표로 ROI 추가' }),
@@ -231,12 +240,21 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().roiScopes).toEqual([
       expect.objectContaining({
         scopeId: 'rear-point',
-        source: 'point',
+        source: 'box',
         active: true,
+        clipBox: {
+          plane: 'xyz',
+          xMin: 5,
+          xMax: 55,
+          yMin: 5,
+          yMax: 55,
+          zMin: 11,
+          zMax: 20,
+        },
         components: [
           expect.objectContaining({
             componentId: 2,
-            faceIds: [3],
+            faceIds: [3, 4],
           }),
         ],
       }),
@@ -244,6 +262,84 @@ describe('Step 07·08 feature editors', () => {
 
     fireEvent.click(screen.getByLabelText('rear-point 활성화'))
     expect(workspaceStore.getState().roiScopes[0].active).toBe(false)
+  })
+
+  it('shows reusable XYZ bounds instead of ROI area values', () => {
+    act(() => {
+      workspaceStore.getState().actions.addRoiScope({
+        label: 'ROI 1-1',
+        source: 'box',
+        view: 'front_xy',
+        clipBox: {
+          xMin: -12.3456,
+          xMax: 30,
+          yMin: 2.5,
+          yMax: 18.75,
+          zMin: -4,
+          zMax: 6.125,
+        },
+        components: [
+          {
+            componentId: 1,
+            componentName: 'STEP Solid 1',
+            faceIds: [0],
+            areaMm2: 1800,
+            bboxMin: { x: -12.3456, y: 2.5, z: -4 },
+            bboxMax: { x: 30, y: 18.75, z: 6.125 },
+          },
+        ],
+      })
+    })
+
+    render(
+      <AppProviders>
+        <RoiSelectionPanel scene={createSceneFixture()} />
+      </AppProviders>,
+    )
+
+    expect(screen.getByLabelText('ROI 1-1 X1')).toHaveProperty(
+      'value',
+      '-12.346',
+    )
+    expect(screen.getByLabelText('ROI 1-1 Z2')).toHaveProperty(
+      'value',
+      '6.125',
+    )
+    expect(
+      screen.getByRole('button', { name: 'ROI 1-1 ROI 좌표 복사' }),
+    ).not.toBeNull()
+    expect(screen.queryByText('1,800 mm²')).toBeNull()
+  })
+
+  it('pastes copied ROI corner coordinates into both coordinate rows', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: vi.fn().mockResolvedValue(
+          '(X1, Y1, Z1)=(-12.346, 2.5, -4), (X2, Y2, Z2)=(30, 18.75, 6.125)',
+        ),
+      },
+    })
+    render(
+      <AppProviders>
+        <RoiSelectionPanel scene={createSceneFixture()} />
+      </AppProviders>,
+    )
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'ROI 좌표 붙여넣기' }),
+      )
+    })
+
+    expect(screen.getByLabelText('ROI X1 coordinate')).toHaveProperty(
+      'value',
+      '-12.346',
+    )
+    expect(screen.getByLabelText('ROI Z2 coordinate')).toHaveProperty(
+      'value',
+      '6.125',
+    )
   })
 
   it('shows ROI explanations from title help tooltips', async () => {
@@ -258,9 +354,6 @@ describe('Step 07·08 feature editors', () => {
     })
     expect(
       screen.getByRole('button', { name: 'ROI List 도움말' }),
-    ).not.toBeNull()
-    expect(
-      screen.getByRole('button', { name: '활성 ROI 도움말' }),
     ).not.toBeNull()
     expect(
       screen.queryByText(/보이는 컴포넌트만 대상으로/),

@@ -8,8 +8,62 @@ import type {
 } from '@/stores'
 
 type Point2 = readonly [number, number]
+type Point3 = [number, number, number]
 
 const intersectionEpsilon = 1e-9
+
+function clipPolygonAtAxis(
+  points: Point3[],
+  axis: 0 | 1 | 2,
+  boundary: number,
+  keepGreater: boolean,
+): Point3[] {
+  if (points.length === 0) return []
+  const output: Point3[] = []
+  let previous = points[points.length - 1]
+  let previousInside = keepGreater
+    ? previous[axis] >= boundary - intersectionEpsilon
+    : previous[axis] <= boundary + intersectionEpsilon
+
+  for (const current of points) {
+    const currentInside = keepGreater
+      ? current[axis] >= boundary - intersectionEpsilon
+      : current[axis] <= boundary + intersectionEpsilon
+    if (currentInside !== previousInside) {
+      const denominator = current[axis] - previous[axis]
+      if (Math.abs(denominator) > intersectionEpsilon) {
+        const ratio = (boundary - previous[axis]) / denominator
+        output.push([
+          previous[0] + (current[0] - previous[0]) * ratio,
+          previous[1] + (current[1] - previous[1]) * ratio,
+          previous[2] + (current[2] - previous[2]) * ratio,
+        ])
+      }
+    }
+    if (currentInside) output.push([...current])
+    previous = current
+    previousInside = currentInside
+  }
+  return output
+}
+
+function triangleIntersectsRoiVolume(
+  triangle: Point3[],
+  box: RoiClipBox,
+): boolean {
+  const bounds: Array<[0 | 1 | 2, number, number]> = [
+    [0, box.xMin, box.xMax],
+    [1, box.yMin, box.yMax],
+    [2, box.zMin ?? 0, box.zMax ?? 0],
+  ]
+  let clipped = triangle
+  for (const [axis, minimum, maximum] of bounds) {
+    clipped = clipPolygonAtAxis(clipped, axis, minimum, true)
+    clipped = clipPolygonAtAxis(clipped, axis, maximum, false)
+    if (clipped.length < 3) return false
+  }
+  return true
+}
 
 function roiPlane(box: RoiClipBox): RoiProjectionPlane {
   return box.plane ?? 'xy'
@@ -196,6 +250,16 @@ export function resolveFacesInRoiBox(
   scene.mesh.faces.forEach((face, faceId) => {
     const componentId = scene.mesh.face_component_ids[faceId]
     if (componentId === null || unavailable.has(componentId)) return
+
+    if (plane === 'xyz') {
+      const triangle = face.map((vertexId) => [
+        ...scene.mesh.vertices[vertexId],
+      ]) as Point3[]
+      if (triangleIntersectsRoiVolume(triangle, box)) {
+        faceIds.push(faceId)
+      }
+      return
+    }
 
     const triangle: Point2[] = face.map((vertexId) => {
       const vertex = scene.mesh.vertices[vertexId]

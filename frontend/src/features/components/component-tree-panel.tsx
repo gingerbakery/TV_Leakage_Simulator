@@ -250,8 +250,15 @@ function ComponentTreeRow({
               />
             </button>
             {isColorPaletteOpen ? (
-              <div className="absolute top-8 right-0 z-30 w-40 rounded-lg border border-border bg-popover p-2 shadow-xl">
-                <div className="mb-1.5 text-sm font-semibold text-muted-foreground">
+              <div
+                className="absolute top-8 right-0 z-30 w-56 min-w-56 max-w-none rounded-lg border border-border bg-popover p-3 shadow-xl"
+                style={{
+                  width: '14rem',
+                  minWidth: '14rem',
+                  maxWidth: 'none',
+                }}
+              >
+                <div className="mb-2 whitespace-nowrap text-sm font-semibold text-muted-foreground">
                   표시색 팔레트
                 </div>
                 <div className="grid grid-cols-6 gap-1.5">
@@ -270,10 +277,10 @@ function ComponentTreeRow({
                     />
                   ))}
                 </div>
-                <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-2">
                   <button
                     type="button"
-                    className="text-xs font-medium text-primary hover:underline"
+                    className="whitespace-nowrap text-xs font-medium text-primary hover:underline"
                     onClick={() => {
                       actions.setComponentColor(componentId, null)
                       setIsColorPaletteOpen(false)
@@ -281,7 +288,7 @@ function ComponentTreeRow({
                   >
                     CAD 원본색
                   </button>
-                  <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
+                  <label className="flex cursor-pointer items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
                     직접 지정
                     <input
                       type="color"

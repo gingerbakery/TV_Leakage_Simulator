@@ -73,6 +73,25 @@ describe('ROI selection', () => {
     ])
   })
 
+  it('uses all six XYZ boundaries for coordinate-box ROI selection', () => {
+    const scene = createSceneFixture()
+    expect(
+      resolveFacesInRoiBox(
+        scene,
+        {
+          plane: 'xyz',
+          xMin: 5,
+          xMax: 55,
+          yMin: 5,
+          yMax: 55,
+          zMin: 11,
+          zMax: 20,
+        },
+        [],
+      ),
+    ).toEqual([3, 4])
+  })
+
   it('groups ROI metadata by component and resolves coordinate input', () => {
     const scene = createSceneFixture()
     const components = groupRoiFacesByComponent(
