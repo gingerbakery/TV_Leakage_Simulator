@@ -4,6 +4,7 @@ import type {
   EmitterPowerMode,
   EmitterSpec,
   RayTraceConfigRequest,
+  RayTraceResult,
   ReceiverSpec,
   ScenePayload,
   Vec3,
@@ -46,10 +47,12 @@ import {
 import {
   axesFromNormal,
   buildRayTraceRequest,
+  convergenceSegmentSeed,
   createCurrentViewReceiver,
   createDatumEmitter,
   createDatumReceiver,
   createFaceEmitter,
+  mergeConvergenceRayTraceResults,
   nextSpecId,
   planeAxesFromRotation,
   rayObjectDisplayName,
@@ -1224,6 +1227,8 @@ export function RayTracingPanel({
     useState<string | null>(null)
   const autoConvergenceActiveRef = useRef(false)
   const convergenceMultiplierRef = useRef(1)
+  const convergenceSegmentIndexRef = useRef(0)
+  const convergenceAggregateRef = useRef<RayTraceResult | null>(null)
   const handledConvergenceJobRef = useRef<string | null>(null)
   const autoRetryJobIdRef = useRef<string | null>(null)
   const autoRetryAbortControllerRef = useRef<AbortController | null>(null)
@@ -1303,8 +1308,7 @@ export function RayTracingPanel({
   const gpuCpuOnlyEmitters = emitters.filter(
     (emitter) =>
       emitter.enabled &&
-      (emitter.emitter_type === 'face' ||
-        emitter.surface_construction === 'polygon_auto'),
+      emitter.surface_construction === 'polygon_auto',
   )
   const gpuCudaProbeReady =
     gpuCudaStatusQuery.isSuccess &&
@@ -1349,7 +1353,7 @@ export function RayTracingPanel({
     }
     if (hadPendingAutoConvergence) {
       setAutoConvergenceStatus(
-        '결과 창을 닫아 이후 Auto convergence 재실행을 취소했습니다.',
+        '결과 창을 닫아 이후 Auto convergence 추가 실행을 취소했습니다.',
       )
     }
   }, [actions, activeJobId, autoConvergenceCancelToken, stopMutation])
@@ -1401,6 +1405,7 @@ export function RayTracingPanel({
   const launchRun = useCallback(async (
     rayMultiplier = 1,
     autoRetry = false,
+    segmentIndex = 0,
   ) => {
     if (
       !scene ||
@@ -1422,6 +1427,15 @@ export function RayTracingPanel({
       roiScopes,
       config,
     })
+    if (config.auto_convergence) {
+      request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
+      request.emitters = request.emitters.map((emitter) => ({
+        ...emitter,
+        seed: emitter.seed === null
+          ? null
+          : convergenceSegmentSeed(emitter.seed, segmentIndex),
+      }))
+    }
     const cancelTokenAtStart = autoConvergenceCancelTokenRef.current
     const abortController = autoRetry ? new AbortController() : null
     if (autoRetry) {
@@ -1464,13 +1478,15 @@ export function RayTracingPanel({
     autoRetryAbortControllerRef.current?.abort()
     autoRetryAbortControllerRef.current = null
     convergenceMultiplierRef.current = 1
+    convergenceSegmentIndexRef.current = 0
+    convergenceAggregateRef.current = null
     handledConvergenceJobRef.current = null
     setAutoConvergenceStatus(
       config.auto_convergence ? '자동 수렴 1차 해석을 시작합니다.' : '',
     )
     setConvergenceHistory([])
     convergenceHistoryRef.current = []
-    await launchRun(1)
+    await launchRun(1, false, 0)
   }
 
   const handleRun = async () => {
@@ -1491,9 +1507,25 @@ export function RayTracingPanel({
     if (autoRetryJobIdRef.current === job.job_id) {
       autoRetryJobIdRef.current = null
     }
+    let accumulatedResult = job.result
+    if (config.auto_convergence) {
+      try {
+        accumulatedResult = mergeConvergenceRayTraceResults(
+          convergenceAggregateRef.current,
+          job.result,
+        )
+      } catch {
+        autoConvergenceActiveRef.current = false
+        setAutoConvergenceStatus(
+          'Receiver 또는 해석 설정이 실행 중 변경되어 누적을 중단했습니다.',
+        )
+        return
+      }
+      convergenceAggregateRef.current = accumulatedResult
+    }
     const enabledIds = receivers.filter((receiver) => receiver.enabled).map((receiver) => receiver.receiver_id)
     const receiverMetrics = enabledIds.map((id) => {
-      const value = job.result?.metrics[id]
+      const value = accumulatedResult.metrics[id]
       return value && typeof value === 'object' ? value as Record<string, unknown> : {}
     })
     const metricError = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : Infinity
@@ -1503,7 +1535,7 @@ export function RayTracingPanel({
     const flux = receiverMetrics.reduce((sum, value) => sum + (Number(value.total_flux_lumen) || 0), 0)
     const enoughSamples = receiverMetrics.every((value) => (Number(value.hit_count) || 0) >= 30)
     const historyEntry = {
-      rays: job.result!.total_rays,
+      rays: accumulatedResult.total_rays,
       totalError,
       peakError,
       peakNit,
@@ -1512,8 +1544,8 @@ export function RayTracingPanel({
     const nextHistory = [...convergenceHistoryRef.current, historyEntry]
     convergenceHistoryRef.current = nextHistory
     setConvergenceHistory(nextHistory)
-    job.result.metrics._convergence_history = nextHistory
-    actions.setActiveCadCaseResult(job.result)
+    accumulatedResult.metrics._convergence_history = nextHistory
+    actions.setActiveCadCaseResult(accumulatedResult)
     const convergenceTarget = config.convergence_target_percent ?? 5
     const converged = enoughSamples &&
       totalError <= convergenceTarget &&
@@ -1529,7 +1561,8 @@ export function RayTracingPanel({
       }
       return
     }
-    const nextMultiplier = convergenceMultiplierRef.current * 2
+    const currentMultiplier = convergenceMultiplierRef.current
+    const nextMultiplier = currentMultiplier * 2
     if (nextMultiplier > (config.max_convergence_multiplier ?? 8)) {
       autoConvergenceActiveRef.current = false
       setAutoConvergenceStatus(
@@ -1537,12 +1570,19 @@ export function RayTracingPanel({
       )
       return
     }
+    const incrementalMultiplier = nextMultiplier - currentMultiplier
     convergenceMultiplierRef.current = nextMultiplier
+    convergenceSegmentIndexRef.current += 1
+    const incrementalRays = enabledEmitterRayCount * incrementalMultiplier
     const nextTotalRays = enabledEmitterRayCount * nextMultiplier
     setAutoConvergenceStatus(
-      `오차가 목표보다 높아 ${nextTotalRays.toLocaleString()} Ray로 다시 해석합니다.`,
+      `오차가 목표보다 높아 ${incrementalRays.toLocaleString()} Ray를 추가합니다. 누적 ${nextTotalRays.toLocaleString()} Ray`,
     )
-    void launchRun(nextMultiplier, true)
+    void launchRun(
+      incrementalMultiplier,
+      true,
+      convergenceSegmentIndexRef.current,
+    )
   }, [actions, config.auto_convergence, config.convergence_target_percent, config.max_convergence_multiplier, enabledEmitterRayCount, job, launchRun, receivers])
 
   const progress =
@@ -1860,8 +1900,10 @@ export function RayTracingPanel({
               Auto convergence
               <HelpTooltip label="Auto convergence help">
                 Total Flux Error와 Peak-area Error가 모두 목표 오차 이하가 될 때까지
-                Ray 수를 2배씩 늘려 자동으로 다시 해석합니다. 각 단계는 전체 해석을
-                새로 실행하므로 Emitter의 총광량 정규화가 올바르게 유지됩니다.
+                독립 Ray 구간을 추가해 누적 표본을 2배씩 늘립니다. 이전 표본은
+                버리지 않고 광량과 제곱합을 표본 수로 가중 결합합니다.
+                1→2→4→8배 설정은 실제로 8배 Ray만 처리하며, Flux 수렴이 셀별
+                Heatmap 노이즈 감소까지 보장하지는 않습니다.
               </HelpTooltip>
             </label>
             {config.auto_convergence ? (
@@ -1884,7 +1926,7 @@ export function RayTracingPanel({
                   step={1}
                   disabled={isRunning}
                   onChange={(value) => updateConfig({ max_convergence_multiplier: Math.trunc(value) })}
-                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 최대 80,000 Ray까지 해석합니다."
+                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 80,000 Ray를 각각 새로 실행하여 누적 150,000 Ray를 처리합니다."
                 />
               </div>
             ) : null}
@@ -2016,6 +2058,101 @@ export function RayTracingPanel({
                 </span>
               </summary>
               <div className="space-y-2 border-t border-border p-2.5">
+                <label className={fieldLabelClassName}>
+                  <span className="flex items-center gap-1.5">
+                    Primary ray sampling
+                    <HelpTooltip label="Primary ray sampling 도움말">
+                      Source distribution은 Emitter의 원래 분포만 사용합니다.
+                      Receiver-directed MIS는 원래 분포와 Receiver 방향 샘플을
+                      편향 없이 혼합해 작은 Receiver의 유효 hit를 늘립니다.
+                      현재 Lambertian·Isotropic Emitter에 적용되며 Gaussian 등
+                      미지원 형식은 자동으로 Source 방식으로 실행됩니다.
+                    </HelpTooltip>
+                  </span>
+                  <select
+                    className={inputClassName}
+                    aria-label="Primary ray sampling"
+                    value={config.primary_sampling_strategy ?? 'source'}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      updateConfig({
+                        primary_sampling_strategy:
+                          event.currentTarget.value === 'receiver_mis'
+                            ? 'receiver_mis'
+                            : 'source',
+                      })
+                    }
+                  >
+                    <option value="source">Source distribution (기본)</option>
+                    <option value="receiver_mis">
+                      Receiver-directed MIS (실험)
+                    </option>
+                  </select>
+                </label>
+                {config.primary_sampling_strategy === 'receiver_mis' ? (
+                  <NumberField
+                    label="Receiver sample ratio"
+                    value={config.receiver_importance_fraction ?? 0.5}
+                    min={0.05}
+                    max={0.95}
+                    step={0.05}
+                    disabled={isRunning}
+                    onChange={(value) =>
+                      updateConfig({ receiver_importance_fraction: value })
+                    }
+                    description="전체 primary ray 중 Receiver 방향으로 제안할 비율입니다. 기본 0.5를 권장하며, 값이 너무 높으면 간접광·차폐 경로 탐색이 부족해질 수 있습니다."
+                  />
+                ) : null}
+                <label className={fieldLabelClassName}>
+                  <span className="flex items-center gap-1.5">
+                    Reflected ray sampling
+                    <HelpTooltip label="Reflected ray sampling 도움말">
+                      Surface distribution은 표면의 원래 반사 분포만
+                      사용합니다. Receiver-directed bounce MIS는 Lambertian
+                      반사점에서 원래 분포와 Receiver 방향을 편향 없이 혼합해
+                      차폐 뒤 희귀 반사광 hit를 늘립니다. Specular는 원래 delta
+                      경로를 유지하고 Gaussian·Mixed 표면은 정확도 보호를 위해
+                      자동으로 Surface 방식으로 실행됩니다.
+                    </HelpTooltip>
+                  </span>
+                  <select
+                    className={inputClassName}
+                    aria-label="Reflected ray sampling"
+                    value={config.bounce_sampling_strategy ?? 'source'}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      updateConfig({
+                        bounce_sampling_strategy:
+                          event.currentTarget.value === 'receiver_mis'
+                            ? 'receiver_mis'
+                            : 'source',
+                      })
+                    }
+                  >
+                    <option value="source">Surface distribution (기본)</option>
+                    <option value="receiver_mis">
+                      Receiver-directed bounce MIS (실험)
+                    </option>
+                  </select>
+                </label>
+                {config.bounce_sampling_strategy === 'receiver_mis' ? (
+                  <NumberField
+                    label="Bounce Receiver sample ratio"
+                    value={
+                      config.bounce_receiver_importance_fraction ?? 0.5
+                    }
+                    min={0.05}
+                    max={0.95}
+                    step={0.05}
+                    disabled={isRunning}
+                    onChange={(value) =>
+                      updateConfig({
+                        bounce_receiver_importance_fraction: value,
+                      })
+                    }
+                    description="Lambertian 반사 표본 중 Receiver 방향으로 제안할 비율입니다. 기본 0.5를 권장합니다."
+                  />
+                ) : null}
                 <label className={fieldLabelClassName}>
                   <span className="flex items-center gap-1.5">
                     충돌 계산 방식
@@ -2192,7 +2329,7 @@ export function RayTracingPanel({
         open={gpuCompatibilityDialogOpen}
         onOpenChange={setGpuCompatibilityDialogOpen}
         title="일부 Emitter는 CPU로 실행됩니다"
-        description="GPU는 요청되지만 아래 Emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
+        description="GPU는 요청되지만 아래 Polygon emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
         footer={
           <>
             <Button variant="outline" onClick={() => setGpuCompatibilityDialogOpen(false)}>
@@ -2217,7 +2354,7 @@ export function RayTracingPanel({
             >
               <span className="font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
               <Badge variant="outline">
-                {emitter.emitter_type === 'face' ? 'Face · CPU scalar' : 'Polygon auto · CPU scalar'}
+                Polygon auto · CPU scalar
               </Badge>
             </div>
           ))}

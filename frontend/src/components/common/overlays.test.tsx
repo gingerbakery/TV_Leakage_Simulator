@@ -117,8 +117,11 @@ describe('common overlays', () => {
         position={{ x: 200, y: 160 }}
         visible
         traceable
+        colorOverride={null}
+        fallbackColor="#64748b"
         wheelTarget={wheelTarget}
         onOpenChange={vi.fn()}
+        onColorChange={vi.fn()}
         onAction={vi.fn()}
       />,
     )

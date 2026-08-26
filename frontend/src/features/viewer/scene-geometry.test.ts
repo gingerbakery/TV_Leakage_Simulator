@@ -9,20 +9,9 @@ import {
   findCadSurfaceFaceIds,
   findCoplanarFacePatch,
   getSceneBounds,
-  resolveComponentColor,
 } from './scene-geometry'
 
 describe('Three.js scene geometry', () => {
-  it('preserves the CAD-authored component display color', () => {
-    const component = {
-      ...createSceneFixture().components[0],
-      color: '#ff0000',
-    }
-
-    expect(resolveComponentColor(component, 0)).toBe(0xff0000)
-    expect(resolveComponentColor({ ...component, color: null }, 0)).toBe(0x64748b)
-  })
-
   it('groups tessellation triangles by original CAD face id', () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]

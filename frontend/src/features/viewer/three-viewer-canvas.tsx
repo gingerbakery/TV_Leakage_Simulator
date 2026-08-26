@@ -81,7 +81,6 @@ import {
   createFeatureEdgeGeometry,
   findCadSurfaceFaceIds,
   getSceneBounds,
-  resolveComponentColor,
 } from './scene-geometry'
 import { fitPerspectiveCameraToBounds } from './camera-fit'
 import {
@@ -89,6 +88,7 @@ import {
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
   ISO_CAMERA_AXES,
+  resolveComponentColor,
   surfaceOpacityFromTransparency,
   type AxisCameraPreset,
   type DisplayCameraPreset,

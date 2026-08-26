@@ -18,6 +18,7 @@ describe('compute execution status', () => {
       gpu_cuda_gpu_attempt_count: 4,
       gpu_cuda_gpu_success_count: 4,
       gpu_cuda_hybrid_cpu_success_count: 2,
+      monte_carlo_contract: 'cpu_gpu_deterministic_batch_v1',
     }
 
     expect(resolveComputeExecution('gpu_cuda', performance).state).toBe(
@@ -35,6 +36,7 @@ describe('compute execution status', () => {
     )
     expect(screen.getByText('CUDA batches · 4/4')).not.toBeNull()
     expect(screen.getByText('NVIDIA RTX Test')).not.toBeNull()
+    expect(screen.getByText('CPU/GPU 동일 샘플 계약')).not.toBeNull()
   })
 
   it('warns when a GPU request fell back with zero CUDA batches', () => {
@@ -91,5 +93,24 @@ describe('compute execution status', () => {
 
     expect(summary.state).toBe('gpu-fallback')
     expect(summary.reason).toContain('Emitter 형식은 CUDA batch를 지원하지 않아')
+  })
+
+  it('warns when an old GPU result lacks the parity contract', () => {
+    render(
+      <ComputeExecutionStatus
+        configuredBackend="gpu_cuda"
+        performance={{
+          compute_backend: 'gpu_cuda',
+          compute_execution_state: 'gpu_active',
+          intersection_provider: 'gpu_cuda',
+          gpu_cuda_gpu_attempt_count: 2,
+          gpu_cuda_gpu_success_count: 2,
+        }}
+      />,
+    )
+
+    expect(
+      screen.getByText(/동일 샘플 정확도 계약이 기록되지 않은 이전 결과/),
+    ).not.toBeNull()
   })
 })

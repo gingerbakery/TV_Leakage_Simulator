@@ -358,44 +358,47 @@ class Perf3B2AMultiBounceWavefrontTests(unittest.TestCase):
         self.assertEqual(performance["intersection_fallback_count"], 0)
         self.assertEqual(native_mock.call_count, performance["intersection_batch_count"])
 
-    def test_default_auto_multibounce_stays_scalar_without_native_probe(self) -> None:
+    def test_default_auto_multibounce_uses_cpu_gpu_parity_contract(self) -> None:
         reference = run_direct_ray_trace(
             two_bounce_input(max_depth=2, ray_count=41),
-            intersection_dispatch="scalar",
+            intersection_dispatch="batch",
+            intersection_batch_size=41,
             intersection_provider="python_cpu",
+            wavefront_planner="python_cpu",
+            wavefront_pipeline="soa_event_tape",
+            wavefront_reducer="python_cpu",
+            wavefront_rng="counter_rng_v2",
+            wavefront_reducer_commit="run_accumulator",
         )
         trace_input = two_bounce_input(max_depth=2, ray_count=41)
 
-        with (
-            patch(
-                "leakage_simulator.native_cpu_intersection.probe_native_cpu",
-                side_effect=AssertionError("default auto must not probe Numba"),
-            ) as probe_mock,
-            patch.object(
-                trace_input.mesh,
-                "intersect_rays_native_cpu",
-                side_effect=AssertionError("default auto must not call native batch"),
-            ) as batch_mock,
-            patch.object(
-                trace_input.mesh,
-                "intersect_ray_native_cpu",
-                side_effect=AssertionError("default auto must not call native scalar"),
-            ) as scalar_mock,
-        ):
-            result = run_direct_ray_trace(trace_input)
+        result = run_direct_ray_trace(trace_input)
 
         self.assertEqual(semantic_payload(reference), semantic_payload(result))
-        probe_mock.assert_not_called()
-        batch_mock.assert_not_called()
-        scalar_mock.assert_not_called()
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["requested_intersection_dispatch"], "auto")
-        self.assertEqual(performance["intersection_dispatch"], "scalar")
-        self.assertEqual(performance["execution_path"], "multi_bounce")
-        self.assertFalse(performance["multi_bounce_wavefront_used"])
+        self.assertEqual(
+            performance["effective_intersection_dispatch_request"],
+            "batch",
+        )
+        self.assertEqual(performance["intersection_dispatch"], "batch")
+        self.assertEqual(performance["execution_path"], "multi_bounce_wavefront")
+        self.assertTrue(performance["multi_bounce_wavefront_used"])
         self.assertEqual(performance["requested_intersection_provider"], "auto")
-        self.assertEqual(performance["intersection_provider"], "python_cpu")
-        self.assertEqual(performance["native_attempt_count"], 0)
+        self.assertEqual(
+            performance["effective_intersection_provider_request"],
+            "numba_cpu",
+        )
+        self.assertIn(
+            performance["intersection_provider"],
+            {"numba_cpu", "python_cpu", "mixed"},
+        )
+        self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
+        self.assertEqual(performance["wavefront_reflection_rng"], "counter_rng_v2")
+        self.assertEqual(
+            performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
 
     def test_stop_during_depth_query_commits_started_primary_chunk_atomically(
         self,

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { RayTraceJob, ScenePayload } from '@/api'
 import {
   BoxSelect,
+  ChevronDown,
   FileBox,
   Layers3,
   Move3D,
@@ -14,6 +15,7 @@ import {
   Target,
   Workflow,
 } from 'lucide-react'
+import { Accordion as AccordionPrimitive } from 'radix-ui'
 
 import { HelpTooltip } from '@/components/common'
 import { ModelImportCard } from '@/features/cad'
@@ -34,7 +36,6 @@ import {
   Accordion,
   AccordionContent,
   AccordionItem,
-  AccordionTrigger,
 } from '@/components/ui/accordion'
 import { cn } from '@/lib/utils'
 import { useWorkspaceStore, workspaceSelectors } from '@/stores'
@@ -140,6 +141,108 @@ const workflowSections: WorkflowSection[] = [
     icon: Settings2,
   },
 ]
+
+function WorkflowSectionHeader({
+  section,
+  isActive,
+  isExpanded,
+}: {
+  section: WorkflowSection
+  isActive: boolean
+  isExpanded: boolean
+}) {
+  const Icon = section.icon
+  const accessibleLabel = section.step
+    ? `Step ${section.step} ${section.label}`
+    : section.label
+
+  return (
+    <AccordionPrimitive.Header
+      className="relative my-1 min-w-0"
+      data-workflow-section-header={section.id}
+    >
+      <AccordionPrimitive.Trigger
+        className={cn(
+          'peer absolute inset-0 z-0 min-w-0 rounded-lg border shadow-sm transition-all outline-none focus-visible:ring-2 focus-visible:ring-primary/45',
+          isActive
+            ? 'border-blue-300 bg-gradient-to-r from-blue-100 to-sky-50 shadow-blue-200/40 hover:from-blue-100 hover:to-sky-100 dark:border-blue-500/55 dark:from-blue-950/75 dark:to-sky-900/35 dark:shadow-blue-950/30 dark:hover:from-blue-900/75 dark:hover:to-sky-900/45'
+            : 'border-slate-200 bg-gradient-to-r from-slate-50 to-white hover:border-blue-200 hover:from-blue-50 hover:to-white dark:border-slate-700 dark:from-slate-900/80 dark:to-slate-800/55 dark:hover:border-blue-700 dark:hover:from-blue-950/45 dark:hover:to-slate-800/65',
+        )}
+        aria-label={accessibleLabel}
+        aria-current={isActive ? 'step' : undefined}
+      >
+        <span className="sr-only">{accessibleLabel}</span>
+      </AccordionPrimitive.Trigger>
+
+      <div className="pointer-events-none relative z-10 flex min-w-0 items-center gap-2 px-2.5 py-2.5">
+        <span
+          className={cn(
+            'flex size-7 shrink-0 items-center justify-center rounded-md border',
+            isActive
+              ? 'border-blue-300 bg-blue-500/10 text-blue-700 dark:border-blue-500/55 dark:bg-blue-400/15 dark:text-sky-300'
+              : 'border-slate-200 bg-white text-slate-500 dark:border-slate-600 dark:bg-slate-800/85 dark:text-slate-400',
+          )}
+          aria-hidden="true"
+        >
+          <Icon className="size-3.5" />
+        </span>
+
+        <span className="min-w-0 flex-1">
+          {section.step ? (
+            <span
+              className={cn(
+                'block text-sm font-medium tracking-wide',
+                isActive
+                  ? 'text-blue-700/75 dark:text-sky-300/85'
+                  : 'text-slate-500 dark:text-slate-400',
+              )}
+              aria-hidden="true"
+            >
+              Step {section.step}
+            </span>
+          ) : null}
+          <span
+            className="flex min-w-0 items-center gap-1"
+            data-workflow-section-title-row
+          >
+            <span
+              className={cn(
+                'min-w-0 truncate text-sm font-semibold leading-5',
+                isActive
+                  ? 'text-blue-950 dark:text-blue-50'
+                  : 'text-slate-700 dark:text-slate-200',
+              )}
+              data-workflow-section-title
+              aria-hidden="true"
+            >
+              {section.label}
+            </span>
+            <span
+              className="pointer-events-auto inline-flex size-4 shrink-0 items-center justify-center"
+              data-workflow-section-help={section.id}
+            >
+              <HelpTooltip
+                label={`${section.label} 도움말`}
+                triggerClassName="size-4"
+                iconClassName="size-3"
+              >
+                {section.guide}
+              </HelpTooltip>
+            </span>
+          </span>
+        </span>
+
+        <ChevronDown
+          className={cn(
+            'size-3.5 shrink-0 text-muted-foreground transition-transform duration-200',
+            isExpanded && 'rotate-180',
+          )}
+          aria-hidden="true"
+        />
+      </div>
+    </AccordionPrimitive.Header>
+  )
+}
 
 export function WorkflowSidebar({
   activeSection,
@@ -309,6 +412,7 @@ export function WorkflowSidebar({
     >
       <div
         className="min-w-0 overflow-x-clip outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary lg:h-full lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain"
+        style={{ scrollbarGutter: 'stable' }}
         role="region"
         aria-label="Workflow menu"
         tabIndex={0}
@@ -367,7 +471,6 @@ export function WorkflowSidebar({
               aria-label="Simulation workflow"
             >
               {workflowSections.map((section) => {
-                const Icon = section.icon
                 const isActive = section.id === activeSection
 
                 return (
@@ -376,54 +479,15 @@ export function WorkflowSidebar({
                     value={section.id}
                     className="min-w-0"
                   >
-                    <AccordionTrigger
-                      className={cn(
-                        'my-1 min-w-0 rounded-lg border px-2.5 py-2.5 shadow-sm',
-                        isActive
-                          ? 'border-blue-300 bg-gradient-to-r from-blue-100 to-sky-50 text-blue-950 shadow-blue-200/40 hover:from-blue-100 hover:to-sky-100 dark:border-blue-500/55 dark:from-blue-950/75 dark:to-sky-900/35 dark:text-blue-50 dark:shadow-blue-950/30 dark:hover:from-blue-900/75 dark:hover:to-sky-900/45'
-                          : 'border-slate-200 bg-gradient-to-r from-slate-50 to-white text-slate-700 hover:border-blue-200 hover:from-blue-50 hover:to-white dark:border-slate-700 dark:from-slate-900/80 dark:to-slate-800/55 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:from-blue-950/45 dark:hover:to-slate-800/65',
-                      )}
-                      aria-label={
-                        section.step
-                          ? `Step ${section.step} ${section.label}`
-                          : section.label
-                      }
-                      aria-current={isActive ? 'step' : undefined}
-                      endAdornment={
-                        <HelpTooltip label={`${section.label} 도움말`}>
-                          {section.guide}
-                        </HelpTooltip>
-                      }
+                    <WorkflowSectionHeader
+                      section={section}
+                      isActive={isActive}
+                      isExpanded={expandedSection === section.id}
+                    />
+                    <AccordionContent
+                      data-workflow-section-content={section.id}
+                      className="mt-1.5 mb-2 min-w-0 rounded-lg border border-blue-300/80 bg-slate-200/70 px-2.5 pt-2.5 dark:border-blue-700/70 dark:bg-slate-900/85"
                     >
-                      <span
-                        className={cn(
-                          'flex size-7 shrink-0 items-center justify-center rounded-md border',
-                          isActive
-                            ? 'border-blue-300 bg-blue-500/10 text-blue-700 dark:border-blue-500/55 dark:bg-blue-400/15 dark:text-sky-300'
-                            : 'border-slate-200 bg-white text-slate-500 dark:border-slate-600 dark:bg-slate-800/85 dark:text-slate-400',
-                        )}
-                      >
-                        <Icon className="size-3.5" aria-hidden="true" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        {section.step ? (
-                          <span
-                            className={cn(
-                              'block text-sm font-medium tracking-wide',
-                              isActive
-                                ? 'text-blue-700/75 dark:text-sky-300/85'
-                                : 'text-slate-500 dark:text-slate-400',
-                            )}
-                          >
-                            Step {section.step}
-                          </span>
-                        ) : null}
-                        <span className="block truncate text-sm font-semibold leading-5">
-                          {section.label}
-                        </span>
-                      </span>
-                    </AccordionTrigger>
-                    <AccordionContent className="mt-1.5 min-w-0 rounded-lg border-l-2 border-blue-300 bg-gradient-to-b from-blue-50/55 to-background px-2.5 pt-2.5 dark:border-blue-700/70 dark:from-blue-950/22 dark:to-background">
                       {renderPanel(section.id)}
                     </AccordionContent>
                   </AccordionItem>

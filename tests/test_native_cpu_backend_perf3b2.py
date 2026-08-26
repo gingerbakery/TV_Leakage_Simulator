@@ -133,42 +133,35 @@ class NativeCpuBackendPerf3B2Tests(unittest.TestCase):
         self.assertEqual(execution.distances.dtype, np.float64)
         self.assertEqual(execution.face_indices.dtype, np.int64)
 
-    def test_default_auto_does_not_probe_or_call_native_provider(self) -> None:
-        trace_input = reflected_case(23)
+    def test_default_auto_uses_shared_deterministic_batch_contract(self) -> None:
         reference = run_direct_ray_trace(
             reflected_case(23),
-            intersection_dispatch="scalar",
+            intersection_dispatch="batch",
             intersection_provider="python_cpu",
+            wavefront_pipeline="soa_event_tape",
+            wavefront_planner="python_cpu",
+            wavefront_reducer="python_cpu",
+            wavefront_rng="counter_rng_v2",
+            wavefront_reducer_commit="run_accumulator",
         )
-
-        with (
-            patch(
-                "leakage_simulator.native_cpu_intersection.probe_native_cpu",
-                side_effect=AssertionError("default auto must not probe Numba"),
-            ) as probe_mock,
-            patch.object(
-                trace_input.mesh,
-                "intersect_rays_native_cpu",
-                side_effect=AssertionError("default auto must not call native batch"),
-            ) as batch_mock,
-            patch.object(
-                trace_input.mesh,
-                "intersect_ray_native_cpu",
-                side_effect=AssertionError("default auto must not call native scalar"),
-            ) as scalar_mock,
-        ):
-            result = run_direct_ray_trace(trace_input)
+        result = run_direct_ray_trace(reflected_case(23))
 
         self.assertEqual(semantic_payload(result), semantic_payload(reference))
-        probe_mock.assert_not_called()
-        batch_mock.assert_not_called()
-        scalar_mock.assert_not_called()
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["requested_intersection_provider"], "auto")
-        self.assertEqual(performance["intersection_provider"], "python_cpu")
-        self.assertIsNone(performance["native_available"])
-        self.assertFalse(performance["native_used"])
-        self.assertEqual(performance["native_attempt_count"], 0)
+        self.assertEqual(
+            performance["effective_intersection_provider_request"],
+            "numba_cpu",
+        )
+        self.assertIn(
+            performance["intersection_provider"],
+            {"numba_cpu", "python_cpu", "mixed"},
+        )
+        self.assertEqual(performance["intersection_dispatch"], "batch")
+        self.assertEqual(
+            performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
         self.assertEqual(performance["intersection_fallback_count"], 0)
 
     def test_native_batch_matches_seeded_bvh_rays_exactly(self) -> None:

@@ -298,7 +298,11 @@ print(json.dumps({{'before': before, 'after': after, 'probed': gpu._CAPABILITY i
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["compute_backend"], "gpu_cuda")
         self.assertEqual(performance["intersection_batch_size"], 65536)
-        self.assertEqual(performance["requested_intersection_provider"], "gpu_cuda")
+        self.assertEqual(performance["requested_intersection_provider"], "auto")
+        self.assertEqual(
+            performance["effective_intersection_provider_request"],
+            "gpu_cuda",
+        )
         self.assertEqual(performance["intersection_provider"], "gpu_cuda")
         self.assertTrue(performance["gpu_cuda_available"])
         self.assertTrue(performance["gpu_cuda_used"])

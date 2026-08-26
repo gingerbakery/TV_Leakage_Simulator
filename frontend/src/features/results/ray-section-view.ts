@@ -20,10 +20,8 @@ import {
 import type { RayHit, ReceiverSpec, ScenePayload } from '@/api'
 import type { RayPathDisplayFilter } from '@/stores'
 
-import {
-  createFaceGeometry,
-  resolveComponentColor,
-} from '@/features/viewer/scene-geometry'
+import { createFaceGeometry } from '@/features/viewer/scene-geometry'
+import { resolveComponentColor } from '@/features/viewer/viewer-display'
 
 import {
   buildRayPathVisualization,

@@ -141,16 +141,119 @@ GPU 테스트 보고에는 다음 네 가지를 같이 남긴다.
 결과에 `Compute` 행 자체가 없으면 최신 frontend가 아니다. Source에서는
 `run_web_gpu.bat`을 다시 실행하고, EXE에서는 새 GPU ZIP을 새 폴더에 푼다.
 
+현재 결과에는 `CPU/GPU 동일 샘플 계약` 배지도 함께 확인한다. GPU 활성인데 이
+배지가 없으면 서로 다른 Monte Carlo stream을 사용하던 이전 결과일 수 있으므로
+현재 버전에서 다시 실행한다.
+
+Source 환경에서 장치 정합을 독립 검증하려면 다음을 실행한다.
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\verify_gpu_cpu_accuracy.py --rays 100000
+```
+
+마지막 JSON의 `passed=true`, 각 case의 `semantic_exact=true`,
+`gpu_execution_proven=true`를 모두 요구한다. 이 검증은 CPU/GPU 구현 정합성용이며
+실측 nit의 물리 정확도 보정은 별도다.
+
+위 명령은 정확한 기준 보존을 위해 PERF-4A `host_roundtrip` 경로를 검사한다.
+프로덕션 GPU의 PERF-4B resident 경로는 다음 명령으로 추가 검증한다.
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4b_resident_wavefront.py `
+  --rays 100000 --repeats 3
+```
+
+`passed=true`, 모든 case의 `parity.passed=true`,
+`resident_evidence.resident_success_count > 0`,
+`resident_evidence.resident_fallback_count=0`을 요구한다. 확률 반사의 CUDA
+초월함수는 CPU와 수 ULP 차이가 날 수 있으므로 이산 결과 exact와 strict float64
+tolerance를 함께 판정한다.
+
+프로덕션 summary 경로의 PERF-4C GPU 누적기는 다음 명령으로 검증한다.
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4c_gpu_accumulator.py `
+  --rays 100000 --repeats 3
+```
+
+모든 case의 `passed=true`, `discrete_exact=true`,
+`float64_tolerance_passed=true`, accumulator success 1 이상, resident fallback
+0과 `strict_float64_gpu_summary_accumulator_v1` 계약을 요구한다. CUDA atomic
+합산 순서 때문에 float가 bit-exact하지 않을 수 있으므로 `semantic_exact=false`
+하나만으로 실패 판정하지 않는다. 이산 결과 exact와 strict `1e-9` 물리량 허용
+오차를 함께 확인한다. `gpu_accumulator=host`는 4B 비교 진단용이며 일반 사용자는
+기본 `auto`를 유지한다.
+
+PERF-4D compact workspace 검증:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4d_compact_workspace.py `
+  --rays 100000 --repeats 3
+```
+
+이산 exact, strict float64, resident fallback 0,
+`compact_summary_sparse_path_retrace_v1`, full 대비 workspace byte 감소를 모두
+확인한다. workspace가 줄어도 wall time이 줄지 않았다면 속도 향상으로 표현하지
+않는다.
+
+PERF-4E primary Receiver MIS 검증:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4e_receiver_mis.py `
+  --rays 20000 --repeats 12
+```
+
+CPU/GPU 이산 exact, strict float64와 finite MIS weight를 확인한다. UI의
+`Receiver-directed MIS`는 Lambertian/isotropic batch Emitter에만 적용되고
+Gaussian·scalar-only Emitter는 source sampling으로 돌아간다. 직접 보이는
+synthetic Receiver의 분산 감소를 차폐된 실제 TV 성능 보장으로 해석하지 않는다.
+
+Auto convergence는 `independent_segment_weighted_v1` 계약으로 독립 구간을
+누적한다. `1→2→4→8배`는 `1+1+2+4=8배` Ray를 처리한다. 저장 결과의
+`_convergence_accumulation.segment_rays`, config/Emitter seed와 compute state를
+함께 확인한다.
+
+PERF-4E-B Lambertian bounce MIS 검증:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts\benchmark_perf4e_bounce_mis.py `
+  --rays 20000 --repeats 12 --parity-rays 8192
+```
+
+`bounce_sampling_strategy=receiver_mis`는 순수 Lambertian 반사점에서만
+Receiver 면적 proposal을 원래 cosine 분포와 혼합한다. 반사 Ray 자체가 기존
+CUDA BVH를 통과하므로 중간 차폐물이 있으면 Receiver보다 먼저 차폐면에
+도달한다. Specular는 기존 delta 경로를 유지하고 Gaussian·Mixed는 source
+sampling으로 fallback한다. 결과의 다음 필드를 함께 확인한다.
+
+- `bounce_sampling_strategy`
+- `bounce_sampling_receiver_directed_fraction`
+- `bounce_sampling_unsupported_surface_count`
+- `bounce_sampling_fallback_reasons`
+- `bounce_sampling_weight_min/max`
+- `bounce_sampling_effective_sample_ratio`
+
 ## E. 기존 프로젝트와 지원 범위
 
 - `compute_backend`가 없는 기존 `.bitsam`은 CPU로 열린다.
 - GPU 테스트 전 프로젝트마다 `연산 장치 > NVIDIA GPU` 선택을 확인한다.
 - GPU 선택을 저장한 프로젝트는 다음 실행에서 해당 선택을 복원할 수 있다.
-- Face 및 `polygon_auto` emitter 등 일부 workload는 현재 CPU 경로를 포함할 수
-  있다. 결과 `Compute` 행의 GPU batch와 fallback을 기준으로 판정한다.
+- Face emitter의 primary ray는 batch 생성 후 CUDA BVH로 교차 판정한다. 작은
+  Face primary batch도 CUDA를 직접 호출한다. 다만 이후 반사 wave가 8,192개
+  미만이면 CPU hybrid가 포함될 수 있다.
+- `polygon_auto` emitter는 아직 CPU scalar 경로다. 결과 `Compute` 행의 GPU
+  batch와 fallback을 기준으로 실제 실행 장치를 판정한다.
 - 작은 장면은 JIT와 전송 비용 때문에 CPU보다 빠르지 않을 수 있다.
+- 일반 GPU summary 실행은 PERF-4C가 Receiver/Heatmap/기여도를 device에서 누적하고
+  compact summary와 선택된 표시 path만 내려받는다. 상세 contribution 진단은
+  full event tape 경로를 사용할 수 있다.
 - CAD import, BVH build, UI 전체가 GPU 가속 대상은 아니다.
 - 성능 비교는 같은 앱 세션에서 같은 장면을 2·3회 실행해 warm 결과를 기록한다.
+- Receiver 결과의 `Heatmap · Sparse/Noisy`는 GPU 오류가 아니라 셀별 표본 부족일
+  수 있다. CPU/GPU 동일 샘플 계약이 확인된 상태에서도 이 표시는 별도로 해소해야
+  한다.
+- Auto convergence `1→2→4→8배`는 독립 구간 `1+1+2+4`를 누적해 총 `8배`
+  Ray를 처리한다. Receiver 또는 grid 계약이 실행 중 바뀌면 누적을 중단한다.
 
 ### 성능 숫자 해석
 

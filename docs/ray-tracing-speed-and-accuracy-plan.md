@@ -204,10 +204,11 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   환산은 약 `52.6초`다. SoA ray state와 compact event tape는 2C에서
   구현했고 compiled ordered reducer는 2C-2에서 완료했다. 후속은
   `counter_rng_v2`, CUDA 순서다.
-- PERF-3B-2C/2C-1은 explicit experimental `soa_event_tape` pipeline과 v2
-  validation/payload 경계를 추가했다.
+- PERF-3B-2C/2C-1은 explicit experimental `soa_event_tape` pipeline과 v3
+  validation/payload/source-face 경계를 사용한다.
   Active ray는 `stable_active_soa_v1` owned 배열로 stable compact하고, 실제
-  surface event만 `ordered_primary_event_tape_v2` primary-major CSR에 저장한다.
+  surface event만 `ordered_primary_event_tape_v3` primary-major CSR에 저장한다.
+  v3는 Face emitter의 initial source face도 primary별로 보존한다.
 - Tape core 정량 column은 항상 유지한다. Path geometry는
   `store_ray_paths && max_stored_paths > 0`일 때 `full_path_v1`, 아니면
   `omitted_v1`이다. Public runtime seal은 vectorized `strict_v1`이고 private
@@ -320,3 +321,21 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
   병목은 depth 사이 host 왕복과 intersection/planning을 합치는 device kernel이다.
   상세는
   `docs/changes/2026-08-20_perf3d-host-overhead-run-accumulator.md`에 기록한다.
+
+## 2026-08-25 CPU/GPU 정확도 통합
+
+- 과거 CPU scalar와 GPU batch가 서로 다른 primary sampler/RNG stream을 사용해
+  희귀 hit 장면에서 50% 이상의 결과 차이가 발생할 수 있었다.
+- 프로덕션 full-auto CPU/GPU를
+  `cpu_gpu_deterministic_batch_v1`로 통합했다. 두 장치는 동일 primary batch,
+  `counter_rng_v2`, SoA tape와 ordered reducer를 사용하고 교차 provider만 다르다.
+- Face emitter도 CPU/GPU 모두 batch sampling을 사용한다.
+- RTX 3070의 Face direct와 stochastic two-bounce 100k gate에서 전체 semantic
+  payload가 exact였고 실제 CUDA batch 실행도 확인했다.
+- Receiver Flux 수렴과 Heatmap 품질을 분리했다. 평균 `5 hit/cell` 미만은
+  `Sparse/Noisy` 경고 대상이다.
+- Auto convergence는 각 배수를 새로 계산하므로 `1→2→4→8배`가 누적 `15배`
+  계산임을 UI에 명시했다.
+- 다음 정확도/속도 과제는 actual company CAD regression, Importance Sampling/
+  Next Event Estimation, 누적 sample을 재사용하는 convergence runner다.
+- 상세는 `docs/changes/2026-08-25_gpu-cpu-accuracy-parity.md`를 따른다.

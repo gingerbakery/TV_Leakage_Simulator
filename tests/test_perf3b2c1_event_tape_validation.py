@@ -186,7 +186,7 @@ def _float_bits(array: np.ndarray) -> bytes:
 
 class Perf3B2C1EventTapeValidationTests(unittest.TestCase):
     def test_public_strict_and_private_trusted_seals_are_bit_identical(self) -> None:
-        self.assertEqual(EVENT_TAPE_CONTRACT, "ordered_primary_event_tape_v2")
+        self.assertEqual(EVENT_TAPE_CONTRACT, "ordered_primary_event_tape_v3")
         self.assertEqual(list(inspect.signature(PrimaryMajorEventTapeBuilder.seal).parameters), ["self"])
 
         for include_path_payload in (False, True):
@@ -231,6 +231,7 @@ class Perf3B2C1EventTapeValidationTests(unittest.TestCase):
         self.assertEqual(full.terminal_points.shape, (3, 3))
         self.assertEqual(omitted.initial_origins.shape, (0, 3))
         self.assertEqual(omitted.initial_directions.shape, (0, 3))
+        self.assertEqual(omitted.initial_source_faces.shape, (0,))
         self.assertEqual(omitted.points.shape, (0, 3))
         self.assertEqual(omitted.normals.shape, (0, 3))
         self.assertEqual(omitted.distances_mm.shape, (0,))
@@ -241,6 +242,7 @@ class Perf3B2C1EventTapeValidationTests(unittest.TestCase):
         path_fields = {
             "initial_origins",
             "initial_directions",
+            "initial_source_faces",
             "points",
             "normals",
             "distances_mm",

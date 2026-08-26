@@ -1,3 +1,5 @@
+import type { SceneComponent } from '@/api'
+
 export type AxisCameraPreset =
   | 'XY'
   | '-XY'
@@ -54,6 +56,37 @@ export const ISO_CAMERA_AXES = {
   // down-right/down-left, keeping the three axes close to 120 degrees apart.
   direction: [1, 1, 1] as AxisVector,
   up: [0, 1, 0] as AxisVector,
+}
+
+export const componentColorPalette = [
+  0x64748b, 0x526b7a, 0x475569, 0x5b6473, 0x45606d, 0x667085,
+]
+
+/**
+ * CAD-authored component color wins when present; otherwise cycles a neutral
+ * fallback palette. A separate user display-color override is applied by the
+ * viewer and is intentionally independent from optical Material Assignment.
+ */
+export function resolveComponentColor(
+  component: SceneComponent | undefined,
+  index: number,
+): number {
+  if (component?.color) {
+    const parsed = Number.parseInt(component.color.replace('#', ''), 16)
+    if (!Number.isNaN(parsed)) return parsed
+  }
+  return componentColorPalette[
+    Math.max(0, index) % componentColorPalette.length
+  ]
+}
+
+export function resolveComponentColorHex(
+  component: SceneComponent | undefined,
+  index: number,
+): string {
+  return `#${resolveComponentColor(component, index)
+    .toString(16)
+    .padStart(6, '0')}`
 }
 
 export const DEFAULT_CAMERA_FOV_DEGREES = 42

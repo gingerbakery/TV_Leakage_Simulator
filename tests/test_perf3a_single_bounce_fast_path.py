@@ -66,7 +66,7 @@ class Perf3ASingleBounceFastPathTests(unittest.TestCase):
         )
         self.assertEqual(
             multi_bounce.metrics["_performance_summary"]["execution_path"],
-            "multi_bounce",
+            "multi_bounce_wavefront",
         )
 
 

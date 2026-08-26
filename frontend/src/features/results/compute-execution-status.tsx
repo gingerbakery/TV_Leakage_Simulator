@@ -55,11 +55,20 @@ export function ComputeExecutionStatus({
         {summary.cpuSmallWaveSuccesses > 0 ? (
           <Badge variant="outline">CPU small waves · {summary.cpuSmallWaveSuccesses}</Badge>
         ) : null}
+        {summary.accuracyParityVerified ? (
+          <Badge variant="secondary">CPU/GPU 동일 샘플 계약</Badge>
+        ) : null}
       </div>
       {summary.reason ? (
         <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
           <Gauge className="size-3.5" aria-hidden="true" />
           {summary.reason}
+        </p>
+      ) : null}
+      {active && !summary.accuracyParityVerified ? (
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
+          <TriangleAlert className="size-3.5" aria-hidden="true" />
+          CPU/GPU 동일 샘플 정확도 계약이 기록되지 않은 이전 결과입니다. 현재 버전에서 다시 해석해 주세요.
         </p>
       ) : null}
     </section>

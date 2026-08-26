@@ -7,16 +7,24 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 
 export interface HelpTooltipProps {
   label: string
   children: ReactNode
+  triggerClassName?: string
+  iconClassName?: string
 }
 
 /** A small "?" icon that reveals guide text on hover/focus - for putting
  *  next to a feature/section title without cluttering the layout when the
  *  user doesn't need it. */
-export function HelpTooltip({ label, children }: HelpTooltipProps) {
+export function HelpTooltip({
+  label,
+  children,
+  triggerClassName,
+  iconClassName,
+}: HelpTooltipProps) {
   return (
     <TooltipProvider>
       <Tooltip>
@@ -24,9 +32,12 @@ export function HelpTooltip({ label, children }: HelpTooltipProps) {
           <button
             type="button"
             aria-label={label}
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            className={cn(
+              'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none',
+              triggerClassName,
+            )}
           >
-            <CircleHelp className="size-3.5" />
+            <CircleHelp className={cn('size-3.5', iconClassName)} />
           </button>
         </TooltipTrigger>
         <TooltipContent

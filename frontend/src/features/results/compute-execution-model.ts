@@ -16,6 +16,8 @@ export interface ComputeExecutionSummary {
   gpuAttempts: number
   gpuSuccesses: number
   cpuSmallWaveSuccesses: number
+  accuracyContract: string | null
+  accuracyParityVerified: boolean
   reason: string | null
 }
 
@@ -70,6 +72,9 @@ export function resolveComputeExecution(
     text(performance.compute_execution_reason) ??
     text(performance.intersection_fallback_reason) ??
     text(performance.intersection_provider_unavailable_reason)
+  const accuracyContract = text(performance.monte_carlo_contract)
+  const accuracyParityVerified =
+    accuracyContract === 'cpu_gpu_deterministic_batch_v1'
 
   if (explicitState === 'cpu' || requested === 'cpu') {
     return {
@@ -81,6 +86,8 @@ export function resolveComputeExecution(
       gpuAttempts,
       gpuSuccesses,
       cpuSmallWaveSuccesses,
+      accuracyContract,
+      accuracyParityVerified,
       reason: null,
     }
   }
@@ -103,6 +110,8 @@ export function resolveComputeExecution(
       gpuAttempts,
       gpuSuccesses,
       cpuSmallWaveSuccesses,
+      accuracyContract,
+      accuracyParityVerified,
       reason: readableReason(reason),
     }
   }
@@ -121,6 +130,8 @@ export function resolveComputeExecution(
       gpuAttempts,
       gpuSuccesses,
       cpuSmallWaveSuccesses,
+      accuracyContract,
+      accuracyParityVerified,
       reason: readableReason(reason) ?? 'CUDA batch가 실행되지 않음',
     }
   }
@@ -134,6 +145,8 @@ export function resolveComputeExecution(
     gpuAttempts,
     gpuSuccesses,
     cpuSmallWaveSuccesses,
+    accuracyContract,
+    accuracyParityVerified,
     reason: 'GPU를 요청했지만 CUDA 실행 기록이 없습니다.',
   }
 }

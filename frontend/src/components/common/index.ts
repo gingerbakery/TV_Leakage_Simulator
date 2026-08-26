@@ -1,5 +1,7 @@
 export { AppDialog } from './app-dialog'
 export type { AppDialogProps } from './app-dialog'
+export { ComponentColorPalette } from './component-color-palette'
+export type { ComponentColorPaletteProps } from './component-color-palette'
 export {
   ComponentContextMenu,
   ViewerComponentActionMenu,

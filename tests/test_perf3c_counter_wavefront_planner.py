@@ -375,26 +375,19 @@ class Perf3CCounterWavefrontPlannerTests(unittest.TestCase):
             performance["wavefront_planner_logical_row_count"],
         )
 
-    def test_cpu_default_does_not_enter_counter_or_native_path(self) -> None:
-        trace_input = stochastic_two_bounce_input(257)
-        with (
-            patch(
-                "leakage_simulator.raytracer.plan_counter_native_cpu"
-            ) as native_mock,
-            patch(
-                "leakage_simulator.raytracer.plan_counter_reference"
-            ) as reference_mock,
-        ):
-            result = run_direct_ray_trace(trace_input)
-        native_mock.assert_not_called()
-        reference_mock.assert_not_called()
+    def test_cpu_default_enters_counter_parity_path(self) -> None:
+        result = run_direct_ray_trace(stochastic_two_bounce_input(257))
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["compute_backend"], "cpu")
         self.assertEqual(
             performance["wavefront_reflection_rng"],
-            "per_primary_seeded_v1",
+            "counter_rng_v2",
         )
-        self.assertEqual(performance["wavefront_pipeline"], "not_used")
+        self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
+        self.assertEqual(
+            performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
         json.dumps(result.to_dict(), allow_nan=False)
 
     def test_gpu_config_promotes_full_batch_policy_while_concrete_kwargs_win(self) -> None:
@@ -408,11 +401,23 @@ class Perf3CCounterWavefrontPlannerTests(unittest.TestCase):
         )
         performance = result.metrics["_performance_summary"]
         self.assertEqual(performance["compute_backend"], "gpu_cuda")
-        self.assertEqual(performance["requested_intersection_dispatch"], "batch")
+        self.assertEqual(performance["requested_intersection_dispatch"], "auto")
+        self.assertEqual(
+            performance["effective_intersection_dispatch_request"],
+            "batch",
+        )
         self.assertEqual(performance["intersection_batch_size"], 65536)
         self.assertEqual(performance["wavefront_pipeline"], "soa_event_tape")
-        self.assertEqual(performance["requested_wavefront_planner"], "numba_cpu")
-        self.assertEqual(performance["requested_wavefront_reducer"], "numba_cpu")
+        self.assertEqual(performance["requested_wavefront_planner"], "auto")
+        self.assertEqual(
+            performance["effective_wavefront_planner_request"],
+            "numba_cpu",
+        )
+        self.assertEqual(performance["requested_wavefront_reducer"], "auto")
+        self.assertEqual(
+            performance["effective_wavefront_reducer_request"],
+            "numba_cpu",
+        )
         self.assertEqual(performance["wavefront_reflection_rng"], "counter_rng_v2")
 
         overridden = run_direct_ray_trace(

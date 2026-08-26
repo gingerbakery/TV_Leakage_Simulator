@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import { defaultRayTraceConfig } from '@/stores'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
   axesFromNormal,
   buildRayTraceRequest,
+  convergenceSegmentSeed,
   createCurrentViewReceiver,
   createDatumEmitter,
   createDatumReceiver,
   createFaceEmitter,
+  mergeConvergenceRayTraceResults,
   nextSpecId,
   planeAxesFromRotation,
   rayObjectDisplayName,
@@ -17,6 +20,92 @@ import {
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
+  it('derives deterministic independent seeds for convergence segments', () => {
+    expect(convergenceSegmentSeed(42, 0)).toBe(42)
+    expect(convergenceSegmentSeed(42, 1)).toBe(1_000_045)
+    expect(convergenceSegmentSeed(42, 2)).toBe(2_000_048)
+  })
+
+  it('reuses convergence segments with weighted flux and squared sums', () => {
+    const first = createRayTraceResultFixture()
+    first.run_id = 'segment-1'
+    first.total_rays = 100
+    first.runtime_sec = 1
+    first.config.ray_count = 100
+    first.config.seed = convergenceSegmentSeed(42, 0)
+    first.emitters[0].ray_count = 100
+    first.receiver_grids[0] = {
+      receiver_id: 'receiver_001',
+      resolution: [1, 1],
+      bin_area_mm2: 1,
+      flux_lumen: [[2]],
+      hit_count: 10,
+      flux_squared_lumen2: 0.04,
+      flux_squared_lumen2_grid: [[0.04]],
+    }
+    first.contribution_summary.direct_receiver_hit_count = 10
+    first.contribution_summary.direct_receiver_flux_lumen = 2
+
+    const second = structuredClone(first)
+    second.run_id = 'segment-2'
+    second.runtime_sec = 2
+    second.config.seed = convergenceSegmentSeed(42, 1)
+    second.receiver_grids[0].flux_lumen = [[4]]
+    second.receiver_grids[0].hit_count = 20
+    second.receiver_grids[0].flux_squared_lumen2 = 0.16
+    second.receiver_grids[0].flux_squared_lumen2_grid = [[0.16]]
+    second.receiver_hit_count = 20
+    second.contribution_summary.direct_receiver_hit_count = 20
+    second.contribution_summary.direct_receiver_flux_lumen = 4
+
+    const merged = mergeConvergenceRayTraceResults(first, second)
+
+    expect(merged.run_id).toBe('segment-2')
+    expect(merged.total_rays).toBe(200)
+    expect(merged.runtime_sec).toBe(3)
+    expect(merged.config.seed).toBe(42)
+    expect(merged.emitters[0].ray_count).toBe(200)
+    expect(merged.receiver_grids[0].flux_lumen[0][0]).toBeCloseTo(3)
+    expect(merged.receiver_grids[0].flux_squared_lumen2).toBeCloseTo(0.05)
+    expect(merged.receiver_grids[0].hit_count).toBe(30)
+    expect(merged.contribution_summary.direct_receiver_hit_count).toBe(30)
+    expect(merged.contribution_summary.direct_receiver_flux_lumen).toBeCloseTo(3)
+    expect(merged.metrics.receiver_001).toMatchObject({
+      total_flux_lumen: 3,
+      hit_count: 30,
+      error_estimate_sample_count: 200,
+    })
+    expect(merged.metrics._convergence_accumulation).toMatchObject({
+      contract: 'independent_segment_weighted_v1',
+      segment_count: 2,
+      segment_rays: [100, 100],
+      segment_seeds: [42, 1_000_045],
+      total_rays: 200,
+      avoided_retrace_rays: 100,
+    })
+  })
+
+  it('processes only eight base samples for a 1-2-4-8 convergence schedule', () => {
+    const segmentRays = [100, 100, 200, 400]
+    let accumulated: ReturnType<typeof mergeConvergenceRayTraceResults> | null = null
+    for (const [index, rays] of segmentRays.entries()) {
+      const segment = createRayTraceResultFixture()
+      segment.run_id = `segment-${index + 1}`
+      segment.total_rays = rays
+      segment.config.ray_count = rays
+      segment.config.seed = convergenceSegmentSeed(42, index)
+      segment.emitters[0].ray_count = rays
+      accumulated = mergeConvergenceRayTraceResults(accumulated, segment)
+    }
+
+    expect(accumulated?.total_rays).toBe(800)
+    expect(accumulated?.metrics._convergence_accumulation).toMatchObject({
+      segment_rays: segmentRays,
+      total_rays: 800,
+      avoided_retrace_rays: 700,
+    })
+  })
+
   it('formats internal ray object IDs without changing custom names', () => {
     expect(rayObjectDisplayName('receiver', 'receiver_001')).toBe(
       'Receiver 1',
@@ -217,6 +306,8 @@ describe('ray tracing model', () => {
     expect(request.config).not.toHaveProperty('auto_convergence')
     expect(request.config).not.toHaveProperty('convergence_target_percent')
     expect(request.config).not.toHaveProperty('max_convergence_multiplier')
+    expect(request.config.primary_sampling_strategy).toBe('source')
+    expect(request.config.receiver_importance_fraction).toBe(0.5)
     expect(request.optical_profiles).toHaveLength(1)
     expect(request.optical_profiles[0]).toMatchObject({
       reflectance: 0.2,

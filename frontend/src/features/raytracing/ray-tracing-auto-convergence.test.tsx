@@ -51,7 +51,7 @@ afterEach(() => {
 describe('RayTracingPanel Auto convergence', () => {
   it('stops a closed-window retry without reusing its cancel token on a later run', async () => {
     const result = createRayTraceResultFixture()
-    const emitter = { ...result.emitters[0], ray_count: 100 }
+    const emitter = { ...result.emitters[0], ray_count: 100, seed: 7 }
     const receiver = result.receivers[0]
     const actions = workspaceStore.getState().actions
 
@@ -113,6 +113,18 @@ describe('RayTracingPanel Auto convergence', () => {
     )
 
     await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(2))
+    expect(apiHookState.start.mock.calls[0][0].request.config).toMatchObject({
+      ray_count: 100,
+      seed: 42,
+    })
+    expect(apiHookState.start.mock.calls[0][0].request.emitters[0].seed).toBe(7)
+    expect(apiHookState.start.mock.calls[1][0].request.config).toMatchObject({
+      ray_count: 100,
+      seed: 1_000_045,
+    })
+    expect(apiHookState.start.mock.calls[1][0].request.emitters[0].seed).toBe(
+      1_000_010,
+    )
     await waitFor(() =>
       expect(workspaceStore.getState().activeRayTraceJobId).toBe(
         'job-auto-retry',
@@ -179,6 +191,14 @@ describe('RayTracingPanel Auto convergence', () => {
     )
 
     await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(4))
+    expect(apiHookState.start.mock.calls[2][0].request.config).toMatchObject({
+      ray_count: 100,
+      seed: 42,
+    })
+    expect(apiHookState.start.mock.calls[3][0].request.config).toMatchObject({
+      ray_count: 100,
+      seed: 1_000_045,
+    })
     await waitFor(() =>
       expect(workspaceStore.getState().activeRayTraceJobId).toBe(
         'job-2-auto-retry',
