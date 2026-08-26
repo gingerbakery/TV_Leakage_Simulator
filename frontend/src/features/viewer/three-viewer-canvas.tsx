@@ -83,6 +83,7 @@ import {
   getSceneBounds,
   resolveComponentColor,
 } from './scene-geometry'
+import { fitPerspectiveCameraToBounds } from './camera-fit'
 import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
@@ -1039,25 +1040,10 @@ function fitCamera(
   const bounds = new Box3().setFromObject(fitRoot)
   if (bounds.isEmpty()) return
 
-  const center = bounds.getCenter(new Vector3())
-  const size = bounds.getSize(new Vector3())
-  const maxDimension = Math.max(size.x, size.y, size.z, 1)
   runtime.camera.fov = cameraFovForPreset(
     preset,
     runtime.camera.fov,
   )
-  const verticalFov = MathUtils.degToRad(runtime.camera.fov)
-  const horizontalFov =
-    2 *
-    Math.atan(
-      Math.tan(verticalFov / 2) * Math.max(runtime.camera.aspect, 0.1),
-    )
-  const distance =
-    Math.max(
-      maxDimension / (2 * Math.tan(verticalFov / 2)),
-      maxDimension / (2 * Math.tan(horizontalFov / 2)),
-    ) * 1.35
-
   let direction = new Vector3(...ISO_CAMERA_AXES.direction)
   if (preset === 'Fit') {
     direction
@@ -1074,13 +1060,15 @@ function fitCamera(
     runtime.camera.up.copy(config.up)
   }
 
-  runtime.camera.position
-    .copy(center)
-    .add(direction.normalize().multiplyScalar(distance))
-  runtime.camera.near = Math.max(distance / 1000, 0.01)
-  runtime.camera.far = Math.max(distance * 20, 1000)
-  runtime.camera.updateProjectionMatrix()
-  runtime.controls.target.copy(center)
+  const fitted = fitPerspectiveCameraToBounds(
+    runtime.camera,
+    bounds,
+    runtime.camera.aspect,
+    direction,
+    runtime.camera.up,
+    1.12,
+  )
+  runtime.controls.target.copy(fitted.target)
   runtime.controls.update()
 }
 
@@ -1192,94 +1180,61 @@ function fitPipCameraToBounds(
 ): void {
   if (bounds.isEmpty()) return
   const camera = runtime.pipCamera
-  const center = bounds.getCenter(new Vector3())
-  const size = bounds.getSize(new Vector3())
-  const maxDimension = Math.max(size.x, size.y, size.z, 1)
   const cameraOffsetDirection = new Vector3(
     ...ISO_CAMERA_AXES.direction,
   ).normalize()
-  const forward = cameraOffsetDirection.clone().negate()
   const requestedUp = new Vector3(...ISO_CAMERA_AXES.up).normalize()
-  const right = new Vector3()
-    .crossVectors(forward, requestedUp)
-    .normalize()
-  const up = new Vector3().crossVectors(right, forward).normalize()
-  const verticalTangent = Math.tan(MathUtils.degToRad(camera.fov) / 2)
-  const horizontalTangent =
-    verticalTangent * Math.max(aspect, 0.1)
-  const corners: Vector3[] = []
-  for (const x of [bounds.min.x, bounds.max.x]) {
-    for (const y of [bounds.min.y, bounds.max.y]) {
-      for (const z of [bounds.min.z, bounds.max.z]) {
-        corners.push(new Vector3(x, y, z))
-      }
-    }
+  const fitted = fitPerspectiveCameraToBounds(
+    camera,
+    bounds,
+    aspect,
+    cameraOffsetDirection,
+    requestedUp,
+    1.1,
+  )
+  runtime.pipTarget.copy(fitted.target)
+  runtime.pipDistance = fitted.distance
+}
+
+function applyRoiComponentVertexColors(
+  geometry: BufferGeometry,
+  scene: ScenePayload,
+  colorOverrides: Record<number, string>,
+): void {
+  const componentIds = geometry.userData.componentIds as number[] | undefined
+  const position = geometry.getAttribute('position')
+  if (!componentIds || !position || componentIds.length * 3 !== position.count) {
+    return
   }
 
-  const requiredDistance = (target: Vector3) => {
-    let distance = maxDimension * 0.05
-    for (const corner of corners) {
-      const relative = corner.clone().sub(target)
-      const towardCamera = relative.dot(cameraOffsetDirection)
-      distance = Math.max(
-        distance,
-        towardCamera + Math.abs(relative.dot(right)) / horizontalTangent,
-        towardCamera + Math.abs(relative.dot(up)) / verticalTangent,
-      )
+  const colors = new Float32Array(position.count * 3)
+  const componentColors = new Map<number, Color>()
+  const componentIndices = new Map(
+    scene.components.map((component, index) => [component.component_id, index]),
+  )
+  const components = new Map(
+    scene.components.map((component) => [component.component_id, component]),
+  )
+  for (let triangleIndex = 0; triangleIndex < componentIds.length; triangleIndex += 1) {
+    const componentId = componentIds[triangleIndex]
+    let color = componentColors.get(componentId)
+    if (!color) {
+      const customColor = colorOverrides[componentId]
+      const componentIndex = componentIndices.get(componentId) ?? -1
+      const colorValue = customColor
+        ? Number.parseInt(customColor.slice(1), 16)
+        : resolveComponentColor(components.get(componentId), componentIndex)
+      color = new Color(colorValue)
+      componentColors.set(componentId, color)
     }
-    return Math.max(distance * 1.06, maxDimension * 0.05)
-  }
-
-  const target = center.clone()
-  // Perspective depth can make the projected box slightly asymmetric even
-  // when looking at its 3D midpoint. Re-center the actual screen projection
-  // twice, then perform one final tight fit from that corrected target.
-  for (let iteration = 0; iteration < 2; iteration += 1) {
-    const distance = requiredDistance(target)
-    camera.aspect = aspect
-    camera.position
-      .copy(target)
-      .addScaledVector(cameraOffsetDirection, distance)
-    camera.up.copy(up)
-    camera.near = Math.max(distance / 1000, 0.01)
-    camera.far = Math.max(distance * 20, maxDimension * 10, 1000)
-    camera.lookAt(target)
-    camera.updateProjectionMatrix()
-    camera.updateMatrixWorld(true)
-    let minX = Infinity
-    let maxX = -Infinity
-    let minY = Infinity
-    let maxY = -Infinity
-    for (const corner of corners) {
-      const projected = corner.clone().project(camera)
-      minX = Math.min(minX, projected.x)
-      maxX = Math.max(maxX, projected.x)
-      minY = Math.min(minY, projected.y)
-      maxY = Math.max(maxY, projected.y)
+    for (let corner = 0; corner < 3; corner += 1) {
+      const colorOffset = (triangleIndex * 3 + corner) * 3
+      colors[colorOffset] = color.r
+      colors[colorOffset + 1] = color.g
+      colors[colorOffset + 2] = color.b
     }
-    target
-      .addScaledVector(
-        right,
-        ((minX + maxX) / 2) * distance * horizontalTangent,
-      )
-      .addScaledVector(
-        up,
-        ((minY + maxY) / 2) * distance * verticalTangent,
-      )
   }
-
-  const distance = requiredDistance(target)
-  camera.aspect = aspect
-  camera.position
-    .copy(target)
-    .addScaledVector(cameraOffsetDirection, distance)
-  camera.up.copy(up)
-  camera.near = Math.max(distance / 1000, 0.01)
-  camera.far = Math.max(distance * 20, maxDimension * 10, 1000)
-  camera.lookAt(target)
-  camera.updateProjectionMatrix()
-  runtime.pipTarget.copy(target)
-  runtime.pipDistance = distance
+  geometry.setAttribute('color', new Float32BufferAttribute(colors, 3))
 }
 
 function restoreRoiSelectionCameraPose(
@@ -3183,6 +3138,13 @@ export function ThreeViewerCanvas({
       }
       if (clipped && clipped.openChainCount === 0) {
         const isWireframe = renderMode === 'Wireframe'
+        if (!isWireframe) {
+          applyRoiComponentVertexColors(
+            clipped.surfaceGeometry,
+            scene,
+            componentColorOverrides,
+          )
+        }
         const surfaceMaterial = isWireframe
           ? new MeshBasicMaterial({
               color: 0x263b4d,
@@ -3194,7 +3156,8 @@ export function ThreeViewerCanvas({
               toneMapped: false,
             })
           : new MeshStandardMaterial({
-              color: 0x8fb3c7,
+              color: 0xffffff,
+              vertexColors: true,
               roughness: 0.72,
               metalness: 0.04,
               // The ROI surface is still the original CAD skin. Smooth its
@@ -3213,44 +3176,6 @@ export function ThreeViewerCanvas({
         )
         surface.name = 'roi-clipped-surface'
         runtime.roiPreviewRoot.add(surface)
-
-        // ROI geometry is rebuilt as a clipped solid, so it cannot reuse the
-        // Full View component meshes. Reapply each component's authored/user
-        // display color as clipped overlays to keep both views consistent.
-        if (!isWireframe) {
-          const boxFaceIdSet = new Set(boxFaceIds)
-          for (const [componentIndex, component] of scene.components.entries()) {
-            const componentFaceIds = component.face_indices.filter((faceId) =>
-              boxFaceIdSet.has(faceId),
-            )
-            if (componentFaceIds.length === 0) continue
-            const componentGeometry = buildRoiClippedGeometries(
-              scene,
-              componentFaceIds,
-              clipBoxes,
-              [...hiddenComponentIds, ...deletedComponentIds],
-              roiPointTransform,
-            )
-            if (!componentGeometry) continue
-            const customColor = componentColorOverrides[component.component_id]
-            const componentColor = customColor
-              ? Number.parseInt(customColor.slice(1), 16)
-              : resolveComponentColor(component, componentIndex)
-            const componentOverlay = new Mesh(
-              componentGeometry.surfaceGeometry,
-              faceOverlayMaterial(
-                viewerMaterialStyle(undefined, componentColor),
-                surfaceOpacity,
-              ),
-            )
-            componentOverlay.name = `roi-component-color-${component.component_id}`
-            componentOverlay.renderOrder = 5 + componentIndex
-            runtime.roiPreviewRoot.add(componentOverlay)
-            componentGeometry.capGeometry?.dispose()
-            componentGeometry.capEdgeGeometry?.dispose()
-            componentGeometry.featureEdgeGeometry?.dispose()
-          }
-        }
 
         if (clipped.capGeometry) {
           const capMaterial = isWireframe
@@ -3360,6 +3285,7 @@ export function ThreeViewerCanvas({
               clipBoxes,
               [...hiddenComponentIds, ...deletedComponentIds],
               roiPointTransform,
+              { includeCaps: false, includeFeatureEdges: false },
             )
             if (!assignmentGeometry) continue
 
@@ -3513,6 +3439,7 @@ export function ThreeViewerCanvas({
         selectionClipBoxes,
         unavailableSelectionComponentIds,
         roiPointTransform,
+        { includeCaps: false, includeFeatureEdges: false },
       )
       if (selectedClipped) {
         const selectionColor = datumFacePickArmed
@@ -3785,6 +3712,7 @@ export function ThreeViewerCanvas({
             roiClipBoxes,
             unavailableComponentIds,
             roiPointTransform,
+            { includeCaps: false, includeFeatureEdges: false },
           )
           if (!clippedEmitter) continue
 

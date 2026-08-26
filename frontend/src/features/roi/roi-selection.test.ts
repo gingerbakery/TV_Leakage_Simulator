@@ -228,6 +228,18 @@ describe('ROI selection', () => {
     expect(clipped?.capLoopCount).toBe(2)
     expect(clipped?.capGeometry).not.toBeNull()
     expect(clipped?.surfaceGeometry.index).toBeNull()
+    const overlayOnly = buildRoiClippedGeometries(
+      scene,
+      cubeFaces.map((_, index) => index),
+      [{ xMin: 0.25, xMax: 0.75, yMin: -1, yMax: 2 }],
+      [],
+      undefined,
+      { includeCaps: false, includeFeatureEdges: false },
+    )
+    expect(overlayOnly?.surfaceGeometry).not.toBeNull()
+    expect(overlayOnly?.capGeometry).toBeNull()
+    expect(overlayOnly?.capEdgeGeometry).toBeNull()
+    expect(overlayOnly?.featureEdgeGeometry).toBeNull()
     const surfaceNormals =
       clipped?.surfaceGeometry.getAttribute('normal')
     const triangleNormalKeys = new Set<string>()

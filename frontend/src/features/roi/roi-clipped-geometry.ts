@@ -61,6 +61,11 @@ export interface RoiClippedGeometryBundle {
   clippedVertexCount: number
 }
 
+export interface RoiClippedGeometryOptions {
+  includeCaps?: boolean
+  includeFeatureEdges?: boolean
+}
+
 function roiPlane(box: RoiClipBox): RoiProjectionPlane {
   return box.plane ?? 'xy'
 }
@@ -629,7 +634,10 @@ export function buildRoiClippedGeometries(
   boxes: RoiClipBox[],
   unavailableComponentIds: Iterable<number> = [],
   transformPoint?: RoiComponentPointTransform,
+  options: RoiClippedGeometryOptions = {},
 ): RoiClippedGeometryBundle | null {
+  const includeCaps = options.includeCaps ?? true
+  const includeFeatureEdges = options.includeFeatureEdges ?? true
   const clipBoxes = normalizeRoiClipBoxes(boxes)
   if (clipBoxes.length === 0 || faceFilter.length === 0) return null
   const unavailable = new Set(unavailableComponentIds)
@@ -755,6 +763,26 @@ export function buildRoiClippedGeometries(
   surfaceGeometry.userData.componentIds = triangleRecords.map(
     (triangle) => triangle.componentId,
   )
+
+  if (!includeCaps) {
+    return {
+      surfaceGeometry,
+      capGeometry: null,
+      capEdgeGeometry: null,
+      featureEdgeGeometry: includeFeatureEdges
+        ? buildFeatureEdgeGeometry(
+            scene,
+            clipBoxes,
+            unavailable,
+            transformPoint,
+          )
+        : null,
+      capLoopCount: 0,
+      openChainCount: 0,
+      clippedTriangleCount: indices.length / 3,
+      clippedVertexCount: positions.length / 3,
+    }
+  }
 
   const edgeRecords = new Map<string, BoundaryEdge>()
   for (const triangle of triangleRecords) {
@@ -946,12 +974,14 @@ export function buildRoiClippedGeometries(
     surfaceGeometry,
     capGeometry,
     capEdgeGeometry,
-    featureEdgeGeometry: buildFeatureEdgeGeometry(
-      scene,
-      clipBoxes,
-      unavailable,
-      transformPoint,
-    ),
+    featureEdgeGeometry: includeFeatureEdges
+      ? buildFeatureEdgeGeometry(
+          scene,
+          clipBoxes,
+          unavailable,
+          transformPoint,
+        )
+      : null,
     capLoopCount,
     openChainCount,
     clippedTriangleCount: indices.length / 3,
