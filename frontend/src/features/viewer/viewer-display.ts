@@ -28,7 +28,8 @@ const axisCameraPresetAxes: Record<
   },
   '-XY': {
     direction: [0, 0, -1],
-    up: [0, -1, 0],
+    // Keep +Y upward. Looking from -Z then places -X on screen-right.
+    up: [0, 1, 0],
   },
   YZ: {
     direction: [1, 0, 0],
@@ -39,13 +40,20 @@ const axisCameraPresetAxes: Record<
     up: [0, 1, 0],
   },
   ZX: {
-    direction: [0, 1, 0],
-    up: [0, 0, 1],
-  },
-  '-ZX': {
     direction: [0, -1, 0],
     up: [0, 0, 1],
   },
+  '-ZX': {
+    direction: [0, 1, 0],
+    up: [0, 0, 1],
+  },
+}
+
+export const ISO_CAMERA_AXES = {
+  // Balanced ISO: +Y is vertical while +X and +Z project symmetrically
+  // down-right/down-left, keeping the three axes close to 120 degrees apart.
+  direction: [1, 1, 1] as AxisVector,
+  up: [0, 1, 0] as AxisVector,
 }
 
 export const DEFAULT_CAMERA_FOV_DEGREES = 42

@@ -5,6 +5,7 @@ import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
+  ISO_CAMERA_AXES,
   surfaceOpacityFromTransparency,
 } from './viewer-display'
 
@@ -18,6 +19,19 @@ describe('viewer display settings', () => {
       direction: [-1, 0, 0],
       up: [0, 1, 0],
     })
+  })
+
+  it('uses the requested front-oriented ISO and opposite axis views', () => {
+    expect(ISO_CAMERA_AXES).toEqual({
+      direction: [1, 1, 1],
+      up: [0, 1, 0],
+    })
+    expect(getAxisCameraPresetAxes('-XY')).toEqual({
+      direction: [0, 0, -1],
+      up: [0, 1, 0],
+    })
+    expect(getAxisCameraPresetAxes('ZX').direction).toEqual([0, -1, 0])
+    expect(getAxisCameraPresetAxes('-ZX').direction).toEqual([0, 1, 0])
   })
 
   it('maps transparency percentages to bounded surface opacity', () => {

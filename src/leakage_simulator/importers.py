@@ -330,6 +330,21 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
         label_color_cache[cache_key] = resolved
         return resolved
 
+    def get_shape_or_face_color(shape) -> Optional[str]:
+        if shape is None or shape.IsNull():
+            return None
+        direct = get_color(shape)
+        if direct:
+            return direct
+        face_colors: Dict[str, int] = {}
+        explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while explorer.More():
+            face_color = get_color(TopoDS.Face_s(explorer.Current()))
+            if face_color:
+                face_colors[face_color] = face_colors.get(face_color, 0) + 1
+            explorer.Next()
+        return max(face_colors, key=face_colors.get) if face_colors else None
+
     results: List[Tuple[object, str, Optional[str]]] = []
     part_counter = 0
 
@@ -367,11 +382,58 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
             inherited_color
             or get_label_or_subshape_color(label, prototype_shape)
         )
-        # Preserve one component per product/assembly occurrence. Exploding a
-        # multi-body ITEM into separate solids loses its authored component
-        # identity and can duplicate the same name in the UI. Shell/surface
-        # STEP components are also valid even when they contain no solid.
-        results.append((located_shape, name, color))
+        # Keep every independent solid selectable. NX can export several
+        # components/bodies below one STEP ITEM; treating that ITEM as one
+        # simulator component prevents body-level Material/Move/Hide edits.
+        prototype_solids = []
+        solid_explorer = TopExp_Explorer(prototype_shape, TopAbs_SOLID)
+        while solid_explorer.More():
+            prototype_solids.append(TopoDS.Solid_s(solid_explorer.Current()))
+            solid_explorer.Next()
+        if not prototype_solids:
+            # Shell/surface STEP items are still valid selectable components.
+            results.append((located_shape, name, color))
+            return
+
+        for solid_index, prototype_solid in enumerate(prototype_solids, start=1):
+            subshape_label = TDF_Label()
+            has_subshape_label = False
+            try:
+                has_subshape_label = shape_tool.FindSubShape(
+                    label,
+                    prototype_solid,
+                    subshape_label,
+                )
+            except Exception:
+                pass
+            solid_name = (
+                preferred_name(subshape_label)
+                if has_subshape_label
+                else None
+            )
+            if not solid_name:
+                solid_name = (
+                    name
+                    if len(prototype_solids) == 1
+                    else "{} · Body {}".format(name, solid_index)
+                )
+            solid_color = (
+                get_label_or_subshape_color(subshape_label, prototype_solid)
+                if has_subshape_label
+                else None
+            )
+            solid_color = (
+                solid_color
+                or get_shape_or_face_color(prototype_solid)
+                or color
+            )
+            results.append(
+                (
+                    prototype_solid.Moved(accumulated_location),
+                    solid_name,
+                    solid_color,
+                )
+            )
 
     free_shapes = TDF_LabelSequence()
     shape_tool.GetFreeShapes(free_shapes)
@@ -842,27 +904,58 @@ def _import_step_ocp(
             solids.append(TopoDS.Solid_s(solid_explorer.Current()))
             solid_explorer.Next()
         return solids or [component_shape]
-    if named_colored_solids:
+
+    # A STEP product occurrence can legally contain several independent
+    # solids. They must remain separate selectable simulator components so
+    # Material, Move, Hide and Traceability can be assigned body by body.
+    # Product occurrences that contain one solid keep their authored name;
+    # multi-solid occurrences receive a stable Body suffix.
+    component_parts: List[Tuple[object, str, Optional[str]]] = []
+    for component_shape, component_name, component_color in (
+        named_colored_solids or []
+    ):
+        leaf_shapes = component_leaf_shapes(component_shape)
+        for leaf_index, leaf_shape in enumerate(leaf_shapes, start=1):
+            selectable_name = (
+                component_name
+                if len(leaf_shapes) == 1
+                else "{} · Body {}".format(component_name, leaf_index)
+            )
+            component_parts.append(
+                (leaf_shape, selectable_name, component_color)
+            )
+
+    if (
+        named_colored_solids
+        and len(component_parts) != len(named_colored_solids)
+    ):
+        print(
+            "[CAD] selectable components  | {} product items -> {} bodies".format(
+                len(named_colored_solids),
+                len(component_parts),
+            ),
+            flush=True,
+        )
+    if component_parts:
         # Each solid was parsed independently via the XCAF document, so its
         # triangulation has to be computed on that same solid - meshing the
         # plain-reader shape below would not populate these faces at all.
         tessellation_started_at = time.perf_counter()
         _cad_stage_start(
             "OCP viewer tessellation",
-            "components={}".format(len(named_colored_solids)),
+            "components={}".format(len(component_parts)),
         )
-        for component_shape, _name, _color in named_colored_solids:
-            for solid in component_leaf_shapes(component_shape):
-                try:
-                    BRepMesh_IncrementalMesh(
-                        solid,
-                        VIEWER_LINEAR_DEFLECTION_MM,
-                        False,
-                        VIEWER_ANGULAR_DEFLECTION_RAD,
-                        True,
-                    ).Perform()
-                except Exception:
-                    pass
+        for component_shape, _name, _color in component_parts:
+            try:
+                BRepMesh_IncrementalMesh(
+                    component_shape,
+                    VIEWER_LINEAR_DEFLECTION_MM,
+                    False,
+                    VIEWER_ANGULAR_DEFLECTION_RAD,
+                    True,
+                ).Perform()
+            except Exception:
+                pass
         timings["ocp_viewer_tessellation"] = _cad_stage(
             "OCP viewer tessellation",
             tessellation_started_at,
@@ -971,19 +1064,20 @@ def _import_step_ocp(
             face_counter += 1
 
         solid_counter = 0
-        if named_colored_solids:
-            for component_shape, component_name, component_color in named_colored_solids:
+        if component_parts:
+            for component_shape, component_name, component_color in (
+                component_parts
+            ):
                 solid_counter += 1
-                for solid in component_leaf_shapes(component_shape):
-                    face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
-                    while face_explorer.More():
-                        import_face(
-                            TopoDS.Face_s(face_explorer.Current()),
-                            solid_counter - 1,
-                            component_name,
-                            component_color,
-                        )
-                        face_explorer.Next()
+                face_explorer = TopExp_Explorer(component_shape, TopAbs_FACE)
+                while face_explorer.More():
+                    import_face(
+                        TopoDS.Face_s(face_explorer.Current()),
+                        solid_counter - 1,
+                        component_name,
+                        component_color,
+                    )
+                    face_explorer.Next()
         else:
             solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
             while solid_explorer.More():
@@ -1035,8 +1129,8 @@ def _import_step_ocp(
         trace_tessellation_started_at = time.perf_counter()
         _cad_stage_start("OCP trace tessellation")
         trace_shapes = (
-            [component_shape for component_shape, _name, _color in named_colored_solids]
-            if named_colored_solids
+            [component_shape for component_shape, _name, _color in component_parts]
+            if component_parts
             else [shape]
         )
         for trace_shape in trace_shapes:
@@ -1083,14 +1177,13 @@ def _import_step_ocp(
     feature_started_at = time.perf_counter()
     _cad_stage_start("B-rep feature edges")
     feature_edge_segments: List[Dict] = []
-    if named_colored_solids:
+    if component_parts:
         for component_index, (component_shape, _name, _color) in enumerate(
-            named_colored_solids
+            component_parts
         ):
-            for solid in component_leaf_shapes(component_shape):
-                feature_edge_segments.extend(
-                    _extract_brep_edge_segments(solid, component_index)
-                )
+            feature_edge_segments.extend(
+                _extract_brep_edge_segments(component_shape, component_index)
+            )
     elif shape is not None:
         edge_solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
         edge_component_index = 0

@@ -87,6 +87,7 @@ import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
+  ISO_CAMERA_AXES,
   surfaceOpacityFromTransparency,
   type AxisCameraPreset,
   type DisplayCameraPreset,
@@ -285,17 +286,13 @@ const roiCameraPresetConfig: Record<
   ZX: {
     ...cameraPresetVectors('ZX'),
     plane: 'zx',
-    view: 'front_zx',
+    view: 'back_neg_zx',
   },
   '-ZX': {
     ...cameraPresetVectors('-ZX'),
     plane: 'zx',
-    view: 'back_neg_zx',
+    view: 'front_zx',
   },
-}
-
-function surfaceDepthUnits(depthPriority: number): number {
-  return 4 + depthPriority * 4
 }
 
 function disposeMaterial(material: Material | Material[]): void {
@@ -1061,16 +1058,16 @@ function fitCamera(
       maxDimension / (2 * Math.tan(horizontalFov / 2)),
     ) * 1.35
 
-  let direction = new Vector3(1, -1, 0.78)
+  let direction = new Vector3(...ISO_CAMERA_AXES.direction)
   if (preset === 'Fit') {
     direction
       .subVectors(runtime.camera.position, runtime.controls.target)
       .normalize()
     if (direction.lengthSq() < 0.01) {
-      direction.set(1, -1, 0.78)
+      direction.set(...ISO_CAMERA_AXES.direction)
     }
   } else if (preset === 'Iso') {
-    runtime.camera.up.set(0, 0, 1)
+    runtime.camera.up.set(...ISO_CAMERA_AXES.up)
   } else {
     const config = roiCameraPresetConfig[preset]
     direction.copy(config.direction)
@@ -1165,12 +1162,12 @@ function createComponentNode(
     roughness: 0.72,
     flatShading: false,
     side: DoubleSide,
-    polygonOffset: true,
-    // A slope-scaled factor creates visible seams where CAD faces meet.
-    // Constant depth units keep coplanar components deterministic without
-    // moving steep faces farther behind their shared feature edges.
+    // The solid itself owns the real depth. Pushing each component backward
+    // by a different polygon offset lets edges from internal bodies pass the
+    // depth test and creates an unintended X-ray/overlay appearance.
+    polygonOffset: false,
     polygonOffsetFactor: 0,
-    polygonOffsetUnits: surfaceDepthUnits(index),
+    polygonOffsetUnits: 0,
   })
   const surface = new Mesh(bundle.geometry, surfaceMaterial)
   surface.name = `component-surface-${component.component_id}`
@@ -1763,10 +1760,10 @@ export function ThreeViewerCanvas({
               pipCamera.position
                 .copy(center)
                 .addScaledVector(
-                  new Vector3(1, -1, 0.78).normalize(),
+                  new Vector3(...ISO_CAMERA_AXES.direction).normalize(),
                   distance,
                 )
-              pipCamera.up.set(0, 0, 1)
+              pipCamera.up.set(...ISO_CAMERA_AXES.up)
               pipCamera.lookAt(center)
             }
           }
@@ -2131,6 +2128,7 @@ export function ThreeViewerCanvas({
     let rightPointerMoved = false
     let rollDrag: { lastX: number } | null = null
     let pipDrag: { lastX: number; lastY: number } | null = null
+    let pointerInPip = false
     const pointInPipViewport = (point: { x: number; y: number }) => {
       const rect = runtime.pipViewportRect
       if (!rect) return false
@@ -2154,8 +2152,18 @@ export function ThreeViewerCanvas({
       ) {
         event.preventDefault()
         pointerDown = null
+        if (controlsInteracting) handleControlsEnd()
+        controls.enabled = false
+        if (fullViewCameraSyncRef.current) {
+          fullViewCameraSyncRef.current = false
+          fullViewSyncBaseMainDistanceRef.current = null
+          fullViewSyncBasePipDistanceRef.current = null
+          setFullViewCameraSync(false)
+          onStatusMessage('Full View camera sync · OFF · manual control')
+        }
         pipDrag = { lastX: event.clientX, lastY: event.clientY }
         runtime.pipUserAdjusted = true
+        runtime.pipLastRenderTime = 0
         canvas.setPointerCapture(event.pointerId)
         return
       }
@@ -2187,6 +2195,9 @@ export function ThreeViewerCanvas({
       pointerDown = { x: event.clientX, y: event.clientY }
     }
     const handlePointerMove = (event: PointerEvent) => {
+      pointerInPip =
+        runtime.roiPreviewRoot.visible &&
+        pointInPipViewport(canvasPoint(event))
       if (
         rightPointerDown &&
         Math.hypot(
@@ -2209,6 +2220,7 @@ export function ThreeViewerCanvas({
         pipDrag.lastX = event.clientX
         pipDrag.lastY = event.clientY
         orbitPipCamera(runtime, dx, dy)
+        runtime.pipLastRenderTime = 0
         return
       }
       const selection = boxDragRef.current
@@ -2246,6 +2258,7 @@ export function ThreeViewerCanvas({
       }
       if (pipDrag) {
         pipDrag = null
+        controls.enabled = true
         if (canvas.hasPointerCapture(event.pointerId)) {
           canvas.releasePointerCapture(event.pointerId)
         }
@@ -2578,6 +2591,7 @@ export function ThreeViewerCanvas({
       }
       if (runtime.roiPreviewRoot.visible && pointInPipViewport(point)) {
         runtime.pipUserAdjusted = false
+        runtime.pipLastRenderTime = 0
         onStatusMessage('Full View PIP · 다시 전체 맞춤')
         return
       }
@@ -2621,16 +2635,23 @@ export function ThreeViewerCanvas({
       camera.position.copy(runtime.pipTarget).add(offset)
       runtime.pipDistance = nextDistance
       runtime.pipUserAdjusted = true
+      runtime.pipLastRenderTime = 0
     }
     let pointerOverCanvas = false
-    const handlePointerEnter = () => {
+    const handlePointerEnter = (event: PointerEvent) => {
       pointerOverCanvas = true
+      pointerInPip =
+        runtime.roiPreviewRoot.visible &&
+        pointInPipViewport(canvasPoint(event))
     }
     const handlePointerLeave = () => {
       pointerOverCanvas = false
+      pointerInPip = false
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 'f') return
+      // `event.key` becomes a Hangul character while the Korean IME is
+      // active. `event.code` keeps the physical F shortcut reliable.
+      if (event.code !== 'KeyF' && event.key.toLowerCase() !== 'f') return
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (!pointerOverCanvas) return
       const activeTag = document.activeElement?.tagName
@@ -2642,6 +2663,12 @@ export function ThreeViewerCanvas({
         return
       }
       event.preventDefault()
+      if (runtime.roiPreviewRoot.visible && pointerInPip) {
+        runtime.pipUserAdjusted = false
+        runtime.pipLastRenderTime = 0
+        onStatusMessage('Full View · Fit (F)')
+        return
+      }
       fitCamera(runtime, 'Fit')
       emitCameraFrame()
       onStatusMessage('Camera preset · Fit (F)')
@@ -2652,6 +2679,7 @@ export function ThreeViewerCanvas({
       rightPointerMoved = false
       rollDrag = null
       pipDrag = null
+      controls.enabled = true
       boxDragRef.current = null
       setBoxDrag(null)
     }
@@ -2905,18 +2933,34 @@ export function ThreeViewerCanvas({
         Math.max(size.z, 1e-3),
       )
       const markerEdges = new EdgesGeometry(boxGeometry)
-      boxGeometry.dispose()
-      const marker = new LineSegments(
-        markerEdges,
-        new LineBasicMaterial({
-          color: 0xfacc15,
+      const markerFill = new Mesh(
+        boxGeometry,
+        new MeshBasicMaterial({
+          color: 0xff8a00,
           transparent: true,
-          opacity: 0.95,
+          opacity: 0.22,
+          side: DoubleSide,
           depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
         }),
       )
+      markerFill.renderOrder = 200
+      const markerEdgesObject = new LineSegments(
+        markerEdges,
+        new LineBasicMaterial({
+          color: 0xffa000,
+          transparent: true,
+          opacity: 1,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      markerEdgesObject.renderOrder = 201
+      const marker = new Group()
+      marker.add(markerFill, markerEdgesObject)
       marker.position.copy(center)
-      marker.renderOrder = 200
       runtime.roiBoundsMarker.add(marker)
     }
 
@@ -3761,8 +3805,7 @@ export function ThreeViewerCanvas({
       node.surface.material.opacity = surfaceOpacity
       node.surface.material.depthWrite = !isTransparentSurface
       node.surface.material.polygonOffsetFactor = 0
-      node.surface.material.polygonOffsetUnits =
-        surfaceDepthUnits(node.depthPriority)
+      node.surface.material.polygonOffsetUnits = 0
       node.surface.visible = !isWireframe
       node.wireframeFill.visible = isWireframe
       node.wireframeFill.material.color.set(
