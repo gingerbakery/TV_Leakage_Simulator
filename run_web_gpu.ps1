@@ -187,7 +187,10 @@ try {
     Write-Host "[READY] Keep this window open and confirm the result's Compute row after every run."
     Write-Host ""
 
-    & $VenvPython (Join-Path $Root "run_web.py") --port $Port --strict-port
+    # Keep Python's native-crash traceback enabled. OCP/Numba/CUDA faults can
+    # terminate the interpreter without a normal exception; faulthandler
+    # prints the active Python stack so the last CAD/GPU stage is diagnosable.
+    & $VenvPython -X faulthandler (Join-Path $Root "run_web.py") --port $Port --strict-port
     if ($LASTEXITCODE -ne 0) {
         throw "Server stopped with exit code $LASTEXITCODE."
     }

@@ -330,21 +330,6 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
         label_color_cache[cache_key] = resolved
         return resolved
 
-    def get_shape_or_face_color(shape) -> Optional[str]:
-        if shape is None or shape.IsNull():
-            return None
-        direct = get_color(shape)
-        if direct:
-            return direct
-        face_colors: Dict[str, int] = {}
-        explorer = TopExp_Explorer(shape, TopAbs_FACE)
-        while explorer.More():
-            face_color = get_color(TopoDS.Face_s(explorer.Current()))
-            if face_color:
-                face_colors[face_color] = face_colors.get(face_color, 0) + 1
-            explorer.Next()
-        return max(face_colors, key=face_colors.get) if face_colors else None
-
     results: List[Tuple[object, str, Optional[str]]] = []
     part_counter = 0
 
@@ -382,58 +367,12 @@ def _read_step_named_colored_solids(path: Path) -> Optional[List[Tuple[object, s
             inherited_color
             or get_label_or_subshape_color(label, prototype_shape)
         )
-        # Keep every independent solid selectable. NX can export several
-        # components/bodies below one STEP ITEM; treating that ITEM as one
-        # simulator component prevents body-level Material/Move/Hide edits.
-        prototype_solids = []
-        solid_explorer = TopExp_Explorer(prototype_shape, TopAbs_SOLID)
-        while solid_explorer.More():
-            prototype_solids.append(TopoDS.Solid_s(solid_explorer.Current()))
-            solid_explorer.Next()
-        if not prototype_solids:
-            # Shell/surface STEP items are still valid selectable components.
-            results.append((located_shape, name, color))
-            return
-
-        for solid_index, prototype_solid in enumerate(prototype_solids, start=1):
-            subshape_label = TDF_Label()
-            has_subshape_label = False
-            try:
-                has_subshape_label = shape_tool.FindSubShape(
-                    label,
-                    prototype_solid,
-                    subshape_label,
-                )
-            except Exception:
-                pass
-            solid_name = (
-                preferred_name(subshape_label)
-                if has_subshape_label
-                else None
-            )
-            if not solid_name:
-                solid_name = (
-                    name
-                    if len(prototype_solids) == 1
-                    else "{} · Body {}".format(name, solid_index)
-                )
-            solid_color = (
-                get_label_or_subshape_color(subshape_label, prototype_solid)
-                if has_subshape_label
-                else None
-            )
-            solid_color = (
-                solid_color
-                or get_shape_or_face_color(prototype_solid)
-                or color
-            )
-            results.append(
-                (
-                    prototype_solid.Moved(accumulated_location),
-                    solid_name,
-                    solid_color,
-                )
-            )
+        # Preserve the product item here. A later, geometry-only normalization
+        # splits independent solids into selectable components without asking
+        # XCAF to resolve every solid as a subshape label. Some very large NX
+        # STEP files can crash inside that native lookup before Python gets a
+        # chance to raise an exception.
+        results.append((located_shape, name, color))
 
     free_shapes = TDF_LabelSequence()
     shape_tool.GetFreeShapes(free_shapes)
