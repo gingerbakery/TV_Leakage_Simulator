@@ -79,12 +79,12 @@ import {
   createFeatureEdgeGeometry,
   findCadSurfaceFaceIds,
   getSceneBounds,
-  resolveComponentColor,
 } from './scene-geometry'
 import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
+  resolveComponentColor,
   surfaceOpacityFromTransparency,
   type AxisCameraPreset,
   type DisplayCameraPreset,

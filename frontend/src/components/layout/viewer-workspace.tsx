@@ -35,6 +35,7 @@ import type {
   ViewerRayObjectContextTarget,
   ViewerRenderMode,
 } from '@/features/viewer'
+import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
@@ -172,6 +173,9 @@ export function ViewerWorkspace({
   const componentNameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
+  const componentColorOverrides = useWorkspaceStore(
+    workspaceSelectors.componentColorOverrides,
+  )
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
@@ -260,6 +264,9 @@ export function ViewerWorkspace({
       component.component_id === contextTarget?.componentId,
   )
   const contextComponentId = contextComponent?.component_id
+  const contextComponentIndex = contextComponent
+    ? (scene?.components.indexOf(contextComponent) ?? -1)
+    : -1
   const contextRayObject =
     rayObjectContextTarget?.kind === 'emitter'
       ? emitters.find(
@@ -657,9 +664,34 @@ export function ViewerWorkspace({
                       contextComponent.component_id,
                     )
                   }
+                  colorOverride={
+                    componentColorOverrides[
+                      contextComponent.component_id
+                    ] ?? null
+                  }
+                  fallbackColor={resolveComponentColorHex(
+                    contextComponent,
+                    contextComponentIndex,
+                  )}
                   wheelTarget={contextTarget.returnFocusElement}
                   onOpenChange={(open) => {
                     if (!open) setContextTarget(null)
+                  }}
+                  onColorChange={(color) => {
+                    actions.setComponentColor(
+                      contextComponent.component_id,
+                      color,
+                    )
+                    setStatusMessage(
+                      `${getComponentDisplayName(
+                        contextComponent,
+                        componentNameOverrides,
+                      )} · ${
+                        color
+                          ? `Display color ${color}`
+                          : 'CAD original color'
+                      }`,
+                    )
                   }}
                   onAction={handleContextAction}
                 />

@@ -161,6 +161,20 @@ describe('Step 07·08 feature editors', () => {
 
     fireEvent.contextMenu(viewer)
     fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Display Color…' }),
+    )
+    expect(
+      screen.getByRole('group', { name: 'STEP Solid 1 색상 선택' }),
+    ).not.toBeNull()
+    fireEvent.click(
+      screen.getByRole('button', { name: '표시색 #14b8a6' }),
+    )
+    expect(workspaceStore.getState().componentColorOverrides).toEqual({
+      1: '#14b8a6',
+    })
+
+    fireEvent.contextMenu(viewer)
+    fireEvent.click(
       await screen.findByRole('menuitem', { name: /Material/ }),
     )
     expect(onEditMaterial).toHaveBeenCalledWith({
@@ -362,6 +376,15 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().componentColorOverrides).toEqual({
       1: '#14b8a6',
     })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'STEP Solid 2 표시색 선택',
+      }),
+    )
+    expect(
+      screen.getByLabelText('STEP Solid 2 사용자 정의 표시색'),
+    ).toHaveProperty('value', '#526b7a')
   })
 
   it('shows only active ROI component subsets in the component tree', () => {

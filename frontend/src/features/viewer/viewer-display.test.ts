@@ -5,8 +5,11 @@ import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
+  resolveComponentColor,
+  resolveComponentColorHex,
   surfaceOpacityFromTransparency,
 } from './viewer-display'
+import { createSceneFixture } from '@/test/scene-fixture'
 
 describe('viewer display settings', () => {
   it('keeps positive Y pointing upward in both YZ views', () => {
@@ -40,5 +43,18 @@ describe('viewer display settings', () => {
     expect(
       cameraFovForPreset('Fit', AXIS_CAMERA_FOV_DEGREES),
     ).toBe(AXIS_CAMERA_FOV_DEGREES)
+  })
+
+  it('shares the exact component fallback colors with Viewer menus', () => {
+    const scene = createSceneFixture()
+    const authoredComponent = {
+      ...scene.components[0],
+      color: '#ff0000',
+    }
+
+    expect(resolveComponentColor(scene.components[0], 0)).toBe(0x64748b)
+    expect(resolveComponentColor(scene.components[1], 1)).toBe(0x526b7a)
+    expect(resolveComponentColorHex(scene.components[1], 1)).toBe('#526b7a')
+    expect(resolveComponentColor(authoredComponent, 0)).toBe(0xff0000)
   })
 })

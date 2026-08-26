@@ -7,17 +7,18 @@ import {
   Move3D,
   Palette,
   Pencil,
-  RotateCcw,
   Search,
   Trash2,
 } from 'lucide-react'
 
 import {
+  ComponentColorPalette,
   ComponentContextMenu,
   type ComponentContextAction,
 } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
 import { cn } from '@/lib/utils'
 import {
   useWorkspaceStore,
@@ -25,12 +26,6 @@ import {
 } from '@/stores'
 
 import { formatArea, getComponentDisplayName } from './component-utils'
-
-const displayColorPalette = [
-  '#2563eb', '#0ea5e9', '#14b8a6', '#22c55e',
-  '#eab308', '#f97316', '#ef4444', '#a855f7',
-  '#64748b', '#111827', '#f8fafc', '#ffffff',
-]
 
 export interface ComponentEditorRequest {
   componentId: number
@@ -54,6 +49,7 @@ interface ComponentTreeRowProps {
   selected: boolean
   visible: boolean
   traceable: boolean
+  fallbackColor: string
   onEditMaterial(request: ComponentEditorRequest): void
   onEditTransform(request: ComponentEditorRequest): void
   onDelete(request: ComponentEditorRequest): void
@@ -67,6 +63,7 @@ function ComponentTreeRow({
   selected,
   visible,
   traceable,
+  fallbackColor,
   onEditMaterial,
   onEditTransform,
   onDelete,
@@ -82,7 +79,7 @@ function ComponentTreeRow({
   const rowRef = useRef<HTMLDivElement>(null)
   const componentId = component.component_id
   const customColor = componentColorOverrides[componentId]
-  const displayColor = customColor ?? component.color ?? '#64748b'
+  const displayColor = customColor ?? fallbackColor
 
   const request = (): ComponentEditorRequest => ({
     componentId,
@@ -251,60 +248,16 @@ function ComponentTreeRow({
               />
             </button>
             {isColorPaletteOpen ? (
-              <div
-                role="group"
-                aria-label={`${displayName} 색상 선택`}
-                data-component-color-palette
-                className="absolute top-8 right-0 z-30 rounded-xl border border-border bg-popover p-2 shadow-xl"
-                style={{ width: '11.25rem', maxWidth: 'none' }}
-              >
-                <div className="grid grid-cols-7 gap-1">
-                  {displayColorPalette.map((color) => (
-                    <button
-                      key={color}
-                      type="button"
-                      aria-label={`표시색 ${color}`}
-                      title={color}
-                      className="size-5 rounded-full border border-black/20 ring-offset-1 transition-transform hover:scale-110 hover:ring-2 hover:ring-primary focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
-                      style={{ backgroundColor: color }}
-                      onClick={() => {
-                        actions.setComponentColor(componentId, color)
-                        setIsColorPaletteOpen(false)
-                      }}
-                    />
-                  ))}
-                  <button
-                    type="button"
-                    aria-label={`${displayName} CAD 원본색으로 되돌리기`}
-                    title="CAD 원본색"
-                    className="flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground ring-offset-1 transition-transform hover:scale-110 hover:text-foreground hover:ring-2 hover:ring-primary focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
-                    onClick={() => {
-                      actions.setComponentColor(componentId, null)
-                      setIsColorPaletteOpen(false)
-                    }}
-                  >
-                    <RotateCcw className="size-3" />
-                  </button>
-                  <label
-                    title="직접 색상 지정"
-                    className="relative size-5 cursor-pointer rounded-full border border-black/20 ring-offset-1 transition-transform [background:conic-gradient(#ef4444,#f59e0b,#22c55e,#0ea5e9,#8b5cf6,#ef4444)] hover:scale-110 hover:ring-2 hover:ring-primary focus-within:ring-2 focus-within:ring-primary"
-                  >
-                    <input
-                      type="color"
-                      value={displayColor}
-                      aria-label={`${displayName} 사용자 정의 표시색`}
-                      className="absolute inset-0 size-full cursor-pointer opacity-0"
-                      onChange={(event) => {
-                        actions.setComponentColor(
-                          componentId,
-                          event.currentTarget.value,
-                        )
-                        setIsColorPaletteOpen(false)
-                      }}
-                    />
-                  </label>
-                </div>
-              </div>
+              <ComponentColorPalette
+                componentName={displayName}
+                value={customColor}
+                fallbackColor={fallbackColor}
+                className="absolute top-8 right-0 z-30"
+                onValueChange={(color) => {
+                  actions.setComponentColor(componentId, color)
+                  setIsColorPaletteOpen(false)
+                }}
+              />
             ) : null}
           </div>
           <Button
@@ -428,6 +381,12 @@ export function ComponentTreePanel({
         activeRoiFaceIdsByComponent.has(component.component_id)),
   )
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase()
+  const componentIndexById = new Map(
+    (scene?.components ?? []).map((component, index) => [
+      component.component_id,
+      index,
+    ]),
+  )
   const filteredComponents = availableComponents.filter((component) =>
     getComponentDisplayName(component, nameOverrides)
       .toLocaleLowerCase()
@@ -509,6 +468,10 @@ export function ComponentTreePanel({
               selected={selectedComponentIds.includes(componentId)}
               visible={!hiddenComponentIds.includes(componentId)}
               traceable={!excludedComponentIds.includes(componentId)}
+              fallbackColor={resolveComponentColorHex(
+                component,
+                componentIndexById.get(componentId) ?? 0,
+              )}
               onEditMaterial={onEditMaterial}
               onEditTransform={onEditTransform}
               onDelete={onDelete}

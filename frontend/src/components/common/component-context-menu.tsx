@@ -1,6 +1,7 @@
 import {
   useEffect,
   useRef,
+  useState,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
@@ -11,6 +12,7 @@ import {
   EyeOff,
   Lightbulb,
   Move3D,
+  Paintbrush,
   Palette,
   Pencil,
   Power,
@@ -28,6 +30,7 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { ComponentColorPalette } from './component-color-palette'
 
 export type ComponentContextAction =
   | 'visibility'
@@ -50,8 +53,11 @@ export interface ViewerComponentActionMenuProps {
   position: { x: number; y: number }
   visible: boolean
   traceable: boolean
+  colorOverride?: string | null
+  fallbackColor?: string
   wheelTarget?: HTMLElement | null
   onOpenChange(open: boolean): void
+  onColorChange(color: string | null): void
   onAction(action: ComponentContextAction): void
 }
 
@@ -134,11 +140,15 @@ export function ViewerComponentActionMenu({
   position,
   visible,
   traceable,
+  colorOverride,
+  fallbackColor = '#64748b',
   wheelTarget,
   onOpenChange,
+  onColorChange,
   onAction,
 }: ViewerComponentActionMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const [colorPaletteOpen, setColorPaletteOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -148,6 +158,7 @@ export function ViewerComponentActionMenu({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
+      setColorPaletteOpen(false)
       onOpenChange(false)
     }
     document.addEventListener('keydown', handleKeyDown)
@@ -162,10 +173,19 @@ export function ViewerComponentActionMenu({
   )
   const top = Math.max(
     8,
-    Math.min(position.y, window.innerHeight - 260),
+    Math.min(
+      position.y,
+      window.innerHeight - (colorPaletteOpen ? 348 : 272),
+    ),
   )
   const select = (action: ComponentContextAction) => {
     onAction(action)
+    setColorPaletteOpen(false)
+    onOpenChange(false)
+  }
+  const selectColor = (color: string | null) => {
+    onColorChange(color)
+    setColorPaletteOpen(false)
     onOpenChange(false)
   }
   const forwardWheel = (event: ReactWheelEvent) => {
@@ -196,9 +216,13 @@ export function ViewerComponentActionMenu({
   return createPortal(
     <div
       className="fixed inset-0 z-50"
-      onPointerDown={() => onOpenChange(false)}
+      onPointerDown={() => {
+        setColorPaletteOpen(false)
+        onOpenChange(false)
+      }}
       onContextMenu={(event) => {
         event.preventDefault()
+        setColorPaletteOpen(false)
         onOpenChange(false)
       }}
       onWheel={forwardWheel}
@@ -207,9 +231,17 @@ export function ViewerComponentActionMenu({
         ref={menuRef}
         role="menu"
         aria-label={`Component actions for ${componentName}`}
-        className="fixed w-64 rounded-lg border border-border bg-popover/98 p-1 text-popover-foreground shadow-2xl shadow-black/40 ring-1 ring-foreground/10"
+        className="fixed max-h-[calc(100vh-1rem)] w-64 overflow-y-auto rounded-lg border border-border bg-popover/98 p-1 text-popover-foreground shadow-2xl shadow-black/40 ring-1 ring-foreground/10"
         style={{ left, top }}
         onPointerDown={(event) => event.stopPropagation()}
+        onWheel={(event) => {
+          if (
+            event.currentTarget.scrollHeight >
+            event.currentTarget.clientHeight
+          ) {
+            event.stopPropagation()
+          }
+        }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -244,6 +276,30 @@ export function ViewerComponentActionMenu({
           {traceable ? 'Traceability Off' : 'Traceability On'}
         </button>
         <div className="-mx-1 my-1 h-px bg-border" />
+        <button
+          type="button"
+          role="menuitem"
+          aria-expanded={colorPaletteOpen}
+          className={itemClassName}
+          onClick={() => setColorPaletteOpen((current) => !current)}
+        >
+          <Paintbrush />
+          Display Color…
+          <span
+            className="ml-auto size-3.5 rounded-full border border-black/20 shadow-sm"
+            style={{ backgroundColor: colorOverride ?? fallbackColor }}
+            aria-hidden="true"
+          />
+        </button>
+        {colorPaletteOpen ? (
+          <ComponentColorPalette
+            componentName={componentName}
+            value={colorOverride}
+            fallbackColor={fallbackColor}
+            className="mx-auto my-1 shadow-none"
+            onValueChange={selectColor}
+          />
+        ) : null}
         <button
           type="button"
           role="menuitem"
