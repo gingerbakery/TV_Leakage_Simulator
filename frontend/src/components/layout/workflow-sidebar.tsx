@@ -484,7 +484,10 @@ export function WorkflowSidebar({
                       isActive={isActive}
                       isExpanded={expandedSection === section.id}
                     />
-                    <AccordionContent className="mt-1.5 min-w-0 rounded-lg border-l-2 border-blue-300 bg-gradient-to-b from-blue-50/55 to-background px-2.5 pt-2.5 dark:border-blue-700/70 dark:from-blue-950/22 dark:to-background">
+                    <AccordionContent
+                      data-workflow-section-content={section.id}
+                      className="mt-1.5 mb-2 min-w-0 rounded-lg border border-blue-300/80 bg-slate-200/70 px-2.5 pt-2.5 dark:border-blue-700/70 dark:bg-slate-900/85"
+                    >
                       {renderPanel(section.id)}
                     </AccordionContent>
                   </AccordionItem>

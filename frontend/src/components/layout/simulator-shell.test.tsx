@@ -155,6 +155,9 @@ describe('SimulatorShell', () => {
     const modelImportTitleRow = modelImportHeader?.querySelector(
       '[data-workflow-section-title-row]',
     )
+    const modelImportContent = view.container.querySelector<HTMLElement>(
+      '[data-workflow-section-content="model-import"] > div',
+    )
     const modelImportHelp = within(modelImportHeader as HTMLElement).getByRole(
       'button',
       { name: 'Model Import 도움말' },
@@ -193,6 +196,10 @@ describe('SimulatorShell', () => {
     expect(modelImportStep.getAttribute('aria-expanded')).toBe(
       modelImportExpanded,
     )
+    expect(modelImportContent?.className).toContain('rounded-lg')
+    expect(modelImportContent?.className).toContain('border')
+    expect(modelImportContent?.className).toContain('bg-slate-200/70')
+    expect(modelImportContent?.className).not.toContain('border-l-2')
 
     fireEvent.click(
       screen.getByRole('button', { name: '왼쪽 메뉴 넓게 보기' }),
