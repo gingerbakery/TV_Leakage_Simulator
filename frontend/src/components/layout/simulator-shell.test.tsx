@@ -146,6 +146,19 @@ describe('SimulatorShell', () => {
     const rayTracingStep = screen.getByRole('button', {
       name: 'Step 04 Ray Tracing',
     })
+    const modelImportStep = screen.getByRole('button', {
+      name: 'Step 01 Model Import',
+    })
+    const modelImportHeader = modelImportStep.closest<HTMLElement>(
+      '[data-workflow-section-header="model-import"]',
+    )
+    const modelImportTitleRow = modelImportHeader?.querySelector(
+      '[data-workflow-section-title-row]',
+    )
+    const modelImportHelp = within(modelImportHeader as HTMLElement).getByRole(
+      'button',
+      { name: 'Model Import 도움말' },
+    )
 
     expect(layout?.style.getPropertyValue('--workflow-sidebar-width')).toBe(
       '384px',
@@ -159,6 +172,7 @@ describe('SimulatorShell', () => {
     expect(workflowRegionClasses).toContain('lg:h-full')
     expect(workflowRegionClasses).toContain('lg:overflow-y-auto')
     expect(workflowRegionClasses).not.toContain('overflow-y-auto')
+    expect(workflowRegion.style.scrollbarGutter).toBe('stable')
     expect(
       workflowRegionClasses.some((className) =>
         className.startsWith('h-[min('),
@@ -166,6 +180,19 @@ describe('SimulatorShell', () => {
     ).toBe(false)
     expect(rayTracingStep.className).toContain('min-w-0')
     expect(rayTracingStep.className).not.toContain('-mx-')
+    expect(
+      view.container.querySelectorAll('[data-workflow-section-help]'),
+    ).toHaveLength(6)
+    expect(modelImportTitleRow?.contains(modelImportHelp)).toBe(true)
+    expect(modelImportHelp.className).toContain('size-4')
+    expect(modelImportHelp.querySelector('svg')?.className.baseVal).toContain(
+      'size-3',
+    )
+    const modelImportExpanded = modelImportStep.getAttribute('aria-expanded')
+    fireEvent.click(modelImportHelp)
+    expect(modelImportStep.getAttribute('aria-expanded')).toBe(
+      modelImportExpanded,
+    )
 
     fireEvent.click(
       screen.getByRole('button', { name: '왼쪽 메뉴 넓게 보기' }),

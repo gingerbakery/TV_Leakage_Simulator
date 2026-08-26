@@ -322,6 +322,48 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().hiddenComponentIds).toEqual([])
   })
 
+  it('opens a compact component color palette without a heading', () => {
+    render(
+      <ComponentTreePanel
+        scene={createSceneFixture()}
+        onEditMaterial={vi.fn()}
+        onEditTransform={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'STEP Solid 1 표시색 선택',
+      }),
+    )
+
+    const palette = screen.getByRole('group', {
+      name: 'STEP Solid 1 색상 선택',
+    })
+    expect(palette.style.width).toBe('11.25rem')
+    expect(palette.style.maxWidth).toBe('none')
+    expect(screen.queryByText('표시색 팔레트')).toBeNull()
+    expect(
+      palette.querySelectorAll('button[aria-label^="표시색 #"]'),
+    ).toHaveLength(12)
+    expect(
+      screen.getByRole('button', {
+        name: 'STEP Solid 1 CAD 원본색으로 되돌리기',
+      }),
+    ).not.toBeNull()
+    expect(
+      screen.getByLabelText('STEP Solid 1 사용자 정의 표시색'),
+    ).not.toBeNull()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '표시색 #14b8a6' }),
+    )
+    expect(workspaceStore.getState().componentColorOverrides).toEqual({
+      1: '#14b8a6',
+    })
+  })
+
   it('shows only active ROI component subsets in the component tree', () => {
     const scene = createSceneFixture()
     act(() => {
