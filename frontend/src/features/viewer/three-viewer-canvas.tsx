@@ -455,9 +455,13 @@ function createSectionCapGeometry(
   response: SectionCapResponse,
   axis: ViewerSectionAxis,
   roiClipBoxes: RoiClipBox[],
+  componentId: number | null,
 ): BufferGeometry {
   const loops: SectionLoop[] = response.contours
-    .filter((contour) => contour.points.length >= 3)
+    .filter(
+      (contour) =>
+        contour.component_id === componentId && contour.points.length >= 3,
+    )
     .map((contour) => {
       const points3d = contour.points.map((point) => new Vector3(...point))
       const points2d = points3d.map((point) => sectionPoint2d(point, axis))
@@ -534,30 +538,64 @@ function createSectionCapGeometry(
   return geometry
 }
 
+function sectionCapDisplayColor(
+  componentId: number | null,
+  components: SceneComponent[],
+  colorOverrides: Record<number, string>,
+): Color {
+  const componentIndex = components.findIndex(
+    (component) => component.component_id === componentId,
+  )
+  const component = componentIndex >= 0 ? components[componentIndex] : undefined
+  const override = componentId === null ? undefined : colorOverrides[componentId]
+  const baseColor = override
+    ? Number.parseInt(override.replace('#', ''), 16)
+    : resolveComponentColor(component, componentIndex)
+  return new Color(baseColor).multiplyScalar(0.85)
+}
+
 function addSectionCapGeometry(
   sectionRoot: Group,
   response: SectionCapResponse,
   axis: ViewerSectionAxis,
   roiClipBoxes: RoiClipBox[],
+  components: SceneComponent[],
+  colorOverrides: Record<number, string>,
 ): void {
-  const geometry = createSectionCapGeometry(response, axis, roiClipBoxes)
-  if (geometry.getAttribute('position').count === 0) {
-    geometry.dispose()
-    return
+  const componentIds = [
+    ...new Set(response.contours.map((contour) => contour.component_id)),
+  ]
+  for (const componentId of componentIds) {
+    const geometry = createSectionCapGeometry(
+      response,
+      axis,
+      roiClipBoxes,
+      componentId,
+    )
+    if (geometry.getAttribute('position').count === 0) {
+      geometry.dispose()
+      continue
+    }
+    const sectionColor = sectionCapDisplayColor(
+      componentId,
+      components,
+      colorOverrides,
+    )
+    const cap = new Mesh(
+      geometry,
+      new MeshBasicMaterial({
+        color: sectionColor,
+        depthTest: true,
+        depthWrite: true,
+        side: DoubleSide,
+        toneMapped: false,
+      }),
+    )
+    cap.name = `viewer-section-cap-component-${componentId ?? 'unknown'}`
+    cap.renderOrder = 3
+    cap.userData.componentId = componentId
+    sectionRoot.add(cap)
   }
-  const cap = new Mesh(
-    geometry,
-    new MeshBasicMaterial({
-      color: 0x9aa1a9,
-      depthTest: true,
-      depthWrite: true,
-      side: DoubleSide,
-      toneMapped: false,
-    }),
-  )
-  cap.name = 'viewer-section-cap-geometry'
-  cap.renderOrder = 3
-  sectionRoot.add(cap)
 }
 
 function viewerCameraFrame(runtime: ViewerRuntime): ViewerCameraFrame {
@@ -1706,6 +1744,8 @@ export function ThreeViewerCanvas({
   const componentColorOverrides = useWorkspaceStore(
     workspaceSelectors.componentColorOverrides,
   )
+  const componentColorOverridesRef = useRef(componentColorOverrides)
+  componentColorOverridesRef.current = componentColorOverrides
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
   )
@@ -4600,8 +4640,6 @@ export function ThreeViewerCanvas({
       setObjectClippingPlane(root, sharedClippingPlane)
     }
 
-    clearGroup(runtime.sectionRoot)
-    runtime.sectionRoot.visible = false
   }, [
     componentColorOverrides,
     materialAssignments,
@@ -4695,6 +4733,8 @@ export function ThreeViewerCanvas({
             roiScopes.flatMap((scope) =>
               scope.active && scope.clipBox ? [scope.clipBox] : [],
             ),
+            scene.components,
+            componentColorOverridesRef.current,
           )
           runtime.sectionRoot.visible = true
           if (response.open_chain_count > 0) {
@@ -4728,6 +4768,24 @@ export function ThreeViewerCanvas({
     sectionView.reverse,
     transformRules,
   ])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    runtime.sectionRoot.traverse((object) => {
+      if (!(object instanceof Mesh)) return
+      if (!object.name.startsWith('viewer-section-cap-component-')) return
+      if (!(object.material instanceof MeshBasicMaterial)) return
+      const rawComponentId = object.userData.componentId as number | null
+      object.material.color.copy(
+        sectionCapDisplayColor(
+          rawComponentId,
+          scene.components,
+          componentColorOverrides,
+        ),
+      )
+    })
+  }, [componentColorOverrides, scene.components])
 
   useEffect(
     () => () => {
