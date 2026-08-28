@@ -7,6 +7,8 @@ import type {
   RayTraceRequest,
   RayTraceResult,
   ScenePayload,
+  SectionCapRequest,
+  SectionCapResponse,
 } from './types'
 import { decodeSceneBinary } from './scene-binary'
 
@@ -20,6 +22,10 @@ export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
 
 export interface LeakageApiClient {
   getScene(cadPath: string, options?: ApiRequestOptions): Promise<ScenePayload>
+  getSectionCap(
+    request: SectionCapRequest,
+    options?: ApiRequestOptions,
+  ): Promise<SectionCapResponse>
   uploadCad(
     file: Blob,
     filename: string,
@@ -73,6 +79,14 @@ export function createApiClient(
           signal: requestOptions?.signal,
         })
       }
+    },
+
+    getSectionCap(request, requestOptions) {
+      return http.requestJson<SectionCapResponse>('/api/scene/section-cap', {
+        method: 'POST',
+        json: request,
+        signal: requestOptions?.signal,
+      })
     },
 
     uploadCad(file, filename, requestOptions) {

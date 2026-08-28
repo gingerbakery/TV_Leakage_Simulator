@@ -251,6 +251,40 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertIn("boot_token", dev_response.json())
         self.assertEqual(ping_response.text, "pong")
 
+    def test_section_cap_endpoint_uses_cached_viewer_mesh(self):
+        def cube_loader(cad_path: str):
+            payload = _scene_loader(cad_path)
+            payload["mesh"].update({
+                "vertices": [
+                    [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+                    [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+                ],
+                "faces": [
+                    [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+                    [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                    [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+                ],
+                "face_component_ids": [4] * 12,
+            })
+            return payload
+
+        runtime = ApiRuntime(Path(self.temp_dir.name), scene_loader=cube_loader)
+        client = TestClient(create_app(runtime))
+        try:
+            scene = runtime.load_scene("cube.step")
+            response = client.post("/api/scene/section-cap", json={
+                "scene_token": scene["metadata"]["scene_token"],
+                "axis": "x",
+                "position": 0,
+                "hidden_component_ids": [],
+                "transform_rules": [],
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["open_chain_count"], 0)
+            self.assertEqual(len(response.json()["contours"]), 1)
+        finally:
+            client.close()
+
     def test_dev_status_exposes_explicit_environment_boot_token(self):
         expected_token = "gpu-source-launch-0123456789abcdef"
         with patch.dict(

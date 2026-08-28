@@ -29,6 +29,7 @@ import {
   Quaternion,
   Raycaster,
   Scene,
+  ShapeUtils,
   SphereGeometry,
   SRGBColorSpace,
   Sprite,
@@ -47,7 +48,9 @@ import type {
   RayTraceResult,
   SceneComponent,
   ScenePayload,
+  SectionCapResponse,
 } from '@/api'
+import { apiClient } from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
@@ -352,6 +355,209 @@ function setObjectClippingPlane(root: Object3D, plane: Plane | null): void {
       material.needsUpdate = true
     }
   })
+}
+
+interface SectionLoop {
+  componentId: number | null
+  points2d: Vector2[]
+  points3d: Vector3[]
+  area: number
+}
+
+function sectionPoint2d(point: Vector3, axis: ViewerSectionAxis): Vector2 {
+  if (axis === 'x') return new Vector2(point.y, point.z)
+  if (axis === 'y') return new Vector2(point.z, point.x)
+  return new Vector2(point.x, point.y)
+}
+
+function signedPolygonArea(points: Vector2[]): number {
+  let area = 0
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index]
+    const next = points[(index + 1) % points.length]
+    area += current.x * next.y - next.x * current.y
+  }
+  return area * 0.5
+}
+
+function pointInsidePolygon(point: Vector2, polygon: Vector2[]): boolean {
+  let inside = false
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const a = polygon[index]
+    const b = polygon[previous]
+    const crosses =
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x
+    if (crosses) inside = !inside
+  }
+  return inside
+}
+
+function orientSectionLoop(loop: SectionLoop, clockwise: boolean): SectionLoop {
+  const isClockwise = loop.area < 0
+  if (isClockwise === clockwise) return loop
+  return {
+    ...loop,
+    points2d: [...loop.points2d].reverse(),
+    points3d: [...loop.points3d].reverse(),
+    area: -loop.area,
+  }
+}
+
+function clipSectionPolygon(
+  source: Vector3[],
+  clipBox: RoiClipBox,
+): Vector3[] {
+  const boundaries: Array<{
+    axis: 'x' | 'y' | 'z'
+    bound: number
+    keepGreater: boolean
+  }> = [
+    { axis: 'x', bound: clipBox.xMin, keepGreater: true },
+    { axis: 'x', bound: clipBox.xMax, keepGreater: false },
+    { axis: 'y', bound: clipBox.yMin, keepGreater: true },
+    { axis: 'y', bound: clipBox.yMax, keepGreater: false },
+  ]
+  if (clipBox.zMin !== undefined) {
+    boundaries.push({ axis: 'z', bound: clipBox.zMin, keepGreater: true })
+  }
+  if (clipBox.zMax !== undefined) {
+    boundaries.push({ axis: 'z', bound: clipBox.zMax, keepGreater: false })
+  }
+  let polygon = source.map((point) => point.clone())
+  for (const boundary of boundaries) {
+    if (polygon.length === 0) break
+    const clipped: Vector3[] = []
+    for (let index = 0; index < polygon.length; index += 1) {
+      const start = polygon[index]
+      const end = polygon[(index + 1) % polygon.length]
+      const startValue = start[boundary.axis]
+      const endValue = end[boundary.axis]
+      const startInside = boundary.keepGreater
+        ? startValue >= boundary.bound
+        : startValue <= boundary.bound
+      const endInside = boundary.keepGreater
+        ? endValue >= boundary.bound
+        : endValue <= boundary.bound
+      if (startInside) clipped.push(start.clone())
+      if (startInside === endInside) continue
+      const denominator = endValue - startValue
+      if (Math.abs(denominator) < 1e-12) continue
+      const ratio = (boundary.bound - startValue) / denominator
+      clipped.push(start.clone().lerp(end, ratio))
+    }
+    polygon = clipped
+  }
+  return polygon
+}
+
+function createSectionCapGeometry(
+  response: SectionCapResponse,
+  axis: ViewerSectionAxis,
+  roiClipBoxes: RoiClipBox[],
+): BufferGeometry {
+  const loops: SectionLoop[] = response.contours
+    .filter((contour) => contour.points.length >= 3)
+    .map((contour) => {
+      const points3d = contour.points.map((point) => new Vector3(...point))
+      const points2d = points3d.map((point) => sectionPoint2d(point, axis))
+      return {
+        componentId: contour.component_id,
+        points2d,
+        points3d,
+        area: signedPolygonArea(points2d),
+      }
+    })
+  const positions: number[] = []
+  const indices: number[] = []
+  for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
+    const loop = loops[loopIndex]
+    const containers = loops
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(
+        ({ candidate, candidateIndex }) =>
+          candidateIndex !== loopIndex &&
+          candidate.componentId === loop.componentId &&
+          Math.abs(candidate.area) > Math.abs(loop.area) &&
+          pointInsidePolygon(loop.points2d[0], candidate.points2d),
+      )
+    if (containers.length % 2 !== 0) continue
+    const outer = orientSectionLoop(loop, true)
+    const holes = loops
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(({ candidate, candidateIndex }) => {
+        if (
+          candidateIndex === loopIndex ||
+          candidate.componentId !== loop.componentId ||
+          Math.abs(candidate.area) >= Math.abs(loop.area) ||
+          !pointInsidePolygon(candidate.points2d[0], loop.points2d)
+        ) return false
+        const between = loops.some(
+          (middle, middleIndex) =>
+            middleIndex !== loopIndex &&
+            middleIndex !== candidateIndex &&
+            middle.componentId === loop.componentId &&
+            Math.abs(middle.area) < Math.abs(loop.area) &&
+            Math.abs(middle.area) > Math.abs(candidate.area) &&
+            pointInsidePolygon(candidate.points2d[0], middle.points2d) &&
+            pointInsidePolygon(middle.points2d[0], loop.points2d),
+        )
+        return !between
+      })
+      .map(({ candidate }) => orientSectionLoop(candidate, false))
+    const combined = [outer, ...holes]
+    const combinedPoints = combined.flatMap((item) => item.points3d)
+    const faces = ShapeUtils.triangulateShape(
+      outer.points2d,
+      holes.map((hole) => hole.points2d),
+    )
+    for (const face of faces) {
+      const triangle = face.map((index) => combinedPoints[index])
+      const polygons =
+        roiClipBoxes.length > 0
+          ? roiClipBoxes.map((clipBox) => clipSectionPolygon(triangle, clipBox))
+          : [triangle]
+      for (const polygon of polygons) {
+        if (polygon.length < 3) continue
+        const baseIndex = positions.length / 3
+        for (const point of polygon) positions.push(point.x, point.y, point.z)
+        for (let index = 1; index < polygon.length - 1; index += 1) {
+          indices.push(baseIndex, baseIndex + index, baseIndex + index + 1)
+        }
+      }
+    }
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+function addSectionCapGeometry(
+  sectionRoot: Group,
+  response: SectionCapResponse,
+  axis: ViewerSectionAxis,
+  roiClipBoxes: RoiClipBox[],
+): void {
+  const geometry = createSectionCapGeometry(response, axis, roiClipBoxes)
+  if (geometry.getAttribute('position').count === 0) {
+    geometry.dispose()
+    return
+  }
+  const cap = new Mesh(
+    geometry,
+    new MeshBasicMaterial({
+      color: 0x9aa1a9,
+      depthTest: true,
+      depthWrite: true,
+      side: DoubleSide,
+      toneMapped: false,
+    }),
+  )
+  cap.name = 'viewer-section-cap-geometry'
+  cap.renderOrder = 3
+  sectionRoot.add(cap)
 }
 
 function viewerCameraFrame(runtime: ViewerRuntime): ViewerCameraFrame {
@@ -1459,6 +1665,7 @@ export function ThreeViewerCanvas({
   const sectionClippingPlaneRef = useRef(new Plane())
   const sectionSliderFrameRef = useRef<number | null>(null)
   const sectionSliderValueRef = useRef(0)
+  const sectionCapRequestRef = useRef<AbortController | null>(null)
   const toggleSectionViewRef = useRef<() => void>(() => undefined)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
@@ -1604,6 +1811,7 @@ export function ThreeViewerCanvas({
         antialias: true,
         alpha: true,
         powerPreference: 'high-performance',
+        stencil: true,
       })
     } catch {
       setRendererError(
@@ -1813,6 +2021,9 @@ export function ThreeViewerCanvas({
       if (controlsInteracting) return
       controlsInteracting = true
       lastMainFrameTime = -Infinity
+      if (sectionViewRef.current.enabled) {
+        runtime.sectionRoot.visible = false
+      }
       if (!largeScene) return
 
       renderer.setPixelRatio(interactivePixelRatio)
@@ -1846,6 +2057,7 @@ export function ThreeViewerCanvas({
         interactionVisibility.clear()
       }
       controlsInteracting = false
+      runtime.sectionRoot.visible = sectionViewRef.current.enabled
       lastMainFrameTime = -Infinity
     }
     runtime.restoreRenderQuality = restoreRenderQuality
@@ -4389,44 +4601,7 @@ export function ThreeViewerCanvas({
     }
 
     clearGroup(runtime.sectionRoot)
-    const planeGeometry = new PlaneGeometry(
-      definition.visualSize,
-      definition.visualSize,
-    )
-    const planeMesh = new Mesh(
-      planeGeometry,
-      new MeshBasicMaterial({
-        color: 0xff8a00,
-        transparent: true,
-        opacity: 0.055,
-        side: DoubleSide,
-        depthTest: false,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    )
-    planeMesh.name = 'viewer-section-plane'
-    planeMesh.position.copy(definition.center)
-    planeMesh.quaternion.setFromUnitVectors(
-      new Vector3(0, 0, 1),
-      definition.normal,
-    )
-    planeMesh.renderOrder = 238
-    const planeBorder = new LineSegments(
-      new EdgesGeometry(planeGeometry),
-      new LineBasicMaterial({
-        color: 0xff8a00,
-        transparent: true,
-        opacity: 0.9,
-        depthTest: false,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    )
-    planeBorder.name = 'viewer-section-plane-border'
-    planeBorder.renderOrder = 239
-    planeMesh.add(planeBorder)
-    runtime.sectionRoot.add(planeMesh)
+    runtime.sectionRoot.visible = false
   }, [
     componentColorOverrides,
     materialAssignments,
@@ -4457,16 +4632,6 @@ export function ThreeViewerCanvas({
     // equation updates the clipping uniform without traversing millions of
     // meshes or forcing shader recompilation while the slider is moving.
     sectionClippingPlaneRef.current.copy(definition.plane)
-    const planeMesh = runtime.sectionRoot.getObjectByName(
-      'viewer-section-plane',
-    )
-    if (planeMesh) {
-      planeMesh.position.copy(definition.center)
-      planeMesh.quaternion.setFromUnitVectors(
-        new Vector3(0, 0, 1),
-        definition.normal,
-      )
-    }
   }, [
     sectionView.axis,
     sectionView.enabled,
@@ -4474,11 +4639,102 @@ export function ThreeViewerCanvas({
     sectionView.reverse,
   ])
 
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    const bounds = sectionBoundsRef.current
+    sectionCapRequestRef.current?.abort()
+    if (!runtime || !bounds || !sectionView.enabled) return
+    clearGroup(runtime.sectionRoot)
+    runtime.sectionRoot.visible = false
+
+    const definition = viewerSectionPlane(
+      bounds,
+      viewerSectionAxisNormal(sectionView.axis),
+      sectionView.offsetRatio,
+      sectionView.reverse,
+    )
+    if (!definition) return
+    const controller = new AbortController()
+    sectionCapRequestRef.current = controller
+    const timer = window.setTimeout(() => {
+      const axisIndex = sectionView.axis === 'x' ? 0 : sectionView.axis === 'y' ? 1 : 2
+      void apiClient
+        .getSectionCap(
+          {
+            scene_token: scene.metadata.scene_token,
+            axis: sectionView.axis,
+            position: definition.center.getComponent(axisIndex),
+            hidden_component_ids: [
+              ...new Set([...hiddenComponentIds, ...deletedComponentIds]),
+            ],
+            transform_rules: transformRules.map((rule) => {
+              if (rule.pivot) return rule
+              const component = scene.components.find(
+                (candidate) => candidate.component_id === rule.componentId,
+              )
+              if (!component) return rule
+              return {
+                ...rule,
+                pivot: {
+                  x: (component.bbox_min[0] + component.bbox_max[0]) * 0.5,
+                  y: (component.bbox_min[1] + component.bbox_max[1]) * 0.5,
+                  z: (component.bbox_min[2] + component.bbox_max[2]) * 0.5,
+                },
+              }
+            }),
+          },
+          { signal: controller.signal },
+        )
+        .then((response) => {
+          if (controller.signal.aborted || runtimeRef.current !== runtime) return
+          clearGroup(runtime.sectionRoot)
+          addSectionCapGeometry(
+            runtime.sectionRoot,
+            response,
+            sectionView.axis,
+            roiScopes.flatMap((scope) =>
+              scope.active && scope.clipBox ? [scope.clipBox] : [],
+            ),
+          )
+          runtime.sectionRoot.visible = true
+          if (response.open_chain_count > 0) {
+            onStatusMessage(
+              `Section Cap · 열린 교차선 ${response.open_chain_count}개 제외`,
+            )
+          }
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) return
+          runtime.sectionRoot.visible = false
+          onStatusMessage(
+            `Section Cap 생성 실패 · ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+    }, 180)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [
+    deletedComponentIds,
+    hiddenComponentIds,
+    onStatusMessage,
+    roiScopes,
+    scene.metadata.scene_token,
+    scene.components,
+    sectionView.axis,
+    sectionView.enabled,
+    sectionView.offsetRatio,
+    sectionView.reverse,
+    transformRules,
+  ])
+
   useEffect(
     () => () => {
       if (sectionSliderFrameRef.current !== null) {
         window.cancelAnimationFrame(sectionSliderFrameRef.current)
       }
+      sectionCapRequestRef.current?.abort()
     },
     [],
   )
@@ -4650,6 +4906,18 @@ export function ThreeViewerCanvas({
             max={100}
             step={1}
             value={Math.round(sectionView.offsetRatio * 100)}
+            onPointerDown={() => {
+              const runtime = runtimeRef.current
+              if (runtime) runtime.sectionRoot.visible = false
+            }}
+            onPointerUp={() => {
+              const runtime = runtimeRef.current
+              if (runtime) runtime.sectionRoot.visible = true
+            }}
+            onPointerCancel={() => {
+              const runtime = runtimeRef.current
+              if (runtime) runtime.sectionRoot.visible = true
+            }}
             onChange={(event) => {
               sectionSliderValueRef.current =
                 Number(event.currentTarget.value) / 100

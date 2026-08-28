@@ -72,3 +72,23 @@ export interface CadUploadResponse {
   display_name: string
   path: string
 }
+
+export interface SectionCapContour {
+  component_id: number | null
+  points: Vec3[]
+}
+
+export interface SectionCapRequest {
+  scene_token: string
+  axis: 'x' | 'y' | 'z'
+  position: number
+  hidden_component_ids: number[]
+  transform_rules: unknown[]
+}
+
+export interface SectionCapResponse {
+  axis: 'x' | 'y' | 'z'
+  position: number
+  contours: SectionCapContour[]
+  open_chain_count: number
+}

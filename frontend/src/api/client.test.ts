@@ -46,6 +46,37 @@ describe('createApiClient', () => {
     )
   })
 
+  it('requests a geometry section cap from the cached CAD scene', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          axis: 'x',
+          position: 0,
+          contours: [],
+          open_chain_count: 0,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    const client = createApiClient({ fetch: fetchMock })
+
+    await client.getSectionCap({
+      scene_token: 'scene-1',
+      axis: 'x',
+      position: 0,
+      hidden_component_ids: [2],
+      transform_rules: [],
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe('/api/scene/section-cap')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      scene_token: 'scene-1',
+      hidden_component_ids: [2],
+    })
+  })
+
   it('passes an abort signal to status polling requests', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

@@ -1916,11 +1916,23 @@ export function RayTraceResultWindow({
       type: 'application/json',
     })
     const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.bitsam-report`
+    const downloadReport = () => {
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    }
     const picker = (window as AnalysisReportSaveFilePickerWindow)
       .showSaveFilePicker
     if (picker) {
       try {
-        const handle = await picker({
+        // Chromium/Edge native file-system methods require Window as their
+        // receiver. A detached call may fail with "Illegal invocation".
+        const handle = await picker.call(window, {
           suggestedName: fileName,
         })
         const writable = await handle.createWritable()
@@ -1932,23 +1944,20 @@ export function RayTraceResultWindow({
           error instanceof DOMException &&
           error.name === 'AbortError'
         ) return
+        // Some managed Edge environments expose the picker but reject a
+        // custom extension or writable handle. Keep the report by falling
+        // back to the browser's standard Downloads path.
+        downloadReport()
         window.alert(
           error instanceof Error
-            ? `보고서 저장에 실패했습니다: ${error.message}`
-            : '보고서 저장에 실패했습니다.',
+            ? `저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${error.message}`
+            : '저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다.',
         )
         return
       }
     }
 
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = fileName
-    document.body.append(anchor)
-    anchor.click()
-    anchor.remove()
-    URL.revokeObjectURL(url)
+    downloadReport()
   }
 
   const importCases = async (event: ChangeEvent<HTMLInputElement>) => {

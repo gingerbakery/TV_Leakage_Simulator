@@ -259,8 +259,11 @@ describe('Step 11 result UI', () => {
     const result = createRayTraceResultFixture()
     const write = vi.fn().mockResolvedValue(undefined)
     const close = vi.fn().mockResolvedValue(undefined)
-    const showSaveFilePicker = vi.fn().mockResolvedValue({
-      createWritable: vi.fn().mockResolvedValue({ write, close }),
+    const showSaveFilePicker = vi.fn(function (this: unknown) {
+      expect(this).toBe(window)
+      return Promise.resolve({
+        createWritable: vi.fn().mockResolvedValue({ write, close }),
+      })
     })
     vi.stubGlobal('showSaveFilePicker', showSaveFilePicker)
 
@@ -288,6 +291,42 @@ describe('Step 11 result UI', () => {
     )
     expect(write).toHaveBeenCalledWith(expect.any(Blob))
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('downloads the report when the native save picker fails', async () => {
+    const result = createRayTraceResultFixture()
+    const pickerError = new DOMException('Blocked by policy', 'NotAllowedError')
+    vi.stubGlobal(
+      'showSaveFilePicker',
+      vi.fn().mockRejectedValue(pickerError),
+    )
+    const createObjectURL = vi.fn().mockReturnValue('blob:analysis-report')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL })
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined)
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save report' }))
+
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledOnce())
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(alert).toHaveBeenCalledWith(
+      expect.stringContaining('다운로드 폴더에 저장했습니다'),
+    )
   })
 
   it('opens the analysis window at the expanded default size', () => {

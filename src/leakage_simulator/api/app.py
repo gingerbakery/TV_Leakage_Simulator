@@ -219,6 +219,18 @@ def create_app(
             )
 
     @application.post(
+        "/api/scene/section-cap",
+        response_class=JSONResponse,
+    )
+    def scene_section_cap(payload: dict[str, Any] = Body(...)) -> Any:
+        try:
+            return api_runtime.build_section_cap(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
+    @application.post(
         "/api/raytrace/start",
         status_code=202,
         response_class=JSONResponse,

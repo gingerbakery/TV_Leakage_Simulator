@@ -16,6 +16,7 @@ from leakage_simulator.raytrace_bridge import (
 )
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
+from leakage_simulator.section_cap import build_section_cap_contours
 
 
 class TraceResult(Protocol):
@@ -59,6 +60,7 @@ class ApiRuntime:
         self._max_cached_scenes = max(1, max_cached_scenes)
         self._max_jobs = max(1, max_jobs)
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
+        self._scene_viewer_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
@@ -147,9 +149,11 @@ class ApiRuntime:
         scene_token = "scene_{}".format(time.time_ns())
         with self._state_lock:
             self._scene_mesh_cache[scene_token] = trace_mesh
+            self._scene_viewer_mesh_cache[scene_token] = viewer_mesh
             while len(self._scene_mesh_cache) > self._max_cached_scenes:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
+                self._scene_viewer_mesh_cache.pop(oldest_token, None)
 
         response_payload = dict(payload)
         # Trace tessellation can be hundreds of MB and must never be serialized
@@ -282,6 +286,32 @@ class ApiRuntime:
             request_payload,
         )
         return self._trace_runner(trace_input).to_dict()
+
+    def build_section_cap(
+        self,
+        request_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        scene_token = str(request_payload.get("scene_token") or "")
+        with self._state_lock:
+            viewer_mesh = self._scene_viewer_mesh_cache.get(scene_token)
+        if viewer_mesh is None:
+            raise ValueError(
+                "CAD scene cache expired. Reload the CAD model and try again"
+            )
+        return build_section_cap_contours(
+            viewer_mesh,
+            axis=str(request_payload.get("axis") or ""),
+            position=float(request_payload.get("position", 0.0)),
+            hidden_component_ids=[
+                int(value)
+                for value in request_payload.get("hidden_component_ids", [])
+            ],
+            transform_rules=[
+                value
+                for value in request_payload.get("transform_rules", [])
+                if isinstance(value, dict)
+            ],
+        )
 
     def register_output_file(self, path_text: Optional[str]) -> None:
         if not path_text:
