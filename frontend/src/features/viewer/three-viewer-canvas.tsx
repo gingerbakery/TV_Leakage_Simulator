@@ -84,6 +84,11 @@ import {
 } from './scene-geometry'
 import { fitPerspectiveCameraToBounds } from './camera-fit'
 import {
+  viewerSectionAxisNormal,
+  viewerSectionPlane,
+  type ViewerSectionAxis,
+} from './section-view'
+import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
@@ -181,12 +186,14 @@ interface ViewerRuntime {
   rayPathRoot: Group
   raycaster: Raycaster
   renderer: WebGLRenderer
+  restoreRenderQuality: (() => void) | null
   roiBoundsMarker: Group
   roiSelectionCameraPose: CameraPose | null
   roiSelectionPreset: RoiCameraPreset | null
   roiSelectionRoot: Group
   roiPreviewKey: string
   roiPreviewRoot: Group
+  sectionRoot: Group
   scene: Scene
 }
 
@@ -197,6 +204,13 @@ interface CameraPose {
   position: Vector3
   target: Vector3
   up: Vector3
+}
+
+interface ViewerSectionState {
+  axis: ViewerSectionAxis
+  enabled: boolean
+  offsetRatio: number
+  reverse: boolean
 }
 
 interface ViewerMaterialStyle {
@@ -314,6 +328,28 @@ function disposeObject(object: Object3D): void {
     } else if (child instanceof Sprite) {
       child.material.map?.dispose()
       child.material.dispose()
+    }
+  })
+}
+
+function setObjectClippingPlane(root: Object3D, plane: Plane | null): void {
+  root.traverse((object) => {
+    const candidate = object as Object3D & {
+      material?: Material | Material[]
+    }
+    if (!candidate.material) return
+    const materials = Array.isArray(candidate.material)
+      ? candidate.material
+      : [candidate.material]
+    for (const material of materials) {
+      const currentPlanes = material.clippingPlanes
+      const alreadyApplied = plane
+        ? currentPlanes?.length === 1 && currentPlanes[0] === plane
+        : !currentPlanes || currentPlanes.length === 0
+      if (alreadyApplied) continue
+      material.clippingPlanes = plane ? [plane] : null
+      material.clipIntersection = false
+      material.needsUpdate = true
     }
   })
 }
@@ -1411,6 +1447,19 @@ export function ThreeViewerCanvas({
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
   const [fullViewCameraSync, setFullViewCameraSync] = useState(false)
+  const [sectionView, setSectionView] = useState<ViewerSectionState>({
+    axis: 'z',
+    enabled: false,
+    offsetRatio: 0,
+    reverse: false,
+  })
+  const sectionViewRef = useRef(sectionView)
+  sectionViewRef.current = sectionView
+  const sectionBoundsRef = useRef<Box3 | null>(null)
+  const sectionClippingPlaneRef = useRef(new Plane())
+  const sectionSliderFrameRef = useRef<number | null>(null)
+  const sectionSliderValueRef = useRef(0)
+  const toggleSectionViewRef = useRef<() => void>(() => undefined)
   const selectedComponentIds = useWorkspaceStore(
     workspaceSelectors.selectedComponentIds,
   )
@@ -1465,6 +1514,24 @@ export function ThreeViewerCanvas({
   const surfaceOpacity = surfaceOpacityFromTransparency(
     surfaceTransparencyPercent,
   )
+
+  toggleSectionViewRef.current = () => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    setSectionView((current) => {
+      if (current.enabled) {
+        onStatusMessage('Section view · OFF')
+        return { ...current, enabled: false }
+      }
+      onStatusMessage('Section view · ON · H to close')
+      return {
+        ...current,
+        enabled: true,
+        offsetRatio: 0,
+        reverse: false,
+      }
+    })
+  }
 
   useEffect(() => {
     emitterFaceSelectionArmedRef.current = emitterFaceSelectionArmed
@@ -1553,6 +1620,7 @@ export function ThreeViewerCanvas({
     renderer.toneMappingExposure = 1.05
     renderer.setClearColor(0x000000, 0)
     renderer.autoClear = false
+    renderer.localClippingEnabled = true
 
     const threeScene = new Scene()
     const orientationScene = new Scene()
@@ -1613,6 +1681,8 @@ export function ThreeViewerCanvas({
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
     rayPathRoot.name = 'ray-path-overlay-root'
+    const sectionRoot = new Group()
+    sectionRoot.name = 'viewer-section-plane-root'
     const roiPreviewRoot = new Group()
     roiPreviewRoot.name = 'roi-preview-root'
     roiPreviewRoot.visible = false
@@ -1633,6 +1703,7 @@ export function ThreeViewerCanvas({
       pivotMarkerRoot,
       placementRoot,
       rayPathRoot,
+      sectionRoot,
     )
     threeScene.add(new HemisphereLight(0xe7f5ff, 0x182337, 2.5))
     const keyLight = new DirectionalLight(0xffffff, 3.2)
@@ -1684,12 +1755,14 @@ export function ThreeViewerCanvas({
       rayPathRoot,
       raycaster: new Raycaster(),
       renderer,
+      restoreRenderQuality: null,
       roiBoundsMarker,
       roiSelectionCameraPose: null,
       roiSelectionPreset: null,
       roiSelectionRoot,
       roiPreviewKey: '',
       roiPreviewRoot,
+      sectionRoot,
       scene: threeScene,
     }
     runtimeRef.current = runtime
@@ -1759,8 +1832,8 @@ export function ThreeViewerCanvas({
         node.selectionOverlayRoot.visible = false
       }
     }
-    const handleControlsEnd = () => {
-      if (controlsInteracting && largeScene) {
+    const restoreRenderQuality = () => {
+      if (largeScene) {
         renderer.setPixelRatio(nativePixelRatio)
         resize()
         for (const [componentId, visibility] of interactionVisibility) {
@@ -1774,6 +1847,10 @@ export function ThreeViewerCanvas({
       }
       controlsInteracting = false
       lastMainFrameTime = -Infinity
+    }
+    runtime.restoreRenderQuality = restoreRenderQuality
+    const handleControlsEnd = () => {
+      restoreRenderQuality()
       emitCameraFrame()
     }
     controls.addEventListener('start', handleControlsStart)
@@ -2763,8 +2840,10 @@ export function ThreeViewerCanvas({
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       // `event.key` becomes a Hangul character while the Korean IME is
-      // active. `event.code` keeps the physical F shortcut reliable.
-      if (event.code !== 'KeyF' && event.key.toLowerCase() !== 'f') return
+      // active. `event.code` keeps the physical F/H shortcuts reliable.
+      const fitShortcut = event.code === 'KeyF' || event.key.toLowerCase() === 'f'
+      const sectionShortcut = event.code === 'KeyH' || event.key.toLowerCase() === 'h'
+      if (!fitShortcut && !sectionShortcut) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (!pointerOverCanvas) return
       const activeTag = document.activeElement?.tagName
@@ -2776,6 +2855,10 @@ export function ThreeViewerCanvas({
         return
       }
       event.preventDefault()
+      if (sectionShortcut) {
+        toggleSectionViewRef.current()
+        return
+      }
       if (runtime.roiPreviewRoot.visible && pointerInPip) {
         runtime.pipUserAdjusted = false
         runtime.pipLastRenderTime = 0
@@ -4270,6 +4353,144 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
+    const clippingRoots = [
+      runtime.modelRoot,
+      runtime.roiPreviewRoot,
+      runtime.roiSelectionRoot,
+      runtime.roiBoundsMarker,
+    ]
+    const sharedClippingPlane = sectionClippingPlaneRef.current
+    if (!sectionView.enabled) {
+      for (const root of clippingRoots) setObjectClippingPlane(root, null)
+      sectionBoundsRef.current = null
+      clearGroup(runtime.sectionRoot)
+      return
+    }
+
+    const visibleCadRoot = runtime.roiPreviewRoot.visible
+      ? runtime.roiPreviewRoot
+      : runtime.modelRoot
+    visibleCadRoot.updateMatrixWorld(true)
+    const bounds = new Box3().setFromObject(visibleCadRoot)
+    sectionBoundsRef.current = bounds.clone()
+    const currentSection = sectionViewRef.current
+    const definition = viewerSectionPlane(
+      bounds,
+      viewerSectionAxisNormal(currentSection.axis),
+      currentSection.offsetRatio,
+      currentSection.reverse,
+    )
+    if (!definition) return
+
+    sharedClippingPlane.copy(definition.plane)
+
+    for (const root of clippingRoots) {
+      setObjectClippingPlane(root, sharedClippingPlane)
+    }
+
+    clearGroup(runtime.sectionRoot)
+    const planeGeometry = new PlaneGeometry(
+      definition.visualSize,
+      definition.visualSize,
+    )
+    const planeMesh = new Mesh(
+      planeGeometry,
+      new MeshBasicMaterial({
+        color: 0xff8a00,
+        transparent: true,
+        opacity: 0.055,
+        side: DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    planeMesh.name = 'viewer-section-plane'
+    planeMesh.position.copy(definition.center)
+    planeMesh.quaternion.setFromUnitVectors(
+      new Vector3(0, 0, 1),
+      definition.normal,
+    )
+    planeMesh.renderOrder = 238
+    const planeBorder = new LineSegments(
+      new EdgesGeometry(planeGeometry),
+      new LineBasicMaterial({
+        color: 0xff8a00,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    planeBorder.name = 'viewer-section-plane-border'
+    planeBorder.renderOrder = 239
+    planeMesh.add(planeBorder)
+    runtime.sectionRoot.add(planeMesh)
+  }, [
+    componentColorOverrides,
+    materialAssignments,
+    renderMode,
+    roiFaceIds,
+    roiScopes,
+    sectionView.axis,
+    sectionView.enabled,
+    selectedComponentIds,
+    selectedFaceIds,
+    surfaceOpacity,
+    transformRules,
+  ])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    const bounds = sectionBoundsRef.current
+    if (!runtime || !bounds || !sectionView.enabled) return
+    const definition = viewerSectionPlane(
+      bounds,
+      viewerSectionAxisNormal(sectionView.axis),
+      sectionView.offsetRatio,
+      sectionView.reverse,
+    )
+    if (!definition) return
+
+    // The Plane object is shared by every CAD material. Mutating only its
+    // equation updates the clipping uniform without traversing millions of
+    // meshes or forcing shader recompilation while the slider is moving.
+    sectionClippingPlaneRef.current.copy(definition.plane)
+    const planeMesh = runtime.sectionRoot.getObjectByName(
+      'viewer-section-plane',
+    )
+    if (planeMesh) {
+      planeMesh.position.copy(definition.center)
+      planeMesh.quaternion.setFromUnitVectors(
+        new Vector3(0, 0, 1),
+        definition.normal,
+      )
+    }
+  }, [
+    sectionView.axis,
+    sectionView.enabled,
+    sectionView.offsetRatio,
+    sectionView.reverse,
+  ])
+
+  useEffect(
+    () => () => {
+      if (sectionSliderFrameRef.current !== null) {
+        window.cancelAnimationFrame(sectionSliderFrameRef.current)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    // A completed trace may arrive while a dense-scene interaction is still
+    // using the temporary low-resolution render target. Always restore the
+    // native pixel ratio before adding stored Ray paths so the CAD surface
+    // does not remain visibly soft after tracing.
+    runtime.restoreRenderQuality?.()
     clearGroup(runtime.rayPathRoot)
     if (!rayTraceResult) return
 
@@ -4382,6 +4603,98 @@ export function ThreeViewerCanvas({
           }}
         />
       ) : null}
+      {sectionView.enabled ? (
+        <div
+          data-testid="viewer-section-controls"
+          className="absolute top-3 right-3 z-30 flex items-center gap-2 rounded-lg border border-orange-300/70 bg-background/90 px-2.5 py-2 text-xs shadow-lg backdrop-blur"
+        >
+          <span className="whitespace-nowrap font-semibold text-orange-600 dark:text-orange-300">
+            Section · H
+          </span>
+          <div
+            aria-label="Section axis"
+            className="flex overflow-hidden rounded border border-border bg-background"
+          >
+            {(['x', 'y', 'z'] as const).map((axis) => (
+              <button
+                key={axis}
+                type="button"
+                aria-label={`Section ${axis.toUpperCase()} axis`}
+                aria-pressed={sectionView.axis === axis}
+                title={`${axis.toUpperCase()} axis · ${
+                  axis === 'x' ? 'YZ' : axis === 'y' ? 'ZX' : 'XY'
+                } plane`}
+                className={`min-w-8 px-2 py-1 font-semibold uppercase transition-colors ${
+                  sectionView.axis === axis
+                    ? 'bg-orange-500 text-white'
+                    : 'text-muted-foreground hover:bg-muted'
+                }`}
+                onClick={() =>
+                  setSectionView((current) => ({
+                    ...current,
+                    axis,
+                    offsetRatio: 0,
+                    reverse: false,
+                  }))
+                }
+              >
+                {axis}
+              </button>
+            ))}
+          </div>
+          <input
+            aria-label="Section position"
+            className="w-32 accent-orange-500"
+            type="range"
+            min={-100}
+            max={100}
+            step={1}
+            value={Math.round(sectionView.offsetRatio * 100)}
+            onChange={(event) => {
+              sectionSliderValueRef.current =
+                Number(event.currentTarget.value) / 100
+              if (sectionSliderFrameRef.current !== null) return
+              sectionSliderFrameRef.current = window.requestAnimationFrame(
+                () => {
+                  sectionSliderFrameRef.current = null
+                  const offsetRatio = sectionSliderValueRef.current
+                  setSectionView((current) => ({
+                    ...current,
+                    offsetRatio,
+                  }))
+                },
+              )
+            }}
+          />
+          <span className="w-9 text-right font-mono text-muted-foreground">
+            {Math.round(sectionView.offsetRatio * 100)}%
+          </span>
+          <button
+            type="button"
+            aria-pressed={sectionView.reverse}
+            className={`rounded border px-2 py-1 font-medium transition-colors ${
+              sectionView.reverse
+                ? 'border-orange-400 bg-orange-500 text-white'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted'
+            }`}
+            onClick={() =>
+              setSectionView((current) => ({
+                ...current,
+                reverse: !current.reverse,
+              }))
+            }
+          >
+            Reverse
+          </button>
+          <button
+            type="button"
+            className="rounded border border-border bg-background px-2 py-1 font-medium text-muted-foreground hover:bg-muted"
+            onClick={() => toggleSectionViewRef.current()}
+          >
+            Close
+          </button>
+        </div>
+      ) : null}
       {showFullViewPip ? (
         <div
           data-testid="full-view-pip-frame"
@@ -4438,7 +4751,7 @@ export function ThreeViewerCanvas({
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
           : emitterFaceSelectionArmed
             ? 'Emitter surface mode · Click a CAD surface to add/remove'
-          : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select'}
+            : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
       </div>
       {rendererError ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/85 p-6 text-center">

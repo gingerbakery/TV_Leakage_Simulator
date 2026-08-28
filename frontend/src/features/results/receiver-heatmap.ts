@@ -75,19 +75,40 @@ function clamp(value: number, minimum: number, maximum: number): number {
 export function receiverHeatmapLayout(
   widthMm: number,
   heightMm: number,
+  physicalScalePxPerMm?: number,
 ): ReceiverHeatmapLayout {
   const safeWidth = positiveDimension(widthMm)
   const safeHeight = positiveDimension(heightMm)
   const aspectRatio = safeWidth / safeHeight
+  const preferredWidthPx =
+    physicalScalePxPerMm !== undefined && physicalScalePxPerMm > 0
+      ? safeWidth * physicalScalePxPerMm
+      : Math.min(
+          maximumPlotWidthPx,
+          maximumPlotHeightPx * aspectRatio,
+        )
   return {
     aspectRatio,
     heightMm: safeHeight,
-    preferredWidthPx: Math.min(
-      maximumPlotWidthPx,
-      maximumPlotHeightPx * aspectRatio,
-    ),
+    preferredWidthPx,
     widthMm: safeWidth,
   }
+}
+
+export function receiverHeatmapPhysicalScale(
+  receivers: ReadonlyArray<{ width_mm: number; height_mm: number }>,
+): number | undefined {
+  if (receivers.length === 0) return undefined
+  const maximumWidthMm = Math.max(
+    ...receivers.map((receiver) => positiveDimension(receiver.width_mm)),
+  )
+  const maximumHeightMm = Math.max(
+    ...receivers.map((receiver) => positiveDimension(receiver.height_mm)),
+  )
+  return Math.min(
+    maximumPlotWidthPx / maximumWidthMm,
+    maximumPlotHeightPx / maximumHeightMm,
+  )
 }
 
 export function receiverHeatmapDisplayValues(

@@ -64,7 +64,7 @@ export function RaySectionImage({
           <img
             src={dataUrl}
             alt={`${label} ray section view`}
-            className="block w-full"
+            className="mx-auto block h-auto w-4/5"
           />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
             {legendEntries.map((entry) => (

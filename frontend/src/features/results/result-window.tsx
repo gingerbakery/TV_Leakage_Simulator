@@ -42,6 +42,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
+  receiverHeatmapPhysicalScale,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -655,6 +656,7 @@ function ReceiverHeatmap({
   errorTargetPercent,
   sampleCount,
   faceSourceIds,
+  physicalScalePxPerMm,
 }: {
   grid: ReceiverGrid
   receiver: ReceiverSpec
@@ -672,6 +674,7 @@ function ReceiverHeatmap({
   errorTargetPercent: number
   sampleCount: number
   faceSourceIds?: number[]
+  physicalScalePxPerMm?: number
 }) {
   const receiverLabel = rayObjectDisplayName(
     'receiver',
@@ -703,6 +706,7 @@ function ReceiverHeatmap({
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
+    physicalScalePxPerMm,
   )
   const columns = Math.max(1, grid.resolution[0])
   const rows = Math.max(1, grid.resolution[1])
@@ -1475,15 +1479,17 @@ function ReceiverHeatmap({
                       key={sequence}
                       aria-pressed={selected}
                       className={`block w-full rounded border px-2 py-1 text-left text-base transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
-                      onClick={() => actions.setHighlightedRayPathSelection(
-                        selected
-                          ? null
-                          : {
-                              runId,
-                              pathIndices: value.pathIndices,
-                              label: sequence,
-                            },
-                      )}
+                      onClick={() => {
+                        actions.setHighlightedRayPathSelection(
+                          selected
+                            ? null
+                            : {
+                                runId,
+                                pathIndices: value.pathIndices,
+                                label: sequence,
+                              },
+                        )
+                      }}
                     >
                       <div className="truncate font-medium" title={sequence}>{sequence}</div>
                       <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
@@ -1811,6 +1817,10 @@ export function RayTraceResultWindow({
       component.component_id,
       getComponentDisplayName(component, componentNameOverrides),
     ]),
+  )
+  const orderedResultReceivers = receiversInDisplayOrder(result.receivers)
+  const heatmapPhysicalScalePxPerMm = receiverHeatmapPhysicalScale(
+    orderedResultReceivers,
   )
 
   const begin = (
@@ -2644,7 +2654,7 @@ export function RayTraceResultWindow({
                   </div>
                 </details>
               ) : null}
-              {receiversInDisplayOrder(result.receivers).map((receiver, receiverIndex) => {
+              {orderedResultReceivers.map((receiver, receiverIndex) => {
                 const values = objectValue(
                   result.metrics,
                   receiver.receiver_id,
@@ -2857,6 +2867,7 @@ export function RayTraceResultWindow({
                               result.total_rays,
                           )}
                           faceSourceIds={scene?.mesh.face_source_ids}
+                          physicalScalePxPerMm={heatmapPhysicalScalePxPerMm}
                         />
                       </div>
                     ) : null}

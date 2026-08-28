@@ -10,6 +10,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
+  receiverHeatmapPhysicalScale,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -29,6 +30,17 @@ describe('receiver heatmap geometry', () => {
       preferredWidthPx: 288,
       widthMm: 30,
     })
+  })
+
+  it('uses one physical scale across differently sized receivers', () => {
+    const scale = receiverHeatmapPhysicalScale([
+      { width_mm: 5, height_mm: 3 },
+      { width_mm: 10, height_mm: 10 },
+    ])
+
+    expect(scale).toBeCloseTo(57.6)
+    expect(receiverHeatmapLayout(5, 3, scale).preferredWidthPx).toBeCloseTo(288)
+    expect(receiverHeatmapLayout(10, 10, scale).preferredWidthPx).toBeCloseTo(576)
   })
 
   it('maps backend local positive Y to the top of the display', () => {

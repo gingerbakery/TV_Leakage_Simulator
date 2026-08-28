@@ -546,6 +546,7 @@ describe('Step 11 result UI', () => {
         }) as ImageData,
     )
     const putImageData = vi.fn()
+    const onOpenChange = vi.fn()
     const contextSpy = vi
       .spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockReturnValue({
@@ -564,7 +565,7 @@ describe('Step 11 result UI', () => {
             { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
             { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparisonResult },
           ]}
-          onOpenChange={vi.fn()}
+          onOpenChange={onOpenChange}
         />
       </div>,
     )
@@ -704,6 +705,13 @@ describe('Step 11 result UI', () => {
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
     expect(tooltip.textContent).toContain('Incident flux')
     expect(tooltip.textContent).toContain('Pixel error')
+    fireEvent.click(screen.getByRole('button', { name: /Direct to Receiver/ }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toEqual({
+      runId: result.run_id,
+      pathIndices: [0],
+      label: 'Direct to Receiver',
+    })
+    expect(onOpenChange).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset view' }))
     expect(screen.getByTestId('receiver_001-zoom').textContent).toBe(
