@@ -89,6 +89,36 @@ describe('BITSAM project format', () => {
     )
   })
 
+  it('round-trips user-saved optical profiles', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.setActiveCad({
+      path: 'material-model.step',
+      displayName: 'material-model.step',
+    })
+    store.getState().actions.addCustomOpticalProfile({
+      id: 'custom-pc-white',
+      name: 'Measured PC White',
+      baseMaterialId: 'pc_white',
+      surfaceId: 'normal',
+      bsdfAssetId: '',
+      opticalOverride: {
+        reflectance: 0.92,
+        loss: 0.08,
+        specularRatio: 0.4,
+        diffuseRatio: 0.6,
+      },
+    })
+    const project = createBitsamProject(
+      createSceneFixture(),
+      store.getState(),
+    )
+
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.workspace.customOpticalProfiles).toEqual(
+      store.getState().customOpticalProfiles,
+    )
+  })
+
   it('loads legacy projects without compute_backend and restores CPU safely', () => {
     const { project } = createProjectFixture()
     const legacy = structuredClone(project)
@@ -104,6 +134,19 @@ describe('BITSAM project format', () => {
     store.getState().actions.restoreProjectState(restored.workspace)
 
     expect(store.getState().rayTraceConfig.compute_backend).toBe('cpu')
+  })
+
+  it('loads legacy projects without saved optical profiles', () => {
+    const { project } = createProjectFixture()
+    delete (
+      project.workspace as Partial<typeof project.workspace>
+    ).customOpticalProfiles
+
+    const restored = parseBitsamProject(JSON.stringify(project))
+    const store = createWorkspaceStore()
+    store.getState().actions.restoreProjectState(restored.workspace)
+
+    expect(store.getState().customOpticalProfiles).toEqual([])
   })
 
   it('uses the custom .bitsam extension', () => {
@@ -204,6 +247,9 @@ describe('BITSAM project format', () => {
     ])
     expect(restored.workspace.hiddenComponentIds).toEqual([])
     expect(restored.workspace.componentNameOverrides).toEqual({})
+    expect(restored.workspace.customOpticalProfiles).toEqual(
+      project.workspace.customOpticalProfiles,
+    )
     expect(restored.restoredDatumEmitters).toBe(1)
     expect(restored.restoredDatumReceivers).toBe(1)
     expect(restored.skippedGeometryItems).toBeGreaterThan(0)

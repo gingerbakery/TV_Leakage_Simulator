@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import { createDatumReceiver } from '@/features/raytracing'
 
-import { computeSectionPlaneBasis } from './ray-section-view'
+import {
+  computeSectionPlaneBasis,
+  filterReceiverPathsForSection,
+} from './ray-section-view'
 
 describe('computeSectionPlaneBasis', () => {
   it('returns a viewNormal perpendicular to the receiver normal for a well-behaved orientation', () => {
@@ -72,5 +75,47 @@ describe('computeSectionPlaneBasis', () => {
     const receiver = createDatumReceiver('receiver_004', [0, 0, 0], [0, 0, 0])
     receiver.normal = [0, 0, 0]
     expect(computeSectionPlaneBasis(receiver)).toBeNull()
+  })
+
+  it('slides a local-U section by the requested signed offset', () => {
+    const receiver = createDatumReceiver(
+      'receiver_005',
+      [10, 20, 30],
+      [20, -30, 45],
+    )
+    const center = computeSectionPlaneBasis(receiver, 'u', 0)!
+    const moved = computeSectionPlaneBasis(receiver, 'u', 7.5)!
+    expect(
+      moved.origin.clone().sub(center.origin).dot(center.viewNormal),
+    ).toBeCloseTo(7.5, 5)
+    expect(moved.viewNormal.toArray()).toEqual(center.viewNormal.toArray())
+  })
+
+  it('filters stored receiver paths by their receiver-hit position', () => {
+    const receiver = createDatumReceiver(
+      'receiver_006',
+      [0, 0, 0],
+      [0, 0, 0],
+    )
+    receiver.u_axis = [1, 0, 0]
+    receiver.v_axis = [0, 1, 0]
+    const basis = computeSectionPlaneBasis(receiver, 'u', 2)!
+    const hit = (x: number, receiverId = receiver.receiver_id) => ({
+      point: [x, 0, 0],
+      receiver_id: receiverId,
+    })
+    const paths = [
+      [hit(-10), hit(2.4)],
+      [hit(-10), hit(4)],
+      [hit(-10), hit(2.1, 'receiver_other')],
+    ]
+    expect(
+      filterReceiverPathsForSection(
+        paths as Parameters<typeof filterReceiverPathsForSection>[0],
+        receiver.receiver_id,
+        basis,
+        1,
+      ),
+    ).toEqual([paths[0]])
   })
 })

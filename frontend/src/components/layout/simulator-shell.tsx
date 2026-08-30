@@ -357,6 +357,16 @@ export function SimulatorShell() {
       projectLoadAttemptRef.current = attemptKey
       const settingsOnly = createBitsamSettingsOnlyState(pendingProject)
       actions.restoreProjectState(settingsOnly.workspace)
+      const sameCadFamily =
+        activeCad.displayName.toLocaleLowerCase() ===
+          pendingProject.cad.display_name.toLocaleLowerCase() &&
+        scene.metadata.component_count ===
+          pendingProject.cad.fingerprint.component_count
+      const restoredArchivedResult =
+        sameCadFamily && pendingProject.analysis_result
+          ? pendingProject.analysis_result
+          : null
+      actions.setRestoredRayTraceResult(restoredArchivedResult)
       setPendingProject(null)
       openFeatureNotice(
         restoredLegacyCpu
@@ -364,9 +374,14 @@ export function SimulatorShell() {
           : '설정 조건만 불러왔습니다',
         [
           '저장 당시 CAD와 현재 CAD의 Surface 구조가 달라 형상 연결 항목은 제외했습니다.',
-          'Ray 개수, 최대 반사 횟수, 종료 조건, Stored paths 및 표시 조건을 복원했습니다.',
+          'Ray 개수, 최대 반사 횟수, 종료 조건, Stored path 저장 한도 및 표시 조건을 복원했습니다.',
           `Datum emitter ${settingsOnly.restoredDatumEmitters}개 / Datum receiver ${settingsOnly.restoredDatumReceivers}개를 복원했습니다.`,
           `CAD Component·Face·ROI 연결 항목 ${settingsOnly.skippedGeometryItems}개는 잘못된 면 연결을 방지하기 위해 제외했습니다.`,
+          restoredArchivedResult
+            ? '동일한 CAD 파일명과 Component 구성의 저장 결과 및 Stored Ray는 과거 결과 확인용으로 복원했습니다. 현재 형상과 Surface 번호가 다를 수 있으므로 Surface 기여도는 다시 계산해 주세요.'
+            : pendingProject.analysis_result
+              ? 'CAD 파일명이 달라 저장 결과와 Stored Ray는 현재 형상에 연결하지 않았습니다.'
+              : '저장된 분석 결과는 없습니다.',
           ...compatibility.reasons.map((reason) => `불일치: ${reason}`),
           ...(restoredLegacyCpu
             ? ['이 프로젝트에는 계산 장치 설정이 없어 CPU로 복원했습니다.']
@@ -421,7 +436,9 @@ export function SimulatorShell() {
         'BITSAM 프로젝트 저장 완료',
         saveResult === 'picked'
           ? `${project.project_name}.bitsam 파일을 선택한 위치에 저장했습니다. 원본 CAD 파일은 포함되지 않으므로 함께 보관해 주세요.`
-          : `${project.project_name}.bitsam 파일을 다운로드 폴더에 저장했습니다. 이 브라우저에서는 저장 위치 선택을 지원하지 않습니다.`,
+          : saveResult === 'fallback-downloaded'
+            ? `저장 위치 선택 기능을 사용할 수 없어 ${project.project_name}.bitsam 파일을 다운로드 폴더에 안전하게 저장했습니다.`
+            : `${project.project_name}.bitsam 파일을 다운로드 폴더에 저장했습니다. 이 브라우저에서는 저장 위치 선택을 지원하지 않습니다.`,
       )
     } catch (error) {
       openFeatureNotice(
@@ -978,11 +995,7 @@ export function SimulatorShell() {
             ) : null}
           </>
         }
-      >
-        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-5 text-muted-foreground">
-          안내 내용은 현재 기능 구성에 맞춰 단계적으로 업데이트됩니다.
-        </div>
-      </AppDialog>
+      />
 
       <MaterialEditorDialog
         open={componentDialog?.type === 'material'}

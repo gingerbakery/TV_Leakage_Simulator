@@ -254,7 +254,9 @@ export function AppDialog({
             ) : null}
           </div>
           {description ? (
-            <DialogDescription>{description}</DialogDescription>
+            <DialogDescription className="whitespace-pre-line">
+              {description}
+            </DialogDescription>
           ) : help ? (
             <DialogDescription className="sr-only">{help}</DialogDescription>
           ) : null}

@@ -34,6 +34,8 @@ const worldUp = new Vector3(0, 0, 1)
 const worldX = new Vector3(1, 0, 0)
 const minimumAxisLength = 1e-6
 
+export type ReceiverSectionAxis = 'u' | 'v'
+
 export interface SectionPlaneBasis {
   origin: Vector3
   viewNormal: Vector3
@@ -41,17 +43,45 @@ export interface SectionPlaneBasis {
 }
 
 /**
- * A vertical section plane through the receiver's center that contains its
- * normal (boresight) vector - both `viewNormal` (perpendicular to the plane,
- * the direction a camera looks along to see it face-on) and `up` are
- * perpendicular to the boresight by construction.
+ * A section plane perpendicular to one receiver-local axis and containing
+ * the receiver normal (boresight). Moving `offsetMm` slides the plane along
+ * the selected local axis, so it stays aligned with the Receiver heatmap.
  */
 export function computeSectionPlaneBasis(
   receiver: ReceiverSpec,
+  sectionAxis: ReceiverSectionAxis = 'u',
+  offsetMm = 0,
 ): SectionPlaneBasis | null {
   const boresight = new Vector3(...receiver.normal)
   if (boresight.lengthSq() < minimumAxisLength) return null
   boresight.normalize()
+
+  const receiverAxisValues =
+    sectionAxis === 'u' ? receiver.u_axis : receiver.v_axis
+  const receiverUpValues =
+    sectionAxis === 'u' ? receiver.v_axis : receiver.u_axis
+  if (receiverAxisValues && receiverUpValues) {
+    const viewNormal = new Vector3(...receiverAxisValues)
+    const up = new Vector3(...receiverUpValues)
+    if (
+      viewNormal.lengthSq() >= minimumAxisLength &&
+      up.lengthSq() >= minimumAxisLength
+    ) {
+      viewNormal.normalize()
+      up.addScaledVector(viewNormal, -up.dot(viewNormal))
+      if (up.lengthSq() >= minimumAxisLength) {
+        up.normalize()
+        return {
+          origin: new Vector3(...receiver.center).addScaledVector(
+            viewNormal,
+            offsetMm,
+          ),
+          up,
+          viewNormal,
+        }
+      }
+    }
+  }
 
   let viewNormal = boresight.clone().cross(worldUp)
   if (viewNormal.lengthSq() < minimumAxisLength) {
@@ -61,10 +91,32 @@ export function computeSectionPlaneBasis(
   viewNormal.normalize()
 
   return {
-    origin: new Vector3(...receiver.center),
+    origin: new Vector3(...receiver.center).addScaledVector(
+      viewNormal,
+      offsetMm,
+    ),
     up: worldUp.clone(),
     viewNormal,
   }
+}
+
+export function filterReceiverPathsForSection(
+  storedPaths: RayHit[][],
+  receiverId: string,
+  basis: SectionPlaneBasis,
+  sectionThicknessMm: number,
+): RayHit[][] {
+  const halfThickness = Math.max(sectionThicknessMm, 0) / 2
+  return storedPaths.filter((path) => {
+    const receiverHit = path[path.length - 1]
+    if (!receiverHit || receiverHit.receiver_id !== receiverId) return false
+    const distance = Math.abs(
+      new Vector3(...receiverHit.point)
+        .sub(basis.origin)
+        .dot(basis.viewNormal),
+    )
+    return distance <= halfThickness + minimumAxisLength
+  })
 }
 
 export interface RaySectionImageOptions {
@@ -78,6 +130,12 @@ export interface RaySectionImageOptions {
   roiFaceIds?: number[]
   /** View the same section plane from the opposite side. */
   reverseDirection?: boolean
+  /** Receiver-local axis normal to the section plane. */
+  sectionAxis?: ReceiverSectionAxis
+  /** Signed offset from the receiver center along `sectionAxis`. */
+  sectionOffsetMm?: number
+  /** Receiver-hit band included around the section plane. */
+  sectionThicknessMm?: number
   width?: number
   height?: number
 }
@@ -97,7 +155,6 @@ const backgroundColor = 0xffffff
 // distinct from the receding component surfaces behind it - the same
 // visual convention CAD section views use (shaded cut face vs. plain
 // surfaces beyond it).
-const sectionCapColor = 0x94a3b8
 // Report-specific palette, distinct from the interactive viewer's
 // dark-background palette (`rayPathStyles`) - light green/yellow read
 // fine on a dark canvas but wash out almost completely on white, so this
@@ -153,12 +210,15 @@ export function renderRaySectionImage({
   storedPaths,
   roiFaceIds,
   reverseDirection = false,
+  sectionAxis = 'u',
+  sectionOffsetMm = 0,
+  sectionThicknessMm = Number.POSITIVE_INFINITY,
   width = defaultWidth,
   height = defaultHeight,
 }: RaySectionImageOptions): string | null {
   const roiFaceSet =
     roiFaceIds && roiFaceIds.length > 0 ? new Set(roiFaceIds) : null
-  const basis = computeSectionPlaneBasis(receiver)
+  const basis = computeSectionPlaneBasis(receiver, sectionAxis, sectionOffsetMm)
   if (!basis) return null
 
   const canvas = document.createElement('canvas')
@@ -318,23 +378,29 @@ export function renderRaySectionImage({
         basis.up,
       )
       .normalize()
-    const capTriangles = computeSectionCapTriangles(
-      scene,
-      allRenderedFaceIds,
-      basis.origin,
-      basis.viewNormal,
-      basis.up,
-      capRight,
-    )
-    if (capTriangles) {
+    let hasCapTriangles = false
+    for (const { component, index, faceIds } of renderedFaceIdsByComponent) {
+      if (faceIds.length === 0) continue
+      const capTriangles = computeSectionCapTriangles(
+        scene,
+        faceIds,
+        basis.origin,
+        basis.viewNormal,
+        basis.up,
+        capRight,
+      )
+      if (!capTriangles) continue
+      hasCapTriangles = true
       const capGeometry = new BufferGeometry()
       capGeometry.setAttribute(
         'position',
         new Float32BufferAttribute(capTriangles, 3),
       )
       capGeometry.computeVertexNormals()
+      const capColor = new Color(resolveComponentColor(component, index))
+        .multiplyScalar(0.85)
       const capMaterial = new MeshStandardMaterial({
-        color: sectionCapColor,
+        color: capColor,
         side: DoubleSide,
         metalness: 0.05,
         roughness: 0.85,
@@ -348,10 +414,11 @@ export function renderRaySectionImage({
       disposables.push(capGeometry, capMaterial)
     }
 
-    const targetPaths = storedPaths.filter(
-      (path) =>
-        path.length > 0 &&
-        path[path.length - 1]?.receiver_id === receiver.receiver_id,
+    const targetPaths = filterReceiverPathsForSection(
+      storedPaths,
+      receiver.receiver_id,
+      basis,
+      sectionThicknessMm,
     )
     const visualization = buildRayPathVisualization(targetPaths, {
       receiver_direct: true,
@@ -511,7 +578,7 @@ export function renderRaySectionImage({
     // surfaces are edge-on and there was no closed cross-section to fill
     // either (e.g. the ROI-scoped face set is missing the faces needed to
     // close the cut into a loop).
-    if (!cadEdgeOnFromThisAngle || capTriangles) {
+    if (!cadEdgeOnFromThisAngle || hasCapTriangles) {
       return canvas.toDataURL('image/png')
     }
 

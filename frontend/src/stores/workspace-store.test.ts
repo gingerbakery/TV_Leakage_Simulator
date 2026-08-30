@@ -575,6 +575,7 @@ describe('workspace store', () => {
       componentNameOverrides: { 3: 'Frame Middle' },
       componentColorOverrides: { 3: '#336699' },
       materialAssignments: [],
+      customOpticalProfiles: [],
       transformRules: [],
       roiScopes: [],
       roiScopeSequence: 0,

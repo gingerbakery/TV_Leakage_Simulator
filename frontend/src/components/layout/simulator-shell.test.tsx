@@ -298,6 +298,48 @@ describe('SimulatorShell', () => {
     ).toBe('step')
   })
 
+  it('restores archived results for the same CAD name after tessellation changes', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    workspaceStore.getState().actions.setActiveCad({
+      path: 'fixture.step',
+      displayName: 'fixture.step',
+    })
+    const savedStore = createWorkspaceStore()
+    savedStore.getState().actions.setActiveCad({
+      path: 'fixture.step',
+      displayName: 'fixture.step',
+    })
+    const savedResult = createCompletedRayTraceJobFixture().result!
+    const project = createBitsamProject(
+      scene,
+      savedStore.getState(),
+      new Date('2026-08-20T00:00:00.000Z'),
+      savedResult,
+    )
+    project.cad.fingerprint.face_count += 1
+    const file = new File(
+      [serializeBitsamProject(project)],
+      'fixture.bitsam',
+      { type: 'application/vnd.bitsam+json' },
+    )
+
+    renderShell()
+    fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+      target: { files: [file] },
+    })
+
+    const dialog = await screen.findByRole('dialog', {
+      name: '설정 조건만 불러왔습니다',
+    })
+    expect(dialog.textContent).toContain('Stored Ray')
+    await waitFor(() =>
+      expect(workspaceStore.getState().restoredRayTraceResult?.run_id).toBe(
+        savedResult.run_id,
+      ),
+    )
+  })
+
   it('moves from Ray tracing to Result when tracing completes', () => {
     const view = renderShell()
     const rayTracingStep = screen.getByRole('button', {

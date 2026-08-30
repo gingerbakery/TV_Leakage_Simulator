@@ -9,10 +9,12 @@ import type {
   ActiveCad,
   ComponentTransformRule,
   MaterialAssignment,
+  OpticalValueOverride,
   RayPathDisplayFilters,
   RoiClipBox,
   RoiComponentClip,
   RoiScope,
+  SavedOpticalProfile,
   Vector3Value,
   WorkspaceProjectState,
   WorkspaceSnapshot,
@@ -172,7 +174,36 @@ function isMaterialAssignment(
     isString(value.surfaceId) &&
     isString(value.profileId) &&
     isString(value.bsdfAssetId) &&
+    (value.opticalOverride === undefined ||
+      isOpticalValueOverride(value.opticalOverride)) &&
     isBoolean(value.enabled)
+  )
+}
+
+function isOpticalValueOverride(
+  value: unknown,
+): value is OpticalValueOverride {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.reflectance) &&
+    isFiniteNumber(value.loss) &&
+    isFiniteNumber(value.specularRatio) &&
+    isFiniteNumber(value.diffuseRatio)
+  )
+}
+
+function isSavedOpticalProfile(
+  value: unknown,
+): value is SavedOpticalProfile {
+  return (
+    isRecord(value) &&
+    isString(value.id) &&
+    isString(value.name) &&
+    isString(value.baseMaterialId) &&
+    isString(value.surfaceId) &&
+    isString(value.bsdfAssetId) &&
+    (value.opticalOverride === undefined ||
+      isOpticalValueOverride(value.opticalOverride))
   )
 }
 
@@ -435,6 +466,8 @@ function isWorkspaceProjectState(
     (value.componentColorOverrides === undefined ||
       isComponentColorOverrides(value.componentColorOverrides)) &&
     isArrayOf(value.materialAssignments, isMaterialAssignment) &&
+    (value.customOpticalProfiles === undefined ||
+      isArrayOf(value.customOpticalProfiles, isSavedOpticalProfile)) &&
     isArrayOf(value.transformRules, isTransformRule) &&
     isArrayOf(value.roiScopes, isRoiScope) &&
     isFiniteNumber(value.roiScopeSequence) &&
@@ -533,6 +566,7 @@ function createWorkspaceProjectState(
     componentNameOverrides: workspace.componentNameOverrides,
     componentColorOverrides: workspace.componentColorOverrides,
     materialAssignments: workspace.materialAssignments,
+    customOpticalProfiles: workspace.customOpticalProfiles,
     transformRules: workspace.transformRules,
     roiScopes: workspace.roiScopes,
     roiScopeSequence: workspace.roiScopeSequence,
@@ -711,6 +745,7 @@ export function createBitsamSettingsOnlyState(
       componentNameOverrides: {},
       componentColorOverrides: {},
       materialAssignments: [],
+      customOpticalProfiles: source.customOpticalProfiles ?? [],
       transformRules: [],
       roiScopes: [],
       roiScopeSequence: 0,
@@ -753,7 +788,11 @@ export function downloadBitsamProject(project: BitsamProject): void {
   URL.revokeObjectURL(objectUrl)
 }
 
-export type BitsamSaveResult = 'picked' | 'downloaded' | 'cancelled'
+export type BitsamSaveResult =
+  | 'picked'
+  | 'downloaded'
+  | 'fallback-downloaded'
+  | 'cancelled'
 
 interface BitsamSaveFileHandle {
   createWritable(): Promise<{
@@ -784,7 +823,7 @@ export async function saveBitsamProject(
   }
 
   try {
-    const handle = await picker({
+    const handle = await picker.call(window, {
       suggestedName: bitsamDownloadFileName(project),
       types: [
         {
@@ -807,6 +846,7 @@ export async function saveBitsamProject(
     if (error instanceof DOMException && error.name === 'AbortError') {
       return 'cancelled'
     }
-    throw error
+    downloadBitsamProject(project)
+    return 'fallback-downloaded'
   }
 }

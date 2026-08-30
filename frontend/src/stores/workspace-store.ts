@@ -69,8 +69,7 @@ export interface MaterialAssignment {
 
 /** A user-named Base material + Surface property combo, saved from the
  *  Material editor's current draft so it can be reapplied later via the
- *  "Saved optical profile" picker - alongside the built-in catalog presets.
- *  Session-only for now (not part of `WorkspaceProjectState`/.bitsam). */
+ *  "Saved optical profile" picker - alongside the built-in catalog presets. */
 export interface SavedOpticalProfile {
   id: string
   name: string
@@ -224,6 +223,7 @@ export type WorkspaceProjectState = Pick<
   | 'componentNameOverrides'
   | 'componentColorOverrides'
   | 'materialAssignments'
+  | 'customOpticalProfiles'
   | 'transformRules'
   | 'roiScopes'
   | 'roiScopeSequence'
@@ -615,6 +615,9 @@ function normalizeProjectState(
         (assignment) =>
           !deletedComponentSet.has(assignment.componentId),
       ),
+    customOpticalProfiles: structuredClone(
+      projectState.customOpticalProfiles ?? [],
+    ),
     transformRules: projectState.transformRules
       .map(normalizeTransformRule)
       .filter(
@@ -648,6 +651,7 @@ function projectStateFromSnapshot(
     componentNameOverrides: state.componentNameOverrides,
     componentColorOverrides: state.componentColorOverrides,
     materialAssignments: state.materialAssignments,
+    customOpticalProfiles: state.customOpticalProfiles,
     transformRules: state.transformRules,
     roiScopes: state.roiScopes,
     roiScopeSequence: state.roiScopeSequence,
