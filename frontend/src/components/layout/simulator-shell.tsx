@@ -545,6 +545,17 @@ export function SimulatorShell() {
         (sum, item) => sum + item.match.unmatched,
         0,
       )
+      const matchBreakdown = successful.reduce(
+        (totals, item) => ({
+          name: totals.name + item.match.breakdown.name,
+          geometry: totals.geometry + item.match.breakdown.geometry,
+          componentId:
+            totals.componentId + item.match.breakdown.componentId,
+          orderedFallback:
+            totals.orderedFallback + item.match.breakdown.orderedFallback,
+        }),
+        { name: 0, geometry: 0, componentId: 0, orderedFallback: 0 },
+      )
       const faceSpecificSkipped =
         successful.length *
         (sourceState.materialAssignments.filter(
@@ -565,6 +576,7 @@ export function SimulatorShell() {
         [
           `${successful.length}개 Case에 안전한 전체 설정 복사를 완료했습니다.`,
           `Component 연결: ${matchedComponents}개 일치 / ${unmatchedComponents}개 불일치 제외`,
+          `매칭 기준: 이름 ${matchBreakdown.name} / 형상 ${matchBreakdown.geometry} / Component ID ${matchBreakdown.componentId} / 동일 순서 ${matchBreakdown.orderedFallback}`,
           `Face 종속 Material·Transform: ${faceSpecificSkipped}개 안전을 위해 제외`,
           `CAD Surface Emitter: ${surfaceEmittersToReselect}개 Face 재선택 필요`,
           'ROI는 좌표 기준으로 재매핑되며 Hidden/Delete 상태와 기존 Ray 결과는 복사하지 않습니다.',

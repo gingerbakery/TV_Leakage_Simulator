@@ -1244,8 +1244,6 @@ export function RayTracingPanel({
     { rays: number; totalError: number; peakError: number; peakNit: number; flux: number }[]
   >([])
   const [autoConvergenceStatus, setAutoConvergenceStatus] = useState('')
-  const [gpuCompatibilityDialogOpen, setGpuCompatibilityDialogOpen] =
-    useState(false)
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
@@ -1305,11 +1303,6 @@ export function RayTracingPanel({
   const enabledReceiverCount = receivers.filter(
     (receiver) => receiver.enabled,
   ).length
-  const gpuCpuOnlyEmitters = emitters.filter(
-    (emitter) =>
-      emitter.enabled &&
-      emitter.surface_construction === 'polygon_auto',
-  )
   const gpuCudaProbeReady =
     gpuCudaStatusQuery.isSuccess &&
     !gpuCudaStatusQuery.isFetching &&
@@ -1472,7 +1465,7 @@ export function RayTracingPanel({
     }
   }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
-  const beginRun = async () => {
+  const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
     autoRetryJobIdRef.current = null
     autoRetryAbortControllerRef.current?.abort()
@@ -1487,17 +1480,6 @@ export function RayTracingPanel({
     setConvergenceHistory([])
     convergenceHistoryRef.current = []
     await launchRun(1, false, 0)
-  }
-
-  const handleRun = async () => {
-    if (
-      config.compute_backend === 'gpu_cuda' &&
-      gpuCpuOnlyEmitters.length > 0
-    ) {
-      setGpuCompatibilityDialogOpen(true)
-      return
-    }
-    await beginRun()
   }
 
   useEffect(() => {
@@ -2324,42 +2306,6 @@ export function RayTracingPanel({
           </p>
         ) : null}
       </section>
-
-      <AppDialog
-        open={gpuCompatibilityDialogOpen}
-        onOpenChange={setGpuCompatibilityDialogOpen}
-        title="일부 Emitter는 CPU로 실행됩니다"
-        description="GPU는 요청되지만 아래 Polygon emitter의 ray 생성·추적 경로에는 현재 CUDA 가속이 적용되지 않습니다."
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setGpuCompatibilityDialogOpen(false)}>
-              설정으로 돌아가기
-            </Button>
-            <Button
-              onClick={() => {
-                setGpuCompatibilityDialogOpen(false)
-                void beginRun()
-              }}
-            >
-              CPU 경로 포함 실행
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-2">
-          {gpuCpuOnlyEmitters.map((emitter) => (
-            <div
-              key={emitter.emitter_id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-orange-400/35 bg-orange-500/8 px-3 py-2 text-sm"
-            >
-              <span className="font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
-              <Badge variant="outline">
-                Polygon auto · CPU scalar
-              </Badge>
-            </div>
-          ))}
-        </div>
-      </AppDialog>
 
       <EmitterDialog
         open={emitterMode !== null || editingEmitter !== null}

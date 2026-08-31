@@ -234,7 +234,8 @@
   stream과는 statistical parity로 비교한다.
 - GPU Face emitter primary는 vectorized batch로 생성해 source face를 CUDA BVH
   `ignore_faces`로 넘긴다. 최초 Face wave는 `<8,192`라도 CPU hybrid를 우회해
-  CUDA를 직접 호출한다. `polygon_auto`는 계속 CPU scalar다.
+  CUDA를 직접 호출한다. `polygon_auto`도 면적 가중 virtual-plane batch로
+  CUDA BVH를 사용하며 작은 batch에는 hybrid CPU 임계값이 적용될 수 있다.
 - Actual CAD 100k intersection micro의 CUDA 65,536 처리량은 `7.743M ray/s`,
   Numba CPU 대비 `6.920x`다. Fully-active synthetic end-to-end는 `0.983175x`로
   근소하게 느렸으므로 모든 장면의 자동 speedup을 주장하지 않는다.

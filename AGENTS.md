@@ -52,8 +52,10 @@ Then follow these repository rules:
    reason or CPU fallback count is also present, report GPU use as
    mixed/partial fallback, not CPU-only and not full-GPU success. Face emitter
    primary rays use the CUDA batch/BVH path; later active waves below the
-   hybrid threshold may still use CPU. `polygon_auto` emitters remain CPU
-   scalar. Report mixed execution honestly.
+   hybrid threshold may still use CPU. `polygon_auto` emitters use the
+   vectorized virtual-plane batch path; small batches may still follow the
+   same hybrid CPU threshold as rectangular virtual planes. Report mixed
+   execution honestly.
 8. Benchmark the same scene in the same session and record the first run plus
    two or three warm runs. The first run may include CUDA JIT and upload cost.
    Do not claim that CAD import, BVH build, the whole UI, or every workload is

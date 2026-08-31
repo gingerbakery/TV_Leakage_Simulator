@@ -241,7 +241,9 @@ sampling으로 fallback한다. 결과의 다음 필드를 함께 확인한다.
 - Face emitter의 primary ray는 batch 생성 후 CUDA BVH로 교차 판정한다. 작은
   Face primary batch도 CUDA를 직접 호출한다. 다만 이후 반사 wave가 8,192개
   미만이면 CPU hybrid가 포함될 수 있다.
-- `polygon_auto` emitter는 아직 CPU scalar 경로다. 결과 `Compute` 행의 GPU
+- `polygon_auto` emitter는 면적 가중 삼각형 샘플링으로 virtual-plane batch
+  경로를 사용하며 CUDA BVH와 호환된다. 작은 batch는 사각 Datum Plane과
+  동일한 hybrid CPU 임계값이 적용될 수 있으므로 결과 `Compute` 행의 GPU
   batch와 fallback을 기준으로 실제 실행 장치를 판정한다.
 - 작은 장면은 JIT와 전송 비용 때문에 CPU보다 빠르지 않을 수 있다.
 - 일반 GPU summary 실행은 PERF-4C가 Receiver/Heatmap/기여도를 device에서 누적하고

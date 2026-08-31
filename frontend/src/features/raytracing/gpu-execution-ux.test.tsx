@@ -48,7 +48,17 @@ function setupRayObjects(kind: 'datum' | 'face' | 'polygon' = 'datum') {
     kind === 'datum'
       ? datum
       : kind === 'polygon'
-        ? { ...datum, surface_construction: 'polygon_auto' }
+        ? {
+            ...datum,
+            emitter_type: 'reference_plane',
+            surface_construction: 'polygon_auto',
+            polygon_vertices: [
+              [-5, -4, 0],
+              [5, -4, 0],
+              [3, 4, 0],
+              [-5, 4, 0],
+            ],
+          }
         : createFaceEmitter('emitter_001', [0]),
   )
   actions.upsertReceiver(
@@ -218,7 +228,7 @@ describe('GPU execution UX', () => {
     ).toBeNull()
   })
 
-  it('requires confirmation before a Polygon auto emitter uses CPU scalar', async () => {
+  it('runs a Polygon auto emitter on GPU without a CPU compatibility dialog', async () => {
     setupRayObjects('polygon')
     act(() => {
       workspaceStore.getState().actions.setRayTraceConfig({
@@ -253,19 +263,14 @@ describe('GPU execution UX', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
 
-    expect(
-      await screen.findByRole('dialog', {
-        name: '일부 Emitter는 CPU로 실행됩니다',
-      }),
-    ).not.toBeNull()
-    expect(
-      startSpy,
-    ).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'CPU 경로 포함 실행' }))
     await waitFor(() => {
       expect(startSpy).toHaveBeenCalledOnce()
     })
+    expect(
+      screen.queryByRole('dialog', {
+        name: '일부 Emitter는 CPU로 실행됩니다',
+      }),
+    ).toBeNull()
   })
 
   it('blocks an unverified GPU run and offers one-click CPU recovery', async () => {

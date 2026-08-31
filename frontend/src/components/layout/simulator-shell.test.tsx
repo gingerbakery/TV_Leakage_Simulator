@@ -92,6 +92,12 @@ describe('SimulatorShell', () => {
       componentIdMap: { 1: 100, 2: 200 },
       matched: 2,
       unmatched: 0,
+      breakdown: {
+        name: 2,
+        geometry: 0,
+        componentId: 0,
+        orderedFallback: 0,
+      },
     })
   })
 

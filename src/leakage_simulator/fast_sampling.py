@@ -99,10 +99,15 @@ class FaceEmitterBatchGeometry:
     cumulative_weights: np.ndarray
 
 
+@dataclass(frozen=True, slots=True)
+class PolygonEmitterBatchGeometry:
+    triangle_vertices: np.ndarray
+    cumulative_weights: np.ndarray
+
+
 def supports_fast_virtual_plane_sampling(emitter: EmitterSpec) -> bool:
     return (
         emitter.emitter_type != "face"
-        and emitter.surface_construction != "polygon_auto"
         and emitter.center is not None
         and emitter.u_axis is not None
         and emitter.v_axis is not None
@@ -127,17 +132,21 @@ def iter_virtual_plane_ray_batches(
         normal = -normal
     basis_u, basis_v = _orthonormal_basis(normal)
     generator = np.random.default_rng(seed)
+    polygon_geometry = _build_polygon_emitter_batch_geometry(emitter)
     remaining = emitter.ray_count
     while remaining > 0:
         count = min(batch_size, remaining)
         remaining -= count
-        u_offsets = (generator.random(count) - 0.5) * emitter.width_mm
-        v_offsets = (generator.random(count) - 0.5) * emitter.height_mm
-        origins = (
-            center[None, :]
-            + u_offsets[:, None] * u_axis[None, :]
-            + v_offsets[:, None] * v_axis[None, :]
-            + epsilon_mm * normal[None, :]
+        origins = _sample_virtual_plane_origins(
+            generator,
+            emitter,
+            center,
+            u_axis,
+            v_axis,
+            normal,
+            epsilon_mm,
+            count,
+            polygon_geometry,
         )
         directions = _sample_direction_batch(
             generator,
@@ -278,17 +287,21 @@ def iter_virtual_plane_receiver_mis_batches(
     if emitter.normal_flip:
         normal = -normal
     generator = np.random.default_rng(seed)
+    polygon_geometry = _build_polygon_emitter_batch_geometry(emitter)
     remaining = emitter.ray_count
     while remaining > 0:
         count = min(batch_size, remaining)
         remaining -= count
-        u_offsets = (generator.random(count) - 0.5) * emitter.width_mm
-        v_offsets = (generator.random(count) - 0.5) * emitter.height_mm
-        origins = (
-            center[None, :]
-            + u_offsets[:, None] * u_axis[None, :]
-            + v_offsets[:, None] * v_axis[None, :]
-            + epsilon_mm * normal[None, :]
+        origins = _sample_virtual_plane_origins(
+            generator,
+            emitter,
+            center,
+            u_axis,
+            v_axis,
+            normal,
+            epsilon_mm,
+            count,
+            polygon_geometry,
         )
         normal_rows = np.repeat(normal[None, :], count, axis=0)
         directions, weights, directed_count = sample_receiver_mis_directions(
@@ -306,6 +319,91 @@ def iter_virtual_plane_receiver_mis_batches(
             weights,
             directed_count,
         )
+
+
+def _sample_virtual_plane_origins(
+    generator: np.random.Generator,
+    emitter: EmitterSpec,
+    center: np.ndarray,
+    u_axis: np.ndarray,
+    v_axis: np.ndarray,
+    normal: np.ndarray,
+    epsilon_mm: float,
+    count: int,
+    polygon_geometry: Optional[PolygonEmitterBatchGeometry],
+) -> np.ndarray:
+    if polygon_geometry is not None:
+        selected_slots = np.searchsorted(
+            polygon_geometry.cumulative_weights,
+            generator.random(count),
+            side="left",
+        )
+        selected_slots = np.minimum(
+            selected_slots,
+            len(polygon_geometry.triangle_vertices) - 1,
+        )
+        selected_triangles = polygon_geometry.triangle_vertices[selected_slots]
+        first_random = generator.random(count)
+        second_random = generator.random(count)
+        root = np.sqrt(first_random)
+        points = (
+            (1.0 - root)[:, None] * selected_triangles[:, 0]
+            + (root * (1.0 - second_random))[:, None]
+            * selected_triangles[:, 1]
+            + (root * second_random)[:, None] * selected_triangles[:, 2]
+        )
+    else:
+        u_offsets = (generator.random(count) - 0.5) * emitter.width_mm
+        v_offsets = (generator.random(count) - 0.5) * emitter.height_mm
+        points = (
+            center[None, :]
+            + u_offsets[:, None] * u_axis[None, :]
+            + v_offsets[:, None] * v_axis[None, :]
+        )
+    return np.ascontiguousarray(
+        points + epsilon_mm * normal[None, :],
+        dtype=np.float64,
+    )
+
+
+def _build_polygon_emitter_batch_geometry(
+    emitter: EmitterSpec,
+) -> Optional[PolygonEmitterBatchGeometry]:
+    if (
+        emitter.surface_construction != "polygon_auto"
+        or len(emitter.polygon_vertices) < 3
+    ):
+        return None
+    vertices = np.asarray(emitter.polygon_vertices, dtype=np.float64)
+    anchor = vertices[0]
+    triangle_vertices = np.stack(
+        [
+            np.stack((anchor, vertices[index], vertices[index + 1]))
+            for index in range(1, len(vertices) - 1)
+        ]
+    )
+    cross_values = np.cross(
+        triangle_vertices[:, 1] - triangle_vertices[:, 0],
+        triangle_vertices[:, 2] - triangle_vertices[:, 0],
+    )
+    areas = 0.5 * np.linalg.norm(cross_values, axis=1)
+    valid = areas > 1e-12
+    if not np.any(valid):
+        raise ValueError("Polygon emitter requires a non-degenerate polygon")
+    triangle_vertices = np.ascontiguousarray(
+        triangle_vertices[valid],
+        dtype=np.float64,
+    )
+    cumulative_weights = np.cumsum(areas[valid])
+    cumulative_weights /= cumulative_weights[-1]
+    cumulative_weights[-1] = 1.0
+    return PolygonEmitterBatchGeometry(
+        triangle_vertices=triangle_vertices,
+        cumulative_weights=np.ascontiguousarray(
+            cumulative_weights,
+            dtype=np.float64,
+        ),
+    )
 
 
 def iter_face_emitter_receiver_mis_batches(

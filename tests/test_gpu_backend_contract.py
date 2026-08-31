@@ -89,6 +89,28 @@ def _face_emitter_payload(ray_count: int = 4) -> dict:
     }
 
 
+def _polygon_emitter_payload(ray_count: int = 8192) -> dict:
+    return {
+        "emitter_id": "polygon-source",
+        "emitter_type": "reference_plane",
+        "center": [0.0, 0.0, 0.0],
+        "u_axis": [1.0, 0.0, 0.0],
+        "v_axis": [0.0, 1.0, 0.0],
+        "width_mm": 6.0,
+        "height_mm": 4.0,
+        "surface_construction": "polygon_auto",
+        "polygon_vertices": [
+            [-3.0, -2.0, 0.0],
+            [3.0, -2.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [-3.0, 2.0, 0.0],
+        ],
+        "direction_distribution": "lambertian",
+        "ray_count": ray_count,
+        "seed": 47,
+    }
+
+
 def _owned_readonly(values, dtype) -> np.ndarray:
     result = np.array(values, dtype=dtype, copy=True, order="C")
     result.setflags(write=False)
@@ -547,6 +569,47 @@ class GpuBackendContractTests(unittest.TestCase):
         self.assertEqual(len(observed_ignored_faces), 1)
         np.testing.assert_array_equal(observed_ignored_faces[0], [0, 0, 0, 0])
 
+    def test_polygon_batch_request_executes_gpu_cuda_bvh(self) -> None:
+        payload = _request_payload(
+            compute_backend="gpu_cuda",
+            ray_count=8192,
+        )
+        payload["emitters"] = [_polygon_emitter_payload()]
+        observed_origins: list[np.ndarray] = []
+
+        def fake_gpu(mesh, rays, backend=None):
+            observed_origins.append(rays.origins.copy())
+            return _fake_gpu_execution(rays)
+
+        client = TestClient(
+            create_app(self._runtime(trace_runner=_contract_trace_runner))
+        )
+        try:
+            with patch.object(
+                TriangleMesh,
+                "intersect_rays_gpu_cuda",
+                new=fake_gpu,
+            ):
+                response = client.post(
+                    "/api/raytrace/direct",
+                    json=payload,
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        performance = response.json()["metrics"]["_performance_summary"]
+        self.assertEqual(performance["compute_execution_state"], "gpu_active")
+        self.assertIsNone(performance["compute_execution_reason"])
+        self.assertTrue(performance["gpu_cuda_used"])
+        self.assertEqual(performance["fast_primary_ray_count"], 8192)
+        self.assertEqual(performance["scalar_primary_ray_count"], 0)
+        self.assertGreater(performance["gpu_cuda_gpu_success_count"], 0)
+        self.assertTrue(observed_origins)
+        origins = np.concatenate(observed_origins)
+        self.assertEqual(len(origins), 8192)
+        np.testing.assert_allclose(origins[:, 2], 1e-4, atol=1e-12)
+
     def test_default_cpu_and_gpu_face_runs_share_exact_monte_carlo_contract(
         self,
     ) -> None:
@@ -591,12 +654,59 @@ class GpuBackendContractTests(unittest.TestCase):
         self.assertEqual(cpu_performance["scalar_primary_ray_count"], 0)
         self.assertEqual(gpu_performance["scalar_primary_ray_count"], 0)
 
-    def test_mixed_gpu_and_face_batch_work_remains_gpu_active(self) -> None:
+    def test_default_cpu_and_gpu_polygon_runs_share_exact_monte_carlo_contract(
+        self,
+    ) -> None:
+        cpu_payload = _request_payload(compute_backend="cpu", ray_count=8192)
+        cpu_payload["emitters"] = [_polygon_emitter_payload()]
+        gpu_payload = _request_payload(
+            compute_backend="gpu_cuda",
+            ray_count=8192,
+        )
+        gpu_payload["emitters"] = [_polygon_emitter_payload()]
+
+        cpu_result = run_direct_ray_trace(
+            build_direct_trace_input(_scene_mesh(), cpu_payload)
+        )
+        with patch.object(
+            TriangleMesh,
+            "intersect_rays_gpu_cuda",
+            new=_reference_gpu_execution,
+        ):
+            gpu_result = run_direct_ray_trace(
+                build_direct_trace_input(_scene_mesh(), gpu_payload)
+            )
+
+        cpu_semantic = cpu_result.to_dict()
+        gpu_semantic = gpu_result.to_dict()
+        for payload in (cpu_semantic, gpu_semantic):
+            payload.pop("run_id", None)
+            payload.pop("runtime_sec", None)
+            payload["metrics"].pop("_performance_summary", None)
+            payload["config"]["compute_backend"] = "normalized"
+
+        self.assertEqual(cpu_semantic, gpu_semantic)
+        cpu_performance = cpu_result.metrics["_performance_summary"]
+        gpu_performance = gpu_result.metrics["_performance_summary"]
+        self.assertEqual(
+            cpu_performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
+        self.assertEqual(
+            gpu_performance["monte_carlo_contract"],
+            "cpu_gpu_deterministic_batch_v1",
+        )
+        self.assertEqual(cpu_performance["scalar_primary_ray_count"], 0)
+        self.assertEqual(gpu_performance["scalar_primary_ray_count"], 0)
+        self.assertGreater(gpu_performance["gpu_cuda_gpu_success_count"], 0)
+
+    def test_mixed_gpu_emitter_formats_remain_gpu_active(self) -> None:
         payload = _request_payload(
             compute_backend="gpu_cuda",
             ray_count=8192,
         )
         payload["emitters"].append(_face_emitter_payload())
+        payload["emitters"].append(_polygon_emitter_payload())
 
         def fake_gpu(mesh, rays, backend=None):
             return _fake_gpu_execution(rays)
@@ -627,6 +737,8 @@ class GpuBackendContractTests(unittest.TestCase):
         self.assertTrue(performance["gpu_cuda_used"])
         self.assertEqual(performance["face_batch_primary_ray_count"], 4)
         self.assertEqual(performance["scalar_primary_ray_count"], 0)
+        self.assertEqual(performance["fast_primary_ray_count"], 16_388)
+        self.assertGreaterEqual(performance["gpu_cuda_gpu_success_count"], 3)
 
     def test_face_batch_preserves_source_faces_in_soa_multibounce(self) -> None:
         payload = _request_payload(compute_backend="gpu_cuda", ray_count=16)
