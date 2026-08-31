@@ -735,6 +735,9 @@ export function ViewerWorkspace({
             onCaseMetadataChange={(caseId, name, note) =>
               actions.updateCadCaseMetadata(caseId, name, note)
             }
+            onDeleteCaseReceiverResult={(caseId, receiverId) =>
+              actions.removeCadCaseReceiverResult(caseId, receiverId)
+            }
             onOpenChange={(open) =>
               onRayTraceResultOpenChange?.(open)
             }

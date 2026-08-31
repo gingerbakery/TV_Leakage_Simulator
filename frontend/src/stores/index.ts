@@ -4,6 +4,7 @@ export {
   defaultRayTraceConfig,
   maxReflectionDepth,
   mergeRayTraceReceiverResults,
+  removeReceiverFromRayTraceResult,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,

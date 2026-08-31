@@ -240,6 +240,7 @@ export interface WorkspaceActions {
   setCadCaseVisible(caseId: string, visible: boolean): void
   removeCadCase(caseId: string): void
   setActiveCadCaseResult(result: RayTraceResult): void
+  removeCadCaseReceiverResult(caseId: string, receiverId: string): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
   copyActiveSetupToCases(targets: Iterable<CopySetupTarget>): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
@@ -793,7 +794,7 @@ export function mergeRayTraceReceiverResults(
   }
 }
 
-function removeReceiverFromRayTraceResult(
+export function removeReceiverFromRayTraceResult(
   result: RayTraceResult | null | undefined,
   receiverId: string,
 ): RayTraceResult | null {
@@ -803,6 +804,24 @@ function removeReceiverFromRayTraceResult(
   )
   if (receivers.length === 0) return null
   const next = structuredClone(result)
+  const removedGrid = next.receiver_grids.find(
+    (grid) => grid.receiver_id === receiverId,
+  )
+  const removedContribution = next.contribution_summary.receivers[
+    receiverId
+  ] as Record<string, unknown> | undefined
+  const contributionValue = (section: string, field: string): number => {
+    const candidate = removedContribution?.[section]
+    if (!candidate || typeof candidate !== 'object') return 0
+    const value = Number((candidate as Record<string, unknown>)[field])
+    return Number.isFinite(value) ? Math.max(0, value) : 0
+  }
+  const removedDirectHits = contributionValue('direct', 'hit_count')
+  const removedDirectFlux = contributionValue('direct', 'flux_lumen')
+  const removedReflectedHits = contributionValue('reflected', 'hit_count')
+  const removedReflectedFlux = contributionValue('reflected', 'flux_lumen')
+  const removedHits = removedDirectHits + removedReflectedHits ||
+    Math.max(0, removedGrid?.hit_count ?? 0)
   next.receivers = receivers
   next.receiver_grids = next.receiver_grids.filter(
     (grid) => grid.receiver_id !== receiverId,
@@ -812,6 +831,23 @@ function removeReceiverFromRayTraceResult(
   )
   delete next.metrics[receiverId]
   delete next.contribution_summary.receivers[receiverId]
+  next.receiver_hit_count = Math.max(0, next.receiver_hit_count - removedHits)
+  next.contribution_summary.direct_receiver_hit_count = Math.max(
+    0,
+    next.contribution_summary.direct_receiver_hit_count - removedDirectHits,
+  )
+  next.contribution_summary.direct_receiver_flux_lumen = Math.max(
+    0,
+    next.contribution_summary.direct_receiver_flux_lumen - removedDirectFlux,
+  )
+  next.contribution_summary.reflected_receiver_hit_count = Math.max(
+    0,
+    next.contribution_summary.reflected_receiver_hit_count - removedReflectedHits,
+  )
+  next.contribution_summary.reflected_receiver_flux_lumen = Math.max(
+    0,
+    next.contribution_summary.reflected_receiver_flux_lumen - removedReflectedFlux,
+  )
   return next
 }
 
@@ -1062,6 +1098,22 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 }
               : item,
           ),
+        }))
+      },
+      removeCadCaseReceiverResult: (caseId, receiverId) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => {
+            if (item.caseId !== caseId) return item
+            const latestResult = removeReceiverFromRayTraceResult(
+              item.latestResult,
+              receiverId,
+            )
+            return {
+              ...item,
+              latestJobId: latestResult ? item.latestJobId : null,
+              latestResult,
+            }
+          }),
         }))
       },
       updateCadCaseMetadata: (caseId, name, note) => {

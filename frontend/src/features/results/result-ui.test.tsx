@@ -203,10 +203,120 @@ describe('Step 11 result UI', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
-      target: { value: '1' },
+      target: { value: 'name:right corner' },
     })
     expect(screen.getByText('0.020 lm')).not.toBeNull()
     expect(screen.getByText('6.000')).not.toBeNull()
+  })
+
+  it('matches Receivers by visible name before checking their geometry', () => {
+    const baseline = createRayTraceResultFixture()
+    baseline.receivers[0].display_name = 'Front Receiver'
+    const sideReceiver = {
+      ...structuredClone(baseline.receivers[0]),
+      receiver_id: 'receiver_002',
+      display_name: 'Side Receiver',
+      center: [25, 0, 0] as [number, number, number],
+      width_mm: 12,
+    }
+    baseline.receivers.push(sideReceiver)
+    baseline.metrics[sideReceiver.receiver_id] = structuredClone(
+      baseline.metrics[baseline.receivers[0].receiver_id],
+    )
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-reordered-receivers'
+    comparison.receivers = [
+      comparison.receivers[1],
+      comparison.receivers[0],
+    ]
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
+      target: { value: 'name:front receiver' },
+    })
+    expect(screen.getAllByText('50.0')).toHaveLength(2)
+  })
+
+  it('keeps geometry validation after matching Receivers by name', () => {
+    const baseline = createRayTraceResultFixture()
+    baseline.receivers[0].display_name = 'Front Receiver'
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-different-receiver-geometry'
+    comparison.receivers[0].width_mm += 1
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
+      target: { value: 'name:front receiver' },
+    })
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
+  it('deletes one Receiver result from the current report Case', async () => {
+    const result = createRayTraceResultFixture()
+    result.receivers[0].display_name = 'Front Receiver'
+    const sideReceiver = {
+      ...structuredClone(result.receivers[0]),
+      receiver_id: 'receiver_002',
+      display_name: 'Side Receiver',
+    }
+    result.receivers.push(sideReceiver)
+    result.metrics[sideReceiver.receiver_id] = structuredClone(
+      result.metrics[result.receivers[0].receiver_id],
+    )
+    const onDeleteCaseReceiverResult = vi.fn()
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onDeleteCaseReceiverResult={onDeleteCaseReceiverResult}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+    const deleteButton = await screen.findByRole('button', {
+      name: 'Delete Side Receiver result from current case',
+    })
+    fireEvent.click(deleteButton)
+    expect(onDeleteCaseReceiverResult).toHaveBeenCalledWith(
+      'case-1',
+      sideReceiver.receiver_id,
+    )
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', {
+          name: 'Delete Side Receiver result from current case',
+        }),
+      ).toBeNull()
+    })
   })
 
   it('uses the automatically synchronized CAD result as a comparison case', () => {

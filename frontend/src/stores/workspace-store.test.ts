@@ -188,6 +188,46 @@ describe('workspace store', () => {
     ).toBe(6)
   })
 
+  it('removes one Receiver result from a Case without deleting its setup', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const result = createRayTraceResultFixture()
+    const receiverOne = result.receivers[0]
+    const receiverTwo = {
+      ...structuredClone(receiverOne),
+      receiver_id: 'receiver_002',
+      display_name: 'Side Receiver',
+    }
+    actions.upsertReceiver(receiverOne)
+    actions.upsertReceiver(receiverTwo)
+    result.receivers = [receiverOne, receiverTwo]
+    result.metrics[receiverTwo.receiver_id] = structuredClone(
+      result.metrics[receiverOne.receiver_id],
+    )
+    result.receiver_grids.push({
+      ...structuredClone(result.receiver_grids[0]),
+      receiver_id: receiverTwo.receiver_id,
+    })
+    actions.setActiveCadCaseResult(result)
+
+    actions.removeCadCaseReceiverResult(caseId, receiverTwo.receiver_id)
+
+    const state = store.getState()
+    expect(state.receivers.map((receiver) => receiver.receiver_id)).toContain(
+      receiverTwo.receiver_id,
+    )
+    const savedResult = state.cadCases.find(
+      (item) => item.caseId === caseId,
+    )?.latestResult
+    expect(savedResult?.receivers.map((receiver) => receiver.receiver_id)).toEqual([
+      receiverOne.receiver_id,
+    ])
+    expect(savedResult?.receiver_grids).toHaveLength(1)
+    expect(savedResult?.metrics[receiverTwo.receiver_id]).toBeUndefined()
+  })
+
   it('copies analysis setup while requiring CAD Surface Emitter face reselection', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

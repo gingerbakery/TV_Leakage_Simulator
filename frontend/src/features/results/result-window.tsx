@@ -33,7 +33,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { getComponentDisplayName } from '@/features/components'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
-import { useWorkspaceStore, workspaceSelectors } from '@/stores'
+import {
+  removeReceiverFromRayTraceResult,
+  useWorkspaceStore,
+  workspaceSelectors,
+} from '@/stores'
 
 import {
   formatReceiverCoordinate,
@@ -82,6 +86,7 @@ interface RayTraceResultWindowProps {
     note?: string
   }>
   onCaseMetadataChange?(caseId: string, name: string, note: string): void
+  onDeleteCaseReceiverResult?(caseId: string, receiverId: string): void
   onOpenChange(open: boolean): void
 }
 
@@ -120,7 +125,7 @@ type AnalysisReportSaveFilePickerWindow = Window & {
   }) => Promise<AnalysisReportSaveFileHandle>
 }
 
-type ReceiverCompareScope = 'all' | number
+type ReceiverCompareScope = 'all' | string
 type LuminanceScaleMode = 'auto' | 'compare' | 'customize'
 
 interface LuminanceDisplayScale {
@@ -146,16 +151,29 @@ function receiversInDisplayOrder(receivers: ReceiverSpec[]): ReceiverSpec[] {
     .map(({ receiver }) => receiver)
 }
 
+function receiverComparisonKey(receiver: ReceiverSpec): string {
+  const visibleName = rayObjectDisplayName(
+    'receiver',
+    receiver.receiver_id,
+    receiver.display_name,
+  ).trim().toLowerCase()
+  return visibleName
+    ? `name:${visibleName}`
+    : `id:${receiver.receiver_id.trim().toLowerCase()}`
+}
+
 function scopedReceivers(
   result: RayTraceResult,
   receiverScope: ReceiverCompareScope,
 ): ReceiverSpec[] {
   const enabled = result.receivers.filter((item) => item.enabled)
   return receiverScope === 'all'
-    ? enabled
-    : enabled[receiverScope]
-      ? [enabled[receiverScope]]
-      : []
+    ? [...enabled].sort((left, right) =>
+        receiverComparisonKey(left).localeCompare(receiverComparisonKey(right)),
+      )
+    : enabled.filter(
+        (receiver) => receiverComparisonKey(receiver) === receiverScope,
+      )
 }
 
 function caseFlux(
@@ -168,10 +186,10 @@ function caseFlux(
       ? numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen)
       : 0
   }
-  const summary = result.contribution_summary
-  return (
-    numeric(summary.direct_receiver_flux_lumen) +
-    numeric(summary.reflected_receiver_flux_lumen)
+  return scopedReceivers(result, receiverScope).reduce(
+    (sum, receiver) =>
+      sum + numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen),
+    0,
   )
 }
 
@@ -179,11 +197,11 @@ function caseReceiverHits(
   result: RayTraceResult,
   receiverScope: ReceiverCompareScope,
 ): number {
-  if (receiverScope === 'all') return result.receiver_hit_count
-  const receiver = scopedReceivers(result, receiverScope)[0]
-  return receiver
-    ? numeric(objectValue(result.metrics, receiver.receiver_id).hit_count)
-    : 0
+  return scopedReceivers(result, receiverScope).reduce(
+    (sum, receiver) =>
+      sum + numeric(objectValue(result.metrics, receiver.receiver_id).hit_count),
+    0,
+  )
 }
 
 function caseLuminance(
@@ -239,13 +257,15 @@ function caseLuminance(
 
 function correspondingReceiverPeakNit(
   result: RayTraceResult,
-  receiverId: string,
-  receiverIndex: number,
+  referenceReceiver: ReceiverSpec,
 ): number {
   const ordered = receiversInDisplayOrder(result.receivers)
   const receiver =
-    ordered.find((item) => item.receiver_id === receiverId) ??
-    ordered[receiverIndex]
+    ordered.find(
+      (item) =>
+        receiverComparisonKey(item) === receiverComparisonKey(referenceReceiver),
+    ) ??
+    ordered.find((item) => item.receiver_id === referenceReceiver.receiver_id)
   return receiver
     ? numeric(objectValue(result.metrics, receiver.receiver_id).peak_nit_est)
     : 0
@@ -371,6 +391,20 @@ function comparisonConditionMismatches(
   if (receiverScope === 'all' && receivers.length !== baselineReceivers.length) {
     mismatches.push('Receiver · 활성 개수')
   }
+  const receiverKeys = receivers.map(receiverComparisonKey)
+  const baselineReceiverKeys = baselineReceivers.map(receiverComparisonKey)
+  if (
+    new Set(receiverKeys).size !== receiverKeys.length ||
+    new Set(baselineReceiverKeys).size !== baselineReceiverKeys.length
+  ) {
+    mismatches.push('Receiver · 이름 중복')
+  }
+  if (
+    receiverKeys.length !== baselineReceiverKeys.length ||
+    receiverKeys.some((key, index) => key !== baselineReceiverKeys[index])
+  ) {
+    mismatches.push('Receiver · 이름 매칭')
+  }
   const receiverFields = [
     ['중심 위치', 'center'],
     ['법선 방향', 'normal'],
@@ -380,9 +414,16 @@ function comparisonConditionMismatches(
     ['수광 각도', 'acceptance_angle_deg'],
     ['방향 반전', 'normal_flip'],
   ] as const
-  for (let index = 0; index < Math.min(receivers.length, baselineReceivers.length); index += 1) {
-    const receiver = receivers[index]
-    const baseReceiver = baselineReceivers[index]
+  const matchedReceiverPairs = baselineReceivers.flatMap(
+    (baseReceiver, index) => {
+      const key = receiverComparisonKey(baseReceiver)
+      const receiver = receivers.find(
+        (candidate) => receiverComparisonKey(candidate) === key,
+      )
+      return receiver ? [{ receiver, baseReceiver, index }] : []
+    },
+  )
+  for (const { receiver, baseReceiver, index } of matchedReceiverPairs) {
     for (const [label, key] of receiverFields) {
       if (different(receiver[key], baseReceiver[key])) {
         mismatches.push(`Receiver ${index + 1} · ${label}`)
@@ -1677,6 +1718,7 @@ export function RayTraceResultWindow({
   roiFaceIds,
   reportCases = [],
   onCaseMetadataChange,
+  onDeleteCaseReceiverResult,
   onOpenChange,
 }: RayTraceResultWindowProps) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1901,6 +1943,21 @@ export function RayTraceResultWindow({
   const receiverCompareOptions = (
     baselineCase?.result ?? result
   ).receivers.filter((item) => item.enabled)
+
+  const deleteReceiverResult = (receiverId: string) => {
+    if (!reportCaseId) return
+    setAnalysisCases((current) =>
+      current.flatMap((item) => {
+        if (item.case_id !== reportCaseId) return [item]
+        const nextResult = removeReceiverFromRayTraceResult(
+          item.result,
+          receiverId,
+        )
+        return nextResult ? [{ ...item, result: nextResult }] : []
+      }),
+    )
+    onDeleteCaseReceiverResult?.(reportCaseId, receiverId)
+  }
 
   const exportCases = async () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
@@ -2135,16 +2192,15 @@ export function RayTraceResultWindow({
                       className="h-7 max-w-48 rounded-md border border-border bg-background px-2 text-xs text-foreground"
                       value={receiverCompareScope}
                       onChange={(event) =>
-                        setReceiverCompareScope(
-                          event.currentTarget.value === 'all'
-                            ? 'all'
-                            : Number(event.currentTarget.value),
-                        )
+                        setReceiverCompareScope(event.currentTarget.value)
                       }
                     >
                       <option value="all">All Receivers</option>
-                      {receiverCompareOptions.map((receiver, index) => (
-                        <option key={receiver.receiver_id} value={index}>
+                      {receiverCompareOptions.map((receiver) => (
+                        <option
+                          key={receiver.receiver_id}
+                          value={receiverComparisonKey(receiver)}
+                        >
                           {rayObjectDisplayName(
                             'receiver',
                             receiver.receiver_id,
@@ -2663,7 +2719,7 @@ export function RayTraceResultWindow({
                   </div>
                 </details>
               ) : null}
-              {orderedResultReceivers.map((receiver, receiverIndex) => {
+              {orderedResultReceivers.map((receiver) => {
                 const values = objectValue(
                   result.metrics,
                   receiver.receiver_id,
@@ -2682,8 +2738,7 @@ export function RayTraceResultWindow({
                   ...selectedCases.map((item) =>
                     correspondingReceiverPeakNit(
                       item.result,
-                      receiver.receiver_id,
-                      receiverIndex,
+                      receiver,
                     ),
                   ),
                 )
@@ -2762,6 +2817,21 @@ export function RayTraceResultWindow({
                           Target
                           <input aria-label="Convergence target percent" className="h-7 w-16 rounded border border-border bg-background px-1.5 font-mono text-foreground" type="number" min={0.1} max={100} step={0.5} value={errorTargetPercent} onChange={(event) => setErrorTargetPercent(Math.max(0.1, numeric(event.currentTarget.value)))} />%
                         </label>
+                        {reportCaseId && orderedResultReceivers.length > 1 ? (
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label={`Delete ${rayObjectDisplayName(
+                              'receiver',
+                              receiver.receiver_id,
+                              receiver.display_name,
+                            )} result from current case`}
+                            title="현재 Case에서 이 Receiver 결과 삭제"
+                            onClick={() => deleteReceiverResult(receiver.receiver_id)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        ) : null}
                       </div>
                     </div>
                     <div className="mt-2 grid grid-cols-6 gap-1.5">
