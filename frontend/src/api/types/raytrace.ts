@@ -139,6 +139,7 @@ export interface RayTraceConfig {
   epsilon_mm: number
   k_abs: number
   k_brdf: number
+  angle_dependent_reflectance: boolean
   termination_mode: TerminationMode
   contribution_mode: ContributionMode
   intersection_backend: IntersectionBackend

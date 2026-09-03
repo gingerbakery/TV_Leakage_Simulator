@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from benchmark_perf3b2a_multibounce import build_depth_ten_case
 from perf4_accuracy import compare_semantic_payloads
-from verify_gpu_cpu_accuracy import build_stochastic_two_bounce_case
+from verify_gpu_cpu_accuracy import (
+    build_face_direct_case,
+    build_stochastic_two_bounce_case,
+)
 from leakage_simulator import gpu_cuda_intersection as gpu_cuda
 from leakage_simulator.gpu_cuda_summary_accumulator import (
     GpuSummaryAccumulatorError,
@@ -90,6 +93,38 @@ class Perf4CGpuSummaryAccumulatorTests(unittest.TestCase):
             performance["wavefront_event_tape_copy_bytes"],
             32 * 1024,
         )
+
+    def test_low_depth_accumulator_stays_gpu_resident(self) -> None:
+        for max_depth in (0, 1):
+            with self.subTest(max_depth=max_depth):
+                def build_case(ray_count: int):
+                    trace_input = (
+                        build_face_direct_case(ray_count)
+                        if max_depth == 0
+                        else build_stochastic_two_bounce_case(ray_count)
+                    )
+                    trace_input.config.max_depth = max_depth
+                    return trace_input
+
+                cpu_input = build_case(8192)
+                cpu_input.config.compute_backend = "cpu"
+                cpu = run_direct_ray_trace(cpu_input)
+                resident = _run(build_case, 8192, "gpu")
+
+                self.assertAccumulatorParity(cpu, resident)
+                performance = resident.metrics["_performance_summary"]
+                self.assertEqual(
+                    performance["execution_path"],
+                    "single_bounce_wavefront",
+                )
+                self.assertEqual(
+                    performance["wavefront_residency"],
+                    "gpu_resident",
+                )
+                self.assertGreater(
+                    performance["gpu_summary_accumulator_success_count"],
+                    0,
+                )
 
     def test_accumulator_reuses_state_across_chunks(self) -> None:
         reference = _run(

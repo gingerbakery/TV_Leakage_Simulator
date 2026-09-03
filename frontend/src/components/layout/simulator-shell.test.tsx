@@ -15,7 +15,10 @@ import { AppProviders } from '@/app/providers'
 import { createWorkspaceStore, workspaceStore } from '@/stores'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
-import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
+import {
+  matchSetupComponents,
+  sceneComponentMatchMetadata,
+} from '@/features/projects/copy-analysis-setup'
 import {
   createBitsamProject,
   serializeBitsamProject,
@@ -397,6 +400,10 @@ describe('SimulatorShell', () => {
     actions.renameComponent(1, 'Renamed chassis')
     actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
     const targetCaseId = workspaceStore.getState().activeCadCaseId!
+    actions.setCadCaseComponentMatchMetadata(
+      targetCaseId,
+      sceneComponentMatchMetadata(targetScene),
+    )
     actions.setActiveCadCase(sourceCaseId)
     const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(targetScene)
 
@@ -412,12 +419,56 @@ describe('SimulatorShell', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Copy Setup Complete' }),
     ).not.toBeNull()
-    expect(getScene).toHaveBeenCalledWith('case-b.step')
+    expect(getScene).not.toHaveBeenCalled()
     expect(
       workspaceStore.getState().cadCases.find(
         (item) => item.caseId === targetCaseId,
       )?.workspaceState?.componentNameOverrides,
     ).toEqual({ 100: 'Renamed chassis' })
+    getScene.mockRestore()
+  })
+
+  it('loads legacy Copy Setup target Scenes sequentially', async () => {
+    const sourceScene = createSceneFixture()
+    apiHookState.scene = sourceScene
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'source.step' })
+    const sourceCaseId = workspaceStore.getState().activeCadCaseId!
+    actions.addCadCase({ path: 'target-1.step', displayName: 'target-1.step' })
+    actions.addCadCase({ path: 'target-2.step', displayName: 'target-2.step' })
+    actions.setActiveCadCase(sourceCaseId)
+
+    let activeRequests = 0
+    let maximumActiveRequests = 0
+    const getScene = vi.spyOn(apiClient, 'getScene').mockImplementation(
+      async () => {
+        activeRequests += 1
+        maximumActiveRequests = Math.max(
+          maximumActiveRequests,
+          activeRequests,
+        )
+        await new Promise((resolve) => window.setTimeout(resolve, 5))
+        activeRequests -= 1
+        return structuredClone(sourceScene)
+      },
+    )
+
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Setup' }))
+    const copyDialog = screen.getByRole('dialog', {
+      name: 'Copy Analysis Setup',
+    })
+    for (const name of ['target-1.step', 'target-2.step']) {
+      const targetLabel = within(copyDialog).getByText(name).closest('label')
+      fireEvent.click(targetLabel!.querySelector('input')!)
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to 2 Cases' }))
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Copy Setup Complete' }),
+    ).not.toBeNull()
+    expect(getScene).toHaveBeenCalledTimes(2)
+    expect(maximumActiveRequests).toBe(1)
     getScene.mockRestore()
   })
 })

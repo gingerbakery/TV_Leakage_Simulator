@@ -1925,6 +1925,27 @@ export function RayTracingPanel({
             }
             description="반사를 최대 몇 번까지 추적할지 (0 = 직접광만, 반사 없음). 클수록 정확하지만 계산이 느려집니다 - quick 체크는 1, 일반 비교는 3, 밀폐된 고반사 경로는 10, 수렴성 확인 목적일 때만 20을 권장합니다."
           />
+          <label className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5 text-sm font-semibold">
+            <input
+              type="checkbox"
+              checked={config.angle_dependent_reflectance !== false}
+              disabled={isRunning}
+              onChange={(event) =>
+                updateConfig({
+                  angle_dependent_reflectance: event.currentTarget.checked,
+                })
+              }
+            />
+            <span className="flex-1">Angle-dependent reflectance</span>
+            <span className="text-xs font-semibold text-muted-foreground">
+              {config.angle_dependent_reflectance !== false ? 'ON' : 'OFF'}
+            </span>
+            <HelpTooltip label="Angle-dependent reflectance 도움말">
+              ON이면 빛이 표면에 비스듬히 입사할수록 유효 반사율이 증가합니다.
+              OFF이면 입사각과 관계없이 Material에 지정한 기본 Reflectance를
+              그대로 사용합니다.
+            </HelpTooltip>
+          </label>
           <NumberField
             label="Random seed"
             value={config.seed}

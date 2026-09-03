@@ -113,6 +113,7 @@ class WavefrontPlanInput:
     max_depth: int
     min_energy: float
     termination_mode: int = TERMINATION_THRESHOLD
+    angle_dependent_reflectance: bool = True
 
     def __post_init__(self) -> None:
         directions = _readonly_vectors(self.incoming_directions, "incoming_directions")
@@ -168,6 +169,11 @@ class WavefrontPlanInput:
         object.__setattr__(self, "max_depth", max_depth)
         object.__setattr__(self, "min_energy", min_energy)
         object.__setattr__(self, "termination_mode", termination_mode)
+        object.__setattr__(
+            self,
+            "angle_dependent_reflectance",
+            bool(self.angle_dependent_reflectance),
+        )
 
     def __len__(self) -> int:
         return int(self.incoming_power_lumen.shape[0])
@@ -385,7 +391,12 @@ def plan_deterministic_reference(batch: WavefrontPlanInput) -> WavefrontPlanResu
         )
         row_reflected_power = float(
             float(batch.incoming_power_lumen[row_index])
-            * effective_surface_reflectance(incoming, normal, profile)
+            * effective_surface_reflectance(
+                incoming,
+                normal,
+                profile,
+                batch.angle_dependent_reflectance,
+            )
         )
         reflected_power[row_index] = row_reflected_power
         if batch.depth >= batch.max_depth:
@@ -438,6 +449,7 @@ def plan_deterministic_native_cpu(
             batch.max_depth,
             batch.min_energy,
             batch.termination_mode,
+            batch.angle_dependent_reflectance,
             *arrays,
         )
     except Exception as exc:
@@ -516,7 +528,10 @@ def _make_kernel() -> Callable[..., None]:
         normal_z: float,
         base_reflectance: float,
         roughness: float,
+        angle_dependent: bool,
     ) -> float:
+        if not angle_dependent:
+            return base_reflectance
         direction_x, direction_y, direction_z = normalize_components(
             incoming_x,
             incoming_y,
@@ -602,6 +617,7 @@ def _make_kernel() -> Callable[..., None]:
         max_depth: int,
         min_energy: float,
         termination_mode: int,
+        angle_dependent_reflectance: bool,
         supported_mask: BoolArray,
         reflected_power_lumen: FloatArray,
         emitted_power_lumen: FloatArray,
@@ -643,6 +659,7 @@ def _make_kernel() -> Callable[..., None]:
                 normal_z,
                 base_reflectance,
                 profile_roughness[row_index],
+                angle_dependent_reflectance,
             )
             reflected_power_lumen[row_index] = row_reflected_power
             if depth >= max_depth:
@@ -709,6 +726,7 @@ def _ensure_kernel() -> tuple[Callable[..., Any], float]:
                 1,
                 0.0,
                 TERMINATION_THRESHOLD,
+                True,
                 *_allocate_outputs(0),
             )
         except Exception as exc:

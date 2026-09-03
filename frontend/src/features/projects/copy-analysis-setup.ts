@@ -1,4 +1,26 @@
-import type { SceneComponent, ScenePayload, Vec3 } from '@/api'
+import type {
+  SceneComponentMatchMetadata,
+  ScenePayload,
+  Vec3,
+} from '@/api'
+
+interface ComponentMatchScene {
+  components: readonly SceneComponentMatchMetadata[]
+}
+
+export function sceneComponentMatchMetadata(
+  scene: ScenePayload,
+): SceneComponentMatchMetadata[] {
+  return scene.components.map((component) => ({
+    component_id: component.component_id,
+    component_name: component.component_name,
+    object_name: component.object_name,
+    face_count: component.face_count,
+    area_mm2: component.area_mm2,
+    bbox_min: [...component.bbox_min],
+    bbox_max: [...component.bbox_max],
+  }))
+}
 
 export interface ComponentMatchBreakdown {
   name: number
@@ -24,16 +46,16 @@ function normalizedComponentName(value: string): string {
 }
 
 function uniqueComponentMatch(
-  candidates: SceneComponent[],
+  candidates: SceneComponentMatchMetadata[],
   usedTargetIds: Set<number>,
-): SceneComponent | null {
+): SceneComponentMatchMetadata | null {
   const available = candidates.filter(
     (candidate) => !usedTargetIds.has(candidate.component_id),
   )
   return available.length === 1 ? available[0] : null
 }
 
-function componentCenter(component: SceneComponent): Vec3 {
+function componentCenter(component: SceneComponentMatchMetadata): Vec3 {
   return [
     (component.bbox_min[0] + component.bbox_max[0]) / 2,
     (component.bbox_min[1] + component.bbox_max[1]) / 2,
@@ -41,7 +63,7 @@ function componentCenter(component: SceneComponent): Vec3 {
   ]
 }
 
-function componentSize(component: SceneComponent): Vec3 {
+function componentSize(component: SceneComponentMatchMetadata): Vec3 {
   return [
     Math.abs(component.bbox_max[0] - component.bbox_min[0]),
     Math.abs(component.bbox_max[1] - component.bbox_min[1]),
@@ -53,7 +75,7 @@ function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.max(Math.abs(left), Math.abs(right), 1)
 }
 
-function sceneDiagonal(scene: ScenePayload): number {
+function sceneDiagonal(scene: ComponentMatchScene): number {
   if (scene.components.length === 0) return 1
   const minimum: Vec3 = [Infinity, Infinity, Infinity]
   const maximum: Vec3 = [-Infinity, -Infinity, -Infinity]
@@ -75,8 +97,8 @@ function sceneDiagonal(scene: ScenePayload): number {
 
 /** Lower is more likely to be the same physical component. */
 function componentGeometryDistance(
-  source: SceneComponent,
-  target: SceneComponent,
+  source: SceneComponentMatchMetadata,
+  target: SceneComponentMatchMetadata,
   positionScale: number,
 ): number {
   const sourceSize = componentSize(source)
@@ -112,16 +134,16 @@ function componentGeometryDistance(
 }
 
 export function matchSetupComponents(
-  source: ScenePayload,
-  target: ScenePayload,
+  source: ComponentMatchScene,
+  target: ComponentMatchScene,
 ): ComponentMatchResult {
-  const byPair = new Map<string, SceneComponent[]>()
-  const byComponentName = new Map<string, SceneComponent[]>()
-  const byObjectName = new Map<string, SceneComponent[]>()
+  const byPair = new Map<string, SceneComponentMatchMetadata[]>()
+  const byComponentName = new Map<string, SceneComponentMatchMetadata[]>()
+  const byObjectName = new Map<string, SceneComponentMatchMetadata[]>()
   const add = (
-    index: Map<string, SceneComponent[]>,
+    index: Map<string, SceneComponentMatchMetadata[]>,
     key: string,
-    component: SceneComponent,
+    component: SceneComponentMatchMetadata,
   ) => {
     if (!key) return
     index.set(key, [...(index.get(key) ?? []), component])
@@ -143,8 +165,8 @@ export function matchSetupComponents(
     orderedFallback: 0,
   }
   const assign = (
-    sourceComponent: SceneComponent,
-    targetComponent: SceneComponent,
+    sourceComponent: SceneComponentMatchMetadata,
+    targetComponent: SceneComponentMatchMetadata,
     strategy: keyof ComponentMatchBreakdown,
   ) => {
     componentIdMap[sourceComponent.component_id] = targetComponent.component_id

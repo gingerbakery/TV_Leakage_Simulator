@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,6 +73,38 @@ def _counter_batch(row_count: int = 513) -> CounterWavefrontPlanInput:
 
 
 class Perf3CCounterWavefrontPlannerTests(unittest.TestCase):
+    def test_angle_dependent_reflectance_can_be_disabled(self) -> None:
+        enabled_batch = _counter_batch(32)
+        disabled_batch = replace(
+            enabled_batch,
+            angle_dependent_reflectance=False,
+        )
+
+        enabled = plan_counter_reference(enabled_batch)
+        disabled = plan_counter_reference(disabled_batch)
+
+        self.assertTrue(
+            np.allclose(
+                disabled.reflected_power_lumen,
+                disabled_batch.incoming_power_lumen
+                * disabled_batch.profile_reflectance,
+            )
+        )
+        self.assertTrue(
+            np.any(
+                enabled.reflected_power_lumen
+                > disabled.reflected_power_lumen + 1e-15
+            )
+        )
+        if probe_native_cpu_counter_wavefront().available:
+            native = plan_counter_native_cpu(disabled_batch).result
+            np.testing.assert_allclose(
+                native.reflected_power_lumen,
+                disabled.reflected_power_lumen,
+                rtol=0.0,
+                atol=0.0,
+            )
+
     def test_counter_uniform_has_stable_golden_values_and_semantic_lanes(self) -> None:
         self.assertEqual(CONTRACT_VERSION, "counter_rng_v2")
         self.assertEqual(RNG_ALGORITHM, "splitmix64_semantic_lane_v1")

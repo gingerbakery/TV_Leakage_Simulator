@@ -35,6 +35,19 @@ export interface SceneComponent {
   color: string | null
 }
 
+/** Lightweight Component identity used for cross-Case setup matching.
+ * Deliberately excludes face_indices and all tessellated mesh arrays. */
+export type SceneComponentMatchMetadata = Pick<
+  SceneComponent,
+  | 'component_id'
+  | 'component_name'
+  | 'object_name'
+  | 'face_count'
+  | 'area_mm2'
+  | 'bbox_min'
+  | 'bbox_max'
+>
+
 export interface ScenePayload {
   schema_version: 'mesh-scene.v1'
   units: {

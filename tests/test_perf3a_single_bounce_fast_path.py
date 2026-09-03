@@ -56,13 +56,13 @@ class Perf3ASingleBounceFastPathTests(unittest.TestCase):
             detailed.contribution_summary.reflected_receiver_flux_lumen,
         )
 
-    def test_execution_path_switches_at_depth_two(self) -> None:
+    def test_production_counter_rng_uses_wavefront_at_low_depth(self) -> None:
         one_bounce = run_direct_ray_trace(build_case("summary", max_depth=1))
         multi_bounce = run_direct_ray_trace(build_case("summary", max_depth=2))
 
         self.assertEqual(
             one_bounce.metrics["_performance_summary"]["execution_path"],
-            "single_bounce_fast",
+            "single_bounce_wavefront",
         )
         self.assertEqual(
             multi_bounce.metrics["_performance_summary"]["execution_path"],

@@ -319,6 +319,7 @@ class GpuResidentWavefrontBatch:
     include_path_payload: bool = False
     bounce_receiver_mis_enabled: bool = False
     bounce_receiver_importance_fraction: float = 0.5
+    angle_dependent_reflectance: bool = True
 
     def __post_init__(self) -> None:
         origins = _owned_array(
@@ -382,6 +383,11 @@ class GpuResidentWavefrontBatch:
         object.__setattr__(self, "min_energy", min_energy)
         object.__setattr__(self, "termination_mode", termination)
         object.__setattr__(self, "include_path_payload", bool(self.include_path_payload))
+        object.__setattr__(
+            self,
+            "angle_dependent_reflectance",
+            bool(self.angle_dependent_reflectance),
+        )
         bounce_receiver_mis_enabled = bool(self.bounce_receiver_mis_enabled)
         bounce_fraction = float(self.bounce_receiver_importance_fraction)
         if not math.isfinite(bounce_fraction) or not 0.0 < bounce_fraction < 1.0:
@@ -855,7 +861,10 @@ def _make_kernel() -> Callable[..., None]:
         normal_z,
         base_reflectance,
         roughness,
+        angle_dependent,
     ):
+        if not angle_dependent:
+            return base_reflectance
         cosine_incidence = -(
             in_x * normal_x + in_y * normal_y + in_z * normal_z
         )
@@ -1371,6 +1380,7 @@ def _make_kernel() -> Callable[..., None]:
         epsilon_mm,
         min_energy,
         termination_mode,
+        angle_dependent_reflectance,
         bounce_receiver_mis_enabled,
         bounce_receiver_importance_fraction,
         record_geometry,
@@ -1651,6 +1661,7 @@ def _make_kernel() -> Callable[..., None]:
                 normal_z,
                 face_reflectance[face_index],
                 face_roughness[face_index],
+                angle_dependent_reflectance,
             )
             event_faces[ray_index, depth] = face_index
             if record_geometry:
@@ -1925,6 +1936,7 @@ def _launch_resident_kernel(
             batch.epsilon_mm,
             batch.min_energy,
             batch.termination_mode,
+            int(batch.angle_dependent_reflectance),
             int(batch.bounce_receiver_mis_enabled),
             batch.bounce_receiver_importance_fraction,
             int(record_geometry),
@@ -2339,6 +2351,7 @@ def _retrace_selected_path_tape(
         bounce_receiver_importance_fraction=(
             batch.bounce_receiver_importance_fraction
         ),
+        angle_dependent_reflectance=batch.angle_dependent_reflectance,
     )
     selected_count = len(selected_batch)
     if selected_count > workspace.geometry_capacity:
@@ -2725,6 +2738,7 @@ def _selected_path_tape(
         bounce_receiver_importance_fraction=(
             batch.bounce_receiver_importance_fraction
         ),
+        angle_dependent_reflectance=batch.angle_dependent_reflectance,
     )
     try:
         tape = _build_tape(selected_batch, **compact)

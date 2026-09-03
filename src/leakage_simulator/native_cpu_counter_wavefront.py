@@ -139,6 +139,7 @@ class CounterWavefrontPlanInput:
     receiver_minimum_cosines: Optional[FloatArray | ArrayLike] = None
     receiver_importance_fraction: float = 0.0
     epsilon_mm: float = 1e-4
+    angle_dependent_reflectance: bool = True
 
     def __post_init__(self) -> None:
         directions = _owned_readonly_vectors(
@@ -338,6 +339,11 @@ class CounterWavefrontPlanInput:
         object.__setattr__(self, "max_depth", max_depth)
         object.__setattr__(self, "min_energy", min_energy)
         object.__setattr__(self, "termination_mode", termination_mode)
+        object.__setattr__(
+            self,
+            "angle_dependent_reflectance",
+            bool(self.angle_dependent_reflectance),
+        )
         object.__setattr__(self, "surface_points", surface_points)
         object.__setattr__(self, "receiver_centers", receiver_centers)
         object.__setattr__(self, "receiver_normals", receiver_normals)
@@ -599,6 +605,7 @@ def plan_counter_native_cpu(
             batch.max_depth,
             batch.min_energy,
             batch.termination_mode,
+            batch.angle_dependent_reflectance,
             batch.surface_points,
             batch.receiver_centers,
             batch.receiver_normals,
@@ -677,6 +684,7 @@ def _plan_reference_row(
         surface_normal,
         float(batch.profile_reflectance[row_index]),
         float(batch.profile_roughness[row_index]),
+        batch.angle_dependent_reflectance,
     )
     reflected_power = float(batch.incoming_power_lumen[row_index]) * reflectance
     reflected[row_index] = reflected_power
@@ -989,7 +997,10 @@ def _make_kernel() -> Callable[..., None]:
         normal_z: float,
         base_reflectance: float,
         roughness: float,
+        angle_dependent: bool,
     ) -> float:
+        if not angle_dependent:
+            return base_reflectance
         cosine_incidence = -(
             incoming_x * normal_x
             + incoming_y * normal_y
@@ -1262,6 +1273,7 @@ def _make_kernel() -> Callable[..., None]:
         max_depth: int,
         min_energy: float,
         termination_mode: int,
+        angle_dependent_reflectance: bool,
         surface_points: FloatArray,
         receiver_centers: FloatArray,
         receiver_normals: FloatArray,
@@ -1323,6 +1335,7 @@ def _make_kernel() -> Callable[..., None]:
                 normal_z,
                 profile_reflectance[row_index],
                 profile_roughness[row_index],
+                angle_dependent_reflectance,
             )
             reflected_power_lumen[row_index] = reflected_power
             if depth >= max_depth:
@@ -1522,6 +1535,7 @@ def _ensure_kernel() -> tuple[Callable[..., Any], float]:
                 1,
                 0.0,
                 TERMINATION_THRESHOLD,
+                True,
                 empty_vectors,
                 empty_vectors,
                 empty_vectors,
@@ -1678,7 +1692,10 @@ def _effective_reflectance(
     normal: tuple[float, float, float],
     base: float,
     roughness: float,
+    angle_dependent: bool = True,
 ) -> float:
+    if not angle_dependent:
+        return max(0.0, min(1.0, base))
     cosine = max(0.0, min(1.0, -sum(incoming[index] * normal[index] for index in range(3))))
     coordinate = max(0.0, (0.7 - cosine) / 0.7)
     gloss = 0.25 + 0.75 * (1.0 - roughness)

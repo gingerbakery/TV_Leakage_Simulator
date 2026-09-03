@@ -6,6 +6,7 @@ import type {
   RayTraceConfigRequest,
   RayTraceResult,
   ReceiverSpec,
+  SceneComponentMatchMetadata,
 } from '@/api'
 
 export interface ActiveCad {
@@ -23,6 +24,7 @@ export interface CadCase {
   workspaceState?: WorkspaceProjectState
   latestJobId?: string | null
   latestResult?: RayTraceResult | null
+  componentMatchMetadata?: SceneComponentMatchMetadata[]
 }
 
 export interface CopySetupTarget {
@@ -239,6 +241,10 @@ export interface WorkspaceActions {
   setActiveCadCase(caseId: string): void
   setCadCaseVisible(caseId: string, visible: boolean): void
   removeCadCase(caseId: string): void
+  setCadCaseComponentMatchMetadata(
+    caseId: string,
+    metadata: SceneComponentMatchMetadata[],
+  ): void
   setActiveCadCaseResult(result: RayTraceResult): void
   removeCadCaseReceiverResult(caseId: string, receiverId: string): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
@@ -425,6 +431,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   epsilon_mm: 1e-4,
   k_abs: 0.12,
   k_brdf: 1,
+  angle_dependent_reflectance: true,
   termination_mode: 'threshold',
   contribution_mode: 'summary',
   intersection_backend: 'auto',
@@ -463,6 +470,8 @@ function normalizeRayTraceConfig(
     epsilon_mm: Math.max(1e-9, Number(config.epsilon_mm) || 1e-4),
     k_abs: Math.max(0, Number(config.k_abs) || 0),
     k_brdf: Math.max(0, Number(config.k_brdf) || 0),
+    angle_dependent_reflectance:
+      config.angle_dependent_reflectance !== false,
     termination_mode:
       config.termination_mode === 'russian_roulette'
         ? 'russian_roulette'
@@ -1082,6 +1091,18 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             activeRayTraceJobId: nextCase.latestJobId ?? null,
           }
         })
+      },
+      setCadCaseComponentMatchMetadata: (caseId, metadata) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === caseId
+              ? {
+                  ...item,
+                  componentMatchMetadata: structuredClone(metadata),
+                }
+              : item,
+          ),
+        }))
       },
       setActiveCadCaseResult: (result) => {
         set((state) => ({

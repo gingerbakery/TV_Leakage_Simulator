@@ -17,6 +17,9 @@ describe('compute execution status', () => {
       gpu_cuda_device_name: 'NVIDIA RTX Test',
       gpu_cuda_gpu_attempt_count: 4,
       gpu_cuda_gpu_success_count: 4,
+      wavefront_residency: 'gpu_resident',
+      gpu_resident_wavefront_attempt_count: 4,
+      gpu_resident_wavefront_success_count: 4,
       gpu_cuda_hybrid_cpu_success_count: 2,
       monte_carlo_contract: 'cpu_gpu_deterministic_batch_v1',
     }
@@ -35,6 +38,7 @@ describe('compute execution status', () => {
       'Compute device · GPU 활성 · CPU 보조',
     )
     expect(screen.getByText('CUDA batches · 4/4')).not.toBeNull()
+    expect(screen.getByText('GPU Resident · 4/4')).not.toBeNull()
     expect(screen.getByText('NVIDIA RTX Test')).not.toBeNull()
     expect(screen.getByText('CPU/GPU 동일 샘플 계약')).not.toBeNull()
   })

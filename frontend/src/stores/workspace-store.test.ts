@@ -79,6 +79,35 @@ describe('workspace store', () => {
     })
   })
 
+  it('stores lightweight Component matching metadata with its CAD Case', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+
+    actions.setCadCaseComponentMatchMetadata(caseId, [
+      {
+        component_id: 7,
+        component_name: 'Front frame',
+        object_name: 'Front frame',
+        face_count: 12,
+        area_mm2: 350,
+        bbox_min: [0, 0, 0],
+        bbox_max: [10, 20, 3],
+      },
+    ])
+
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseId)
+        ?.componentMatchMetadata,
+    ).toEqual([
+      expect.objectContaining({
+        component_id: 7,
+        component_name: 'Front frame',
+      }),
+    ])
+  })
+
   it('restores each CAD case ray job across show/hide and case switching', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

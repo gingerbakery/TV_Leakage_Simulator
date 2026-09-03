@@ -330,6 +330,7 @@ function comparisonConditionMismatches(
     ['Intersection epsilon', 'epsilon_mm'],
     ['k_abs', 'k_abs'],
     ['k_brdf', 'k_brdf'],
+    ['Angle-dependent reflectance', 'angle_dependent_reflectance'],
     ['Termination mode', 'termination_mode'],
   ] as const
   for (const [label, key] of traceFields) {

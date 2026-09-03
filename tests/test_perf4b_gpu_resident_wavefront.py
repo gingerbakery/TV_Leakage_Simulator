@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from benchmark_perf3b2a_multibounce import build_depth_ten_case
 from perf4_accuracy import compare_semantic_payloads
-from verify_gpu_cpu_accuracy import build_stochastic_two_bounce_case
+from verify_gpu_cpu_accuracy import (
+    build_face_direct_case,
+    build_stochastic_two_bounce_case,
+)
 from leakage_simulator import gpu_cuda_intersection as gpu_cuda
 from leakage_simulator.gpu_cuda_resident_wavefront import (
     GpuResidentWavefrontBatch,
@@ -138,6 +141,55 @@ class Perf4BGpuResidentIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             performance["gpu_resident_wavefront_fallback_count"],
+            0,
+        )
+
+    def test_zero_reflection_resident_matches_cpu_exactly(self) -> None:
+        def build_case(ray_count: int):
+            trace_input = build_face_direct_case(ray_count)
+            trace_input.config.max_depth = 0
+            return trace_input
+
+        cpu = _run(build_case, 512, "cpu", "host_roundtrip")
+        resident = _run(build_case, 512, "gpu_cuda", "gpu_resident")
+
+        report = compare_semantic_payloads(
+            _semantic_payload(cpu),
+            _semantic_payload(resident),
+        )
+        performance = resident.metrics["_performance_summary"]
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertTrue(report.semantic_exact)
+        self.assertEqual(performance["execution_path"], "single_bounce_wavefront")
+        self.assertEqual(performance["wavefront_residency"], "gpu_resident")
+        self.assertGreater(
+            performance["gpu_resident_wavefront_success_count"],
+            0,
+        )
+
+    def test_one_reflection_resident_preserves_cpu_contract(self) -> None:
+        def build_case(ray_count: int):
+            trace_input = build_stochastic_two_bounce_case(ray_count)
+            trace_input.config.max_depth = 1
+            trace_input.config.angle_dependent_reflectance = False
+            return trace_input
+
+        cpu = _run(build_case, 8192, "cpu", "host_roundtrip")
+        resident = _run(build_case, 8192, "gpu_cuda", "gpu_resident")
+
+        report = compare_semantic_payloads(
+            _semantic_payload(cpu),
+            _semantic_payload(resident),
+        )
+        performance = resident.metrics["_performance_summary"]
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertTrue(report.discrete_exact)
+        self.assertTrue(report.float64_tolerance_passed)
+        self.assertLessEqual(report.max_ulp_distance, 8)
+        self.assertEqual(performance["execution_path"], "single_bounce_wavefront")
+        self.assertEqual(performance["wavefront_residency"], "gpu_resident")
+        self.assertGreater(
+            performance["gpu_resident_wavefront_success_count"],
             0,
         )
 

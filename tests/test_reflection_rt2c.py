@@ -183,6 +183,23 @@ class ReflectionRT2CTests(unittest.TestCase):
         self.assertAlmostEqual(normal_value, 0.08)
         self.assertGreater(grazing_value, 0.4)
 
+    def test_angle_dependent_reflectance_can_be_disabled(self) -> None:
+        profile = OpticalProfile(
+            "gloss_black",
+            0.08,
+            scatter_model="mixed",
+            roughness=0.15,
+        )
+
+        grazing_value = effective_surface_reflectance(
+            (0.995, 0.0, -0.1),
+            (0.0, 0.0, 1.0),
+            profile,
+            angle_dependent=False,
+        )
+
+        self.assertAlmostEqual(grazing_value, 0.08)
+
     def test_specular_direction_matches_reflection_law(self) -> None:
         inverse_root_two = 1.0 / math.sqrt(2.0)
         incoming = (inverse_root_two, 0.0, -inverse_root_two)

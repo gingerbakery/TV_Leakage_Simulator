@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import type { SceneComponent, ScenePayload } from '@/api'
 import { createSceneFixture } from '@/test/scene-fixture'
 
-import { matchSetupComponents } from './copy-analysis-setup'
+import {
+  matchSetupComponents,
+  sceneComponentMatchMetadata,
+} from './copy-analysis-setup'
 
 function renamedDuplicateComponents(scene: ScenePayload): ScenePayload {
   const copy = structuredClone(scene)
@@ -41,6 +44,21 @@ function changeGeometry(component: SceneComponent, amount: number): SceneCompone
 }
 
 describe('matchSetupComponents', () => {
+  it('extracts lightweight metadata without tessellated face indices', () => {
+    const scene = createSceneFixture()
+
+    const metadata = sceneComponentMatchMetadata(scene)
+
+    expect(metadata).toHaveLength(scene.components.length)
+    expect(metadata[0]).toMatchObject({
+      component_id: scene.components[0].component_id,
+      component_name: scene.components[0].component_name,
+      face_count: scene.components[0].face_count,
+    })
+    expect(metadata[0]).not.toHaveProperty('face_indices')
+    expect(metadata[0]).not.toHaveProperty('color')
+  })
+
   it('normalizes common STEP name separators', () => {
     const source = createSceneFixture()
     source.components[0].component_name = 'Frame_Middle-FMB'

@@ -852,6 +852,14 @@ class GpuBackendContractTests(unittest.TestCase):
         self.assertEqual(config.intersection_backend, "bvh")
         self.assertEqual(config.to_dict()["intersection_backend"], "bvh")
 
+        angle_disabled = RayTraceConfig.from_dict(
+            {"angle_dependent_reflectance": False}
+        )
+        self.assertFalse(angle_disabled.angle_dependent_reflectance)
+        self.assertFalse(
+            angle_disabled.to_dict()["angle_dependent_reflectance"]
+        )
+
         mesh = TriangleMesh()
         mesh.set_acceleration_structure("bvh")
         self.assertEqual(mesh.intersection_backend, "bvh")

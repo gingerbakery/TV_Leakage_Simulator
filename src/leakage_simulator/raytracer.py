@@ -1630,9 +1630,7 @@ class _WavefrontReducerStats:
         detailed_contributions: bool,
         max_depth: int,
     ) -> None:
-        if max_depth <= 1:
-            self.selection_reason = "no_eligible_soa_tape"
-        elif pipeline != "soa_event_tape":
+        if pipeline != "soa_event_tape":
             self.selection_reason = "not_soa_event_tape"
         elif self.requested_provider == "auto":
             self.selection_reason = "auto_python_no_probe"
@@ -2333,7 +2331,6 @@ def run_direct_ray_trace(
         and intersection_provider == "gpu_cuda"
         and selected_wavefront_pipeline == "soa_event_tape"
         and wavefront_rng == "counter_rng_v2"
-        and trace_input.config.max_depth > 1
     )
     if wavefront_residency == "gpu_resident" and gpu_resident_eligible:
         resident_effective_mode = "gpu_resident"
@@ -2523,7 +2520,14 @@ def run_direct_ray_trace(
                         stopped_early = True
                         break
                     end = min(len(origin_batch), start + intersection_batch_size)
-                    if trace_input.config.max_depth <= 1:
+                    use_wavefront_dispatch = bool(
+                        trace_input.config.max_depth > 1
+                        or (
+                            selected_wavefront_pipeline == "soa_event_tape"
+                            and wavefront_rng == "counter_rng_v2"
+                        )
+                    )
+                    if not use_wavefront_dispatch:
                         batch_counts = _trace_single_bounce_batch(
                             trace_input.mesh,
                             origin_batch[start:end],
@@ -2866,6 +2870,7 @@ def run_direct_ray_trace(
                     current_direction,
                     surface_hit.normal,
                     resolved_optical.profile,
+                    trace_input.config.angle_dependent_reflectance,
                 )
                 surface_contribution = (
                     _surface_contribution_for_face(
@@ -3060,7 +3065,11 @@ def run_direct_ray_trace(
     metrics["_performance_summary"] = {
         "backend": "python_numpy_cpu",
         "execution_path": (
-            "multi_bounce_wavefront"
+            (
+                "single_bounce_wavefront"
+                if trace_input.config.max_depth <= 1
+                else "multi_bounce_wavefront"
+            )
             if multi_bounce_wavefront_used
             else execution_path
         ),
@@ -3348,6 +3357,7 @@ def _trace_single_bounce_fast(
         direction,
         surface_hit.normal,
         resolved_optical.profile,
+        config.angle_dependent_reflectance,
     )
     surface_contribution = (
         _surface_contribution_for_face(
@@ -3473,6 +3483,7 @@ def _trace_single_bounce_fast(
             reflection_sample.direction,
             secondary_surface_hit.normal,
             secondary_optical.profile,
+            config.angle_dependent_reflectance,
         )
         secondary_contribution = (
             _surface_contribution_for_face(
@@ -4009,6 +4020,9 @@ def _plan_counter_wavefront_rows(
                 else 0.0
             ),
             epsilon_mm=config.epsilon_mm,
+            angle_dependent_reflectance=(
+                config.angle_dependent_reflectance
+            ),
         )
     except Exception:
         planner_stats.record_input_prepare_failure(len(hit_rows))
@@ -4094,6 +4108,9 @@ def _plan_deterministic_wavefront_rows(
                     max_depth=config.max_depth,
                     min_energy=config.min_energy,
                     termination_mode=NATIVE_WAVEFRONT_TERMINATION_THRESHOLD,
+                    angle_dependent_reflectance=(
+                        config.angle_dependent_reflectance
+                    ),
                 )
                 if len(native_rows)
                 else None
@@ -6617,6 +6634,7 @@ def _trace_multi_bounce_wavefront_batch(
                         state.current_direction,
                         normal,
                         resolved_optical.profile,
+                        config.angle_dependent_reflectance,
                     )
                 )
                 reflection_rng_was_unset = state.reflection_rng is None
@@ -6833,6 +6851,9 @@ def _trace_multi_bounce_gpu_resident_batch(
             bounce_receiver_mis_enabled=bounce_sampling_enabled,
             bounce_receiver_importance_fraction=(
                 config.bounce_receiver_importance_fraction
+            ),
+            angle_dependent_reflectance=(
+                config.angle_dependent_reflectance
             ),
         ),
         summary_request=summary_request,
@@ -7101,8 +7122,6 @@ def _trace_multi_bounce_wavefront_soa_batch(
     bounce_sampling_stats: _BounceSamplingStats,
     bounce_sampling_enabled: bool,
 ) -> Tuple[int, int, int]:
-    if config.max_depth <= 1:
-        raise ValueError("multi-bounce wavefront requires max_depth >= 2")
     ray_count = len(origins)
     if ray_count == 0:
         return 0, 0, 0
@@ -7424,6 +7443,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
                         incoming_direction,
                         normal,
                         resolved_optical.profile,
+                        config.angle_dependent_reflectance,
                     )
                 )
                 primary_slot = int(active.primary_slots[active_index])
@@ -7844,6 +7864,7 @@ def _plan_single_bounce(
         direction,
         primary_surface_hit.normal,
         resolved_optical.profile,
+        config.angle_dependent_reflectance,
     )
     plan.reflection_decision = _decide_reflection_emission(
         rng,
@@ -7926,6 +7947,7 @@ def _commit_single_bounce_plan(
         direction,
         surface_hit.normal,
         resolved_optical.profile,
+        config.angle_dependent_reflectance,
     )
     surface_contribution = (
         _surface_contribution_for_face(
@@ -8019,6 +8041,7 @@ def _commit_single_bounce_plan(
             reflection_sample.direction,
             secondary_surface_hit.normal,
             secondary_optical.profile,
+            config.angle_dependent_reflectance,
         )
         secondary_contribution = (
             _surface_contribution_for_face(

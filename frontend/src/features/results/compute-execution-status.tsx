@@ -52,6 +52,19 @@ export function ComputeExecutionStatus({
             CUDA batches · {summary.gpuSuccesses}/{summary.gpuAttempts}
           </Badge>
         ) : null}
+        {summary.requested === 'gpu_cuda' ? (
+          <Badge
+            variant={
+              summary.gpuResidentMode === 'gpu_resident' &&
+              summary.gpuResidentSuccesses > 0
+                ? 'secondary'
+                : 'destructive'
+            }
+          >
+            GPU Resident · {summary.gpuResidentSuccesses}/
+            {summary.gpuResidentAttempts}
+          </Badge>
+        ) : null}
         {summary.cpuSmallWaveSuccesses > 0 ? (
           <Badge variant="outline">CPU small waves · {summary.cpuSmallWaveSuccesses}</Badge>
         ) : null}

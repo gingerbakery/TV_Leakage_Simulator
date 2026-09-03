@@ -28,6 +28,7 @@ def effective_surface_reflectance(
     incoming: Vec3,
     normal: Vec3,
     profile: OpticalProfile,
+    angle_dependent: bool = True,
 ) -> float:
     """Angle-aware reflectance used for ray energy conservation.
 
@@ -36,6 +37,9 @@ def effective_surface_reflectance(
     incidence that a constant coefficient misses. Rough finishes retain a
     smaller sheen term; glossy finishes retain nearly the full Fresnel rise.
     """
+    if not angle_dependent:
+        return max(0.0, min(1.0, profile.reflectance))
+
     incoming_direction = _normalize(incoming)
     surface_normal = _oriented_surface_normal(incoming_direction, normal)
     cos_incidence = max(

@@ -510,6 +510,7 @@ class RayTraceConfig:
     epsilon_mm: float = 1e-4
     k_abs: float = 0.12
     k_brdf: float = 1.0
+    angle_dependent_reflectance: bool = True
     termination_mode: str = "threshold"
     contribution_mode: str = "summary"
     intersection_backend: str = "auto"
@@ -538,6 +539,9 @@ class RayTraceConfig:
         self.epsilon_mm = require_positive(self.epsilon_mm, "epsilon_mm")
         self.k_abs = require_non_negative(self.k_abs, "k_abs")
         self.k_brdf = require_non_negative(self.k_brdf, "k_brdf")
+        self.angle_dependent_reflectance = bool(
+            self.angle_dependent_reflectance
+        )
         self.termination_mode = require_choice(self.termination_mode, "termination_mode", TERMINATION_MODES)
         self.contribution_mode = require_choice(
             self.contribution_mode,

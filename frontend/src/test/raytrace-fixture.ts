@@ -58,6 +58,7 @@ export function createRayTraceResultFixture(): RayTraceResult {
       epsilon_mm: 1e-4,
       k_abs: 0.12,
       k_brdf: 1,
+      angle_dependent_reflectance: true,
       termination_mode: 'threshold',
       contribution_mode: 'detailed',
       intersection_backend: 'bvh',

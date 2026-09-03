@@ -45,7 +45,10 @@ import {
   readBitsamProjectFile,
   type BitsamProject,
 } from '@/features/projects'
-import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
+import {
+  matchSetupComponents,
+  sceneComponentMatchMetadata,
+} from '@/features/projects/copy-analysis-setup'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
@@ -139,12 +142,14 @@ export function SimulatorShell() {
   const [copySetupOpen, setCopySetupOpen] = useState(false)
   const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
   const [copySetupPending, setCopySetupPending] = useState(false)
+  const [copySetupProgress, setCopySetupProgress] = useState('')
   const [pendingProject, setPendingProject] =
     useState<BitsamProject | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
   const projectFileInputRef = useRef<HTMLInputElement>(null)
   const projectLoadAttemptRef = useRef('')
+  const copySetupAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -214,6 +219,15 @@ export function SimulatorShell() {
   }, [rawRayTraceResult, receivers, savedActiveCaseResult])
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
+
+  useEffect(() => {
+    if (!scene || !activeCadCaseId) return
+    actions.setCadCaseComponentMatchMetadata(
+      activeCadCaseId,
+      sceneComponentMatchMetadata(scene),
+    )
+  }, [actions, activeCadCaseId, scene])
+
   const activeComponent =
     scene?.components.find(
       (component) =>
@@ -491,32 +505,61 @@ export function SimulatorShell() {
 
   const handleCopyAnalysisSetup = async () => {
     if (!scene || copySetupTargetIds.length === 0) return
+    const abortController = new AbortController()
+    copySetupAbortRef.current = abortController
     setCopySetupPending(true)
+    setCopySetupProgress('Preparing Component metadata...')
     try {
       const selectedCases = cadCases.filter((item) =>
         copySetupTargetIds.includes(item.caseId),
       )
-      const settled = await Promise.allSettled(
-        selectedCases.map(async (item) => {
-          const targetScene = await apiClient.getScene(item.cad.path)
-          return {
-            item,
-            match: matchSetupComponents(scene, targetScene),
+      const sourceMetadata =
+        cadCases.find((item) => item.caseId === activeCadCaseId)
+          ?.componentMatchMetadata ?? sceneComponentMatchMetadata(scene)
+      const successful: Array<{
+        item: (typeof selectedCases)[number]
+        match: ReturnType<typeof matchSetupComponents>
+      }> = []
+      const failedCases: string[] = []
+
+      for (let index = 0; index < selectedCases.length; index += 1) {
+        if (abortController.signal.aborted) return
+        const item = selectedCases[index]
+        const caseName =
+          item.name || item.cad.displayName || `Case ${index + 1}`
+        setCopySetupProgress(
+          `${index + 1} / ${selectedCases.length} · ${caseName}`,
+        )
+        // Yield once so the progress label paints before any legacy Scene
+        // fallback. Normal imported Cases already have lightweight metadata.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+        try {
+          let targetMetadata = item.componentMatchMetadata
+          if (!targetMetadata || targetMetadata.length === 0) {
+            // Compatibility path for a Case created before metadata capture.
+            // Process one full Scene at a time so large meshes never coexist.
+            const targetScene = await apiClient.getScene(item.cad.path, {
+              signal: abortController.signal,
+            })
+            targetMetadata = sceneComponentMatchMetadata(targetScene)
+            actions.setCadCaseComponentMatchMetadata(
+              item.caseId,
+              targetMetadata,
+            )
           }
-        }),
-      )
-      const successful = settled.flatMap((result) =>
-        result.status === 'fulfilled' ? [result.value] : [],
-      )
-      const failedCases = settled.flatMap((result, index) =>
-        result.status === 'rejected'
-          ? [
-              selectedCases[index]?.name ||
-                selectedCases[index]?.cad.displayName ||
-                `Case ${index + 1}`,
-            ]
-          : [],
-      )
+          successful.push({
+            item,
+            match: matchSetupComponents(
+              { components: sourceMetadata },
+              { components: targetMetadata },
+            ),
+          })
+        } catch (error) {
+          if (abortController.signal.aborted) return
+          failedCases.push(caseName)
+          console.warn(`Copy Setup metadata failed for ${caseName}`, error)
+        }
+      }
       if (successful.length === 0) {
         openFeatureNotice(
           'Copy Setup Failed',
@@ -593,7 +636,11 @@ export function SimulatorShell() {
           : '설정을 복사하는 중 알 수 없는 오류가 발생했습니다.',
       )
     } finally {
+      if (copySetupAbortRef.current === abortController) {
+        copySetupAbortRef.current = null
+      }
       setCopySetupPending(false)
+      setCopySetupProgress('')
     }
   }
 
@@ -904,17 +951,22 @@ export function SimulatorShell() {
 
       <AppDialog
         open={copySetupOpen}
-        onOpenChange={setCopySetupOpen}
+        onOpenChange={(open) => {
+          if (!open) copySetupAbortRef.current?.abort()
+          setCopySetupOpen(open)
+        }}
         title="Copy Analysis Setup"
         description="현재 활성 Case의 해석 조건을 선택한 Case에 복사합니다. 대상 Case의 기존 설정과 Ray 결과는 교체됩니다."
         footer={
           <>
             <Button
               variant="outline"
-              disabled={copySetupPending}
-              onClick={() => setCopySetupOpen(false)}
+              onClick={() => {
+                copySetupAbortRef.current?.abort()
+                setCopySetupOpen(false)
+              }}
             >
-              Cancel
+              {copySetupPending ? 'Cancel Copy' : 'Cancel'}
             </Button>
             <Button
               disabled={copySetupTargetIds.length === 0 || copySetupPending}
@@ -948,13 +1000,14 @@ export function SimulatorShell() {
                   <input
                     type="checkbox"
                     checked={copySetupTargetIds.includes(item.caseId)}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked
                       setCopySetupTargetIds((current) =>
-                        event.currentTarget.checked
+                        checked
                           ? [...current, item.caseId]
                           : current.filter((caseId) => caseId !== item.caseId),
                       )
-                    }
+                    }}
                   />
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-semibold">
@@ -967,6 +1020,14 @@ export function SimulatorShell() {
                 </label>
               ))}
           </fieldset>
+          {copySetupPending && copySetupProgress ? (
+            <div
+              className="rounded-lg border border-primary/25 bg-primary/5 p-3 text-sm font-medium text-foreground"
+              role="status"
+            >
+              Copying Setup · {copySetupProgress}
+            </div>
+          ) : null}
           <div className="rounded-lg border border-orange-300/60 bg-orange-50/70 p-3 text-xs leading-5 text-orange-950 dark:border-orange-800 dark:bg-orange-950/30 dark:text-orange-100">
             전체 해석 설정을 안전하게 복사합니다. Component 설정은 CAD 이름이 일치하는 부품에만 연결하고, ROI는 동일 공간 좌표로 재매핑합니다. Face 종속 Material·Transform은 제외하며 CAD Surface Emitter는 Face를 다시 선택해야 합니다.
           </div>

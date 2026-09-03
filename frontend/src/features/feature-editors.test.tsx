@@ -1213,6 +1213,15 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.click(runOptionsSummary!)
     expect(runOptionsDetails?.open).toBe(true)
 
+    const angleReflectance = screen.getByRole('checkbox', {
+      name: /Angle-dependent reflectance/,
+    })
+    expect(angleReflectance).toHaveProperty('checked', true)
+    fireEvent.click(angleReflectance)
+    expect(
+      workspaceStore.getState().rayTraceConfig.angle_dependent_reflectance,
+    ).toBe(false)
+
     const computeDeviceSelector = screen.getByRole('group', {
       name: '연산 장치 선택',
     })

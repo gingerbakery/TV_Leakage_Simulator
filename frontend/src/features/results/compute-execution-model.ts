@@ -15,6 +15,9 @@ export interface ComputeExecutionSummary {
   deviceName: string | null
   gpuAttempts: number
   gpuSuccesses: number
+  gpuResidentAttempts: number
+  gpuResidentSuccesses: number
+  gpuResidentMode: string | null
   cpuSmallWaveSuccesses: number
   accuracyContract: string | null
   accuracyParityVerified: boolean
@@ -64,6 +67,13 @@ export function resolveComputeExecution(
   const deviceName = text(performance.gpu_cuda_device_name)
   const gpuAttempts = count(performance.gpu_cuda_gpu_attempt_count)
   const gpuSuccesses = count(performance.gpu_cuda_gpu_success_count)
+  const gpuResidentAttempts = count(
+    performance.gpu_resident_wavefront_attempt_count,
+  )
+  const gpuResidentSuccesses = count(
+    performance.gpu_resident_wavefront_success_count,
+  )
+  const gpuResidentMode = text(performance.wavefront_residency)
   const cpuSmallWaveSuccesses = count(
     performance.gpu_cuda_hybrid_cpu_success_count,
   )
@@ -85,6 +95,9 @@ export function resolveComputeExecution(
       deviceName: null,
       gpuAttempts,
       gpuSuccesses,
+      gpuResidentAttempts,
+      gpuResidentSuccesses,
+      gpuResidentMode,
       cpuSmallWaveSuccesses,
       accuracyContract,
       accuracyParityVerified,
@@ -109,6 +122,9 @@ export function resolveComputeExecution(
       deviceName,
       gpuAttempts,
       gpuSuccesses,
+      gpuResidentAttempts,
+      gpuResidentSuccesses,
+      gpuResidentMode,
       cpuSmallWaveSuccesses,
       accuracyContract,
       accuracyParityVerified,
@@ -129,6 +145,9 @@ export function resolveComputeExecution(
       deviceName,
       gpuAttempts,
       gpuSuccesses,
+      gpuResidentAttempts,
+      gpuResidentSuccesses,
+      gpuResidentMode,
       cpuSmallWaveSuccesses,
       accuracyContract,
       accuracyParityVerified,
@@ -144,6 +163,9 @@ export function resolveComputeExecution(
     deviceName,
     gpuAttempts,
     gpuSuccesses,
+    gpuResidentAttempts,
+    gpuResidentSuccesses,
+    gpuResidentMode,
     cpuSmallWaveSuccesses,
     accuracyContract,
     accuracyParityVerified,
