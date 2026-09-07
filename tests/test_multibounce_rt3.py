@@ -255,7 +255,7 @@ class MultiBounceRT3Tests(unittest.TestCase):
         self.assertEqual(depth_ten.receiver_hit_count, 100)
         self.assertAlmostEqual(
             depth_ten.metrics["corridor_observer"]["total_flux_lumen"],
-            (0.95**10) / math.sqrt(2.0),
+            0.95**10,
             places=6,
         )
         self.assertEqual(

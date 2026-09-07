@@ -322,6 +322,16 @@ function comparisonConditionMismatches(
   }
   const different = (left: unknown, right: unknown) =>
     !equivalent(left, right)
+  const receiverFluxContract = (candidate: RayTraceResult) =>
+    String(
+      metricGroup(candidate, '_performance_summary').receiver_flux_contract ??
+        'cosine_weighted_incident_flux_v1',
+    )
+  if (
+    different(receiverFluxContract(result), receiverFluxContract(baseline))
+  ) {
+    mismatches.push('Calculation version · Receiver flux')
+  }
   const traceFields = [
     ['Ray count', 'ray_count'],
     ['Max reflection', 'max_depth'],

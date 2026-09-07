@@ -275,6 +275,31 @@ describe('Step 11 result UI', () => {
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })
 
+  it('does not score reports produced by different Receiver flux contracts', () => {
+    const baseline = createRayTraceResultFixture()
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-geometric-receiver-flux'
+    comparison.metrics._performance_summary = {
+      ...(comparison.metrics._performance_summary as Record<string, unknown>),
+      receiver_flux_contract: 'geometric_incident_flux_v2',
+    }
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
   it('deletes one Receiver result from the current report Case', async () => {
     const result = createRayTraceResultFixture()
     result.receivers[0].display_name = 'Front Receiver'

@@ -273,7 +273,7 @@ class Perf3B2AMultiBounceWavefrontTests(unittest.TestCase):
         self.assertEqual(wavefront.receiver_hit_count, 100)
         self.assertAlmostEqual(
             wavefront.metrics["corridor_observer"]["total_flux_lumen"],
-            (0.95**10) / math.sqrt(2.0),
+            0.95**10,
             places=6,
         )
         performance = wavefront.metrics["_performance_summary"]

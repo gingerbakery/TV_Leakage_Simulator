@@ -1581,7 +1581,10 @@ def _make_kernel() -> Callable[..., None]:
                 best_receiver = receiver_index
                 best_receiver_row = row
                 best_receiver_column = column
-                best_receiver_power = current_power * acceptance_cosine
+                # The finite receiver-plane intersection already carries the
+                # projected-area cosine through geometric hit probability.
+                # Keep acceptance_cosine as an angular gate only.
+                best_receiver_power = current_power
                 best_receiver_point_x = point_x
                 best_receiver_point_y = point_y
                 best_receiver_point_z = point_z
