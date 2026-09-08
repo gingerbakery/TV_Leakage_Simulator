@@ -7,6 +7,7 @@ import type {
   RayTraceResult,
   ReceiverSpec,
 } from '@/api'
+import { mergeRayTraceResultSourceContexts } from '@/features/raytracing/ray-result-source-context'
 
 export interface ActiveCad {
   path: string
@@ -780,6 +781,10 @@ export function mergeRayTraceReceiverResults(
     const receiverId = storedPathReceiverId(path)
     return receiverId !== null && retainedIds.has(receiverId)
   })
+  const sourceContext = mergeRayTraceResultSourceContexts(
+    previous.source_context,
+    current.source_context,
+  )
 
   return {
     ...structuredClone(current),
@@ -791,6 +796,7 @@ export function mergeRayTraceReceiverResults(
       ...current.stored_paths.map((path) => structuredClone(path)),
     ],
     metrics,
+    ...(sourceContext ? { source_context: sourceContext } : {}),
   }
 }
 

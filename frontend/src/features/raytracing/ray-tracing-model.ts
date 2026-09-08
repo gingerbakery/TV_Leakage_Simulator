@@ -18,6 +18,7 @@ import type {
   MaterialAssignment,
   RoiScope,
 } from '@/stores'
+import { mergeRayTraceResultSourceContexts } from './ray-result-source-context'
 
 export interface ViewerCameraFrame {
   target: Vec3
@@ -487,6 +488,10 @@ export function mergeConvergenceRayTraceResults(
       seed: previousEmitter ? previousEmitter.seed : emitter.seed,
     }
   })
+  const sourceContext = mergeRayTraceResultSourceContexts(
+    previous.source_context,
+    current.source_context,
+  )
 
   return {
     ...structuredClone(current),
@@ -507,6 +512,7 @@ export function mergeConvergenceRayTraceResults(
     runtime_sec: previous.runtime_sec + current.runtime_sec,
     stored_paths: storedPaths,
     metrics,
+    ...(sourceContext ? { source_context: sourceContext } : {}),
   }
 }
 

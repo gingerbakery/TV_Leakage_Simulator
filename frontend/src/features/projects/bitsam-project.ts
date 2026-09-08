@@ -1,9 +1,14 @@
 import type {
   EmitterSpec,
+  OpticalAssignment,
+  OpticalProfile,
   RayTraceConfigRequest,
+  RayTraceRequest,
   RayTraceResult,
+  RayTraceResultSourceContext,
   ReceiverSpec,
   ScenePayload,
+  TransformRule,
 } from '@/api'
 import type {
   ActiveCad,
@@ -396,6 +401,139 @@ function isRayTraceConfig(
   )
 }
 
+function isOpticalProfile(value: unknown): value is OpticalProfile {
+  return (
+    isRecord(value) &&
+    isString(value.profile_id) &&
+    isFiniteNumber(value.reflectance) &&
+    isNumberOrNull(value.absorption) &&
+    isFiniteNumber(value.specular_ratio) &&
+    isFiniteNumber(value.diffuse_ratio) &&
+    isOneOf(value.scatter_model, [
+      'none',
+      'specular',
+      'lambertian',
+      'gaussian',
+      'mixed',
+    ]) &&
+    isFiniteNumber(value.roughness) &&
+    isFiniteNumber(value.gaussian_sigma_deg) &&
+    isStringOrNull(value.bsdf_asset_id) &&
+    isString(value.notes)
+  )
+}
+
+function isOpticalAssignment(value: unknown): value is OpticalAssignment {
+  return (
+    isRecord(value) &&
+    isString(value.assignment_id) &&
+    isOneOf(value.target_type, ['part', 'faces']) &&
+    isSafeId(value.component_id) &&
+    isString(value.profile_id) &&
+    isIdArray(value.face_indices) &&
+    isFiniteNumber(value.priority) &&
+    isBoolean(value.enabled)
+  )
+}
+
+function isApiTransformRule(value: unknown): value is TransformRule {
+  return (
+    isRecord(value) &&
+    isString(value.rule_id) &&
+    value.target_type === 'component' &&
+    isSafeId(value.object_id) &&
+    isString(value.label) &&
+    isBoolean(value.enabled) &&
+    isVector3Value(value.move) &&
+    isVector3Value(value.tilt) &&
+    (value.pivot === undefined || isVector3Value(value.pivot))
+  )
+}
+
+function isRayTraceRequestConfig(
+  value: unknown,
+): value is RayTraceRequest['config'] {
+  return (
+    isRayTraceConfig(value) &&
+    isOneOf(value.compute_backend, ['cpu', 'gpu_cuda']) &&
+    (value.primary_sampling_strategy === undefined ||
+      isOneOf(value.primary_sampling_strategy, ['source', 'receiver_mis'])) &&
+    (value.receiver_importance_fraction === undefined ||
+      isFiniteNumber(value.receiver_importance_fraction)) &&
+    (value.bounce_sampling_strategy === undefined ||
+      isOneOf(value.bounce_sampling_strategy, ['source', 'receiver_mis'])) &&
+    (value.bounce_receiver_importance_fraction === undefined ||
+      isFiniteNumber(value.bounce_receiver_importance_fraction))
+  )
+}
+
+function isRayTraceRequestReceiver(value: unknown): value is ReceiverSpec {
+  return (
+    isReceiverSpec(value) &&
+    isRecord(value) &&
+    (value.pivot === null || isVec3(value.pivot))
+  )
+}
+
+function isRayTraceRequest(value: unknown): value is RayTraceRequest {
+  return (
+    isRecord(value) &&
+    isString(value.scene_token) &&
+    value.scene_token.trim().length > 0 &&
+    isString(value.project_name) &&
+    value.project_name.trim().length > 0 &&
+    isArrayOf(value.emitters, isEmitterSpec) &&
+    isArrayOf(value.receivers, isRayTraceRequestReceiver) &&
+    isArrayOf(value.optical_profiles, isOpticalProfile) &&
+    isArrayOf(value.optical_assignments, isOpticalAssignment) &&
+    isArrayOf(value.transform_rules, isApiTransformRule) &&
+    isIdArray(value.excluded_component_ids) &&
+    (value.roi_faces === undefined || isIdArray(value.roi_faces)) &&
+    isRayTraceRequestConfig(value.config)
+  )
+}
+
+function isRayTraceResultSourceScene(
+  value: unknown,
+): value is RayTraceResultSourceContext['scene'] {
+  return (
+    isRecord(value) &&
+    value.schema_version === 'ray-result-scene.v1' &&
+    isString(value.scene_token) &&
+    value.scene_token.trim().length > 0 &&
+    value.scene_schema_version === 'mesh-scene.v1' &&
+    isSafeId(value.face_count) &&
+    isSafeId(value.vertex_count) &&
+    isSafeId(value.component_count) &&
+    isString(value.mesh_signature) &&
+    value.mesh_signature.trim().length > 0
+  )
+}
+
+function isRayTraceResultSourceContext(
+  value: unknown,
+): value is RayTraceResultSourceContext {
+  if (!isRecord(value)) return false
+  const scene = value.scene
+  const requests = value.requests
+  if (
+    value.schema_version !== 'ray-result-source.v1' ||
+    !(
+      value.cad_case_id === null ||
+      (isString(value.cad_case_id) && value.cad_case_id.trim().length > 0)
+    ) ||
+    !isString(value.cad_display_name) ||
+    value.cad_display_name.trim().length === 0 ||
+    !isRayTraceResultSourceScene(scene) ||
+    !isArrayOf(requests, isRayTraceRequest) ||
+    requests.length === 0
+  ) {
+    return false
+  }
+
+  return requests.every((request) => request.scene_token === scene.scene_token)
+}
+
 function isRayPathDisplayFilters(
   value: unknown,
 ): value is RayPathDisplayFilters {
@@ -436,7 +574,9 @@ function isSavedRayTraceResult(value: unknown): value is RayTraceResult {
     isFiniteNumber(value.surface_hit_count) &&
     isFiniteNumber(value.runtime_sec) &&
     isRecord(value.metrics) &&
-    isRecord(value.contribution_summary)
+    isRecord(value.contribution_summary) &&
+    (value.source_context === undefined ||
+      isRayTraceResultSourceContext(value.source_context))
   )
 }
 

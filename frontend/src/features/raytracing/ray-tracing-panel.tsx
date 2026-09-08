@@ -59,6 +59,12 @@ import {
   rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
+import {
+  attachRayTraceResultSourceContext,
+  createRayTraceResultSourceContext,
+  registerPendingRayTraceResultSourceContext,
+  takePendingRayTraceResultSourceContext,
+} from './ray-result-source-context'
 import { ComputeDeviceSelector } from './compute-device-selector'
 import { isGpuCudaStatusReady } from './gpu-cuda-status'
 
@@ -1267,6 +1273,7 @@ export function RayTracingPanel({
     workspaceSelectors.activeRayTraceJobId,
   )
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const editingEmitter =
     emitters.find(
@@ -1436,6 +1443,11 @@ export function RayTracingPanel({
       autoRetryAbortControllerRef.current = abortController
     }
     try {
+      const sourceContext = createRayTraceResultSourceContext(
+        scene,
+        request,
+        activeCadCaseId,
+      )
       const startedJob = await startMutation.mutateAsync({
         request,
         signal: abortController?.signal,
@@ -1452,6 +1464,10 @@ export function RayTracingPanel({
         return false
       }
       autoRetryJobIdRef.current = autoRetry ? startedJob.job_id : null
+      registerPendingRayTraceResultSourceContext(
+        startedJob.job_id,
+        sourceContext,
+      )
       actions.setActiveRayTraceJobId(startedJob.job_id)
       return true
     } catch {
@@ -1463,7 +1479,7 @@ export function RayTracingPanel({
       setAutoConvergenceStatus('자동 수렴의 다음 Ray 실행을 시작하지 못했습니다.')
       return false
     }
-  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCadCaseId, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
@@ -1489,12 +1505,15 @@ export function RayTracingPanel({
     if (autoRetryJobIdRef.current === job.job_id) {
       autoRetryJobIdRef.current = null
     }
-    let accumulatedResult = job.result
+    const sourceContext = takePendingRayTraceResultSourceContext(job.job_id)
+    let accumulatedResult = sourceContext
+      ? attachRayTraceResultSourceContext(job.result, sourceContext)
+      : job.result
     if (config.auto_convergence) {
       try {
         accumulatedResult = mergeConvergenceRayTraceResults(
           convergenceAggregateRef.current,
-          job.result,
+          accumulatedResult,
         )
       } catch {
         autoConvergenceActiveRef.current = false

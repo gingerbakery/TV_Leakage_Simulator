@@ -12,6 +12,10 @@ __pycache__/
 outputs/
 _uploads/
 
+# Reproducible large synthetic ray histories (keep local; regenerate for validation)
+samples/side_seam/*.result.json
+samples/side_seam_horizontal/*.result.json
+
 # Release/package artifacts
 release/
 build/

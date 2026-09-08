@@ -54,6 +54,7 @@ import {
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
 import { ComputeExecutionStatus } from './compute-execution-status'
+import { prototypeLeakagePreviewUnavailableReason } from './leakage-preview-data'
 
 // Kill switch for the Ray Section View images in the Ray summary tab.
 // This feature has a known limitation (the true filled-cap cross-section
@@ -64,6 +65,22 @@ import { ComputeExecutionStatus } from './compute-execution-status'
 // whole merge (which would also undo the unrelated WORKFLOW accordion,
 // Receiver color, and ROI datum-pick fixes bundled in the same commit).
 const RAY_SECTION_VIEW_ENABLED = true
+
+function leakagePreviewUnavailableTitle(reason: string): string {
+  switch (reason) {
+    case 'result_source_context_missing':
+    case 'result_source_request_missing':
+      return '이 결과에는 실행 당시 CAD 연결 정보가 없습니다. 새 Ray Tracing 결과부터 사용할 수 있습니다.'
+    case 'roi_trace_not_supported_by_prototype_aabb':
+      return 'ROI 해석 결과는 이번 3D 빛샘 시제품에서 지원하지 않습니다.'
+    case 'excluded_components_not_supported_by_prototype_aabb':
+      return '해석 제외 부품이 있는 결과는 이번 3D 빛샘 시제품에서 지원하지 않습니다.'
+    case 'stored_receiver_paths_not_available':
+      return '수광 결과의 3D 위치를 만들 저장 경로 표본이 없습니다.'
+    default:
+      return '이 결과는 현재 3D 빛샘 시제품에서 표시할 수 없습니다.'
+  }
+}
 
 type ResultTab =
   | 'summary'
@@ -87,6 +104,11 @@ interface RayTraceResultWindowProps {
   }>
   onCaseMetadataChange?(caseId: string, name: string, note: string): void
   onDeleteCaseReceiverResult?(caseId: string, receiverId: string): void
+  onOpenLeakagePreview?(request: {
+    caseId: string | null
+    runId: string
+    result: RayTraceResult
+  }): void
   onOpenChange(open: boolean): void
 }
 
@@ -1719,6 +1741,7 @@ export function RayTraceResultWindow({
   reportCases = [],
   onCaseMetadataChange,
   onDeleteCaseReceiverResult,
+  onOpenLeakagePreview,
   onOpenChange,
 }: RayTraceResultWindowProps) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1845,15 +1868,26 @@ export function RayTraceResultWindow({
     }
   }, [open])
 
-  const result =
-    analysisCases.find((item) => item.case_id === reportCaseId)?.result ??
-    liveResult
+  const reportCase = analysisCases.find(
+    (item) => item.case_id === reportCaseId,
+  )
+  const result = reportCase?.result ?? liveResult
   useEffect(() => {
     if (result?.config.convergence_target_percent) {
       setErrorTargetPercent(result.config.convergence_target_percent)
     }
   }, [result?.config.convergence_target_percent, result?.run_id])
   if (!open || !result) return null
+  const prototypeUnavailableReason =
+    prototypeLeakagePreviewUnavailableReason(result)
+  const leakagePreviewUnavailableReason = prototypeUnavailableReason
+    ? leakagePreviewUnavailableTitle(prototypeUnavailableReason)
+    : !result.source_context?.cad_case_id
+      ? '이 결과에는 3D 형상을 다시 열 CAD Case 연결 정보가 없습니다.'
+      : reportCase &&
+          result.source_context.cad_case_id !== reportCase.case_id
+        ? '선택한 Case와 결과의 CAD 연결 정보가 일치하지 않습니다.'
+        : null
   const componentNames = new Map(
     (scene?.components ?? []).map((component) => [
       component.component_id,
@@ -2130,6 +2164,24 @@ export function RayTraceResultWindow({
                   </option>
                 ))}
               </select>
+            ) : null}
+            {onOpenLeakagePreview ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={leakagePreviewUnavailableReason !== null}
+                title={leakagePreviewUnavailableReason ?? '완료 결과를 3D에서 보기'}
+                onClick={() =>
+                  onOpenLeakagePreview({
+                    caseId: reportCase?.case_id ?? null,
+                    runId: result.run_id,
+                    result,
+                  })
+                }
+              >
+                <Aperture />
+                3D 빛샘 보기
+              </Button>
             ) : null}
             <Badge className="bg-primary/12 text-primary">Complete</Badge>
             <Button

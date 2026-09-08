@@ -1,0 +1,500 @@
+{
+  "format": "tv-leakage-simulator-project",
+  "schema_version": "bitsam-project.v1",
+  "application_version": "1.0.0",
+  "saved_at": "2026-09-07T02:52:46.385Z",
+  "project_name": "horizontal_gap_0p3_off",
+  "cad": {
+    "display_name": "horizontal_gap_0p3_off.step",
+    "file_extension": ".step",
+    "fingerprint": {
+      "scene_schema_version": "mesh-scene.v1",
+      "face_count": 110,
+      "vertex_count": 42,
+      "component_count": 3,
+      "geometry_signature": "fnv1a32:17e6a5a4"
+    }
+  },
+  "workspace": {
+    "hiddenComponentIds": [],
+    "excludedComponentIds": [],
+    "deletedComponentIds": [],
+    "componentNameOverrides": {},
+    "componentColorOverrides": {},
+    "materialAssignments": [
+      {
+        "assignmentId": "opaque_0",
+        "componentId": 0,
+        "targetType": "part",
+        "faceIds": [],
+        "baseMaterialId": "pc_black",
+        "surfaceId": "matte_black_resin",
+        "profileId": "default",
+        "bsdfAssetId": "",
+        "opticalOverride": {
+          "reflectance": 0.2,
+          "loss": 0.8,
+          "specularRatio": 0,
+          "diffuseRatio": 1
+        },
+        "enabled": true
+      },
+      {
+        "assignmentId": "opaque_1",
+        "componentId": 1,
+        "targetType": "part",
+        "faceIds": [],
+        "baseMaterialId": "pc_black",
+        "surfaceId": "matte_black_resin",
+        "profileId": "default",
+        "bsdfAssetId": "",
+        "opticalOverride": {
+          "reflectance": 0.2,
+          "loss": 0.8,
+          "specularRatio": 0,
+          "diffuseRatio": 1
+        },
+        "enabled": true
+      },
+      {
+        "assignmentId": "opaque_2",
+        "componentId": 2,
+        "targetType": "part",
+        "faceIds": [],
+        "baseMaterialId": "pc_black",
+        "surfaceId": "matte_black_resin",
+        "profileId": "default",
+        "bsdfAssetId": "",
+        "opticalOverride": {
+          "reflectance": 0.2,
+          "loss": 0.8,
+          "specularRatio": 0,
+          "diffuseRatio": 1
+        },
+        "enabled": true
+      }
+    ],
+    "customOpticalProfiles": [],
+    "transformRules": [],
+    "roiScopes": [],
+    "roiScopeSequence": 0,
+    "emitters": [
+      {
+        "face_indices": [],
+        "source_face_indices": [],
+        "normal_mode": "face_normal",
+        "normal_flip": false,
+        "custom_normal": null,
+        "direction_distribution": "lambertian",
+        "gaussian_sigma_deg": 12,
+        "power_mode": "total",
+        "power_lumen": 0,
+        "power_density_lm_per_m2": 100,
+        "luminance_nit": 500,
+        "center": [
+          60,
+          40,
+          11.5
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "v_axis": [
+          0,
+          1,
+          0
+        ],
+        "width_mm": 104,
+        "height_mm": 64,
+        "reference_mode": null,
+        "surface_construction": "rectangular_fit",
+        "polygon_vertices": [],
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "ray_count": 500000,
+        "seed": 20260907,
+        "enabled": true,
+        "emitter_id": "synthetic_blu",
+        "emitter_type": "datum_plane"
+      }
+    ],
+    "receivers": [
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Right horizontal seam",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          130,
+          40,
+          8
+        ],
+        "normal": [
+          -1,
+          0,
+          0
+        ],
+        "u_axis": [
+          0,
+          -1,
+          0
+        ],
+        "v_axis": [
+          0,
+          0,
+          1
+        ],
+        "width_mm": 100,
+        "height_mm": 40,
+        "resolution": [
+          200,
+          160
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "right_side"
+      },
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Front guard",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          60,
+          40,
+          28
+        ],
+        "normal": [
+          0,
+          0,
+          -1
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "v_axis": [
+          0,
+          -1,
+          0
+        ],
+        "width_mm": 140,
+        "height_mm": 100,
+        "resolution": [
+          28,
+          20
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "front"
+      },
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Back guard",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          60,
+          40,
+          -12
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "v_axis": [
+          0,
+          1,
+          0
+        ],
+        "width_mm": 140,
+        "height_mm": 100,
+        "resolution": [
+          28,
+          20
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "back"
+      },
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Left guard",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          -10,
+          40,
+          8
+        ],
+        "normal": [
+          1,
+          0,
+          0
+        ],
+        "u_axis": [
+          0,
+          1,
+          0
+        ],
+        "v_axis": [
+          0,
+          0,
+          1
+        ],
+        "width_mm": 100,
+        "height_mm": 40,
+        "resolution": [
+          20,
+          8
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "left"
+      },
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Bottom guard",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          60,
+          -10,
+          8
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "v_axis": [
+          0,
+          0,
+          -1
+        ],
+        "width_mm": 140,
+        "height_mm": 40,
+        "resolution": [
+          28,
+          8
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "bottom"
+      },
+      {
+        "receiver_type": "rectangle",
+        "display_name": "Top guard",
+        "placement_mode": "datum_plane",
+        "source_face_indices": [],
+        "center": [
+          60,
+          90,
+          8
+        ],
+        "normal": [
+          0,
+          -1,
+          0
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "v_axis": [
+          0,
+          0,
+          1
+        ],
+        "width_mm": 140,
+        "height_mm": 40,
+        "resolution": [
+          28,
+          8
+        ],
+        "acceptance_angle_deg": 90,
+        "normal_flip": false,
+        "reference_mode": null,
+        "reference_vertex_indices": [],
+        "reference_edge_vertex_indices": [],
+        "reference_vertex_points": [],
+        "reference_edge_points": [],
+        "view_distance_mm": null,
+        "base_center": null,
+        "base_u_axis": null,
+        "base_v_axis": null,
+        "base_normal": null,
+        "position_offset_mm": [
+          0,
+          0,
+          0
+        ],
+        "tilt_xyz_deg": [
+          0,
+          0,
+          0
+        ],
+        "pivot": null,
+        "enabled": true,
+        "receiver_id": "top"
+      }
+    ],
+    "rayTraceConfig": {
+      "ray_count": 500000,
+      "max_depth": 4,
+      "seed": 20260907,
+      "min_energy": 0,
+      "epsilon_mm": 0.0001,
+      "k_abs": 0.12,
+      "k_brdf": 1,
+      "termination_mode": "threshold",
+      "contribution_mode": "summary",
+      "intersection_backend": "bvh",
+      "compute_backend": "cpu",
+      "store_ray_paths": true,
+      "max_stored_paths": 1000,
+      "auto_convergence": false,
+      "convergence_target_percent": 5,
+      "max_convergence_multiplier": 8,
+      "primary_sampling_strategy": "source",
+      "receiver_importance_fraction": 0.5,
+      "bounce_sampling_strategy": "source",
+      "bounce_receiver_importance_fraction": 0.5
+    },
+    "rayPathDisplayFilters": {
+      "receiver_direct": true,
+      "receiver_reflected": true,
+      "direct": false,
+      "specular": false,
+      "lambertian": false,
+      "gaussian": false
+    }
+  }
+}

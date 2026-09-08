@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import type { RayTraceResult, ScenePayload } from '@/api'
@@ -11,6 +12,7 @@ import {
   BoxSelect,
   CircleDot,
   FileBox,
+  GalleryHorizontalEnd,
   LoaderCircle,
   Maximize2,
   Rotate3D,
@@ -35,13 +37,19 @@ import type {
   ViewerRayObjectContextTarget,
   ViewerRenderMode,
 } from '@/features/viewer'
+import { buildLeakageSurfacePreview } from '@/features/results/leakage-surface-preview'
+import type { ViewerCameraSnapshot } from '@/features/viewer/three-viewer-canvas'
 import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
 } from '@/features/raytracing'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
-import { RayTraceResultWindow } from '@/features/results'
+import {
+  buildPrototypeLeakagePreviewData,
+  prototypeLeakagePreviewUnavailableReason,
+  RayTraceResultWindow,
+} from '@/features/results'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -86,11 +94,21 @@ const ThreeViewerCanvas = lazy(() =>
   })),
 )
 
+export interface LeakagePreviewOpenRequest {
+  caseId: string | null
+  runId: string
+  result: RayTraceResult
+  initialCameraPreset?: ViewerCameraPreset
+  contextDistanceScale?: number
+}
+
 interface ViewerWorkspaceProps {
+  leakagePreviewRequest?: LeakagePreviewOpenRequest | null
   cadModelVisible?: boolean
   scene?: ScenePayload
   isSceneLoading?: boolean
   sceneErrorMessage?: string
+  onRetryScene?(): void
   onCameraFrameChange?(frame: ViewerCameraFrame): void
   rayTraceResult?: RayTraceResult | null
   rayTraceResultOpen?: boolean
@@ -103,11 +121,40 @@ interface ViewerWorkspaceProps {
   onEditRayObject?(request: RayObjectEditRequest): void
 }
 
+interface LeakagePreviewSession {
+  caseId: string
+  runId: string
+  result: RayTraceResult
+}
+
+function leakagePreviewReasonMessage(reason: string): string {
+  switch (reason) {
+    case 'result_source_context_missing':
+    case 'result_source_request_missing':
+      return '실행 당시 CAD와 해석 조건을 확인할 수 없는 결과입니다.'
+    case 'roi_trace_not_supported_by_prototype_aabb':
+      return 'ROI 해석 결과는 이번 외곽 경계 시제품에서 표시하지 않습니다.'
+    case 'excluded_components_not_supported_by_prototype_aabb':
+      return '해석 제외 부품이 있는 결과는 이번 시제품에서 표시하지 않습니다.'
+    case 'stored_receiver_paths_not_available':
+    case 'receiver_path_samples_missing':
+      return '수광 결과는 있지만 3D 위치를 만들 저장 경로 표본이 부족합니다.'
+    case 'scene_mesh_signature_mismatch':
+      return '실행 당시 CAD 형상과 현재 형상이 일치하지 않습니다.'
+    case 'scene_aabb_invalid':
+      return '제품 외곽 경계를 계산할 수 없습니다.'
+    default:
+      return '이 결과는 현재 3D 빛샘 시제품에서 표시할 수 없습니다.'
+  }
+}
+
 export function ViewerWorkspace({
+  leakagePreviewRequest,
   cadModelVisible = true,
   scene,
   isSceneLoading = false,
   sceneErrorMessage,
+  onRetryScene,
   onCameraFrameChange,
   rayTraceResult,
   rayTraceResultOpen = false,
@@ -122,12 +169,27 @@ export function ViewerWorkspace({
   const [cameraPreset, setCameraPreset] =
     useState<ViewerCameraPreset>('Iso')
   const [cameraRequestId, setCameraRequestId] = useState(0)
+  const handledPreviewRequestRef = useRef('')
+  const [leakageInitialView, setLeakageInitialView] = useState<{ id: string; preset: ViewerCameraPreset; distanceScale: number } | null>(null)
+  const latestCameraSnapshotRef = useRef<ViewerCameraSnapshot | null>(null)
+  const [leakageCameraRestore, setLeakageCameraRestore] = useState<{ id: string; snapshot: ViewerCameraSnapshot } | null>(null)
+  const captureCameraSnapshot = useCallback((snapshot: ViewerCameraSnapshot) => {
+    latestCameraSnapshotRef.current = snapshot
+  }, [])
   const [renderMode, setRenderMode] =
     useState<ViewerRenderMode>('Surface + Edge')
   const [axisScalePercent, setAxisScalePercent] = useState(50)
   const [surfaceTransparencyPercent, setSurfaceTransparencyPercent] =
     useState(0)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const [leakagePreviewSession, setLeakagePreviewSession] =
+    useState<LeakagePreviewSession | null>(null)
+  const [leakageExteriorBrightness, setLeakageExteriorBrightness] = useState(60)
+  const [leakageExteriorColor, setLeakageExteriorColor] =
+    useState<'black' | 'gray' | 'silver'>('black')
+  const [leakageExteriorFinish, setLeakageExteriorFinish] =
+    useState<'matte' | 'satin'>('matte')
   const reportCases = useMemo(
     () =>
       cadCases.flatMap((item) =>
@@ -189,6 +251,42 @@ export function ViewerWorkspace({
     workspaceSelectors.roiDraftLabel,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const leakagePreviewData = useMemo(() => {
+    if (
+      !leakagePreviewSession ||
+      !scene ||
+      activeCadCaseId !== leakagePreviewSession.caseId
+    ) {
+      return null
+    }
+    return buildPrototypeLeakagePreviewData(
+      leakagePreviewSession.result,
+      scene,
+    )
+  }, [activeCadCaseId, leakagePreviewSession, scene])
+  const leakageSurfacePreview = useMemo(() => {
+    if (!scene || !leakagePreviewData) return null
+    return buildLeakageSurfacePreview(scene, leakagePreviewData,
+      leakagePreviewSession?.result.source_context?.requests.at(-1))
+  }, [scene, leakagePreviewData, leakagePreviewSession])
+  const leakagePreviewHasContinuousField = (leakageSurfacePreview?.fields.length ?? 0) > 0
+
+  useEffect(() => {
+    if (!leakagePreviewSession) return
+    const sourceCase = cadCases.find(
+      (item) => item.caseId === leakagePreviewSession.caseId,
+    )
+    if (
+      activeCadCaseId === leakagePreviewSession.caseId &&
+      sourceCase?.latestResult?.run_id === leakagePreviewSession.runId
+    ) {
+      return
+    }
+    setLeakagePreviewSession(null)
+    setStatusMessage(
+      '3D 빛샘 보기를 종료했습니다. 해당 Case의 최신 Ray Tracing Result가 변경되었습니다.',
+    )
+  }, [activeCadCaseId, cadCases, leakagePreviewSession])
 
   useEffect(() => {
     if (!isSceneLoading) {
@@ -359,6 +457,60 @@ export function ViewerWorkspace({
     )
   }
 
+  const openLeakagePreview = useCallback(({
+    caseId,
+    runId,
+    result,
+    initialCameraPreset,
+    contextDistanceScale,
+  }: LeakagePreviewOpenRequest) => {
+    const sourceContext = result.source_context
+    const previewUnavailableReason =
+      prototypeLeakagePreviewUnavailableReason(result)
+    const resolvedCaseId = caseId ?? sourceContext?.cad_case_id ?? null
+    const targetCase = resolvedCaseId
+      ? cadCases.find((item) => item.caseId === resolvedCaseId)
+      : null
+    if (
+      previewUnavailableReason ||
+      !sourceContext ||
+      !resolvedCaseId ||
+      sourceContext.cad_case_id !== resolvedCaseId ||
+      !targetCase ||
+      targetCase.latestResult?.run_id !== runId
+    ) {
+      setStatusMessage(
+        previewUnavailableReason
+          ? `3D 빛샘 보기 · ${leakagePreviewReasonMessage(previewUnavailableReason)}`
+          : '3D 빛샘 보기 · 실행 당시 CAD와 연결된 새 Ray Tracing Result가 필요합니다.',
+      )
+      return
+    }
+
+    const previousSnapshot = leakagePreviewSession && !initialCameraPreset ? latestCameraSnapshotRef.current : null
+    setLeakageInitialView(initialCameraPreset ? { id: resolvedCaseId + ":" + runId, preset: initialCameraPreset, distanceScale: contextDistanceScale ?? 1 } : null)
+    setLeakageCameraRestore(previousSnapshot
+      ? { id: resolvedCaseId + ":" + runId, snapshot: structuredClone(previousSnapshot) } : null)
+    actions.setCadCaseVisible(resolvedCaseId, true)
+    setContextTarget(null)
+    setRayObjectContextTarget(null)
+    setLeakagePreviewSession({ caseId: resolvedCaseId, runId, result })
+    if (!leakagePreviewSession || initialCameraPreset) {
+      setCameraPreset(initialCameraPreset ?? 'XY')
+      setCameraRequestId((requestId) => requestId + 1)
+    }
+    onRayTraceResultOpenChange?.(false)
+    setStatusMessage(`3D 빛샘 보기 · ${runId}`)
+    return true
+  }, [actions, cadCases, leakagePreviewSession, onRayTraceResultOpenChange])
+
+  useEffect(() => {
+    if (!leakagePreviewRequest || !scene || isSceneLoading || sceneErrorMessage ||
+      activeCadCaseId !== leakagePreviewRequest.caseId) return
+    const key = leakagePreviewRequest.caseId + ":" + leakagePreviewRequest.runId
+    if (handledPreviewRequestRef.current === key) return
+    if (openLeakagePreview(leakagePreviewRequest)) handledPreviewRequestRef.current = key
+  }, [activeCadCaseId, isSceneLoading, leakagePreviewRequest, openLeakagePreview, scene, sceneErrorMessage])
   return (
     <main
       data-viewer-workspace
@@ -367,15 +519,168 @@ export function ViewerWorkspace({
       <div className="border-b border-border bg-background/65 px-3 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-sm font-semibold">3D Viewer</h1>
+            <h1 className="text-sm font-semibold">
+              {leakagePreviewSession ? '3D 빛샘 보기' : '3D Viewer'}
+            </h1>
             <p className="text-xs text-muted-foreground">
-              Three.js Mesh · ROI, Emitter, Receiver and Ray Overlays · Step 11
+              {leakagePreviewSession
+                ? leakagePreviewData?.status === 'ready'
+                  ? `${
+                      leakagePreviewHasContinuousField
+                        ? '틈 형상 기반 연속광 시제품'
+                        : '출구 점 표본 시제품 · 연속 표시 기준 미충족'
+                    } · 상대 표시 하한 적용 · 밝기·크기 미보정 · 외관 보조 조명 · ${leakagePreviewSession.runId}`
+                  : leakagePreviewData
+                    ? leakagePreviewReasonMessage(leakagePreviewData.reason)
+                    : '실행 당시 CAD 형상을 불러오는 중입니다.'
+                : 'Three.js Mesh · ROI, Emitter, Receiver and Ray Overlays · Step 11'}
             </p>
           </div>
           <div
             className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[390px]:w-auto"
             data-viewer-toolbar
           >
+            {leakagePreviewSession ? (
+              <>
+                <Badge className="border border-cyan-300/30 bg-cyan-400/10 text-cyan-200">
+                  {leakagePreviewHasContinuousField ? '시제품 · 평면 틈 범위 확인' : '시제품 · 외곽 경계 추정'}
+                </Badge>
+                <label className="flex h-8 max-w-full min-w-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 text-xs text-muted-foreground">
+                  <span className="font-medium whitespace-nowrap">비교 결과</span>
+                  <select
+                    aria-label="3D 비교 결과"
+                    value={leakagePreviewSession.caseId}
+                    className="min-w-0 max-w-64 rounded bg-background px-1 py-0.5 text-foreground"
+                    onChange={(event) => {
+                      const target = cadCases.find((item) => item.caseId === event.currentTarget.value)
+                      if (!target?.latestResult) return
+                      openLeakagePreview({
+                        caseId: target.caseId,
+                        runId: target.latestResult.run_id,
+                        result: target.latestResult,
+                      })
+                    }}
+                  >
+                    {cadCases.filter((item) => item.latestResult).map((item) => {
+                      const emitters = item.latestResult!.emitters.filter((emitter) => emitter.enabled)
+                      const power = emitters.length > 0 && emitters.every((emitter) =>
+                        emitter.power_mode === 'total' && Number.isFinite(emitter.power_lumen))
+                        ? emitters.reduce((sum, emitter) => sum + emitter.power_lumen, 0)
+                        : null
+                      return (
+                        <option
+                          key={item.caseId}
+                          value={item.caseId}
+                          disabled={item.latestResult?.source_context?.cad_case_id !== item.caseId ||
+                            Boolean(prototypeLeakagePreviewUnavailableReason(item.latestResult!))}
+                        >
+                          {power === null ? '' : `광원 ${power.toLocaleString()} lm · `}
+                          {item.name || item.cad.displayName}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </label>
+                <label className="flex h-8 max-w-full min-w-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 text-xs text-muted-foreground">
+                  <span className="font-medium whitespace-nowrap">외관 밝기</span>
+                  <input
+                    aria-label="외관 밝기"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={leakageExteriorBrightness}
+                    className="h-1.5 w-20 cursor-pointer accent-primary"
+                    onChange={(event) =>
+                      setLeakageExteriorBrightness(Number(event.currentTarget.value))
+                    }
+                  />
+                  <span className="w-8 text-right font-semibold text-foreground">
+                    {leakageExteriorBrightness}%
+                  </span>
+                </label>
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 text-xs text-muted-foreground">
+                  <span className="font-medium whitespace-nowrap">외관 색상</span>
+                  <select
+                    aria-label="외관 색상"
+                    value={leakageExteriorColor}
+                    className="min-w-0 rounded bg-background px-1 py-0.5 text-foreground"
+                    onChange={(event) =>
+                      setLeakageExteriorColor(
+                        event.currentTarget.value as 'black' | 'gray' | 'silver',
+                      )
+                    }
+                  >
+                    <option value="black">블랙</option>
+                    <option value="gray">그레이</option>
+                    <option value="silver">실버</option>
+                  </select>
+                </label>
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 text-xs text-muted-foreground">
+                  <span className="font-medium whitespace-nowrap">표면 재질</span>
+                  <select
+                    aria-label="표면 재질"
+                    value={leakageExteriorFinish}
+                    className="min-w-0 rounded bg-background px-1 py-0.5 text-foreground"
+                    onChange={(event) =>
+                      setLeakageExteriorFinish(
+                        event.currentTarget.value as 'matte' | 'satin',
+                      )
+                    }
+                  >
+                    <option value="matte">무광</option>
+                    <option value="satin">반광</option>
+                  </select>
+                </label>
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 text-xs text-muted-foreground">
+                  <span className="font-medium whitespace-nowrap">관측 방향</span>
+                  <select
+                    aria-label="관측 방향"
+                    value={cameraPreset === 'Fit' ? '' : cameraPreset}
+                    className="min-w-0 rounded bg-background px-1 py-0.5 text-foreground"
+                    onChange={(event) => {
+                      setCameraPreset(event.currentTarget.value as ViewerCameraPreset)
+                      setCameraRequestId((requestId) => requestId + 1)
+                      setStatusMessage('3D 빛샘 보기 · 관측 방향 변경')
+                    }}
+                  >
+                    <option value="" disabled>현재 방향</option>
+                    <option value="XY">정면 (+Z)</option>
+                    <option value="YZ">오른쪽 측면 (+X)</option>
+                    <option value="-YZ">왼쪽 측면 (-X)</option>
+                    <option value="-XY">뒷면 (-Z)</option>
+                    <option value="ZX">위쪽 (+Y)</option>
+                    <option value="-ZX">아래쪽 (-Y)</option>
+                    <option value="Iso">사선</option>
+                  </select>
+                </label>
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  onClick={() => {
+                    setCameraPreset('Fit')
+                    setCameraRequestId((requestId) => requestId + 1)
+                    setStatusMessage('3D 빛샘 보기 · 빛샘 중심으로 맞춤')
+                  }}
+                >
+                  <Maximize2 aria-hidden="true" />
+                  빛샘 맞춤
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    setLeakagePreviewSession(null)
+                    onRayTraceResultOpenChange?.(true)
+                    setStatusMessage('Ray Tracing Analysis Result')
+                  }}
+                >
+                  <GalleryHorizontalEnd aria-hidden="true" />
+                  Result로 돌아가기
+                </Button>
+              </>
+            ) : (
+              <>
             <div
               className="grid w-full min-w-0 grid-cols-4 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 p-1 min-[390px]:flex min-[390px]:w-auto dark:border-blue-900/70 dark:bg-blue-950/30"
               aria-label="Camera presets"
@@ -481,12 +786,25 @@ export function ViewerWorkspace({
                 {surfaceTransparencyPercent}%
               </span>
             </label>
+              </>
+            )}
           </div>
         </div>
+        {leakagePreviewSession ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            외관 확인용 조명 · 빛샘 밝기에는 영향 없음
+          </p>
+        ) : null}
       </div>
 
       <div className="relative flex min-h-0 flex-1 p-3">
-        <div className="relative flex min-h-[30rem] w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-[radial-gradient(circle_at_center,var(--sim-panel-raised)_0,transparent_58%)] lg:min-h-0">
+        <div
+          className={`relative flex min-h-[30rem] w-full items-center justify-center overflow-hidden rounded-xl border lg:min-h-0 ${
+            leakagePreviewSession
+              ? 'border-slate-800 bg-black'
+              : 'border-border bg-[radial-gradient(circle_at_center,var(--sim-panel-raised)_0,transparent_58%)]'
+          }`}
+        >
           <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2">
             <Badge
               variant="outline"
@@ -575,6 +893,11 @@ export function ViewerWorkspace({
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
                 {sceneErrorMessage}
               </p>
+              {onRetryScene ? (
+                <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onRetryScene}>
+                  다시 연결
+                </Button>
+              ) : null}
             </div>
           ) : !scene ? (
             <div className="relative z-10 flex max-w-sm flex-col items-center px-6 text-center">
@@ -617,32 +940,102 @@ export function ViewerWorkspace({
                     cadModelVisible={cadModelVisible}
                     axisScalePercent={axisScalePercent}
                     surfaceTransparencyPercent={
-                      surfaceTransparencyPercent
+                      leakagePreviewSession ? 0 : surfaceTransparencyPercent
                     }
                     cameraPreset={cameraPreset}
                     cameraRequestId={cameraRequestId}
-                    renderMode={renderMode}
-                    roiBoxSelectionArmed={roiBoxSelectionArmed}
-                    roiFaceIds={activeRoiFaceIds}
-                    roiScopes={roiScopes}
-                    rayTraceResult={rayTraceResult}
-                    editingComponentId={editingComponentId}
-                    editingComponentMode={editingComponentMode}
+                    renderMode={leakagePreviewSession ? 'Surface' : renderMode}
+                    roiBoxSelectionArmed={
+                      leakagePreviewSession ? false : roiBoxSelectionArmed
+                    }
+                    roiFaceIds={
+                      leakagePreviewSession ? [] : activeRoiFaceIds
+                    }
+                    roiScopes={leakagePreviewSession ? [] : roiScopes}
+                    rayTraceResult={
+                      leakagePreviewSession ? null : rayTraceResult
+                    }
+                    leakagePreviewActive={leakagePreviewSession !== null}
+                    leakageCameraRestore={leakageCameraRestore}
+                    leakageInitialView={leakageInitialView}
+                    onCameraSnapshotChange={captureCameraSnapshot}
+                    leakageSurfacePreview={leakageSurfacePreview}
+                    leakageExteriorBrightness={leakageExteriorBrightness}
+                    leakageExteriorColor={leakageExteriorColor}
+                    leakageExteriorFinish={leakageExteriorFinish}
+                    leakagePreviewBounds={
+                      leakagePreviewData?.status === 'ready'
+                        ? leakagePreviewData.bounds
+                        : null
+                    }
+                    leakagePreviewCoverage={
+                      leakagePreviewData?.status === 'ready'
+                        ? leakagePreviewData.coverage
+                        : null
+                    }
+                    leakagePreviewSamples={
+                      leakagePreviewData?.status === 'ready'
+                        ? leakagePreviewData.samples
+                        : []
+                    }
+                    leakagePreviewRequest={
+                      leakagePreviewSession?.result.source_context?.requests.at(
+                        -1,
+                      ) ?? null
+                    }
+                    editingComponentId={
+                      leakagePreviewSession ? null : editingComponentId
+                    }
+                    editingComponentMode={
+                      leakagePreviewSession ? null : editingComponentMode
+                    }
                     onRoiBoxSelection={addBoxRoi}
                     onCameraFrameChange={onCameraFrameChange}
                     onCameraPresetChange={setCameraPreset}
-                    onComponentContextMenu={(target) => {
-                      setRayObjectContextTarget(null)
-                      setContextTarget(target)
-                    }}
-                    onRayObjectContextMenu={(target) => {
-                      setContextTarget(null)
-                      setRayObjectContextTarget(target)
-                    }}
+                    onComponentContextMenu={
+                      leakagePreviewSession
+                        ? undefined
+                        : (target) => {
+                            setRayObjectContextTarget(null)
+                            setContextTarget(target)
+                          }
+                    }
+                    onRayObjectContextMenu={
+                      leakagePreviewSession
+                        ? undefined
+                        : (target) => {
+                            setContextTarget(null)
+                            setRayObjectContextTarget(target)
+                          }
+                    }
                     onStatusMessage={setStatusMessage}
                   />
                 </Suspense>
               </div>
+              {leakagePreviewSession &&
+              leakagePreviewData?.status === 'unsupported' ? (
+                <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/85 px-6 text-center">
+                  <div className="max-w-md rounded-xl border border-amber-300/25 bg-slate-950/95 p-5 shadow-2xl">
+                    <div className="text-sm font-semibold text-amber-200">
+                      3D 빛샘 표시 중지
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-300">
+                      {leakagePreviewReasonMessage(leakagePreviewData.reason)}
+                    </p>
+                    <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                      빈 화면을 빛샘 없음으로 오인하지 않도록 결과를 표시하지
+                      않았습니다.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+              {leakagePreviewSession &&
+              leakagePreviewData?.status === 'ready' &&
+              leakagePreviewData.samples.length === 0 ? (
+                <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full border border-slate-600 bg-black/75 px-3 py-1.5 text-[11px] text-slate-300">
+                  표시할 빛샘 광량이 없습니다
+                </div>
+              ) : null}
               {contextComponent && contextTarget ? (
                 <ViewerComponentActionMenu
                   open
@@ -738,6 +1131,7 @@ export function ViewerWorkspace({
             onDeleteCaseReceiverResult={(caseId, receiverId) =>
               actions.removeCadCaseReceiverResult(caseId, receiverId)
             }
+            onOpenLeakagePreview={openLeakagePreview}
             onOpenChange={(open) =>
               onRayTraceResultOpenChange?.(open)
             }

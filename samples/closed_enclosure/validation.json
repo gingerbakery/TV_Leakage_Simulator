@@ -1,0 +1,193 @@
+{
+  "schema": "closed-enclosure-validation.v1",
+  "purpose": "synthetic opaque enclosure and aperture transport regression",
+  "roi_demo": "explicit CAD crop; not an exact reproduction of frontend ROI face-selection",
+  "source": "1 lm synthetic BLU-equivalent plane, not measured TV",
+  "validation_passed": true,
+  "cases": [
+    {
+      "case": "closed",
+      "gap_mm": 0.0,
+      "artificial_roi_cut": false,
+      "cad_file": "closed.step",
+      "parts": 4,
+      "triangles": 132672,
+      "ray_count": 20000,
+      "seed": 20260903,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "intersection_provider": "python_cpu",
+      "emitted_lumen": 1.0,
+      "receiver_hits": 0,
+      "receiver_flux_lumen": 0.0,
+      "per_receiver": {
+        "front": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "back": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "left": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "right": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "bottom": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "top": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        }
+      },
+      "elapsed_seconds": 12.402033899910748,
+      "checked_saved_gap_crossings": 0,
+      "saved_path_check_scope": "bounded diagnostic subset, not a proof for all rays",
+      "calibrated_appearance": false
+    },
+    {
+      "case": "gap_0p2",
+      "gap_mm": 0.2,
+      "artificial_roi_cut": false,
+      "cad_file": "gap_0p2.step",
+      "parts": 4,
+      "triangles": 133996,
+      "ray_count": 20000,
+      "seed": 20260903,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "intersection_provider": "python_cpu",
+      "emitted_lumen": 1.0,
+      "receiver_hits": 12,
+      "receiver_flux_lumen": 0.0002928405295953365,
+      "per_receiver": {
+        "front": {
+          "flux_lumen": 0.00028877820197335845,
+          "hit_count": 11.0
+        },
+        "back": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "left": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "right": {
+          "flux_lumen": 4.062327621978065e-06,
+          "hit_count": 1.0
+        },
+        "bottom": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "top": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        }
+      },
+      "elapsed_seconds": 13.294109299778938,
+      "checked_saved_gap_crossings": 12,
+      "saved_path_check_scope": "bounded diagnostic subset, not a proof for all rays",
+      "calibrated_appearance": false
+    },
+    {
+      "case": "gap_0p5",
+      "gap_mm": 0.5,
+      "artificial_roi_cut": false,
+      "cad_file": "gap_0p5.step",
+      "parts": 4,
+      "triangles": 134116,
+      "ray_count": 20000,
+      "seed": 20260903,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "intersection_provider": "python_cpu",
+      "emitted_lumen": 1.0,
+      "receiver_hits": 118,
+      "receiver_flux_lumen": 0.00216193261823562,
+      "per_receiver": {
+        "front": {
+          "flux_lumen": 0.002117785055081162,
+          "hit_count": 116.0
+        },
+        "back": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "left": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        },
+        "right": {
+          "flux_lumen": 5.8556256211461505e-08,
+          "hit_count": 1.0
+        },
+        "bottom": {
+          "flux_lumen": 4.408900689824642e-05,
+          "hit_count": 1.0
+        },
+        "top": {
+          "flux_lumen": 0.0,
+          "hit_count": 0.0
+        }
+      },
+      "elapsed_seconds": 12.316843600012362,
+      "checked_saved_gap_crossings": 118,
+      "saved_path_check_scope": "bounded diagnostic subset, not a proof for all rays",
+      "calibrated_appearance": false
+    },
+    {
+      "case": "roi_cut_open_demo",
+      "gap_mm": 0.0,
+      "artificial_roi_cut": true,
+      "cad_file": "roi_cut_open_demo.step",
+      "parts": 3,
+      "triangles": 20192,
+      "ray_count": 20000,
+      "seed": 20260903,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "intersection_provider": "python_cpu",
+      "emitted_lumen": 1.0,
+      "receiver_hits": 13152,
+      "receiver_flux_lumen": 0.08267123160956932,
+      "per_receiver": {
+        "front": {
+          "flux_lumen": 0.029410639139078845,
+          "hit_count": 3990.0
+        },
+        "back": {
+          "flux_lumen": 0.016762463366842555,
+          "hit_count": 4398.0
+        },
+        "left": {
+          "flux_lumen": 0.006042338740219421,
+          "hit_count": 832.0
+        },
+        "right": {
+          "flux_lumen": 0.006034227121069792,
+          "hit_count": 756.0
+        },
+        "bottom": {
+          "flux_lumen": 0.006763372934126412,
+          "hit_count": 917.0
+        },
+        "top": {
+          "flux_lumen": 0.017658190308232298,
+          "hit_count": 2259.0
+        }
+      },
+      "elapsed_seconds": 6.984457999933511,
+      "checked_saved_gap_crossings": 0,
+      "saved_path_check_scope": "bounded diagnostic subset, not a proof for all rays",
+      "calibrated_appearance": false
+    }
+  ]
+}

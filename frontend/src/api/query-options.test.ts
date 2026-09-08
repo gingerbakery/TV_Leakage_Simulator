@@ -1,3 +1,4 @@
+import { QueryObserver } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from './errors'
@@ -119,4 +120,27 @@ describe('API query options', () => {
     expect(shouldRetryQuery(0, clientError)).toBe(false)
     expect(shouldRetryQuery(0, serverError)).toBe(true)
   })
+  it('recovers an active failed scene through explicit refetch', async () => {
+    const scene = { schema_version: 'mesh-scene.v1' } as ScenePayload
+    const getScene = vi.fn()
+      .mockRejectedValueOnce(new ApiError('offline', { kind: 'network', url: '/api/scene' }))
+      .mockResolvedValueOnce(scene)
+    const queryClient = createAppQueryClient()
+    const options = sceneQueryOptions('C:/frame.step', { getScene })
+    const observer = new QueryObserver(queryClient, { ...options, retry: false })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true))
+      expect(observer.getCurrentResult().data).toBeUndefined()
+      const recovered = await observer.refetch()
+      expect(recovered.isSuccess).toBe(true)
+      expect(recovered.data).toBe(scene)
+      expect(getScene).toHaveBeenCalledTimes(2)
+      expect(queryClient.getQueryData(options.queryKey)).toBe(scene)
+    } finally {
+      unsubscribe()
+      queryClient.clear()
+    }
+  })
+
 })

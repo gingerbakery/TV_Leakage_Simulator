@@ -45,10 +45,13 @@ import {
   readBitsamProjectFile,
   type BitsamProject,
 } from '@/features/projects'
+import { useHorizontalSeamDemo } from '@/features/projects/use-horizontal-seam-demo'
 import { matchSetupComponents } from '@/features/projects/copy-analysis-setup'
-import type {
-  RayObjectEditRequest,
-  ViewerCameraFrame,
+import {
+  attachRayTraceResultSourceContext,
+  findPendingRayTraceResultSourceContext,
+  type RayObjectEditRequest,
+  type ViewerCameraFrame,
 } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import {
@@ -198,22 +201,48 @@ export function SimulatorShell() {
     rayTraceJob?.status === 'completed'
       ? rayTraceJob.result
       : restoredRayTraceResult
+  const contextualRayTraceResult = useMemo(() => {
+    if (!rawRayTraceResult || rawRayTraceResult.source_context) {
+      return rawRayTraceResult
+    }
+    const sourceContext = findPendingRayTraceResultSourceContext(
+      activeRayTraceJobId,
+    )
+    return sourceContext
+      ? attachRayTraceResultSourceContext(rawRayTraceResult, sourceContext)
+      : rawRayTraceResult
+  }, [activeRayTraceJobId, rawRayTraceResult])
   const savedActiveCaseResult = cadCases.find(
     (item) => item.caseId === activeCadCaseId,
   )?.latestResult
   const rayTraceResult = useMemo(() => {
-    if (!rawRayTraceResult) return rawRayTraceResult
-    if (savedActiveCaseResult?.run_id === rawRayTraceResult.run_id) {
+    if (!contextualRayTraceResult) return contextualRayTraceResult
+    if (savedActiveCaseResult?.run_id === contextualRayTraceResult.run_id) {
       return savedActiveCaseResult
     }
     return mergeRayTraceReceiverResults(
       savedActiveCaseResult,
-      rawRayTraceResult,
+      contextualRayTraceResult,
       receivers,
     )
-  }, [rawRayTraceResult, receivers, savedActiveCaseResult])
+  }, [contextualRayTraceResult, receivers, savedActiveCaseResult])
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
+  const horizontalDemo = useHorizontalSeamDemo()
+  const demoResult = horizontalDemo.stage === 'running' &&
+    activeCadCaseId === horizontalDemo.run.caseId &&
+    activeRayTraceJobId === horizontalDemo.run.jobId &&
+    rayTraceJob?.status === 'completed' && savedActiveCaseResult?.run_id === rayTraceJob.result?.run_id
+      ? savedActiveCaseResult : null
+  const demoPreviewRequest = useMemo(() => demoResult && horizontalDemo.stage === 'running'
+    ? { caseId: horizontalDemo.run.caseId, runId: demoResult.run_id, result: demoResult, initialCameraPreset: 'YZ' as const, contextDistanceScale: 3.5 }
+    : null, [demoResult, horizontalDemo])
+  const demoError = horizontalDemo.stage === 'failed' ? horizontalDemo.message
+    : horizontalDemo.stage === 'running' && activeCadCaseId === horizontalDemo.run.caseId
+      ? rayTraceJob?.status === 'failed' ? rayTraceJob.error || '빛샘 해석을 완료하지 못했습니다.'
+        : rayTraceJobQuery.error?.message : null
+  const demoBusy = !demoResult && !demoError && (horizontalDemo.stage === 'loading' ||
+    (horizontalDemo.stage === 'running' && activeCadCaseId === horizontalDemo.run.caseId))
   const activeComponent =
     scene?.components.find(
       (component) =>
@@ -326,8 +355,8 @@ export function SimulatorShell() {
       }
     }
     setActiveSection('result')
-    setRayTraceResultOpen(true)
-  }, [actions, activeRayTraceJobId, emitters, rayTraceConfig, rayTraceResult, receivers, savedActiveCaseResult?.run_id])
+    setRayTraceResultOpen(!(horizontalDemo.stage === 'running' && horizontalDemo.run.jobId === activeRayTraceJobId))
+  }, [actions, activeRayTraceJobId, emitters, rayTraceConfig, rayTraceResult, receivers, savedActiveCaseResult?.run_id, horizontalDemo])
 
   const openFeatureNotice = (
     title: string,
@@ -793,6 +822,15 @@ export function SimulatorShell() {
           } as CSSProperties
         }
       >
+        {(demoBusy || demoError) && (
+          <div role={demoError ? 'alert' : 'status'} data-horizontal-seam-demo-status
+            className="absolute top-4 right-4 z-40 max-w-sm rounded-xl border border-border bg-background/95 p-4 text-sm shadow-xl">
+            <p className="font-semibold">가로 틈 빛샘 3D 시연</p>
+            <p className="mt-1 text-muted-foreground">{demoError || (horizontalDemo.stage === 'loading' ? horizontalDemo.message :
+              `실제 빛의 이동을 계산 중입니다 · ${Math.round((rayTraceJob?.progress ?? 0) * 100)}%`)}</p>
+            {demoBusy && <p className="mt-2 text-xs text-muted-foreground">완료되면 제품 옆면의 빛샘을 자동으로 엽니다.</p>}
+          </div>
+        )}
         <WorkflowSidebar
           activeSection={activeSection}
           onActiveSectionChange={setActiveSection}
@@ -861,10 +899,12 @@ export function SimulatorShell() {
           />
         </div>
         <ViewerWorkspace
+          leakagePreviewRequest={demoPreviewRequest}
           scene={scene}
           cadModelVisible={activeCadCaseVisible}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
+          onRetryScene={() => { void sceneQuery.refetch() }}
           onCameraFrameChange={setViewerCameraFrame}
           rayTraceResult={displayedRayTraceResult}
           rayTraceResultOpen={rayTraceResultOpen}

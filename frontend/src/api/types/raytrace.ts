@@ -229,6 +229,27 @@ export interface RayTraceContributionSummary {
   depths: ContributionBreakdown
 }
 
+/** Stable client-side link between a completed result and the exact scene and
+ * transport requests that produced it. Older API responses and saved projects
+ * do not contain this field, so consumers must treat it as optional. */
+export interface RayTraceResultSourceContext {
+  schema_version: 'ray-result-source.v1'
+  cad_case_id: string | null
+  cad_display_name: string
+  scene: {
+    schema_version: 'ray-result-scene.v1'
+    scene_token: string
+    scene_schema_version: 'mesh-scene.v1'
+    face_count: number
+    vertex_count: number
+    component_count: number
+    mesh_signature: string
+  }
+  /** One entry per transport segment. Auto-convergence results contain every
+   * segment request rather than silently describing only the final segment. */
+  requests: RayTraceRequest[]
+}
+
 export interface RayTraceResult {
   run_id: string
   config: RayTraceConfig
@@ -244,6 +265,7 @@ export interface RayTraceResult {
   runtime_sec: number
   stored_paths: RayHit[][]
   metrics: Record<string, unknown>
+  source_context?: RayTraceResultSourceContext
 }
 
 interface RayTraceJobProgress {

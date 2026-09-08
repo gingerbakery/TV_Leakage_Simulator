@@ -15,3 +15,12 @@ export type {
   RayTraceRequestSource,
   ViewerCameraFrame,
 } from './ray-tracing-model'
+export {
+  attachRayTraceResultSourceContext,
+  createRayTraceResultSourceContext,
+  createRayTraceSceneMeshSignature,
+  findPendingRayTraceResultSourceContext,
+  mergeRayTraceResultSourceContexts,
+  registerPendingRayTraceResultSourceContext,
+  takePendingRayTraceResultSourceContext,
+} from './ray-result-source-context'

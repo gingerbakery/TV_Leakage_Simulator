@@ -20,6 +20,40 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { ResultPanel } from './result-panel'
 import { RayTraceResultWindow } from './result-window'
 
+function bindPreviewSource(
+  result: ReturnType<typeof createRayTraceResultFixture>,
+  caseId: string | null,
+) {
+  result.source_context = {
+    schema_version: 'ray-result-source.v1',
+    cad_case_id: caseId,
+    cad_display_name: 'fixture.step',
+    scene: {
+      schema_version: 'ray-result-scene.v1',
+      scene_token: 'fixture-token',
+      scene_schema_version: 'mesh-scene.v1',
+      face_count: 2,
+      vertex_count: 4,
+      component_count: 1,
+      mesh_signature: 'mesh-fnv-pair-v1:fixture',
+    },
+    requests: [
+      {
+        scene_token: 'fixture-token',
+        project_name: 'fixture.step',
+        emitters: structuredClone(result.emitters),
+        receivers: structuredClone(result.receivers),
+        optical_profiles: structuredClone(result.optical_profiles),
+        optical_assignments: [],
+        transform_rules: [],
+        excluded_component_ids: [],
+        config: structuredClone(result.config),
+      },
+    ],
+  }
+  return result
+}
+
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
@@ -136,6 +170,87 @@ describe('Step 11 result UI', () => {
     fireEvent.pointerDown(selector)
     fireEvent.change(selector, { target: { value: 'case-2' } })
     expect(screen.getByText(/run-second-case/)).not.toBeNull()
+  })
+
+  it('opens the leakage preview for the selected report case', () => {
+    const first = bindPreviewSource(createRayTraceResultFixture(), 'case-1')
+    const second = {
+      ...bindPreviewSource(createRayTraceResultFixture(), 'case-2'),
+      run_id: 'run-second-preview-case',
+    }
+    const onOpenLeakagePreview = vi.fn()
+    render(
+      <RayTraceResultWindow
+        open
+        result={first}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: first },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: second },
+        ]}
+        onOpenLeakagePreview={onOpenLeakagePreview}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'Report active case' }),
+      { target: { value: 'case-2' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '3D 빛샘 보기' }))
+
+    expect(onOpenLeakagePreview).toHaveBeenCalledWith({
+      caseId: 'case-2',
+      runId: second.run_id,
+      result: second,
+    })
+  })
+
+  it('opens the live result preview without a report case and hides the button without a handler', () => {
+    const result = bindPreviewSource(createRayTraceResultFixture(), 'case-live')
+    const onOpenLeakagePreview = vi.fn()
+    const view = render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenLeakagePreview={onOpenLeakagePreview}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '3D 빛샘 보기' }))
+    expect(onOpenLeakagePreview).toHaveBeenCalledWith({
+      caseId: null,
+      runId: result.run_id,
+      result,
+    })
+
+    view.rerender(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenChange={vi.fn()}
+      />,
+    )
+    expect(
+      screen.queryByRole('button', { name: '3D 빛샘 보기' }),
+    ).toBeNull()
+  })
+
+  it('disables the preview entry for an ROI-traced result', () => {
+    const result = bindPreviewSource(createRayTraceResultFixture(), 'case-roi')
+    result.source_context!.requests[0].roi_faces = [0]
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        onOpenLeakagePreview={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    const button = screen.getByRole('button', { name: '3D 빛샘 보기' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(button.getAttribute('title')).toContain('ROI 해석 결과')
   })
 
   it('lets the user choose the comparison baseline case', () => {

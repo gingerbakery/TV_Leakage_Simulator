@@ -1,0 +1,3633 @@
+{
+  "schema": "side-seam-validation.v1",
+  "purpose": "synthetic fully enclosed right-side straight-gap CPU reference",
+  "axes": {
+    "front": "+Z",
+    "right": "+X",
+    "up": "+Y"
+  },
+  "enclosure_inner_mm": [
+    120,
+    80,
+    16
+  ],
+  "wall_mm": 0.4,
+  "seam": {
+    "plane_x_mm": 120.4,
+    "y_mm": [
+      8,
+      28
+    ],
+    "base_z_mm": 12
+  },
+  "optical_domain": "full closed enclosure; no ROI or excluded part",
+  "calibrated_appearance": false,
+  "validation_passed": true,
+  "cases": [
+    {
+      "case": "closed",
+      "gap_mm": 0,
+      "seam_length_mm": 20,
+      "physical_aperture_area_mm2": 0,
+      "cad_file": "closed.step",
+      "parts": 3,
+      "triangles": 114448,
+      "ray_count": 500000,
+      "seed": 20260907,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "emitted_lumen": 1,
+      "elapsed_seconds": 34.09455519999028,
+      "receiver_hits": 0,
+      "captured_receiver_paths": 0,
+      "full_receiver_capture": true,
+      "checked_side_slit_crossings": 0,
+      "outside_slit_count": 0,
+      "receiver_flux_lumen": 0,
+      "captured_incoming_energy_lumen": 0,
+      "per_receiver": {
+        "right_side": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 32000,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 160000,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "front": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "back": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "left": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 160,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "bottom": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "top": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "_optical_summary": {
+          "surface_hit_count": 2500000,
+          "unassigned_surface_hit_count": 0,
+          "profile_hits": {
+            "default": {
+              "profile_id": "default",
+              "source": "part_assignment",
+              "hit_count": 2500000,
+              "reflectance": 0.2,
+              "specular_ratio": 0,
+              "diffuse_ratio": 1,
+              "scatter_model": "lambertian",
+              "incoming_flux_lumen": 1.2554932882607297,
+              "potential_reflected_flux_lumen": 0.2558495890314411
+            }
+          }
+        },
+        "_reflection_summary": {
+          "enabled": true,
+          "implemented_max_depth": 4,
+          "termination_mode": "threshold",
+          "min_energy_lumen": 0,
+          "max_observed_depth": 4,
+          "surface_hit_count": 2500000,
+          "primary_surface_hit_count": 500000,
+          "reflection_attempt_count": 2000000,
+          "reflection_emitted_count": 2000000,
+          "reflection_receiver_hit_count": 0,
+          "reflection_blocked_count": 500000,
+          "reflection_continued_count": 1500000,
+          "reflection_escaped_count": 0,
+          "reflection_below_energy_count": 0,
+          "reflection_disabled_count": 500000,
+          "depth_limit_count": 500000,
+          "roulette_terminated_count": 0,
+          "roulette_survived_count": 0,
+          "direct_receiver_hit_count": 0,
+          "direct_receiver_flux_lumen": 0,
+          "reflected_receiver_flux_lumen": 0,
+          "depths": {
+            "1": {
+              "emitted_count": 500000,
+              "emitted_flux_lumen": 0.20415088073611812,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 500000,
+              "escaped_count": 0
+            },
+            "2": {
+              "emitted_count": 500000,
+              "emitted_flux_lumen": 0.04117713145527118,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 500000,
+              "escaped_count": 0
+            },
+            "3": {
+              "emitted_count": 500000,
+              "emitted_flux_lumen": 0.008433861231837566,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 500000,
+              "escaped_count": 0
+            },
+            "4": {
+              "emitted_count": 500000,
+              "emitted_flux_lumen": 0.0017314148431881967,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 500000,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          },
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            },
+            "lambertian": {
+              "emitted_count": 2000000,
+              "emitted_flux_lumen": 0.25549328826738943,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 500000,
+              "continued_count": 1500000,
+              "escaped_count": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          }
+        },
+        "_contribution_summary": {
+          "schema_version": "rt-contribution.v1",
+          "direct_receiver_hit_count": 0,
+          "direct_receiver_flux_lumen": 0,
+          "reflected_receiver_hit_count": 0,
+          "reflected_receiver_flux_lumen": 0,
+          "receivers": {
+            "right_side": {
+              "receiver_id": "right_side",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "front": {
+              "receiver_id": "front",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "back": {
+              "receiver_id": "back",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "left": {
+              "receiver_id": "left",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "bottom": {
+              "receiver_id": "bottom",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "top": {
+              "receiver_id": "top",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            }
+          },
+          "components": {},
+          "faces": {},
+          "materials": {},
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "lambertian": {
+              "emitted_count": 2000000,
+              "emitted_flux_lumen": 0.25549328826738943,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 500000,
+              "blocked_flux_lumen": 0.0017314148431881967,
+              "continued_count": 1500000,
+              "continued_flux_lumen": 0.2537618734244929,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            }
+          },
+          "depths": {
+            "1": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 500000,
+              "reflection_emitted_flux_lumen": 0.20415088073611812,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 500000,
+              "continued_flux_lumen": 0.20415088073611812,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "2": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 500000,
+              "reflection_emitted_flux_lumen": 0.04117713145527118,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 500000,
+              "continued_flux_lumen": 0.04117713145527118,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "3": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 500000,
+              "reflection_emitted_flux_lumen": 0.008433861231837566,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 500000,
+              "continued_flux_lumen": 0.008433861231837566,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "4": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 500000,
+              "reflection_emitted_flux_lumen": 0.0017314148431881967,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 500000,
+              "blocked_flux_lumen": 0.0017314148431881967,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            }
+          }
+        },
+        "_performance_summary": {
+          "backend": "python_numpy_cpu",
+          "execution_path": "multi_bounce_wavefront",
+          "contribution_mode": "summary",
+          "intersection_backend": "bvh",
+          "configured_intersection_backend": "bvh",
+          "acceleration_structure": "bvh",
+          "configured_acceleration_structure": "bvh",
+          "bvh_node_count": 32767,
+          "bvh_leaf_count": 16384,
+          "bvh_build_sec": 3.0499348000157624,
+          "bvh_cached_build_sec": 3.0499348000157624,
+          "bvh_cache_hit": false,
+          "fast_primary_ray_count": 500000,
+          "face_batch_primary_ray_count": 0,
+          "scalar_primary_ray_count": 0,
+          "resolved_optical_face_cache_count": 114448,
+          "stored_path_count": 5000,
+          "stopped_early": false,
+          "requested_ray_count": 500000,
+          "rays_per_sec": 14666.645881682287,
+          "compute_backend": "cpu",
+          "monte_carlo_contract": "cpu_gpu_deterministic_batch_v1",
+          "acceleration_policy": "cpu_compatible_v1",
+          "requested_intersection_dispatch": "auto",
+          "effective_intersection_dispatch_request": "batch",
+          "intersection_batch_size": 1024,
+          "multi_bounce_wavefront_used": true,
+          "requested_wavefront_pipeline": "auto",
+          "wavefront_pipeline": "soa_event_tape",
+          "wavefront_chunk_count": 489,
+          "wavefront_primary_ray_count": 500000,
+          "wavefront_depth_batch_count": 2445,
+          "wavefront_max_active_ray_count": 1024,
+          "wavefront_max_observed_depth": 4,
+          "wavefront_active_ray_count_by_depth": {
+            "0": 500000,
+            "1": 500000,
+            "2": 500000,
+            "3": 500000,
+            "4": 500000
+          },
+          "wavefront_batch_count_by_depth": {
+            "0": 489,
+            "1": 489,
+            "2": 489,
+            "3": 489,
+            "4": 489
+          },
+          "wavefront_receiver_dispatch": "numpy_numeric_batch_v2",
+          "wavefront_surface_geometry_dispatch": "numpy_batch_v1",
+          "wavefront_path_quota_dispatch": "ordered_dead_end_queue_v1",
+          "wavefront_reflection_rng": "counter_rng_v2",
+          "wavefront_reflection_seed_dispatch": "numpy_splitmix64_batch_v1",
+          "wavefront_counter_apply_dispatch": "numpy_vectorized_v1",
+          "wavefront_rng_scalar_parity": "statistical_vs_per_primary_seeded_v1",
+          "wavefront_stochastic_primary_ray_count": 500000,
+          "wavefront_state_build_sec": 0.08735370004433207,
+          "wavefront_state_layout": "stable_active_soa_v1",
+          "wavefront_state_init_sec": 0.08735370004433207,
+          "wavefront_state_advance_sec": 0.09068660021875985,
+          "wavefront_receiver_sec": 2.689707999030361,
+          "wavefront_geometry_sec": 0.7697809012024663,
+          "wavefront_geometry_ray_count": 2500000,
+          "wavefront_geometry_hit_count": 2500000,
+          "wavefront_plan_sec": 9.365839800360845,
+          "wavefront_commit_sec": 7.990081899886718,
+          "wavefront_total_sec": 33.74804319971008,
+          "wavefront_compacted_ray_count": 500000,
+          "wavefront_path_materialized_count": 5000,
+          "wavefront_path_materialization_skipped_count": 495000,
+          "wavefront_event_tape_contract": "ordered_primary_event_tape_v3",
+          "wavefront_event_tape_append_sec": 0.3305700992641505,
+          "wavefront_event_tape_seal_sec": 0.8269299002713524,
+          "wavefront_event_tape_validation_mode": "strict_v1",
+          "wavefront_event_tape_validation_sec": 0.4796051999728661,
+          "wavefront_event_tape_copy_bytes": 272000000,
+          "wavefront_event_tape_copy_contract": "builder_owned_materialization_v1",
+          "wavefront_event_tape_path_payload": "full_path_v1",
+          "wavefront_event_tape_path_payload_requested": "full_path_v1",
+          "wavefront_event_tape_path_payload_full_chunk_count": 489,
+          "wavefront_event_tape_path_payload_omitted_chunk_count": 0,
+          "wavefront_event_tape_path_payload_full_primary_count": 500000,
+          "wavefront_event_tape_path_payload_omitted_primary_count": 0,
+          "wavefront_event_tape_path_payload_full_event_count": 2500000,
+          "wavefront_event_tape_path_payload_omitted_event_count": 0,
+          "wavefront_event_tape_path_payload_suppressed_chunk_count": 0,
+          "wavefront_event_tape_peak_scope": "tape_owned_ndarray_estimate_v2",
+          "wavefront_event_count": 2500000,
+          "wavefront_event_tape_peak_bytes": 1179656,
+          "wavefront_reducer_contract": "ordered_summary_reducer_v1",
+          "wavefront_reducer_preflight_sec": 0.3782974001078401,
+          "wavefront_reducer_replay_sec": 7.4008570000878535,
+          "wavefront_reducer_hydrate_sec": 0.18698940007016063,
+          "wavefront_reducer_logical_event_count": 2500000,
+          "requested_wavefront_planner": "auto",
+          "wavefront_planner": "numba_cpu",
+          "wavefront_planner_contract": "counter_rng_v2",
+          "wavefront_planner_rng_algorithm": "splitmix64_semantic_lane_v1",
+          "wavefront_planner_logical_row_count": 2500000,
+          "wavefront_planner_python_sidecar_row_count": 0,
+          "wavefront_planner_native_available": true,
+          "wavefront_planner_native_used": true,
+          "wavefront_planner_native_provider_version": "0.66.0",
+          "wavefront_planner_native_provider_disabled": false,
+          "wavefront_planner_native_attempt_count": 2445,
+          "wavefront_planner_native_attempt_row_count": 2500000,
+          "wavefront_planner_native_success_count": 2445,
+          "wavefront_planner_native_success_row_count": 2500000,
+          "wavefront_planner_native_face_table_prepare_sec": 0.08608750000712462,
+          "wavefront_planner_native_input_prepare_sec": 1.3178040998463985,
+          "wavefront_planner_native_dispatch_sec": 5.908458999503637,
+          "wavefront_planner_native_execute_sec": 0.2410099002008792,
+          "wavefront_planner_native_result_validation_sec": 0.8339402003912255,
+          "wavefront_planner_native_jit_compile_sec": 4.7417412000068,
+          "wavefront_planner_fallback_count": 0,
+          "wavefront_planner_fallback_row_count": 0,
+          "wavefront_planner_fallback_phase": null,
+          "wavefront_planner_fallback_reason": null,
+          "wavefront_planner_unavailable_reason": null,
+          "requested_wavefront_reducer": "auto",
+          "wavefront_reducer": "numba_cpu",
+          "wavefront_reducer_selection_reason": "eligible_explicit_numba",
+          "wavefront_reducer_native_available": true,
+          "wavefront_reducer_native_used": true,
+          "wavefront_reducer_native_provider_version": "0.66.0",
+          "wavefront_reducer_native_provider_disabled": false,
+          "wavefront_reducer_native_attempt_count": 489,
+          "wavefront_reducer_native_attempt_primary_count": 500000,
+          "wavefront_reducer_native_attempt_event_count": 2500000,
+          "wavefront_reducer_native_success_count": 489,
+          "wavefront_reducer_native_success_primary_count": 500000,
+          "wavefront_reducer_native_success_event_count": 2500000,
+          "wavefront_reducer_python_tape_count": 0,
+          "wavefront_reducer_python_primary_count": 0,
+          "wavefront_reducer_python_event_count": 0,
+          "wavefront_reducer_logical_tape_count": 489,
+          "wavefront_reducer_logical_primary_count": 500000,
+          "wavefront_reducer_fallback_count": 0,
+          "wavefront_reducer_fallback_primary_count": 0,
+          "wavefront_reducer_fallback_event_count": 0,
+          "wavefront_reducer_fallback_phase": null,
+          "wavefront_reducer_fallback_reason": null,
+          "wavefront_reducer_unavailable_reason": null,
+          "wavefront_reducer_native_prepare_sec": 0.3782974001078401,
+          "wavefront_reducer_native_dispatch_sec": 6.301374500239035,
+          "wavefront_reducer_native_jit_compile_sec": 2.685351099993568,
+          "wavefront_reducer_native_execute_sec": 0.2944843000732362,
+          "wavefront_reducer_native_result_validation_sec": 2.838753499905579,
+          "wavefront_reducer_native_apply_sec": 1.0994824998488184,
+          "wavefront_reducer_native_path_sec": 0.18698940007016063,
+          "wavefront_reducer_commit_policy": "run_accumulator",
+          "wavefront_reducer_retained_tape_count": 489,
+          "wavefront_reducer_retained_primary_count": 500000,
+          "wavefront_reducer_retained_event_count": 2500000,
+          "wavefront_reducer_final_flush_count": 1,
+          "wavefront_reducer_final_flush_sec": 0.0024649999977555126,
+          "wavefront_reducer_fallback_flush_count": 0,
+          "wavefront_reducer_native_timing_scope": "prepare_external_plus_dispatch_including_jit_wait_and_validation",
+          "primary_sampling_contract": "receiver_directed_primary_mis_v1",
+          "requested_primary_sampling_strategy": "source",
+          "primary_sampling_strategy": "source",
+          "receiver_importance_fraction": 0.5,
+          "primary_sampling_applied_emitter_count": 0,
+          "primary_sampling_fallback_emitter_count": 0,
+          "primary_sampling_fallback_reasons": {},
+          "primary_sampling_ray_count": 0,
+          "primary_sampling_receiver_directed_ray_count": 0,
+          "primary_sampling_receiver_directed_fraction": 0,
+          "primary_sampling_weight_mean": 1,
+          "primary_sampling_weight_min": 1,
+          "primary_sampling_weight_max": 1,
+          "primary_sampling_effective_sample_size": 0,
+          "primary_sampling_effective_sample_ratio": 1,
+          "bounce_sampling_contract": "receiver_directed_lambertian_bounce_mis_v1",
+          "requested_bounce_sampling_strategy": "source",
+          "bounce_sampling_strategy": "source",
+          "bounce_receiver_importance_fraction": 0.5,
+          "bounce_sampling_eligible_surface_count": 0,
+          "bounce_sampling_receiver_directed_ray_count": 0,
+          "bounce_sampling_receiver_directed_fraction": 0,
+          "bounce_sampling_zero_weight_count": 0,
+          "bounce_sampling_unsupported_surface_count": 0,
+          "bounce_sampling_fallback_reasons": {},
+          "bounce_sampling_weight_mean": 1,
+          "bounce_sampling_weight_min": 1,
+          "bounce_sampling_weight_max": 1,
+          "bounce_sampling_effective_sample_size": 0,
+          "bounce_sampling_effective_sample_ratio": 1,
+          "requested_gpu_workspace": "auto",
+          "requested_wavefront_residency": "auto",
+          "wavefront_residency": "host_roundtrip",
+          "wavefront_residency_selection_reason": "host_roundtrip_requested",
+          "gpu_resident_wavefront_contract": "strict_float64_resident_wavefront_v1",
+          "gpu_resident_wavefront_strict_float64": true,
+          "gpu_resident_wavefront_attempt_count": 0,
+          "gpu_resident_wavefront_attempt_primary_count": 0,
+          "gpu_resident_wavefront_success_count": 0,
+          "gpu_resident_wavefront_success_primary_count": 0,
+          "gpu_resident_wavefront_logical_intersection_rows": 0,
+          "gpu_resident_wavefront_fallback_count": 0,
+          "gpu_resident_wavefront_fallback_primary_count": 0,
+          "gpu_resident_wavefront_fallback_phase": null,
+          "gpu_resident_wavefront_fallback_reason": null,
+          "gpu_resident_wavefront_provider_disabled": false,
+          "gpu_resident_wavefront_bindings_upload_sec": 0,
+          "gpu_resident_wavefront_workspace_prepare_sec": 0,
+          "gpu_resident_wavefront_input_upload_sec": 0,
+          "gpu_resident_wavefront_jit_compile_sec": 0,
+          "gpu_resident_wavefront_kernel_sec": 0,
+          "gpu_resident_wavefront_output_download_sec": 0,
+          "gpu_resident_wavefront_tape_build_sec": 0,
+          "gpu_resident_wavefront_total_sec": 0,
+          "gpu_resident_wavefront_device_name": null,
+          "gpu_resident_wavefront_compute_capability": null,
+          "gpu_resident_wavefront_reused_bindings_count": 0,
+          "gpu_resident_wavefront_reused_workspace_count": 0,
+          "gpu_summary_accumulator_contract": "strict_float64_gpu_summary_accumulator_v1",
+          "gpu_summary_accumulator_success_count": 0,
+          "gpu_summary_accumulator_state_upload_sec": 0,
+          "gpu_summary_accumulator_jit_compile_sec": 0,
+          "gpu_summary_accumulator_kernel_sec": 0,
+          "gpu_summary_accumulator_output_download_sec": 0,
+          "gpu_summary_accumulator_input_bytes": 0,
+          "gpu_summary_accumulator_output_bytes": 0,
+          "gpu_summary_accumulator_reused_state_count": 0,
+          "gpu_summary_selected_path_count": 0,
+          "gpu_summary_skipped_path_count": 0,
+          "gpu_summary_path_select_sec": 0,
+          "gpu_summary_path_retrace_sec": 0,
+          "gpu_summary_path_download_sec": 0,
+          "gpu_resident_workspace_contract": null,
+          "gpu_resident_workspace_peak_bytes": 0,
+          "gpu_resident_event_geometry_capacity": 0,
+          "intersection_dispatch": "batch",
+          "intersection_batch_count": 2445,
+          "intersection_batch_max_size": 1024,
+          "intersection_ray_count": 2500000,
+          "intersection_scalar_query_count": 0,
+          "intersection_sec": 12.43622759997379,
+          "intersection_timing_scope": "batch_dispatch_only",
+          "requested_intersection_provider": "auto",
+          "intersection_provider": "numba_cpu",
+          "reference_scalar_query_count": 0,
+          "reference_batch_count": 0,
+          "reference_batch_sec": 0,
+          "native_available": true,
+          "native_used": true,
+          "native_batch": true,
+          "native_provider_version": "0.66.0",
+          "native_provider_disabled": false,
+          "native_attempt_count": 2445,
+          "native_attempt_ray_count": 2500000,
+          "native_success_count": 2445,
+          "native_success_ray_count": 2500000,
+          "native_scalar_success_count": 0,
+          "native_batch_success_count": 2445,
+          "native_scene_build_sec": 0.18278259999351576,
+          "native_jit_compile_sec": 2.119853599986527,
+          "native_execute_sec": 9.34702409885358,
+          "intersection_fallback_count": 0,
+          "intersection_fallback_ray_count": 0,
+          "intersection_fallback_phase": null,
+          "intersection_fallback_reason": null,
+          "intersection_provider_unavailable_reason": null,
+          "gpu_cuda_requested": false,
+          "gpu_cuda_available": null,
+          "gpu_cuda_used": false,
+          "gpu_cuda_contract": "not_requested",
+          "gpu_cuda_strict_float64": null,
+          "gpu_cuda_device_name": null,
+          "gpu_cuda_compute_capability": null,
+          "gpu_cuda_device_id": null,
+          "gpu_cuda_numba_version": null,
+          "gpu_cuda_toolkit_layout": null,
+          "gpu_cuda_scene_upload_sec": 0,
+          "gpu_cuda_workspace_prepare_sec": 0,
+          "gpu_cuda_input_upload_sec": 0,
+          "gpu_cuda_kernel_sec": 0,
+          "gpu_cuda_output_download_sec": 0,
+          "gpu_cuda_device_scene_reuse_count": 0,
+          "gpu_cuda_workspace_reuse_count": 0,
+          "gpu_cuda_execution_policy": "not_requested",
+          "gpu_cuda_hybrid_cpu_below_rays": 0,
+          "gpu_cuda_hybrid_cpu_attempt_count": 0,
+          "gpu_cuda_hybrid_cpu_attempt_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_success_count": 0,
+          "gpu_cuda_hybrid_cpu_success_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_execute_sec": 0,
+          "gpu_cuda_hybrid_cpu_failure_count": 0,
+          "gpu_cuda_hybrid_cpu_failure_reason": null,
+          "gpu_cuda_hybrid_cpu_disabled": false,
+          "gpu_cuda_hybrid_bypass_count": 0,
+          "gpu_cuda_hybrid_bypass_ray_count": 0,
+          "gpu_cuda_gpu_attempt_count": 0,
+          "gpu_cuda_gpu_attempt_ray_count": 0,
+          "gpu_cuda_gpu_success_count": 0,
+          "gpu_cuda_gpu_success_ray_count": 0,
+          "effective_intersection_provider_request": "numba_cpu",
+          "effective_wavefront_planner_request": "numba_cpu",
+          "effective_wavefront_reducer_request": "numba_cpu",
+          "requested_wavefront_rng": "auto",
+          "requested_wavefront_reducer_commit": "auto",
+          "compute_execution_state": "cpu",
+          "compute_execution_reason": null
+        }
+      },
+      "calibrated_appearance": false,
+      "source_context_binding": "live UI run required for fresh Case identity",
+      "intersection_provider": "numba_cpu",
+      "compute_execution_state": "cpu"
+    },
+    {
+      "case": "gap_0p1",
+      "gap_mm": 0.1,
+      "seam_length_mm": 20,
+      "physical_aperture_area_mm2": 2,
+      "cad_file": "gap_0p1.step",
+      "parts": 3,
+      "triangles": 114638,
+      "ray_count": 500000,
+      "seed": 20260907,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "emitted_lumen": 1,
+      "elapsed_seconds": 16.64510780002456,
+      "receiver_hits": 27,
+      "captured_receiver_paths": 27,
+      "full_receiver_capture": true,
+      "checked_side_slit_crossings": 27,
+      "outside_slit_count": 0,
+      "receiver_flux_lumen": 0.0000073368352630609604,
+      "captured_incoming_energy_lumen": 0.000007711755164489172,
+      "per_receiver": {
+        "right_side": {
+          "peak_nit_est": 0.605923066530921,
+          "mean_nit_est": 0.00007006161592602468,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0.0000073368352630609604,
+          "hit_count": 27,
+          "area_above_zero_mm2": 3.375,
+          "error_estimate_percent": 46.437262518426856,
+          "peak_area_error_estimate_percent": 48.098673419780994,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000054,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 555556,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 32000,
+          "heatmap_hits_per_bin": 0.00084375,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 160000,
+          "estimated_rays_for_usable_heatmap": 2962962963,
+          "heatmap_quality": "sparse"
+        },
+        "front": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "back": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "left": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 160,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "bottom": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "top": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "_optical_summary": {
+          "surface_hit_count": 2499938,
+          "unassigned_surface_hit_count": 0,
+          "profile_hits": {
+            "default": {
+              "profile_id": "default",
+              "source": "part_assignment",
+              "hit_count": 2499938,
+              "reflectance": 0.2,
+              "specular_ratio": 0,
+              "diffuse_ratio": 1,
+              "scatter_model": "lambertian",
+              "incoming_flux_lumen": 1.2554846226198106,
+              "potential_reflected_flux_lumen": 0.25584862150109916
+            }
+          }
+        },
+        "_reflection_summary": {
+          "enabled": true,
+          "implemented_max_depth": 4,
+          "termination_mode": "threshold",
+          "min_energy_lumen": 0,
+          "max_observed_depth": 4,
+          "surface_hit_count": 2499938,
+          "primary_surface_hit_count": 499997,
+          "reflection_attempt_count": 1999965,
+          "reflection_emitted_count": 1999965,
+          "reflection_receiver_hit_count": 24,
+          "reflection_blocked_count": 499973,
+          "reflection_continued_count": 1499968,
+          "reflection_escaped_count": 0,
+          "reflection_below_energy_count": 0,
+          "reflection_disabled_count": 499973,
+          "depth_limit_count": 499973,
+          "roulette_terminated_count": 0,
+          "roulette_survived_count": 0,
+          "direct_receiver_hit_count": 3,
+          "direct_receiver_flux_lumen": 0.000005803631777879155,
+          "reflected_receiver_flux_lumen": 0.000001533203485181805,
+          "depths": {
+            "1": {
+              "emitted_count": 499997,
+              "emitted_flux_lumen": 0.20415013698260354,
+              "receiver_hit_count": 2,
+              "receiver_flux_lumen": 7.609399496672785e-7,
+              "blocked_count": 0,
+              "continued_count": 499995,
+              "escaped_count": 0
+            },
+            "2": {
+              "emitted_count": 499995,
+              "emitted_flux_lumen": 0.04117711266039744,
+              "receiver_hit_count": 7,
+              "receiver_flux_lumen": 6.930667654994623e-7,
+              "blocked_count": 0,
+              "continued_count": 499988,
+              "escaped_count": 0
+            },
+            "3": {
+              "emitted_count": 499988,
+              "emitted_flux_lumen": 0.008433701389151605,
+              "receiver_hit_count": 3,
+              "receiver_flux_lumen": 4.624118890641183e-8,
+              "blocked_count": 0,
+              "continued_count": 499985,
+              "escaped_count": 0
+            },
+            "4": {
+              "emitted_count": 499985,
+              "emitted_flux_lumen": 0.0017313833485076908,
+              "receiver_hit_count": 12,
+              "receiver_flux_lumen": 3.2955581108652426e-8,
+              "blocked_count": 499973,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          },
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999965,
+              "emitted_flux_lumen": 0.25549233438163454,
+              "receiver_hit_count": 24,
+              "receiver_flux_lumen": 0.000001533203485181805,
+              "blocked_count": 499973,
+              "continued_count": 1499968,
+              "escaped_count": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          }
+        },
+        "_contribution_summary": {
+          "schema_version": "rt-contribution.v1",
+          "direct_receiver_hit_count": 3,
+          "direct_receiver_flux_lumen": 0.000005803631777879155,
+          "reflected_receiver_hit_count": 24,
+          "reflected_receiver_flux_lumen": 0.000001533203485181805,
+          "receivers": {
+            "right_side": {
+              "receiver_id": "right_side",
+              "direct": {
+                "hit_count": 3,
+                "flux_lumen": 0.000005803631777879155
+              },
+              "reflected": {
+                "hit_count": 24,
+                "flux_lumen": 0.000001533203485181805
+              },
+              "total": {
+                "hit_count": 27,
+                "flux_lumen": 0.0000073368352630609604
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 24,
+                  "flux_lumen": 0.000001533203485181805
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "0": {
+                  "hit_count": 3,
+                  "flux_lumen": 0.000005803631777879155
+                },
+                "1": {
+                  "hit_count": 2,
+                  "flux_lumen": 7.609399496672785e-7
+                },
+                "2": {
+                  "hit_count": 7,
+                  "flux_lumen": 6.930667654994623e-7
+                },
+                "3": {
+                  "hit_count": 3,
+                  "flux_lumen": 4.624118890641183e-8
+                },
+                "4": {
+                  "hit_count": 12,
+                  "flux_lumen": 3.2955581108652426e-8
+                }
+              }
+            },
+            "front": {
+              "receiver_id": "front",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "back": {
+              "receiver_id": "back",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "left": {
+              "receiver_id": "left",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "bottom": {
+              "receiver_id": "bottom",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "top": {
+              "receiver_id": "top",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            }
+          },
+          "components": {},
+          "faces": {},
+          "materials": {},
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999965,
+              "emitted_flux_lumen": 0.25549233438163454,
+              "receiver_hit_count": 24,
+              "receiver_flux_lumen": 0.000001533203485181805,
+              "blocked_count": 499973,
+              "blocked_flux_lumen": 0.0017313364975140748,
+              "continued_count": 1499968,
+              "continued_flux_lumen": 0.2537592861292476,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            }
+          },
+          "depths": {
+            "0": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 0,
+              "reflection_emitted_flux_lumen": 0,
+              "receiver_hit_count": 3,
+              "receiver_flux_lumen": 0.000005803631777879155,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "1": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499997,
+              "reflection_emitted_flux_lumen": 0.20415013698260354,
+              "receiver_hit_count": 2,
+              "receiver_flux_lumen": 7.609399496672785e-7,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499995,
+              "continued_flux_lumen": 0.20414933474451158,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "2": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499995,
+              "reflection_emitted_flux_lumen": 0.04117711266039744,
+              "receiver_hit_count": 7,
+              "receiver_flux_lumen": 6.930667654994623e-7,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499988,
+              "continued_flux_lumen": 0.041176299518383086,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "3": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499988,
+              "reflection_emitted_flux_lumen": 0.008433701389151605,
+              "receiver_hit_count": 3,
+              "receiver_flux_lumen": 4.624118890641183e-8,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499985,
+              "continued_flux_lumen": 0.008433651865087034,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "4": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499985,
+              "reflection_emitted_flux_lumen": 0.0017313833485076908,
+              "receiver_hit_count": 12,
+              "receiver_flux_lumen": 3.2955581108652426e-8,
+              "blocked_count": 499973,
+              "blocked_flux_lumen": 0.0017313364975140748,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            }
+          }
+        },
+        "_performance_summary": {
+          "backend": "python_numpy_cpu",
+          "execution_path": "multi_bounce_wavefront",
+          "contribution_mode": "summary",
+          "intersection_backend": "bvh",
+          "configured_intersection_backend": "bvh",
+          "acceleration_structure": "bvh",
+          "configured_acceleration_structure": "bvh",
+          "bvh_node_count": 32767,
+          "bvh_leaf_count": 16384,
+          "bvh_build_sec": 2.4459396000020206,
+          "bvh_cached_build_sec": 2.4459396000020206,
+          "bvh_cache_hit": false,
+          "fast_primary_ray_count": 500000,
+          "face_batch_primary_ray_count": 0,
+          "scalar_primary_ray_count": 0,
+          "resolved_optical_face_cache_count": 114638,
+          "stored_path_count": 5000,
+          "stopped_early": false,
+          "requested_ray_count": 500000,
+          "rays_per_sec": 30055.024080541283,
+          "compute_backend": "cpu",
+          "monte_carlo_contract": "cpu_gpu_deterministic_batch_v1",
+          "acceleration_policy": "cpu_compatible_v1",
+          "requested_intersection_dispatch": "auto",
+          "effective_intersection_dispatch_request": "batch",
+          "intersection_batch_size": 1024,
+          "multi_bounce_wavefront_used": true,
+          "requested_wavefront_pipeline": "auto",
+          "wavefront_pipeline": "soa_event_tape",
+          "wavefront_chunk_count": 489,
+          "wavefront_primary_ray_count": 500000,
+          "wavefront_depth_batch_count": 2445,
+          "wavefront_max_active_ray_count": 1024,
+          "wavefront_max_observed_depth": 4,
+          "wavefront_active_ray_count_by_depth": {
+            "0": 500000,
+            "1": 499997,
+            "2": 499995,
+            "3": 499988,
+            "4": 499985
+          },
+          "wavefront_batch_count_by_depth": {
+            "0": 489,
+            "1": 489,
+            "2": 489,
+            "3": 489,
+            "4": 489
+          },
+          "wavefront_receiver_dispatch": "numpy_numeric_batch_v2",
+          "wavefront_surface_geometry_dispatch": "numpy_batch_v1",
+          "wavefront_path_quota_dispatch": "ordered_dead_end_queue_v1",
+          "wavefront_reflection_rng": "counter_rng_v2",
+          "wavefront_reflection_seed_dispatch": "numpy_splitmix64_batch_v1",
+          "wavefront_counter_apply_dispatch": "numpy_vectorized_v1",
+          "wavefront_rng_scalar_parity": "statistical_vs_per_primary_seeded_v1",
+          "wavefront_stochastic_primary_ray_count": 499997,
+          "wavefront_state_build_sec": 0.06614729971624911,
+          "wavefront_state_layout": "stable_active_soa_v1",
+          "wavefront_state_init_sec": 0.06614729971624911,
+          "wavefront_state_advance_sec": 0.06752870019408874,
+          "wavefront_receiver_sec": 1.830203000426991,
+          "wavefront_geometry_sec": 0.4859227984852623,
+          "wavefront_geometry_ray_count": 2499965,
+          "wavefront_geometry_hit_count": 2499938,
+          "wavefront_plan_sec": 3.19183430049452,
+          "wavefront_commit_sec": 3.6913988997985143,
+          "wavefront_total_sec": 16.35923699993873,
+          "wavefront_compacted_ray_count": 500000,
+          "wavefront_path_materialized_count": 5027,
+          "wavefront_path_materialization_skipped_count": 494973,
+          "wavefront_event_tape_contract": "ordered_primary_event_tape_v3",
+          "wavefront_event_tape_append_sec": 0.25321859944961034,
+          "wavefront_event_tape_seal_sec": 0.53366830010782,
+          "wavefront_event_tape_validation_mode": "strict_v1",
+          "wavefront_event_tape_validation_sec": 0.30707780006923713,
+          "wavefront_event_tape_copy_bytes": 271996564,
+          "wavefront_event_tape_copy_contract": "builder_owned_materialization_v1",
+          "wavefront_event_tape_path_payload": "full_path_v1",
+          "wavefront_event_tape_path_payload_requested": "full_path_v1",
+          "wavefront_event_tape_path_payload_full_chunk_count": 489,
+          "wavefront_event_tape_path_payload_omitted_chunk_count": 0,
+          "wavefront_event_tape_path_payload_full_primary_count": 500000,
+          "wavefront_event_tape_path_payload_omitted_primary_count": 0,
+          "wavefront_event_tape_path_payload_full_event_count": 2499938,
+          "wavefront_event_tape_path_payload_omitted_event_count": 0,
+          "wavefront_event_tape_path_payload_suppressed_chunk_count": 0,
+          "wavefront_event_tape_peak_scope": "tape_owned_ndarray_estimate_v2",
+          "wavefront_event_count": 2499938,
+          "wavefront_event_tape_peak_bytes": 1179656,
+          "wavefront_reducer_contract": "ordered_summary_reducer_v1",
+          "wavefront_reducer_preflight_sec": 0.2968207001395058,
+          "wavefront_reducer_replay_sec": 3.2029862011841033,
+          "wavefront_reducer_hydrate_sec": 0.17609909948077984,
+          "wavefront_reducer_logical_event_count": 2499938,
+          "requested_wavefront_planner": "auto",
+          "wavefront_planner": "numba_cpu",
+          "wavefront_planner_contract": "counter_rng_v2",
+          "wavefront_planner_rng_algorithm": "splitmix64_semantic_lane_v1",
+          "wavefront_planner_logical_row_count": 2499938,
+          "wavefront_planner_python_sidecar_row_count": 0,
+          "wavefront_planner_native_available": true,
+          "wavefront_planner_native_used": true,
+          "wavefront_planner_native_provider_version": "0.66.0",
+          "wavefront_planner_native_provider_disabled": false,
+          "wavefront_planner_native_attempt_count": 2445,
+          "wavefront_planner_native_attempt_row_count": 2499938,
+          "wavefront_planner_native_success_count": 2445,
+          "wavefront_planner_native_success_row_count": 2499938,
+          "wavefront_planner_native_face_table_prepare_sec": 0.048078699997859076,
+          "wavefront_planner_native_input_prepare_sec": 0.9182426000479609,
+          "wavefront_planner_native_dispatch_sec": 0.7957340002176352,
+          "wavefront_planner_native_execute_sec": 0.19919630014919676,
+          "wavefront_planner_native_result_validation_sec": 0.5282245008856989,
+          "wavefront_planner_native_jit_compile_sec": 0,
+          "wavefront_planner_fallback_count": 0,
+          "wavefront_planner_fallback_row_count": 0,
+          "wavefront_planner_fallback_phase": null,
+          "wavefront_planner_fallback_reason": null,
+          "wavefront_planner_unavailable_reason": null,
+          "requested_wavefront_reducer": "auto",
+          "wavefront_reducer": "numba_cpu",
+          "wavefront_reducer_selection_reason": "eligible_explicit_numba",
+          "wavefront_reducer_native_available": true,
+          "wavefront_reducer_native_used": true,
+          "wavefront_reducer_native_provider_version": "0.66.0",
+          "wavefront_reducer_native_provider_disabled": false,
+          "wavefront_reducer_native_attempt_count": 489,
+          "wavefront_reducer_native_attempt_primary_count": 500000,
+          "wavefront_reducer_native_attempt_event_count": 2499938,
+          "wavefront_reducer_native_success_count": 489,
+          "wavefront_reducer_native_success_primary_count": 500000,
+          "wavefront_reducer_native_success_event_count": 2499938,
+          "wavefront_reducer_python_tape_count": 0,
+          "wavefront_reducer_python_primary_count": 0,
+          "wavefront_reducer_python_event_count": 0,
+          "wavefront_reducer_logical_tape_count": 489,
+          "wavefront_reducer_logical_primary_count": 500000,
+          "wavefront_reducer_fallback_count": 0,
+          "wavefront_reducer_fallback_primary_count": 0,
+          "wavefront_reducer_fallback_event_count": 0,
+          "wavefront_reducer_fallback_phase": null,
+          "wavefront_reducer_fallback_reason": null,
+          "wavefront_reducer_unavailable_reason": null,
+          "wavefront_reducer_native_prepare_sec": 0.2968207001395058,
+          "wavefront_reducer_native_dispatch_sec": 2.4014500002376735,
+          "wavefront_reducer_native_jit_compile_sec": 0,
+          "wavefront_reducer_native_execute_sec": 0.19964890007395297,
+          "wavefront_reducer_native_result_validation_sec": 1.8872791006288026,
+          "wavefront_reducer_native_apply_sec": 0.8015362009464297,
+          "wavefront_reducer_native_path_sec": 0.17609909948077984,
+          "wavefront_reducer_commit_policy": "run_accumulator",
+          "wavefront_reducer_retained_tape_count": 489,
+          "wavefront_reducer_retained_primary_count": 500000,
+          "wavefront_reducer_retained_event_count": 2499938,
+          "wavefront_reducer_final_flush_count": 1,
+          "wavefront_reducer_final_flush_sec": 0.0024738000065553933,
+          "wavefront_reducer_fallback_flush_count": 0,
+          "wavefront_reducer_native_timing_scope": "prepare_external_plus_dispatch_including_jit_wait_and_validation",
+          "primary_sampling_contract": "receiver_directed_primary_mis_v1",
+          "requested_primary_sampling_strategy": "source",
+          "primary_sampling_strategy": "source",
+          "receiver_importance_fraction": 0.5,
+          "primary_sampling_applied_emitter_count": 0,
+          "primary_sampling_fallback_emitter_count": 0,
+          "primary_sampling_fallback_reasons": {},
+          "primary_sampling_ray_count": 0,
+          "primary_sampling_receiver_directed_ray_count": 0,
+          "primary_sampling_receiver_directed_fraction": 0,
+          "primary_sampling_weight_mean": 1,
+          "primary_sampling_weight_min": 1,
+          "primary_sampling_weight_max": 1,
+          "primary_sampling_effective_sample_size": 0,
+          "primary_sampling_effective_sample_ratio": 1,
+          "bounce_sampling_contract": "receiver_directed_lambertian_bounce_mis_v1",
+          "requested_bounce_sampling_strategy": "source",
+          "bounce_sampling_strategy": "source",
+          "bounce_receiver_importance_fraction": 0.5,
+          "bounce_sampling_eligible_surface_count": 0,
+          "bounce_sampling_receiver_directed_ray_count": 0,
+          "bounce_sampling_receiver_directed_fraction": 0,
+          "bounce_sampling_zero_weight_count": 0,
+          "bounce_sampling_unsupported_surface_count": 0,
+          "bounce_sampling_fallback_reasons": {},
+          "bounce_sampling_weight_mean": 1,
+          "bounce_sampling_weight_min": 1,
+          "bounce_sampling_weight_max": 1,
+          "bounce_sampling_effective_sample_size": 0,
+          "bounce_sampling_effective_sample_ratio": 1,
+          "requested_gpu_workspace": "auto",
+          "requested_wavefront_residency": "auto",
+          "wavefront_residency": "host_roundtrip",
+          "wavefront_residency_selection_reason": "host_roundtrip_requested",
+          "gpu_resident_wavefront_contract": "strict_float64_resident_wavefront_v1",
+          "gpu_resident_wavefront_strict_float64": true,
+          "gpu_resident_wavefront_attempt_count": 0,
+          "gpu_resident_wavefront_attempt_primary_count": 0,
+          "gpu_resident_wavefront_success_count": 0,
+          "gpu_resident_wavefront_success_primary_count": 0,
+          "gpu_resident_wavefront_logical_intersection_rows": 0,
+          "gpu_resident_wavefront_fallback_count": 0,
+          "gpu_resident_wavefront_fallback_primary_count": 0,
+          "gpu_resident_wavefront_fallback_phase": null,
+          "gpu_resident_wavefront_fallback_reason": null,
+          "gpu_resident_wavefront_provider_disabled": false,
+          "gpu_resident_wavefront_bindings_upload_sec": 0,
+          "gpu_resident_wavefront_workspace_prepare_sec": 0,
+          "gpu_resident_wavefront_input_upload_sec": 0,
+          "gpu_resident_wavefront_jit_compile_sec": 0,
+          "gpu_resident_wavefront_kernel_sec": 0,
+          "gpu_resident_wavefront_output_download_sec": 0,
+          "gpu_resident_wavefront_tape_build_sec": 0,
+          "gpu_resident_wavefront_total_sec": 0,
+          "gpu_resident_wavefront_device_name": null,
+          "gpu_resident_wavefront_compute_capability": null,
+          "gpu_resident_wavefront_reused_bindings_count": 0,
+          "gpu_resident_wavefront_reused_workspace_count": 0,
+          "gpu_summary_accumulator_contract": "strict_float64_gpu_summary_accumulator_v1",
+          "gpu_summary_accumulator_success_count": 0,
+          "gpu_summary_accumulator_state_upload_sec": 0,
+          "gpu_summary_accumulator_jit_compile_sec": 0,
+          "gpu_summary_accumulator_kernel_sec": 0,
+          "gpu_summary_accumulator_output_download_sec": 0,
+          "gpu_summary_accumulator_input_bytes": 0,
+          "gpu_summary_accumulator_output_bytes": 0,
+          "gpu_summary_accumulator_reused_state_count": 0,
+          "gpu_summary_selected_path_count": 0,
+          "gpu_summary_skipped_path_count": 0,
+          "gpu_summary_path_select_sec": 0,
+          "gpu_summary_path_retrace_sec": 0,
+          "gpu_summary_path_download_sec": 0,
+          "gpu_resident_workspace_contract": null,
+          "gpu_resident_workspace_peak_bytes": 0,
+          "gpu_resident_event_geometry_capacity": 0,
+          "intersection_dispatch": "batch",
+          "intersection_batch_count": 2445,
+          "intersection_batch_max_size": 1024,
+          "intersection_ray_count": 2499965,
+          "intersection_scalar_query_count": 0,
+          "intersection_sec": 6.811080799641786,
+          "intersection_timing_scope": "batch_dispatch_only",
+          "requested_intersection_provider": "auto",
+          "intersection_provider": "numba_cpu",
+          "reference_scalar_query_count": 0,
+          "reference_batch_count": 0,
+          "reference_batch_sec": 0,
+          "native_available": true,
+          "native_used": true,
+          "native_batch": true,
+          "native_provider_version": "0.66.0",
+          "native_provider_disabled": false,
+          "native_attempt_count": 2445,
+          "native_attempt_ray_count": 2499965,
+          "native_success_count": 2445,
+          "native_success_ray_count": 2499965,
+          "native_scalar_success_count": 0,
+          "native_batch_success_count": 2445,
+          "native_scene_build_sec": 0.16285220001009293,
+          "native_jit_compile_sec": 0,
+          "native_execute_sec": 6.352038501005154,
+          "intersection_fallback_count": 0,
+          "intersection_fallback_ray_count": 0,
+          "intersection_fallback_phase": null,
+          "intersection_fallback_reason": null,
+          "intersection_provider_unavailable_reason": null,
+          "gpu_cuda_requested": false,
+          "gpu_cuda_available": null,
+          "gpu_cuda_used": false,
+          "gpu_cuda_contract": "not_requested",
+          "gpu_cuda_strict_float64": null,
+          "gpu_cuda_device_name": null,
+          "gpu_cuda_compute_capability": null,
+          "gpu_cuda_device_id": null,
+          "gpu_cuda_numba_version": null,
+          "gpu_cuda_toolkit_layout": null,
+          "gpu_cuda_scene_upload_sec": 0,
+          "gpu_cuda_workspace_prepare_sec": 0,
+          "gpu_cuda_input_upload_sec": 0,
+          "gpu_cuda_kernel_sec": 0,
+          "gpu_cuda_output_download_sec": 0,
+          "gpu_cuda_device_scene_reuse_count": 0,
+          "gpu_cuda_workspace_reuse_count": 0,
+          "gpu_cuda_execution_policy": "not_requested",
+          "gpu_cuda_hybrid_cpu_below_rays": 0,
+          "gpu_cuda_hybrid_cpu_attempt_count": 0,
+          "gpu_cuda_hybrid_cpu_attempt_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_success_count": 0,
+          "gpu_cuda_hybrid_cpu_success_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_execute_sec": 0,
+          "gpu_cuda_hybrid_cpu_failure_count": 0,
+          "gpu_cuda_hybrid_cpu_failure_reason": null,
+          "gpu_cuda_hybrid_cpu_disabled": false,
+          "gpu_cuda_hybrid_bypass_count": 0,
+          "gpu_cuda_hybrid_bypass_ray_count": 0,
+          "gpu_cuda_gpu_attempt_count": 0,
+          "gpu_cuda_gpu_attempt_ray_count": 0,
+          "gpu_cuda_gpu_success_count": 0,
+          "gpu_cuda_gpu_success_ray_count": 0,
+          "effective_intersection_provider_request": "numba_cpu",
+          "effective_wavefront_planner_request": "numba_cpu",
+          "effective_wavefront_reducer_request": "numba_cpu",
+          "requested_wavefront_rng": "auto",
+          "requested_wavefront_reducer_commit": "auto",
+          "compute_execution_state": "cpu",
+          "compute_execution_reason": null
+        }
+      },
+      "calibrated_appearance": false,
+      "source_context_binding": "live UI run required for fresh Case identity",
+      "intersection_provider": "numba_cpu",
+      "compute_execution_state": "cpu"
+    },
+    {
+      "case": "gap_0p3",
+      "gap_mm": 0.3,
+      "seam_length_mm": 20,
+      "physical_aperture_area_mm2": 6,
+      "cad_file": "gap_0p3.step",
+      "parts": 3,
+      "triangles": 114668,
+      "ray_count": 500000,
+      "seed": 20260907,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "emitted_lumen": 1,
+      "elapsed_seconds": 17.109003299992764,
+      "receiver_hits": 219,
+      "captured_receiver_paths": 219,
+      "full_receiver_capture": true,
+      "checked_side_slit_crossings": 219,
+      "outside_slit_count": 0,
+      "receiver_flux_lumen": 0.000050865525506513124,
+      "captured_incoming_energy_lumen": 0.00005594906143054611,
+      "per_receiver": {
+        "right_side": {
+          "peak_nit_est": 1.1407132558882132,
+          "mean_nit_est": 0.0004842418200363599,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0.000050709684812905966,
+          "hit_count": 213,
+          "area_above_zero_mm2": 25.5,
+          "error_estimate_percent": 16.149608375479186,
+          "peak_area_error_estimate_percent": 17.21116087676517,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000426,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 70423,
+          "statistical_quality": "estimated",
+          "heatmap_bin_count": 32000,
+          "heatmap_hits_per_bin": 0.00665625,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 160000,
+          "estimated_rays_for_usable_heatmap": 375586855,
+          "heatmap_quality": "sparse"
+        },
+        "front": {
+          "peak_nit_est": 0.000011192144088110869,
+          "mean_nit_est": 2.6492509590160005e-8,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 9.710011908753779e-9,
+          "hit_count": 3,
+          "area_above_zero_mm2": 50,
+          "error_estimate_percent": 59.71526094358253,
+          "peak_area_error_estimate_percent": 59.71526094358253,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000006,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 5000000,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0.005357142857142857,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": 466666667,
+          "heatmap_quality": "sparse"
+        },
+        "back": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "left": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 160,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "bottom": {
+          "peak_nit_est": 0.00017513710062100772,
+          "mean_nit_est": 9.967465855581151e-7,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 1.4613068169840392e-7,
+          "hit_count": 3,
+          "area_above_zero_mm2": 75,
+          "error_estimate_percent": 79.90940252011615,
+          "peak_area_error_estimate_percent": 79.90940252011615,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000006,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 5000000,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0.013392857142857142,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": 186666667,
+          "heatmap_quality": "sparse"
+        },
+        "top": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "_optical_summary": {
+          "surface_hit_count": 2499458,
+          "unassigned_surface_hit_count": 0,
+          "profile_hits": {
+            "default": {
+              "profile_id": "default",
+              "source": "part_assignment",
+              "hit_count": 2499458,
+              "reflectance": 0.2,
+              "specular_ratio": 0,
+              "diffuse_ratio": 1,
+              "scatter_model": "lambertian",
+              "incoming_flux_lumen": 1.2554245486917726,
+              "potential_reflected_flux_lumen": 0.2558366354697315
+            }
+          }
+        },
+        "_reflection_summary": {
+          "enabled": true,
+          "implemented_max_depth": 4,
+          "termination_mode": "threshold",
+          "min_energy_lumen": 0,
+          "max_observed_depth": 4,
+          "surface_hit_count": 2499458,
+          "primary_surface_hit_count": 499983,
+          "reflection_attempt_count": 1999677,
+          "reflection_emitted_count": 1999677,
+          "reflection_receiver_hit_count": 202,
+          "reflection_blocked_count": 499781,
+          "reflection_continued_count": 1499694,
+          "reflection_escaped_count": 0,
+          "reflection_below_energy_count": 0,
+          "reflection_disabled_count": 499781,
+          "depth_limit_count": 499781,
+          "roulette_terminated_count": 0,
+          "roulette_survived_count": 0,
+          "direct_receiver_hit_count": 17,
+          "direct_receiver_flux_lumen": 0.000032239153010611947,
+          "reflected_receiver_flux_lumen": 0.00001862637249590117,
+          "depths": {
+            "1": {
+              "emitted_count": 499983,
+              "emitted_flux_lumen": 0.2041448045172974,
+              "receiver_hit_count": 43,
+              "receiver_flux_lumen": 0.00001518488362644252,
+              "blocked_count": 0,
+              "continued_count": 499940,
+              "escaped_count": 0
+            },
+            "2": {
+              "emitted_count": 499940,
+              "emitted_flux_lumen": 0.04117258895919906,
+              "receiver_hit_count": 37,
+              "receiver_flux_lumen": 0.000002528138755094944,
+              "blocked_count": 0,
+              "continued_count": 499903,
+              "escaped_count": 0
+            },
+            "3": {
+              "emitted_count": 499903,
+              "emitted_flux_lumen": 0.008432215431796088,
+              "receiver_hit_count": 52,
+              "receiver_flux_lumen": 7.159861945823752e-7,
+              "blocked_count": 0,
+              "continued_count": 499851,
+              "escaped_count": 0
+            },
+            "4": {
+              "emitted_count": 499851,
+              "emitted_flux_lumen": 0.0017308888505972865,
+              "receiver_hit_count": 70,
+              "receiver_flux_lumen": 1.9736391978134172e-7,
+              "blocked_count": 499781,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          },
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999677,
+              "emitted_flux_lumen": 0.25548049775986426,
+              "receiver_hit_count": 202,
+              "receiver_flux_lumen": 0.00001862637249590117,
+              "blocked_count": 499781,
+              "continued_count": 1499694,
+              "escaped_count": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          }
+        },
+        "_contribution_summary": {
+          "schema_version": "rt-contribution.v1",
+          "direct_receiver_hit_count": 17,
+          "direct_receiver_flux_lumen": 0.000032239153010611947,
+          "reflected_receiver_hit_count": 202,
+          "reflected_receiver_flux_lumen": 0.00001862637249590117,
+          "receivers": {
+            "right_side": {
+              "receiver_id": "right_side",
+              "direct": {
+                "hit_count": 17,
+                "flux_lumen": 0.000032239153010611947
+              },
+              "reflected": {
+                "hit_count": 196,
+                "flux_lumen": 0.000018470531802294016
+              },
+              "total": {
+                "hit_count": 213,
+                "flux_lumen": 0.00005070968481290595
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 196,
+                  "flux_lumen": 0.000018470531802294016
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "0": {
+                  "hit_count": 17,
+                  "flux_lumen": 0.000032239153010611947
+                },
+                "1": {
+                  "hit_count": 43,
+                  "flux_lumen": 0.00001518488362644252
+                },
+                "2": {
+                  "hit_count": 36,
+                  "flux_lumen": 0.0000024135117907861995
+                },
+                "3": {
+                  "hit_count": 50,
+                  "flux_lumen": 6.844824771927159e-7
+                },
+                "4": {
+                  "hit_count": 67,
+                  "flux_lumen": 1.8765390787258796e-7
+                }
+              }
+            },
+            "front": {
+              "receiver_id": "front",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 3,
+                "flux_lumen": 9.710011908753779e-9
+              },
+              "total": {
+                "hit_count": 3,
+                "flux_lumen": 9.710011908753779e-9
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 3,
+                  "flux_lumen": 9.710011908753779e-9
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "4": {
+                  "hit_count": 3,
+                  "flux_lumen": 9.710011908753779e-9
+                }
+              }
+            },
+            "back": {
+              "receiver_id": "back",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "left": {
+              "receiver_id": "left",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "bottom": {
+              "receiver_id": "bottom",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 3,
+                "flux_lumen": 1.4613068169840392e-7
+              },
+              "total": {
+                "hit_count": 3,
+                "flux_lumen": 1.4613068169840392e-7
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 3,
+                  "flux_lumen": 1.4613068169840392e-7
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "2": {
+                  "hit_count": 1,
+                  "flux_lumen": 1.1462696430874461e-7
+                },
+                "3": {
+                  "hit_count": 2,
+                  "flux_lumen": 3.150371738965932e-8
+                }
+              }
+            },
+            "top": {
+              "receiver_id": "top",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            }
+          },
+          "components": {},
+          "faces": {},
+          "materials": {},
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999677,
+              "emitted_flux_lumen": 0.25548049775986426,
+              "receiver_hit_count": 202,
+              "receiver_flux_lumen": 0.00001862637249590117,
+              "blocked_count": 499781,
+              "blocked_flux_lumen": 0.0017306387595460244,
+              "continued_count": 1499694,
+              "continued_flux_lumen": 0.2537279099391788,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            }
+          },
+          "depths": {
+            "0": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 0,
+              "reflection_emitted_flux_lumen": 0,
+              "receiver_hit_count": 17,
+              "receiver_flux_lumen": 0.000032239153010611947,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "1": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499983,
+              "reflection_emitted_flux_lumen": 0.2041448045172974,
+              "receiver_hit_count": 43,
+              "receiver_flux_lumen": 0.00001518488362644252,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499940,
+              "continued_flux_lumen": 0.20412725194935932,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "2": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499940,
+              "reflection_emitted_flux_lumen": 0.04117258895919906,
+              "receiver_hit_count": 37,
+              "receiver_flux_lumen": 0.000002528138755094944,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499903,
+              "continued_flux_lumen": 0.04116932992297227,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "3": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499903,
+              "reflection_emitted_flux_lumen": 0.008432215431796088,
+              "receiver_hit_count": 52,
+              "receiver_flux_lumen": 7.159861945823752e-7,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499851,
+              "continued_flux_lumen": 0.008431328065581355,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "4": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499851,
+              "reflection_emitted_flux_lumen": 0.0017308888505972865,
+              "receiver_hit_count": 70,
+              "receiver_flux_lumen": 1.9736391978134172e-7,
+              "blocked_count": 499781,
+              "blocked_flux_lumen": 0.0017306387595460244,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            }
+          }
+        },
+        "_performance_summary": {
+          "backend": "python_numpy_cpu",
+          "execution_path": "multi_bounce_wavefront",
+          "contribution_mode": "summary",
+          "intersection_backend": "bvh",
+          "configured_intersection_backend": "bvh",
+          "acceleration_structure": "bvh",
+          "configured_acceleration_structure": "bvh",
+          "bvh_node_count": 32767,
+          "bvh_leaf_count": 16384,
+          "bvh_build_sec": 2.130008699983591,
+          "bvh_cached_build_sec": 2.130008699983591,
+          "bvh_cache_hit": false,
+          "fast_primary_ray_count": 500000,
+          "face_batch_primary_ray_count": 0,
+          "scalar_primary_ray_count": 0,
+          "resolved_optical_face_cache_count": 114668,
+          "stored_path_count": 5000,
+          "stopped_early": false,
+          "requested_ray_count": 500000,
+          "rays_per_sec": 29236.899730278827,
+          "compute_backend": "cpu",
+          "monte_carlo_contract": "cpu_gpu_deterministic_batch_v1",
+          "acceleration_policy": "cpu_compatible_v1",
+          "requested_intersection_dispatch": "auto",
+          "effective_intersection_dispatch_request": "batch",
+          "intersection_batch_size": 1024,
+          "multi_bounce_wavefront_used": true,
+          "requested_wavefront_pipeline": "auto",
+          "wavefront_pipeline": "soa_event_tape",
+          "wavefront_chunk_count": 489,
+          "wavefront_primary_ray_count": 500000,
+          "wavefront_depth_batch_count": 2445,
+          "wavefront_max_active_ray_count": 1024,
+          "wavefront_max_observed_depth": 4,
+          "wavefront_active_ray_count_by_depth": {
+            "0": 500000,
+            "1": 499983,
+            "2": 499940,
+            "3": 499903,
+            "4": 499851
+          },
+          "wavefront_batch_count_by_depth": {
+            "0": 489,
+            "1": 489,
+            "2": 489,
+            "3": 489,
+            "4": 489
+          },
+          "wavefront_receiver_dispatch": "numpy_numeric_batch_v2",
+          "wavefront_surface_geometry_dispatch": "numpy_batch_v1",
+          "wavefront_path_quota_dispatch": "ordered_dead_end_queue_v1",
+          "wavefront_reflection_rng": "counter_rng_v2",
+          "wavefront_reflection_seed_dispatch": "numpy_splitmix64_batch_v1",
+          "wavefront_counter_apply_dispatch": "numpy_vectorized_v1",
+          "wavefront_rng_scalar_parity": "statistical_vs_per_primary_seeded_v1",
+          "wavefront_stochastic_primary_ray_count": 499983,
+          "wavefront_state_build_sec": 0.07366260013077408,
+          "wavefront_state_layout": "stable_active_soa_v1",
+          "wavefront_state_init_sec": 0.07366260013077408,
+          "wavefront_state_advance_sec": 0.0671251006424427,
+          "wavefront_receiver_sec": 1.8271282999194227,
+          "wavefront_geometry_sec": 0.47547510074218735,
+          "wavefront_geometry_ray_count": 2499677,
+          "wavefront_geometry_hit_count": 2499458,
+          "wavefront_plan_sec": 3.2105507996457163,
+          "wavefront_commit_sec": 3.777763999911258,
+          "wavefront_total_sec": 16.46441059964127,
+          "wavefront_compacted_ray_count": 500000,
+          "wavefront_path_materialized_count": 5216,
+          "wavefront_path_materialization_skipped_count": 494784,
+          "wavefront_event_tape_contract": "ordered_primary_event_tape_v3",
+          "wavefront_event_tape_append_sec": 0.26434170024003834,
+          "wavefront_event_tape_seal_sec": 0.5409165998862591,
+          "wavefront_event_tape_validation_mode": "strict_v1",
+          "wavefront_event_tape_validation_sec": 0.31115279989899136,
+          "wavefront_event_tape_copy_bytes": 271968532,
+          "wavefront_event_tape_copy_contract": "builder_owned_materialization_v1",
+          "wavefront_event_tape_path_payload": "full_path_v1",
+          "wavefront_event_tape_path_payload_requested": "full_path_v1",
+          "wavefront_event_tape_path_payload_full_chunk_count": 489,
+          "wavefront_event_tape_path_payload_omitted_chunk_count": 0,
+          "wavefront_event_tape_path_payload_full_primary_count": 500000,
+          "wavefront_event_tape_path_payload_omitted_primary_count": 0,
+          "wavefront_event_tape_path_payload_full_event_count": 2499458,
+          "wavefront_event_tape_path_payload_omitted_event_count": 0,
+          "wavefront_event_tape_path_payload_suppressed_chunk_count": 0,
+          "wavefront_event_tape_peak_scope": "tape_owned_ndarray_estimate_v2",
+          "wavefront_event_count": 2499458,
+          "wavefront_event_tape_peak_bytes": 1179656,
+          "wavefront_reducer_contract": "ordered_summary_reducer_v1",
+          "wavefront_reducer_preflight_sec": 0.29743490027613007,
+          "wavefront_reducer_replay_sec": 3.278070698841475,
+          "wavefront_reducer_hydrate_sec": 0.18377980130026117,
+          "wavefront_reducer_logical_event_count": 2499458,
+          "requested_wavefront_planner": "auto",
+          "wavefront_planner": "numba_cpu",
+          "wavefront_planner_contract": "counter_rng_v2",
+          "wavefront_planner_rng_algorithm": "splitmix64_semantic_lane_v1",
+          "wavefront_planner_logical_row_count": 2499458,
+          "wavefront_planner_python_sidecar_row_count": 0,
+          "wavefront_planner_native_available": true,
+          "wavefront_planner_native_used": true,
+          "wavefront_planner_native_provider_version": "0.66.0",
+          "wavefront_planner_native_provider_disabled": false,
+          "wavefront_planner_native_attempt_count": 2445,
+          "wavefront_planner_native_attempt_row_count": 2499458,
+          "wavefront_planner_native_success_count": 2445,
+          "wavefront_planner_native_success_row_count": 2499458,
+          "wavefront_planner_native_face_table_prepare_sec": 0.046383900014916435,
+          "wavefront_planner_native_input_prepare_sec": 0.9182967001979705,
+          "wavefront_planner_native_dispatch_sec": 0.7944327010191046,
+          "wavefront_planner_native_execute_sec": 0.1987201011797879,
+          "wavefront_planner_native_result_validation_sec": 0.5272850999899674,
+          "wavefront_planner_native_jit_compile_sec": 0,
+          "wavefront_planner_fallback_count": 0,
+          "wavefront_planner_fallback_row_count": 0,
+          "wavefront_planner_fallback_phase": null,
+          "wavefront_planner_fallback_reason": null,
+          "wavefront_planner_unavailable_reason": null,
+          "requested_wavefront_reducer": "auto",
+          "wavefront_reducer": "numba_cpu",
+          "wavefront_reducer_selection_reason": "eligible_explicit_numba",
+          "wavefront_reducer_native_available": true,
+          "wavefront_reducer_native_used": true,
+          "wavefront_reducer_native_provider_version": "0.66.0",
+          "wavefront_reducer_native_provider_disabled": false,
+          "wavefront_reducer_native_attempt_count": 489,
+          "wavefront_reducer_native_attempt_primary_count": 500000,
+          "wavefront_reducer_native_attempt_event_count": 2499458,
+          "wavefront_reducer_native_success_count": 489,
+          "wavefront_reducer_native_success_primary_count": 500000,
+          "wavefront_reducer_native_success_event_count": 2499458,
+          "wavefront_reducer_python_tape_count": 0,
+          "wavefront_reducer_python_primary_count": 0,
+          "wavefront_reducer_python_event_count": 0,
+          "wavefront_reducer_logical_tape_count": 489,
+          "wavefront_reducer_logical_primary_count": 500000,
+          "wavefront_reducer_fallback_count": 0,
+          "wavefront_reducer_fallback_primary_count": 0,
+          "wavefront_reducer_fallback_event_count": 0,
+          "wavefront_reducer_fallback_phase": null,
+          "wavefront_reducer_fallback_reason": null,
+          "wavefront_reducer_unavailable_reason": null,
+          "wavefront_reducer_native_prepare_sec": 0.29743490027613007,
+          "wavefront_reducer_native_dispatch_sec": 2.3942471999907866,
+          "wavefront_reducer_native_jit_compile_sec": 0,
+          "wavefront_reducer_native_execute_sec": 0.19913770040147938,
+          "wavefront_reducer_native_result_validation_sec": 1.883071999240201,
+          "wavefront_reducer_native_apply_sec": 0.8838234988506883,
+          "wavefront_reducer_native_path_sec": 0.18377980130026117,
+          "wavefront_reducer_commit_policy": "run_accumulator",
+          "wavefront_reducer_retained_tape_count": 489,
+          "wavefront_reducer_retained_primary_count": 500000,
+          "wavefront_reducer_retained_event_count": 2499458,
+          "wavefront_reducer_final_flush_count": 1,
+          "wavefront_reducer_final_flush_sec": 0.0024970000085886568,
+          "wavefront_reducer_fallback_flush_count": 0,
+          "wavefront_reducer_native_timing_scope": "prepare_external_plus_dispatch_including_jit_wait_and_validation",
+          "primary_sampling_contract": "receiver_directed_primary_mis_v1",
+          "requested_primary_sampling_strategy": "source",
+          "primary_sampling_strategy": "source",
+          "receiver_importance_fraction": 0.5,
+          "primary_sampling_applied_emitter_count": 0,
+          "primary_sampling_fallback_emitter_count": 0,
+          "primary_sampling_fallback_reasons": {},
+          "primary_sampling_ray_count": 0,
+          "primary_sampling_receiver_directed_ray_count": 0,
+          "primary_sampling_receiver_directed_fraction": 0,
+          "primary_sampling_weight_mean": 1,
+          "primary_sampling_weight_min": 1,
+          "primary_sampling_weight_max": 1,
+          "primary_sampling_effective_sample_size": 0,
+          "primary_sampling_effective_sample_ratio": 1,
+          "bounce_sampling_contract": "receiver_directed_lambertian_bounce_mis_v1",
+          "requested_bounce_sampling_strategy": "source",
+          "bounce_sampling_strategy": "source",
+          "bounce_receiver_importance_fraction": 0.5,
+          "bounce_sampling_eligible_surface_count": 0,
+          "bounce_sampling_receiver_directed_ray_count": 0,
+          "bounce_sampling_receiver_directed_fraction": 0,
+          "bounce_sampling_zero_weight_count": 0,
+          "bounce_sampling_unsupported_surface_count": 0,
+          "bounce_sampling_fallback_reasons": {},
+          "bounce_sampling_weight_mean": 1,
+          "bounce_sampling_weight_min": 1,
+          "bounce_sampling_weight_max": 1,
+          "bounce_sampling_effective_sample_size": 0,
+          "bounce_sampling_effective_sample_ratio": 1,
+          "requested_gpu_workspace": "auto",
+          "requested_wavefront_residency": "auto",
+          "wavefront_residency": "host_roundtrip",
+          "wavefront_residency_selection_reason": "host_roundtrip_requested",
+          "gpu_resident_wavefront_contract": "strict_float64_resident_wavefront_v1",
+          "gpu_resident_wavefront_strict_float64": true,
+          "gpu_resident_wavefront_attempt_count": 0,
+          "gpu_resident_wavefront_attempt_primary_count": 0,
+          "gpu_resident_wavefront_success_count": 0,
+          "gpu_resident_wavefront_success_primary_count": 0,
+          "gpu_resident_wavefront_logical_intersection_rows": 0,
+          "gpu_resident_wavefront_fallback_count": 0,
+          "gpu_resident_wavefront_fallback_primary_count": 0,
+          "gpu_resident_wavefront_fallback_phase": null,
+          "gpu_resident_wavefront_fallback_reason": null,
+          "gpu_resident_wavefront_provider_disabled": false,
+          "gpu_resident_wavefront_bindings_upload_sec": 0,
+          "gpu_resident_wavefront_workspace_prepare_sec": 0,
+          "gpu_resident_wavefront_input_upload_sec": 0,
+          "gpu_resident_wavefront_jit_compile_sec": 0,
+          "gpu_resident_wavefront_kernel_sec": 0,
+          "gpu_resident_wavefront_output_download_sec": 0,
+          "gpu_resident_wavefront_tape_build_sec": 0,
+          "gpu_resident_wavefront_total_sec": 0,
+          "gpu_resident_wavefront_device_name": null,
+          "gpu_resident_wavefront_compute_capability": null,
+          "gpu_resident_wavefront_reused_bindings_count": 0,
+          "gpu_resident_wavefront_reused_workspace_count": 0,
+          "gpu_summary_accumulator_contract": "strict_float64_gpu_summary_accumulator_v1",
+          "gpu_summary_accumulator_success_count": 0,
+          "gpu_summary_accumulator_state_upload_sec": 0,
+          "gpu_summary_accumulator_jit_compile_sec": 0,
+          "gpu_summary_accumulator_kernel_sec": 0,
+          "gpu_summary_accumulator_output_download_sec": 0,
+          "gpu_summary_accumulator_input_bytes": 0,
+          "gpu_summary_accumulator_output_bytes": 0,
+          "gpu_summary_accumulator_reused_state_count": 0,
+          "gpu_summary_selected_path_count": 0,
+          "gpu_summary_skipped_path_count": 0,
+          "gpu_summary_path_select_sec": 0,
+          "gpu_summary_path_retrace_sec": 0,
+          "gpu_summary_path_download_sec": 0,
+          "gpu_resident_workspace_contract": null,
+          "gpu_resident_workspace_peak_bytes": 0,
+          "gpu_resident_event_geometry_capacity": 0,
+          "intersection_dispatch": "batch",
+          "intersection_batch_count": 2445,
+          "intersection_batch_max_size": 1024,
+          "intersection_ray_count": 2499677,
+          "intersection_scalar_query_count": 0,
+          "intersection_sec": 6.8160960001987405,
+          "intersection_timing_scope": "batch_dispatch_only",
+          "requested_intersection_provider": "auto",
+          "intersection_provider": "numba_cpu",
+          "reference_scalar_query_count": 0,
+          "reference_batch_count": 0,
+          "reference_batch_sec": 0,
+          "native_available": true,
+          "native_used": true,
+          "native_batch": true,
+          "native_provider_version": "0.66.0",
+          "native_provider_disabled": false,
+          "native_attempt_count": 2445,
+          "native_attempt_ray_count": 2499677,
+          "native_success_count": 2445,
+          "native_success_ray_count": 2499677,
+          "native_scalar_success_count": 0,
+          "native_batch_success_count": 2445,
+          "native_scene_build_sec": 0.16141889998107217,
+          "native_jit_compile_sec": 0,
+          "native_execute_sec": 6.357828500040341,
+          "intersection_fallback_count": 0,
+          "intersection_fallback_ray_count": 0,
+          "intersection_fallback_phase": null,
+          "intersection_fallback_reason": null,
+          "intersection_provider_unavailable_reason": null,
+          "gpu_cuda_requested": false,
+          "gpu_cuda_available": null,
+          "gpu_cuda_used": false,
+          "gpu_cuda_contract": "not_requested",
+          "gpu_cuda_strict_float64": null,
+          "gpu_cuda_device_name": null,
+          "gpu_cuda_compute_capability": null,
+          "gpu_cuda_device_id": null,
+          "gpu_cuda_numba_version": null,
+          "gpu_cuda_toolkit_layout": null,
+          "gpu_cuda_scene_upload_sec": 0,
+          "gpu_cuda_workspace_prepare_sec": 0,
+          "gpu_cuda_input_upload_sec": 0,
+          "gpu_cuda_kernel_sec": 0,
+          "gpu_cuda_output_download_sec": 0,
+          "gpu_cuda_device_scene_reuse_count": 0,
+          "gpu_cuda_workspace_reuse_count": 0,
+          "gpu_cuda_execution_policy": "not_requested",
+          "gpu_cuda_hybrid_cpu_below_rays": 0,
+          "gpu_cuda_hybrid_cpu_attempt_count": 0,
+          "gpu_cuda_hybrid_cpu_attempt_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_success_count": 0,
+          "gpu_cuda_hybrid_cpu_success_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_execute_sec": 0,
+          "gpu_cuda_hybrid_cpu_failure_count": 0,
+          "gpu_cuda_hybrid_cpu_failure_reason": null,
+          "gpu_cuda_hybrid_cpu_disabled": false,
+          "gpu_cuda_hybrid_bypass_count": 0,
+          "gpu_cuda_hybrid_bypass_ray_count": 0,
+          "gpu_cuda_gpu_attempt_count": 0,
+          "gpu_cuda_gpu_attempt_ray_count": 0,
+          "gpu_cuda_gpu_success_count": 0,
+          "gpu_cuda_gpu_success_ray_count": 0,
+          "effective_intersection_provider_request": "numba_cpu",
+          "effective_wavefront_planner_request": "numba_cpu",
+          "effective_wavefront_reducer_request": "numba_cpu",
+          "requested_wavefront_rng": "auto",
+          "requested_wavefront_reducer_commit": "auto",
+          "compute_execution_state": "cpu",
+          "compute_execution_reason": null
+        }
+      },
+      "calibrated_appearance": false,
+      "source_context_binding": "live UI run required for fresh Case identity",
+      "intersection_provider": "numba_cpu",
+      "compute_execution_state": "cpu"
+    },
+    {
+      "case": "gap_0p5",
+      "gap_mm": 0.5,
+      "seam_length_mm": 20,
+      "physical_aperture_area_mm2": 10,
+      "cad_file": "gap_0p5.step",
+      "parts": 3,
+      "triangles": 114668,
+      "ray_count": 500000,
+      "seed": 20260907,
+      "max_depth": 4,
+      "compute_backend": "cpu",
+      "emitted_lumen": 1,
+      "elapsed_seconds": 16.568271300027845,
+      "receiver_hits": 455,
+      "captured_receiver_paths": 455,
+      "full_receiver_capture": true,
+      "checked_side_slit_crossings": 455,
+      "outside_slit_count": 0,
+      "receiver_flux_lumen": 0.00009099751423424004,
+      "captured_incoming_energy_lumen": 0.00010626983726315632,
+      "per_receiver": {
+        "right_side": {
+          "peak_nit_est": 1.1407132558882132,
+          "mean_nit_est": 0.0008658074012106675,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0.00009066713903557012,
+          "hit_count": 436,
+          "area_above_zero_mm2": 51.25,
+          "error_estimate_percent": 11.321429742366522,
+          "peak_area_error_estimate_percent": 12.233889239168024,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000872,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 34404,
+          "statistical_quality": "estimated",
+          "heatmap_bin_count": 32000,
+          "heatmap_hits_per_bin": 0.013625,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 160000,
+          "estimated_rays_for_usable_heatmap": 183486239,
+          "heatmap_quality": "sparse"
+        },
+        "front": {
+          "peak_nit_est": 0.00001540915218622203,
+          "mean_nit_est": 8.480405031095405e-8,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 3.1082307836014453e-8,
+          "hit_count": 8,
+          "area_above_zero_mm2": 150,
+          "error_estimate_percent": 40.94873088800188,
+          "peak_area_error_estimate_percent": 40.94873088800188,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000016,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 1875000,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0.014285714285714285,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": 175000000,
+          "heatmap_quality": "sparse"
+        },
+        "back": {
+          "peak_nit_est": 0.000029269546638172567,
+          "mean_nit_est": 1.21344056496841e-7,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 4.447491958551372e-8,
+          "hit_count": 3,
+          "area_above_zero_mm2": 75,
+          "error_estimate_percent": 59.447884119944746,
+          "peak_area_error_estimate_percent": 59.447884119944746,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000006,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 5000000,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 560,
+          "heatmap_hits_per_bin": 0.005357142857142857,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 2800,
+          "estimated_rays_for_usable_heatmap": 466666667,
+          "heatmap_quality": "sparse"
+        },
+        "left": {
+          "peak_nit_est": 0,
+          "mean_nit_est": 0,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 0,
+          "hit_count": 0,
+          "area_above_zero_mm2": 0,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": null,
+          "statistical_quality": "no_hits",
+          "heatmap_bin_count": 160,
+          "heatmap_hits_per_bin": 0,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 800,
+          "estimated_rays_for_usable_heatmap": null,
+          "heatmap_quality": "no_hits"
+        },
+        "bottom": {
+          "peak_nit_est": 0.00017513710062100772,
+          "mean_nit_est": 0.000001714620388140604,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 2.5137647803696404e-7,
+          "hit_count": 7,
+          "area_above_zero_mm2": 125,
+          "error_estimate_percent": 55.792517811567365,
+          "peak_area_error_estimate_percent": 56.45270225265998,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000014,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 2142858,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0.03125,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": 80000000,
+          "heatmap_quality": "sparse"
+        },
+        "top": {
+          "peak_nit_est": 0.000005258214299685222,
+          "mean_nit_est": 2.3474170980737598e-8,
+          "p95_nit_est": 0,
+          "total_flux_lumen": 3.4414932114358105e-9,
+          "hit_count": 1,
+          "area_above_zero_mm2": 25,
+          "error_estimate_percent": 100,
+          "peak_area_error_estimate_percent": 100,
+          "error_estimate_sample_count": 500000,
+          "receiver_hit_rate": 0.000002,
+          "minimum_convergence_hits": 30,
+          "estimated_rays_for_minimum_hits": 15000000,
+          "statistical_quality": "insufficient_hits",
+          "heatmap_bin_count": 224,
+          "heatmap_hits_per_bin": 0.004464285714285714,
+          "minimum_usable_heatmap_hits_per_bin": 5,
+          "recommended_heatmap_hit_count": 1120,
+          "estimated_rays_for_usable_heatmap": 560000000,
+          "heatmap_quality": "sparse"
+        },
+        "_optical_summary": {
+          "surface_hit_count": 2498863,
+          "unassigned_surface_hit_count": 0,
+          "profile_hits": {
+            "default": {
+              "profile_id": "default",
+              "source": "part_assignment",
+              "hit_count": 2498863,
+              "reflectance": 0.2,
+              "specular_ratio": 0,
+              "diffuse_ratio": 1,
+              "scatter_model": "lambertian",
+              "incoming_flux_lumen": 1.2553618205006856,
+              "potential_reflected_flux_lumen": 0.25582405124341234
+            }
+          }
+        },
+        "_reflection_summary": {
+          "enabled": true,
+          "implemented_max_depth": 4,
+          "termination_mode": "threshold",
+          "min_energy_lumen": 0,
+          "max_observed_depth": 4,
+          "surface_hit_count": 2498863,
+          "primary_surface_hit_count": 499971,
+          "reflection_attempt_count": 1999318,
+          "reflection_emitted_count": 1999318,
+          "reflection_receiver_hit_count": 426,
+          "reflection_blocked_count": 499545,
+          "reflection_continued_count": 1499347,
+          "reflection_escaped_count": 0,
+          "reflection_below_energy_count": 0,
+          "reflection_disabled_count": 499545,
+          "depth_limit_count": 499545,
+          "roulette_terminated_count": 0,
+          "roulette_survived_count": 0,
+          "direct_receiver_hit_count": 29,
+          "direct_receiver_flux_lumen": 0.0000509345178935949,
+          "reflected_receiver_flux_lumen": 0.00004006299634064519,
+          "depths": {
+            "1": {
+              "emitted_count": 499971,
+              "emitted_flux_lumen": 0.20414015731070254,
+              "receiver_hit_count": 95,
+              "receiver_flux_lumen": 0.00003291381818591952,
+              "blocked_count": 0,
+              "continued_count": 499876,
+              "escaped_count": 0
+            },
+            "2": {
+              "emitted_count": 499876,
+              "emitted_flux_lumen": 0.04116720412421336,
+              "receiver_hit_count": 77,
+              "receiver_flux_lumen": 0.000005146293193158348,
+              "blocked_count": 0,
+              "continued_count": 499799,
+              "escaped_count": 0
+            },
+            "3": {
+              "emitted_count": 499799,
+              "emitted_flux_lumen": 0.008430477235113575,
+              "receiver_hit_count": 127,
+              "receiver_flux_lumen": 0.0000016531423121104532,
+              "blocked_count": 0,
+              "continued_count": 499672,
+              "escaped_count": 0
+            },
+            "4": {
+              "emitted_count": 499672,
+              "emitted_flux_lumen": 0.0017302516736077086,
+              "receiver_hit_count": 127,
+              "receiver_flux_lumen": 3.4974264945681766e-7,
+              "blocked_count": 499545,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          },
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999318,
+              "emitted_flux_lumen": 0.25546809034461176,
+              "receiver_hit_count": 426,
+              "receiver_flux_lumen": 0.00004006299634064519,
+              "blocked_count": 499545,
+              "continued_count": 1499347,
+              "escaped_count": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "continued_count": 0,
+              "escaped_count": 0
+            }
+          }
+        },
+        "_contribution_summary": {
+          "schema_version": "rt-contribution.v1",
+          "direct_receiver_hit_count": 29,
+          "direct_receiver_flux_lumen": 0.0000509345178935949,
+          "reflected_receiver_hit_count": 426,
+          "reflected_receiver_flux_lumen": 0.00004006299634064519,
+          "receivers": {
+            "right_side": {
+              "receiver_id": "right_side",
+              "direct": {
+                "hit_count": 29,
+                "flux_lumen": 0.0000509345178935949
+              },
+              "reflected": {
+                "hit_count": 407,
+                "flux_lumen": 0.000039732621141975255
+              },
+              "total": {
+                "hit_count": 436,
+                "flux_lumen": 0.0000906671390355701
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 407,
+                  "flux_lumen": 0.000039732621141975255
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "0": {
+                  "hit_count": 29,
+                  "flux_lumen": 0.0000509345178935949
+                },
+                "1": {
+                  "hit_count": 95,
+                  "flux_lumen": 0.00003291381818591952
+                },
+                "2": {
+                  "hit_count": 75,
+                  "flux_lumen": 0.0000049564127768455806
+                },
+                "3": {
+                  "hit_count": 120,
+                  "flux_lumen": 0.0000015501677334406953
+                },
+                "4": {
+                  "hit_count": 117,
+                  "flux_lumen": 3.1222244576941503e-7
+                }
+              }
+            },
+            "front": {
+              "receiver_id": "front",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 8,
+                "flux_lumen": 3.1082307836014453e-8
+              },
+              "total": {
+                "hit_count": 8,
+                "flux_lumen": 3.1082307836014453e-8
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 8,
+                  "flux_lumen": 3.1082307836014453e-8
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "4": {
+                  "hit_count": 8,
+                  "flux_lumen": 3.1082307836014453e-8
+                }
+              }
+            },
+            "back": {
+              "receiver_id": "back",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 3,
+                "flux_lumen": 4.447491958551372e-8
+              },
+              "total": {
+                "hit_count": 3,
+                "flux_lumen": 4.447491958551372e-8
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 3,
+                  "flux_lumen": 4.447491958551372e-8
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "3": {
+                  "hit_count": 3,
+                  "flux_lumen": 4.447491958551372e-8
+                }
+              }
+            },
+            "left": {
+              "receiver_id": "left",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "total": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {}
+            },
+            "bottom": {
+              "receiver_id": "bottom",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 7,
+                "flux_lumen": 2.5137647803696404e-7
+              },
+              "total": {
+                "hit_count": 7,
+                "flux_lumen": 2.5137647803696404e-7
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 7,
+                  "flux_lumen": 2.5137647803696404e-7
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "2": {
+                  "hit_count": 2,
+                  "flux_lumen": 1.898804163127677e-7
+                },
+                "3": {
+                  "hit_count": 4,
+                  "flux_lumen": 5.8499659084244085e-8
+                },
+                "4": {
+                  "hit_count": 1,
+                  "flux_lumen": 2.9964026399522538e-9
+                }
+              }
+            },
+            "top": {
+              "receiver_id": "top",
+              "direct": {
+                "hit_count": 0,
+                "flux_lumen": 0
+              },
+              "reflected": {
+                "hit_count": 1,
+                "flux_lumen": 3.4414932114358105e-9
+              },
+              "total": {
+                "hit_count": 1,
+                "flux_lumen": 3.4414932114358105e-9
+              },
+              "lobes": {
+                "specular": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                },
+                "lambertian": {
+                  "hit_count": 1,
+                  "flux_lumen": 3.4414932114358105e-9
+                },
+                "gaussian": {
+                  "hit_count": 0,
+                  "flux_lumen": 0
+                }
+              },
+              "depths": {
+                "4": {
+                  "hit_count": 1,
+                  "flux_lumen": 3.4414932114358105e-9
+                }
+              }
+            }
+          },
+          "components": {},
+          "faces": {},
+          "materials": {},
+          "lobes": {
+            "specular": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "lambertian": {
+              "emitted_count": 1999318,
+              "emitted_flux_lumen": 0.25546809034461176,
+              "receiver_hit_count": 426,
+              "receiver_flux_lumen": 0.00004006299634064519,
+              "blocked_count": 499545,
+              "blocked_flux_lumen": 0.0017298016683911493,
+              "continued_count": 1499347,
+              "continued_flux_lumen": 0.2536900188392475,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            },
+            "gaussian": {
+              "emitted_count": 0,
+              "emitted_flux_lumen": 0,
+              "receiver_hit_count": 0,
+              "receiver_flux_lumen": 0,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0
+            }
+          },
+          "depths": {
+            "0": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 0,
+              "reflection_emitted_flux_lumen": 0,
+              "receiver_hit_count": 29,
+              "receiver_flux_lumen": 0.0000509345178935949,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "1": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499971,
+              "reflection_emitted_flux_lumen": 0.20414015731070254,
+              "receiver_hit_count": 95,
+              "receiver_flux_lumen": 0.00003291381818591952,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499876,
+              "continued_flux_lumen": 0.20410107203829966,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "2": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499876,
+              "reflection_emitted_flux_lumen": 0.04116720412421336,
+              "receiver_hit_count": 77,
+              "receiver_flux_lumen": 0.000005146293193158348,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499799,
+              "continued_flux_lumen": 0.041160662250281164,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "3": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499799,
+              "reflection_emitted_flux_lumen": 0.008430477235113575,
+              "receiver_hit_count": 127,
+              "receiver_flux_lumen": 0.0000016531423121104532,
+              "blocked_count": 0,
+              "blocked_flux_lumen": 0,
+              "continued_count": 499672,
+              "continued_flux_lumen": 0.008428284549401407,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            },
+            "4": {
+              "surface_hit_count": 0,
+              "surface_incident_flux_lumen": 0,
+              "reflection_emitted_count": 499672,
+              "reflection_emitted_flux_lumen": 0.0017302516736077086,
+              "receiver_hit_count": 127,
+              "receiver_flux_lumen": 3.4974264945681766e-7,
+              "blocked_count": 499545,
+              "blocked_flux_lumen": 0.0017298016683911493,
+              "continued_count": 0,
+              "continued_flux_lumen": 0,
+              "escaped_count": 0,
+              "escaped_flux_lumen": 0,
+              "secondary_block_count": 0,
+              "secondary_blocked_flux_lumen": 0
+            }
+          }
+        },
+        "_performance_summary": {
+          "backend": "python_numpy_cpu",
+          "execution_path": "multi_bounce_wavefront",
+          "contribution_mode": "summary",
+          "intersection_backend": "bvh",
+          "configured_intersection_backend": "bvh",
+          "acceleration_structure": "bvh",
+          "configured_acceleration_structure": "bvh",
+          "bvh_node_count": 32767,
+          "bvh_leaf_count": 16384,
+          "bvh_build_sec": 2.334706699999515,
+          "bvh_cached_build_sec": 2.334706699999515,
+          "bvh_cache_hit": false,
+          "fast_primary_ray_count": 500000,
+          "face_batch_primary_ray_count": 0,
+          "scalar_primary_ray_count": 0,
+          "resolved_optical_face_cache_count": 114668,
+          "stored_path_count": 5000,
+          "stopped_early": false,
+          "requested_ray_count": 500000,
+          "rays_per_sec": 30197.25484946874,
+          "compute_backend": "cpu",
+          "monte_carlo_contract": "cpu_gpu_deterministic_batch_v1",
+          "acceleration_policy": "cpu_compatible_v1",
+          "requested_intersection_dispatch": "auto",
+          "effective_intersection_dispatch_request": "batch",
+          "intersection_batch_size": 1024,
+          "multi_bounce_wavefront_used": true,
+          "requested_wavefront_pipeline": "auto",
+          "wavefront_pipeline": "soa_event_tape",
+          "wavefront_chunk_count": 489,
+          "wavefront_primary_ray_count": 500000,
+          "wavefront_depth_batch_count": 2445,
+          "wavefront_max_active_ray_count": 1024,
+          "wavefront_max_observed_depth": 4,
+          "wavefront_active_ray_count_by_depth": {
+            "0": 500000,
+            "1": 499971,
+            "2": 499876,
+            "3": 499799,
+            "4": 499672
+          },
+          "wavefront_batch_count_by_depth": {
+            "0": 489,
+            "1": 489,
+            "2": 489,
+            "3": 489,
+            "4": 489
+          },
+          "wavefront_receiver_dispatch": "numpy_numeric_batch_v2",
+          "wavefront_surface_geometry_dispatch": "numpy_batch_v1",
+          "wavefront_path_quota_dispatch": "ordered_dead_end_queue_v1",
+          "wavefront_reflection_rng": "counter_rng_v2",
+          "wavefront_reflection_seed_dispatch": "numpy_splitmix64_batch_v1",
+          "wavefront_counter_apply_dispatch": "numpy_vectorized_v1",
+          "wavefront_rng_scalar_parity": "statistical_vs_per_primary_seeded_v1",
+          "wavefront_stochastic_primary_ray_count": 499971,
+          "wavefront_state_build_sec": 0.08272470021620393,
+          "wavefront_state_layout": "stable_active_soa_v1",
+          "wavefront_state_init_sec": 0.08272470021620393,
+          "wavefront_state_advance_sec": 0.06739670046954416,
+          "wavefront_receiver_sec": 1.815979099366814,
+          "wavefront_geometry_sec": 0.483128299965756,
+          "wavefront_geometry_ray_count": 2499318,
+          "wavefront_geometry_hit_count": 2498863,
+          "wavefront_plan_sec": 3.2252543008944485,
+          "wavefront_commit_sec": 3.715603500168072,
+          "wavefront_total_sec": 16.289876700291643,
+          "wavefront_compacted_ray_count": 500000,
+          "wavefront_path_materialized_count": 5451,
+          "wavefront_path_materialization_skipped_count": 494549,
+          "wavefront_event_tape_contract": "ordered_primary_event_tape_v3",
+          "wavefront_event_tape_append_sec": 0.2780284999171272,
+          "wavefront_event_tape_seal_sec": 0.5406987004098482,
+          "wavefront_event_tape_validation_mode": "strict_v1",
+          "wavefront_event_tape_validation_sec": 0.3089683998259716,
+          "wavefront_event_tape_copy_bytes": 271933616,
+          "wavefront_event_tape_copy_contract": "builder_owned_materialization_v1",
+          "wavefront_event_tape_path_payload": "full_path_v1",
+          "wavefront_event_tape_path_payload_requested": "full_path_v1",
+          "wavefront_event_tape_path_payload_full_chunk_count": 489,
+          "wavefront_event_tape_path_payload_omitted_chunk_count": 0,
+          "wavefront_event_tape_path_payload_full_primary_count": 500000,
+          "wavefront_event_tape_path_payload_omitted_primary_count": 0,
+          "wavefront_event_tape_path_payload_full_event_count": 2498863,
+          "wavefront_event_tape_path_payload_omitted_event_count": 0,
+          "wavefront_event_tape_path_payload_suppressed_chunk_count": 0,
+          "wavefront_event_tape_peak_scope": "tape_owned_ndarray_estimate_v2",
+          "wavefront_event_count": 2498863,
+          "wavefront_event_tape_peak_bytes": 1179656,
+          "wavefront_reducer_contract": "ordered_summary_reducer_v1",
+          "wavefront_reducer_preflight_sec": 0.2974975999095477,
+          "wavefront_reducer_replay_sec": 3.2106458981288597,
+          "wavefront_reducer_hydrate_sec": 0.19144490148755722,
+          "wavefront_reducer_logical_event_count": 2498863,
+          "requested_wavefront_planner": "auto",
+          "wavefront_planner": "numba_cpu",
+          "wavefront_planner_contract": "counter_rng_v2",
+          "wavefront_planner_rng_algorithm": "splitmix64_semantic_lane_v1",
+          "wavefront_planner_logical_row_count": 2498863,
+          "wavefront_planner_python_sidecar_row_count": 0,
+          "wavefront_planner_native_available": true,
+          "wavefront_planner_native_used": true,
+          "wavefront_planner_native_provider_version": "0.66.0",
+          "wavefront_planner_native_provider_disabled": false,
+          "wavefront_planner_native_attempt_count": 2445,
+          "wavefront_planner_native_attempt_row_count": 2498863,
+          "wavefront_planner_native_success_count": 2445,
+          "wavefront_planner_native_success_row_count": 2498863,
+          "wavefront_planner_native_face_table_prepare_sec": 0.046326199983013794,
+          "wavefront_planner_native_input_prepare_sec": 0.9186094006872736,
+          "wavefront_planner_native_dispatch_sec": 0.7951196990325116,
+          "wavefront_planner_native_execute_sec": 0.1991448991757352,
+          "wavefront_planner_native_result_validation_sec": 0.5279077004233841,
+          "wavefront_planner_native_jit_compile_sec": 0,
+          "wavefront_planner_fallback_count": 0,
+          "wavefront_planner_fallback_row_count": 0,
+          "wavefront_planner_fallback_phase": null,
+          "wavefront_planner_fallback_reason": null,
+          "wavefront_planner_unavailable_reason": null,
+          "requested_wavefront_reducer": "auto",
+          "wavefront_reducer": "numba_cpu",
+          "wavefront_reducer_selection_reason": "eligible_explicit_numba",
+          "wavefront_reducer_native_available": true,
+          "wavefront_reducer_native_used": true,
+          "wavefront_reducer_native_provider_version": "0.66.0",
+          "wavefront_reducer_native_provider_disabled": false,
+          "wavefront_reducer_native_attempt_count": 489,
+          "wavefront_reducer_native_attempt_primary_count": 500000,
+          "wavefront_reducer_native_attempt_event_count": 2498863,
+          "wavefront_reducer_native_success_count": 489,
+          "wavefront_reducer_native_success_primary_count": 500000,
+          "wavefront_reducer_native_success_event_count": 2498863,
+          "wavefront_reducer_python_tape_count": 0,
+          "wavefront_reducer_python_primary_count": 0,
+          "wavefront_reducer_python_event_count": 0,
+          "wavefront_reducer_logical_tape_count": 489,
+          "wavefront_reducer_logical_primary_count": 500000,
+          "wavefront_reducer_fallback_count": 0,
+          "wavefront_reducer_fallback_primary_count": 0,
+          "wavefront_reducer_fallback_event_count": 0,
+          "wavefront_reducer_fallback_phase": null,
+          "wavefront_reducer_fallback_reason": null,
+          "wavefront_reducer_unavailable_reason": null,
+          "wavefront_reducer_native_prepare_sec": 0.2974975999095477,
+          "wavefront_reducer_native_dispatch_sec": 2.3970579994493164,
+          "wavefront_reducer_native_jit_compile_sec": 0,
+          "wavefront_reducer_native_execute_sec": 0.1992398998409044,
+          "wavefront_reducer_native_result_validation_sec": 1.8888784997106995,
+          "wavefront_reducer_native_apply_sec": 0.8135878986795433,
+          "wavefront_reducer_native_path_sec": 0.19144490148755722,
+          "wavefront_reducer_commit_policy": "run_accumulator",
+          "wavefront_reducer_retained_tape_count": 489,
+          "wavefront_reducer_retained_primary_count": 500000,
+          "wavefront_reducer_retained_event_count": 2498863,
+          "wavefront_reducer_final_flush_count": 1,
+          "wavefront_reducer_final_flush_sec": 0.0029036999912932515,
+          "wavefront_reducer_fallback_flush_count": 0,
+          "wavefront_reducer_native_timing_scope": "prepare_external_plus_dispatch_including_jit_wait_and_validation",
+          "primary_sampling_contract": "receiver_directed_primary_mis_v1",
+          "requested_primary_sampling_strategy": "source",
+          "primary_sampling_strategy": "source",
+          "receiver_importance_fraction": 0.5,
+          "primary_sampling_applied_emitter_count": 0,
+          "primary_sampling_fallback_emitter_count": 0,
+          "primary_sampling_fallback_reasons": {},
+          "primary_sampling_ray_count": 0,
+          "primary_sampling_receiver_directed_ray_count": 0,
+          "primary_sampling_receiver_directed_fraction": 0,
+          "primary_sampling_weight_mean": 1,
+          "primary_sampling_weight_min": 1,
+          "primary_sampling_weight_max": 1,
+          "primary_sampling_effective_sample_size": 0,
+          "primary_sampling_effective_sample_ratio": 1,
+          "bounce_sampling_contract": "receiver_directed_lambertian_bounce_mis_v1",
+          "requested_bounce_sampling_strategy": "source",
+          "bounce_sampling_strategy": "source",
+          "bounce_receiver_importance_fraction": 0.5,
+          "bounce_sampling_eligible_surface_count": 0,
+          "bounce_sampling_receiver_directed_ray_count": 0,
+          "bounce_sampling_receiver_directed_fraction": 0,
+          "bounce_sampling_zero_weight_count": 0,
+          "bounce_sampling_unsupported_surface_count": 0,
+          "bounce_sampling_fallback_reasons": {},
+          "bounce_sampling_weight_mean": 1,
+          "bounce_sampling_weight_min": 1,
+          "bounce_sampling_weight_max": 1,
+          "bounce_sampling_effective_sample_size": 0,
+          "bounce_sampling_effective_sample_ratio": 1,
+          "requested_gpu_workspace": "auto",
+          "requested_wavefront_residency": "auto",
+          "wavefront_residency": "host_roundtrip",
+          "wavefront_residency_selection_reason": "host_roundtrip_requested",
+          "gpu_resident_wavefront_contract": "strict_float64_resident_wavefront_v1",
+          "gpu_resident_wavefront_strict_float64": true,
+          "gpu_resident_wavefront_attempt_count": 0,
+          "gpu_resident_wavefront_attempt_primary_count": 0,
+          "gpu_resident_wavefront_success_count": 0,
+          "gpu_resident_wavefront_success_primary_count": 0,
+          "gpu_resident_wavefront_logical_intersection_rows": 0,
+          "gpu_resident_wavefront_fallback_count": 0,
+          "gpu_resident_wavefront_fallback_primary_count": 0,
+          "gpu_resident_wavefront_fallback_phase": null,
+          "gpu_resident_wavefront_fallback_reason": null,
+          "gpu_resident_wavefront_provider_disabled": false,
+          "gpu_resident_wavefront_bindings_upload_sec": 0,
+          "gpu_resident_wavefront_workspace_prepare_sec": 0,
+          "gpu_resident_wavefront_input_upload_sec": 0,
+          "gpu_resident_wavefront_jit_compile_sec": 0,
+          "gpu_resident_wavefront_kernel_sec": 0,
+          "gpu_resident_wavefront_output_download_sec": 0,
+          "gpu_resident_wavefront_tape_build_sec": 0,
+          "gpu_resident_wavefront_total_sec": 0,
+          "gpu_resident_wavefront_device_name": null,
+          "gpu_resident_wavefront_compute_capability": null,
+          "gpu_resident_wavefront_reused_bindings_count": 0,
+          "gpu_resident_wavefront_reused_workspace_count": 0,
+          "gpu_summary_accumulator_contract": "strict_float64_gpu_summary_accumulator_v1",
+          "gpu_summary_accumulator_success_count": 0,
+          "gpu_summary_accumulator_state_upload_sec": 0,
+          "gpu_summary_accumulator_jit_compile_sec": 0,
+          "gpu_summary_accumulator_kernel_sec": 0,
+          "gpu_summary_accumulator_output_download_sec": 0,
+          "gpu_summary_accumulator_input_bytes": 0,
+          "gpu_summary_accumulator_output_bytes": 0,
+          "gpu_summary_accumulator_reused_state_count": 0,
+          "gpu_summary_selected_path_count": 0,
+          "gpu_summary_skipped_path_count": 0,
+          "gpu_summary_path_select_sec": 0,
+          "gpu_summary_path_retrace_sec": 0,
+          "gpu_summary_path_download_sec": 0,
+          "gpu_resident_workspace_contract": null,
+          "gpu_resident_workspace_peak_bytes": 0,
+          "gpu_resident_event_geometry_capacity": 0,
+          "intersection_dispatch": "batch",
+          "intersection_batch_count": 2445,
+          "intersection_batch_max_size": 1024,
+          "intersection_ray_count": 2499318,
+          "intersection_scalar_query_count": 0,
+          "intersection_sec": 6.6845150999724865,
+          "intersection_timing_scope": "batch_dispatch_only",
+          "requested_intersection_provider": "auto",
+          "intersection_provider": "numba_cpu",
+          "reference_scalar_query_count": 0,
+          "reference_batch_count": 0,
+          "reference_batch_sec": 0,
+          "native_available": true,
+          "native_used": true,
+          "native_batch": true,
+          "native_provider_version": "0.66.0",
+          "native_provider_disabled": false,
+          "native_attempt_count": 2445,
+          "native_attempt_ray_count": 2499318,
+          "native_success_count": 2445,
+          "native_success_ray_count": 2499318,
+          "native_scalar_success_count": 0,
+          "native_batch_success_count": 2445,
+          "native_scene_build_sec": 0.16842639999231324,
+          "native_jit_compile_sec": 0,
+          "native_execute_sec": 6.219894500274677,
+          "intersection_fallback_count": 0,
+          "intersection_fallback_ray_count": 0,
+          "intersection_fallback_phase": null,
+          "intersection_fallback_reason": null,
+          "intersection_provider_unavailable_reason": null,
+          "gpu_cuda_requested": false,
+          "gpu_cuda_available": null,
+          "gpu_cuda_used": false,
+          "gpu_cuda_contract": "not_requested",
+          "gpu_cuda_strict_float64": null,
+          "gpu_cuda_device_name": null,
+          "gpu_cuda_compute_capability": null,
+          "gpu_cuda_device_id": null,
+          "gpu_cuda_numba_version": null,
+          "gpu_cuda_toolkit_layout": null,
+          "gpu_cuda_scene_upload_sec": 0,
+          "gpu_cuda_workspace_prepare_sec": 0,
+          "gpu_cuda_input_upload_sec": 0,
+          "gpu_cuda_kernel_sec": 0,
+          "gpu_cuda_output_download_sec": 0,
+          "gpu_cuda_device_scene_reuse_count": 0,
+          "gpu_cuda_workspace_reuse_count": 0,
+          "gpu_cuda_execution_policy": "not_requested",
+          "gpu_cuda_hybrid_cpu_below_rays": 0,
+          "gpu_cuda_hybrid_cpu_attempt_count": 0,
+          "gpu_cuda_hybrid_cpu_attempt_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_success_count": 0,
+          "gpu_cuda_hybrid_cpu_success_ray_count": 0,
+          "gpu_cuda_hybrid_cpu_execute_sec": 0,
+          "gpu_cuda_hybrid_cpu_failure_count": 0,
+          "gpu_cuda_hybrid_cpu_failure_reason": null,
+          "gpu_cuda_hybrid_cpu_disabled": false,
+          "gpu_cuda_hybrid_bypass_count": 0,
+          "gpu_cuda_hybrid_bypass_ray_count": 0,
+          "gpu_cuda_gpu_attempt_count": 0,
+          "gpu_cuda_gpu_attempt_ray_count": 0,
+          "gpu_cuda_gpu_success_count": 0,
+          "gpu_cuda_gpu_success_ray_count": 0,
+          "effective_intersection_provider_request": "numba_cpu",
+          "effective_wavefront_planner_request": "numba_cpu",
+          "effective_wavefront_reducer_request": "numba_cpu",
+          "requested_wavefront_rng": "auto",
+          "requested_wavefront_reducer_commit": "auto",
+          "compute_execution_state": "cpu",
+          "compute_execution_reason": null
+        }
+      },
+      "calibrated_appearance": false,
+      "source_context_binding": "live UI run required for fresh Case identity",
+      "intersection_provider": "numba_cpu",
+      "compute_execution_state": "cpu"
+    }
+  ]
+}

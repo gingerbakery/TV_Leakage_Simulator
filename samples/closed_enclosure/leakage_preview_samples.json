@@ -1,0 +1,4371 @@
+{
+  "schema_version": "leakage-preview-samples.v1",
+  "generated_at_utc": "2026-09-03T11:50:06.372891+00:00",
+  "method": "Intersection of stored receiver-terminal segments with the synthetic fixture's known Z=18 mm exterior plane.",
+  "units": {
+    "position": "mm",
+    "direction": "unit vector",
+    "raw_weight": "incoming_energy_lumen"
+  },
+  "scope": {
+    "synthetic_fixtures_only": true,
+    "automatic_exit_detection_for_general_cad": false,
+    "transport_rerun": false,
+    "input_population": "Stored paths ending at a receiver only; other escaping rays and capped-away paths are absent.",
+    "sample_selection": "Receiver-priority bounded path store; not an unbiased spatial or angular sample.",
+    "weight_interpretation": "Raw terminal incoming ray power before receiver cosine weighting; usable only as a sample-relative display weight.",
+    "forbidden_interpretations": [
+      "camera luminance or nit image",
+      "complete all-angle leakage reconstruction",
+      "absence of a stored sample proves absence of leakage",
+      "sum of raw sample weights measures total leakage or compares models' total light output",
+      "known fixture plane method detects real product openings automatically"
+    ],
+    "normalization": "None. No raw-weight sum or full-population scaling is computed.",
+    "geometry_association": "Current scene/STEP digests record extraction inputs, not the original result's geometry provenance."
+  },
+  "cases": [
+    {
+      "case_id": "closed",
+      "run_id": "rt3-f359a4d7e373",
+      "gap_mm": 0.0,
+      "known_aperture": {
+        "plane_z_mm": 18.0,
+        "union_rectangles": []
+      },
+      "source_files": {
+        "result": "closed.result.json",
+        "scene": "closed.scene.json",
+        "step": "closed.step"
+      },
+      "source_digests_at_extraction": {
+        "algorithm": "sha256",
+        "result_file": "aa3bcea1047cfe57a6a8f387a2a6015f43afc10de810a272afe11924ecc22c20",
+        "scene_file": "3229a4fd9e0d0d304f11917f548af4f928676f1c890175f109ba8c15a4f901bd",
+        "step_file": "b66e8152393f6f40a7c99362438fe31564d07203cee83c5047520438749d6f11",
+        "viewer_geometry_snapshot": "f336b75e342b7f69ea6a9ec237c3bc8773e77619c95d5d588d72dab0b368a045",
+        "scope": "Current extraction inputs only; original trace-to-CAD association is not verified by these digests."
+      },
+      "counts": {
+        "total_traced_rays": 20000,
+        "total_receiver_hits": 0,
+        "stored_paths": 120,
+        "stored_receiver_terminal_paths": 0,
+        "extracted_exit_samples": 0
+      },
+      "source_sampling": {
+        "store_ray_paths": true,
+        "max_stored_paths": 120,
+        "primary_sampling_strategy": "source",
+        "bounce_sampling_strategy": "source",
+        "seed": 20260903
+      },
+      "validation": {
+        "all_stored_receiver_paths_extracted": true,
+        "all_exit_points_in_known_aperture": true,
+        "all_directions_finite_and_unit_length": true,
+        "all_weights_finite_and_nonnegative": true,
+        "all_exit_points_between_segment_endpoints": true,
+        "closed_control_zero": true,
+        "geometry_tolerance_mm": 1e-06
+      },
+      "samples": []
+    },
+    {
+      "case_id": "gap_0p2",
+      "run_id": "rt3-4cf6f894f356",
+      "gap_mm": 0.2,
+      "known_aperture": {
+        "plane_z_mm": 18.0,
+        "union_rectangles": [
+          {
+            "x_mm": [
+              92.0,
+              112.2
+            ],
+            "y_mm": [
+              7.8,
+              8.0
+            ]
+          },
+          {
+            "x_mm": [
+              112.0,
+              112.2
+            ],
+            "y_mm": [
+              7.8,
+              28.0
+            ]
+          }
+        ]
+      },
+      "source_files": {
+        "result": "gap_0p2.result.json",
+        "scene": "gap_0p2.scene.json",
+        "step": "gap_0p2.step"
+      },
+      "source_digests_at_extraction": {
+        "algorithm": "sha256",
+        "result_file": "5ff8ed2beb4bdc567b626a613c8691e8132f049ccb4da006b08057445d4fe8c0",
+        "scene_file": "678b334cd914f82e0db040e1c33eef527247a4e2dfed9fb12fcf1c1925f713c3",
+        "step_file": "0a12e10586231394937e677d5610de118c3449b34ababa05e6679540dd04e1ff",
+        "viewer_geometry_snapshot": "c571cf73ceb88b9c67482f97c7e034daefaea80158bd039b8a5b2a419b708d08",
+        "scope": "Current extraction inputs only; original trace-to-CAD association is not verified by these digests."
+      },
+      "counts": {
+        "total_traced_rays": 20000,
+        "total_receiver_hits": 12,
+        "stored_paths": 120,
+        "stored_receiver_terminal_paths": 12,
+        "extracted_exit_samples": 12
+      },
+      "source_sampling": {
+        "store_ray_paths": true,
+        "max_stored_paths": 120,
+        "primary_sampling_strategy": "source",
+        "bounce_sampling_strategy": "source",
+        "seed": 20260903
+      },
+      "validation": {
+        "all_stored_receiver_paths_extracted": true,
+        "all_exit_points_in_known_aperture": true,
+        "all_directions_finite_and_unit_length": true,
+        "all_weights_finite_and_nonnegative": true,
+        "all_exit_points_between_segment_endpoints": true,
+        "closed_control_zero": null,
+        "geometry_tolerance_mm": 1e-06
+      },
+      "samples": [
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:0",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 0,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.21755105165373,
+            7.995036590729481,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.8445071301242565,
+            0.03498728754317603,
+            0.5344002216313757
+          ],
+          "incoming_energy_lumen": 4.173380751558517e-07,
+          "terminal_segment_start_mm": [
+            120.0,
+            7.258323267200646,
+            6.7473482222149475
+          ],
+          "terminal_segment_end_mm": [
+            86.4146547215173,
+            8.649738556165977,
+            28.0
+          ],
+          "exit_segment_fraction": 0.529470481869336,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:1",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 1,
+          "receiver_id": "right",
+          "exit_point_mm": [
+            112.04512368646958,
+            8.467251376895783,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.8830101724911242,
+            0.466905525028168,
+            0.04787761455383769
+          ],
+          "incoming_energy_lumen": 4.600544533385767e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            8.443391517543484,
+            17.99755335268455
+          ],
+          "terminal_segment_end_mm": [
+            130.0,
+            17.96117479154252,
+            18.973529721719803
+          ],
+          "exit_segment_fraction": 0.0025068714705324302,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:2",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 2,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.15472447675681,
+            8.693304416660697,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.031406752652048404,
+            -0.7562415618522664,
+            0.6535383049333052
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.67416444917393,
+            20.264684299494387,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.63528930998802,
+            -2.8781911811289724,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:3",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 3,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.13938568082668,
+            9.54615908503875,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.048345312562090195,
+            -0.1331980961814717,
+            0.9899095907843833
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.65100947395857,
+            10.891703824078682,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.6277667715057,
+            8.200600890416872,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:4",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 4,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.12684713437916,
+            23.01403772710049,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.03608738127679436,
+            -0.3949333806015831,
+            0.9180007221125637
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.73374264618295,
+            27.316097864470965,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.51995555365957,
+            18.71193456869843,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:5",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 5,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.34473516861605,
+            7.8369851613599915,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5847291715026252,
+            -0.05421093670017529,
+            0.8094152026839768
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            109.56875718194122,
+            8.506732831172092,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            95.12064091434834,
+            7.167230794004217,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:6",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 6,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.55082183717995,
+            7.990559491966694,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.7326710641901152,
+            0.03141208466893987,
+            0.6798576267390661
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            113.32754491365247,
+            7.52852495248878,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            91.77399099239899,
+            8.452598651836206,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:7",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 7,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.35983046591487,
+            7.825178604760571,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5514469408772682,
+            -0.059313762949423796,
+            0.8320986413412067
+          ],
+          "incoming_energy_lumen": 4.000000000000001e-07,
+          "terminal_segment_start_mm": [
+            104.28875865139017,
+            9.108256932311683,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            85.73264814065081,
+            7.11235731167662,
+            27.999999999999996
+          ],
+          "exit_segment_fraction": 0.642857142857143,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:8",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 8,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.19574044575013,
+            23.70277524973073,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.010090400075868842,
+            -0.08984019821433781,
+            0.9959050771088163
+          ],
+          "incoming_energy_lumen": 2.0232572314768107e-06,
+          "terminal_segment_start_mm": [
+            112.01336643688082,
+            25.326548041965818,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            112.29705933956642,
+            22.800679254044574,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:9",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 9,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            95.02800260740767,
+            7.896678030719239,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.7235595742284805,
+            -0.0031583538412439374,
+            0.690254711931265
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            105.51039883195946,
+            7.942433926377943,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            84.54550155784537,
+            7.850921677497004,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:10",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 10,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.13300431377988,
+            16.219061784225435,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.008864325086582173,
+            -0.18650902363485503,
+            0.9824132571599044
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.22323351598911,
+            18.117521085190074,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.0427742092696,
+            14.320583498477937,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-4cf6f894f356:stored-path:11",
+          "run_id": "rt3-4cf6f894f356",
+          "stored_path_index": 11,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.00176143005064,
+            18.944984919140488,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.2292029357867798,
+            0.9351804833827543,
+            0.27000644015785885
+          ],
+          "incoming_energy_lumen": 1.4034476582548842e-07,
+          "terminal_segment_start_mm": [
+            112.0,
+            18.93779803472934,
+            17.997924994041085
+          ],
+          "terminal_segment_end_mm": [
+            120.49055657333598,
+            53.5804729777217,
+            28.0
+          ],
+          "exit_segment_fraction": 0.00020745754832657444,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        }
+      ]
+    },
+    {
+      "case_id": "gap_0p5",
+      "run_id": "rt3-64044e983b19",
+      "gap_mm": 0.5,
+      "known_aperture": {
+        "plane_z_mm": 18.0,
+        "union_rectangles": [
+          {
+            "x_mm": [
+              92.0,
+              112.5
+            ],
+            "y_mm": [
+              7.5,
+              8.0
+            ]
+          },
+          {
+            "x_mm": [
+              112.0,
+              112.5
+            ],
+            "y_mm": [
+              7.5,
+              28.0
+            ]
+          }
+        ]
+      },
+      "source_files": {
+        "result": "gap_0p5.result.json",
+        "scene": "gap_0p5.scene.json",
+        "step": "gap_0p5.step"
+      },
+      "source_digests_at_extraction": {
+        "algorithm": "sha256",
+        "result_file": "0f94b05b9ecdc2b74f72090a94d083930f28e0cd7aa9f3dd7e47584008e44ae6",
+        "scene_file": "fa48d9f9a6e4374e77c5d8109815a3271ce8135f6c8f6abf89a0f48a93fc625c",
+        "step_file": "5e611d76336aadf37d0e1059928accc567b2dfa2fb97d078a1b71c1dad69ee03",
+        "viewer_geometry_snapshot": "cd3d162f20287281f520faabf7e858f5ce6406ce0ad2c10c3d1922d465ebb691",
+        "scope": "Current extraction inputs only; original trace-to-CAD association is not verified by these digests."
+      },
+      "counts": {
+        "total_traced_rays": 20000,
+        "total_receiver_hits": 118,
+        "stored_paths": 120,
+        "stored_receiver_terminal_paths": 118,
+        "extracted_exit_samples": 118
+      },
+      "source_sampling": {
+        "store_ray_paths": true,
+        "max_stored_paths": 120,
+        "primary_sampling_strategy": "source",
+        "bounce_sampling_strategy": "source",
+        "seed": 20260903
+      },
+      "validation": {
+        "all_stored_receiver_paths_extracted": true,
+        "all_exit_points_in_known_aperture": true,
+        "all_directions_finite_and_unit_length": true,
+        "all_weights_finite_and_nonnegative": true,
+        "all_exit_points_between_segment_endpoints": true,
+        "closed_control_zero": null,
+        "geometry_tolerance_mm": 1e-06
+      },
+      "samples": [
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:0",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 0,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.29487883809455,
+            11.290248978336985,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.04573780882902548,
+            0.07790905110506464,
+            0.9959107553387643
+          ],
+          "incoming_energy_lumen": 8.01941798057401e-08,
+          "terminal_segment_start_mm": [
+            113.12153981600758,
+            9.88212790687196,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            111.83562273925396,
+            12.072538462484221,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:1",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 1,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.14314300134808,
+            11.488534385144105,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.3218725334348586,
+            -0.7068087041592189,
+            0.6299361300520803
+          ],
+          "incoming_energy_lumen": 2.159979984758843e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            11.802866018889338,
+            17.719855101176265
+          ],
+          "terminal_segment_end_mm": [
+            117.25274884993225,
+            0.26821107870376437,
+            28.0
+          ],
+          "exit_segment_fraction": 0.027251065192261042,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:2",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 2,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.76407328192494,
+            7.69822602586781,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.07721179935445867,
+            -0.12832090569658408,
+            0.9887224500342122
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            94.16973812581735,
+            10.034348061388082,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            91.98314836865138,
+            6.400380450578771,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:3",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 3,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.26040367310411,
+            21.062252839386986,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.022702721516926438,
+            -0.7203070011835968,
+            0.693283787839885
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.58786689794667,
+            31.451934680323664,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            111.93293717359656,
+            10.672467100592918,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:4",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 4,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.47208702696892,
+            7.705748265300211,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.788805656489533,
+            -0.05455514098204004,
+            0.6122167695208507
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            105.35637585574958,
+            8.596847597213761,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            79.58766935401152,
+            6.81464002230423,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:5",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 5,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.12844942821779,
+            12.805724930527914,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.08669941533347807,
+            0.36633167259396304,
+            0.9264363534724566
+          ],
+          "incoming_energy_lumen": 9.333047254657565e-08,
+          "terminal_segment_start_mm": [
+            112.0,
+            12.262986623680376,
+            16.62743918830366
+          ],
+          "terminal_segment_end_mm": [
+            113.06428722223907,
+            16.759927194082053,
+            28.0
+          ],
+          "exit_segment_fraction": 0.12069056692004679,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:6",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 6,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.26562965925046,
+            19.584161652168373,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.18869183980300294,
+            0.63064885000217,
+            0.7527797935536649
+          ],
+          "incoming_energy_lumen": 8.002752244035937e-08,
+          "terminal_segment_start_mm": [
+            112.0,
+            18.696370005705706,
+            16.94027934508953
+          ],
+          "terminal_segment_end_mm": [
+            114.77223041313417,
+            27.961762318427645,
+            28.0
+          ],
+          "exit_segment_fraction": 0.09581803085053144,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:7",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 7,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            103.0298188686852,
+            7.974706151394667,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.28783172306424465,
+            0.33856818332677313,
+            0.8958373091341287
+          ],
+          "incoming_energy_lumen": 1.2797021015908131e-05,
+          "terminal_segment_start_mm": [
+            102.62625026350044,
+            7.5,
+            16.74394729854349
+          ],
+          "terminal_segment_end_mm": [
+            106.24280988981657,
+            11.754055145622381,
+            28.0
+          ],
+          "exit_segment_fraction": 0.11158909208855963,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:8",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 8,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.16853985618549,
+            15.445504774659542,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.03287933781403054,
+            -0.6428213180771459,
+            0.7653101999650023
+          ],
+          "incoming_energy_lumen": 2.0000055924974488e-06,
+          "terminal_segment_start_mm": [
+            111.39522195100193,
+            30.564581622083974,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            112.5981609146208,
+            7.046017637201526,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:9",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 9,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            99.21586375316456,
+            7.799191423504189,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.6364842311953088,
+            0.12729723872265658,
+            0.760712321744103
+          ],
+          "incoming_energy_lumen": 7.653195433033694e-07,
+          "terminal_segment_start_mm": [
+            100.71181625834173,
+            7.5,
+            16.2120696041517
+          ],
+          "terminal_segment_end_mm": [
+            90.84891329104997,
+            9.472586675349186,
+            28.0
+          ],
+          "exit_segment_fraction": 0.15167466517091135,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:10",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 10,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            103.78400531641934,
+            7.798593283334279,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.1995041176134914,
+            -0.10796457294506655,
+            0.9739310848535698
+          ],
+          "incoming_energy_lumen": 2.042340312382569e-06,
+          "terminal_segment_start_mm": [
+            104.15617804117295,
+            8.0,
+            16.183142333561143
+          ],
+          "terminal_segment_end_mm": [
+            101.73556348397196,
+            6.690049007213356,
+            28.0
+          ],
+          "exit_segment_fraction": 0.15375133709183342,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:11",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 11,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.49254525106464,
+            17.354035108822362,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.0016798095274438475,
+            0.4396492357042636,
+            0.898167984168111
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.51124768489615,
+            12.459128510485879,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.47384263020692,
+            22.248990656714327,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:12",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 12,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            111.42681193882463,
+            7.55051705117857,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5357495494119848,
+            0.40180650497701303,
+            0.7426465867847323
+          ],
+          "incoming_energy_lumen": 3.356722997187817e-06,
+          "terminal_segment_start_mm": [
+            111.49416895537688,
+            7.5,
+            17.90663089032284
+          ],
+          "terminal_segment_end_mm": [
+            104.21275401483284,
+            12.960984319554813,
+            28.0
+          ],
+          "exit_segment_fraction": 0.009250539503964043,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:13",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 13,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.67315151065483,
+            7.502470721676583,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.19501970676906272,
+            -0.20196233088210017,
+            0.9597804597283578
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            103.70505114556916,
+            9.606705176668001,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            99.64123155654097,
+            5.3982152241301895,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:14",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 14,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.19136071342245,
+            18.726532233089372,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.10618254201543968,
+            0.35871811317274677,
+            0.9273869651083758
+          ],
+          "incoming_energy_lumen": 8.002649282672326e-08,
+          "terminal_segment_start_mm": [
+            114.25229733231762,
+            11.764038387432533,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            111.04639592514735,
+            22.594584369565396,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:15",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 15,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.35759081981111,
+            8.109818157868133,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.5123738802593947,
+            0.42404686974338524,
+            0.746764527203032
+          ],
+          "incoming_energy_lumen": 2.014493996662121e-06,
+          "terminal_segment_start_mm": [
+            111.62075034746282,
+            7.5,
+            16.926084353326782
+          ],
+          "terminal_segment_end_mm": [
+            119.21884174422854,
+            13.788273069641072,
+            28.0
+          ],
+          "exit_segment_fraction": 0.09697704777043693,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:16",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 16,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            98.42225939169445,
+            7.511320833924658,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.1551354360976197,
+            -0.09199117452207338,
+            0.9836008439793303
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            99.99946304796255,
+            8.446560521582564,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            96.84503996323207,
+            6.57607179377635,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:17",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 17,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            93.19644157750758,
+            7.729325359651423,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.7229193505937522,
+            0.23254939083333415,
+            0.6506215438795065
+          ],
+          "incoming_energy_lumen": 8.7159237930464e-07,
+          "terminal_segment_start_mm": [
+            93.90933847859085,
+            7.5,
+            17.358398579276155
+          ],
+          "terminal_segment_end_mm": [
+            82.08523019211216,
+            11.303590506893483,
+            28.0
+          ],
+          "exit_segment_fraction": 0.06029181091807917,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:18",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 18,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            109.73844287856642,
+            7.925212085210555,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.15864606078540297,
+            0.47410056780836596,
+            0.8660600897172547
+          ],
+          "incoming_energy_lumen": 9.161653549771132e-07,
+          "terminal_segment_start_mm": [
+            109.88072961454068,
+            7.5,
+            17.223246623878403
+          ],
+          "terminal_segment_end_mm": [
+            107.90662932810946,
+            13.399434641328423,
+            28.0
+          ],
+          "exit_segment_fraction": 0.0720767515978119,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:19",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 19,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.17247842698697,
+            14.175119998425563,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.48772317220106043,
+            0.8254094981075248,
+            0.28429785038233896
+          ],
+          "incoming_energy_lumen": 1.2653645678450243e-05,
+          "terminal_segment_start_mm": [
+            112.0,
+            13.883222176119506,
+            17.899460905643604
+          ],
+          "terminal_segment_end_mm": [
+            129.3278375528173,
+            43.208385533056585,
+            28.0
+          ],
+          "exit_segment_fraction": 0.009953834485188169,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:20",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 20,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.29315901416506,
+            24.639675292024407,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.08956494236212595,
+            -0.12029529553291039,
+            0.9886896191284295
+          ],
+          "incoming_energy_lumen": 4.0028320117221387e-07,
+          "terminal_segment_start_mm": [
+            110.66254721110045,
+            26.82976131872023,
+            8.881784197001252e-16
+          ],
+          "terminal_segment_end_mm": [
+            113.19905446031206,
+            23.422960832748952,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:21",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 21,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            111.98131899827963,
+            7.551828505163357,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.1897624052469945,
+            0.7697691404632686,
+            0.6094634525099236
+          ],
+          "incoming_energy_lumen": 1.4559741981340966e-05,
+          "terminal_segment_start_mm": [
+            111.9685423081226,
+            7.5,
+            17.958964866172373
+          ],
+          "terminal_segment_end_mm": [
+            115.09491677785945,
+            20.182104156527945,
+            28.0
+          ],
+          "exit_segment_fraction": 0.004086743376624817,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:22",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 22,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            108.45253177849828,
+            7.897585429899035,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.529614700892666,
+            0.06440944309545672,
+            0.8457893900011426
+          ],
+          "incoming_energy_lumen": 4.0000003716221847e-07,
+          "terminal_segment_start_mm": [
+            97.18132794363449,
+            6.526830500333585,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            114.71431168675595,
+            8.659115946324285,
+            28.000000000000004
+          ],
+          "exit_segment_fraction": 0.6428571428571428,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:23",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 23,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            110.74977359915782,
+            7.536338483906738,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.2116460232294719,
+            -0.1866329166731117,
+            0.959361305903692
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            108.54368184345712,
+            9.48170619047839,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.9558874159967,
+            5.590951323463482,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:24",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 24,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.13064358563693,
+            19.43517193148431,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.08868695710453009,
+            -0.46803120971788315,
+            0.8792504821548602
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            113.13929893510695,
+            24.758188965933357,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            111.12197814951256,
+            14.11210166633261,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:25",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 25,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.91179057148281,
+            7.713000834443126,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.35056624193139985,
+            -0.1908807887773525,
+            0.9168794001905763
+          ],
+          "incoming_energy_lumen": 2.0022727291251503e-06,
+          "terminal_segment_start_mm": [
+            93.43888509760653,
+            8.0,
+            16.621424269794282
+          ],
+          "terminal_segment_end_mm": [
+            89.08831889288982,
+            5.631148098547028,
+            28.0
+          ],
+          "exit_segment_fraction": 0.12115538560297423,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:26",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 26,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.18213477721902,
+            21.028864012266855,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.6305925099141906,
+            0.2924769769276009,
+            0.7188951970958027
+          ],
+          "incoming_energy_lumen": 9.711339348864958e-08,
+          "terminal_segment_start_mm": [
+            112.5,
+            20.881434003239235,
+            17.637623697731318
+          ],
+          "terminal_segment_end_mm": [
+            103.41044576800513,
+            25.09728703288448,
+            28.0
+          ],
+          "exit_segment_fraction": 0.03497038629926474,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:27",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 27,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            98.6120755385376,
+            7.69480694141264,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.390870791518217,
+            -0.10964764695180103,
+            0.9138913599853408
+          ],
+          "incoming_energy_lumen": 8.338839885315316e-08,
+          "terminal_segment_start_mm": [
+            106.31066484070669,
+            9.854426488712088,
+            -1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            94.335081481777,
+            6.495018304024057,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:28",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 28,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.23350366941064,
+            8.220524707152723,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.03953652373990009,
+            -0.5033721250802213,
+            0.8631647391910691
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.77546678977959,
+            14.05217037690877,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.69154512945629,
+            2.388820720356808,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:29",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 29,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.15472447675681,
+            8.693304416660697,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.031406752652048404,
+            -0.7562415618522664,
+            0.6535383049333052
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.67416444917393,
+            20.264684299494387,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.63528930998802,
+            -2.8781911811289724,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:30",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 30,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            108.40799296923109,
+            7.868737463359137,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.47566903806106386,
+            0.06094158106714655,
+            0.8775107349355327
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            102.98738371132123,
+            7.174261951833765,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.82865643377559,
+            8.563219919709072,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:31",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 31,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.14040160067444,
+            25.962807183182868,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.07317039799916493,
+            0.08079200054588763,
+            0.9940416216157335
+          ],
+          "incoming_energy_lumen": 2.0000053515166905e-06,
+          "terminal_segment_start_mm": [
+            113.46536338833498,
+            24.499834226917514,
+            -1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            111.4043117186408,
+            26.775569936663622,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:32",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 32,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.0002261464417,
+            24.61261513487577,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.32527805669859,
+            -0.6654544251170024,
+            0.6718367315967388
+          ],
+          "incoming_energy_lumen": 8.47121790727566e-08,
+          "terminal_segment_start_mm": [
+            112.5,
+            25.635053370592104,
+            16.967755661971257
+          ],
+          "terminal_segment_end_mm": [
+            107.15860255843828,
+            14.707613014264826,
+            28.0
+          ],
+          "exit_segment_fraction": 0.09356612366447878,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:33",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 33,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            100.92247101195385,
+            7.600035677413805,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.221958019304811,
+            -0.011425572528194091,
+            0.9749892788942288
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            103.19896578506916,
+            7.717221153395929,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            98.64595347366316,
+            7.482849029565203,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:34",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 34,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.1231639048125,
+            12.828516040975124,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.058955313104203905,
+            0.9234039402046456,
+            0.37927487956799966
+          ],
+          "incoming_energy_lumen": 1.4897958695800668e-05,
+          "terminal_segment_start_mm": [
+            112.0,
+            10.899427227659173,
+            17.207654531792194
+          ],
+          "terminal_segment_end_mm": [
+            113.67758567857604,
+            37.17507812429628,
+            28.0
+          ],
+          "exit_segment_fraction": 0.073417355897465,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:35",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 35,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.41582644498088,
+            24.16163021377785,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.022253569377152015,
+            0.003613340549028111,
+            0.9997458289085546
+          ],
+          "incoming_energy_lumen": 8.06901249237507e-08,
+          "terminal_segment_start_mm": [
+            112.81649253150613,
+            24.096573548371694,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            112.19323417468907,
+            24.197772805670162,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:36",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 36,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.40685290668304,
+            11.797450878691274,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.11138611743508232,
+            -0.4789855870689864,
+            0.8707272478927696
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.12763482957027,
+            17.29837896348807,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.6860837761045,
+            6.296467784063532,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:37",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 37,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.33312818423782,
+            20.64894132021647,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.11576488978311097,
+            -0.691420952517284,
+            0.7131167903741966
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            110.70977933455686,
+            30.344604746468857,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.95649326756961,
+            10.953180936360244,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:38",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 38,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.13938568082668,
+            9.54615908503875,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.048345312562090195,
+            -0.1331980961814717,
+            0.9899095907843833
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.65100947395857,
+            10.891703824078682,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.6277667715057,
+            8.200600890416872,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:39",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 39,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.49901220843105,
+            18.451083989191996,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.05922047581323105,
+            0.11405239801851064,
+            0.9917081151985607
+          ],
+          "incoming_energy_lumen": 8.010893645303291e-08,
+          "terminal_segment_start_mm": [
+            111.42413085140522,
+            16.380975725610682,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            113.09616851788985,
+            19.60114413562606,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:40",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 40,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.04110612388426,
+            7.850917951434351,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.2782061585328715,
+            0.9073752237669972,
+            0.3150738590365353
+          ],
+          "incoming_energy_lumen": 1.2281014154916962e-05,
+          "terminal_segment_start_mm": [
+            100.9335127791779,
+            7.5,
+            17.8781484547213
+          ],
+          "terminal_segment_end_mm": [
+            109.87097729706247,
+            36.64972806350334,
+            28.0
+          ],
+          "exit_segment_fraction": 0.012038463983947567,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:41",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 41,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.94819848048304,
+            7.894944325233234,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.17530972366719397,
+            0.46606178210723775,
+            0.8672098454507754
+          ],
+          "incoming_energy_lumen": 1.2979077561877789e-05,
+          "terminal_segment_start_mm": [
+            102.09675728358317,
+            7.5,
+            17.26511973219815
+          ],
+          "terminal_segment_end_mm": [
+            99.92666096465759,
+            13.269211978582799,
+            28.0
+          ],
+          "exit_segment_fraction": 0.06845723934211406,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:42",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 42,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.17287234117634,
+            19.058475709096847,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.14967947514044103,
+            0.0867272412152145,
+            0.9849235708180002
+          ],
+          "incoming_energy_lumen": 8.000000000000003e-08,
+          "terminal_segment_start_mm": [
+            114.90834403903644,
+            17.473489433890393,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            110.65316584236518,
+            19.939023639767097,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:43",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 43,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.30007675969992,
+            24.192943692530992,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.12138573634209389,
+            0.28140978954440693,
+            0.9518792115396052
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.02486745779281,
+            21.236612972886917,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.57529881382756,
+            27.149303975777897,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:44",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 44,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            110.75820026576777,
+            7.683479136295904,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.0749076579119831,
+            -0.0849678355562242,
+            0.9935639434415038
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.51212163469287,
+            8.538652942055805,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            110.00427135755359,
+            6.828296778712426,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:45",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 45,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.22039559161733,
+            7.698147304140676,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.29463997172928713,
+            -0.055404079109254954,
+            0.9540008779227722
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            109.13196001311861,
+            8.278896508366763,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            115.30886205478068,
+            7.117392292364471,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:46",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 46,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.37362507899273,
+            26.502489660608102,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.014504605277060127,
+            -0.1806306475348955,
+            0.983444042941377
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.52111145948497,
+            28.33918634431751,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.22613722362195,
+            24.665774609748183,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:47",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 47,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            105.02347578357498,
+            7.942691414323611,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.7912278092331695,
+            0.05672016266667407,
+            0.6088853562396989
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            92.02891303302003,
+            7.011159806874035,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            118.0181684810569,
+            8.874232337182415,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:48",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 48,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.12684713437916,
+            23.01403772710049,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.03608738127679436,
+            -0.3949333806015831,
+            0.9180007221125637
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.73374264618295,
+            27.316097864470965,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.51995555365957,
+            18.71193456869843,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:49",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 49,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.196099265529,
+            19.79549451179806,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.037689971205508245,
+            -0.4649839796224485,
+            0.8845164581651369
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.62220320014634,
+            25.052370463515423,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            111.7699910698297,
+            14.538565990795494,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:50",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 50,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.04378398834251,
+            25.485414543950675,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.10756244938165961,
+            0.4732103894526353,
+            0.8743581913592982
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            113.27395915934363,
+            20.073380185204815,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            110.81359651546666,
+            30.89750302358133,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:51",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 51,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.43795893193608,
+            17.05755037369573,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.004280223465622695,
+            -0.15400532315046359,
+            0.9880607471853163
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.39463992877174,
+            18.616197284181162,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.48127836829478,
+            15.498887876585327,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:52",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 52,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.28045589906948,
+            10.754424266943895,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.03601005691113031,
+            0.4945999520468313,
+            0.8683744372311574
+          ],
+          "incoming_energy_lumen": 4.0998575149535845e-07,
+          "terminal_segment_start_mm": [
+            113.02688623673245,
+            0.5021658457611439,
+            -1.1102230246251565e-16
+          ],
+          "terminal_segment_end_mm": [
+            111.8657723781456,
+            16.4501233898232,
+            28.000000000000004
+          ],
+          "exit_segment_fraction": 0.6428571428571428,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:53",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 53,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            108.23182580103887,
+            7.884046248361718,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.3940322646098992,
+            0.1500402204472502,
+            0.9067670630843045
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.57724526242725,
+            6.229390646572439,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            103.88636288502131,
+            9.538718396872483,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:54",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 54,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            111.01247487886152,
+            7.843713847080959,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.29006816979433475,
+            0.5400263691012825,
+            0.790083525677792
+          ],
+          "incoming_energy_lumen": 4.881342756620296e-07,
+          "terminal_segment_start_mm": [
+            110.82785343764994,
+            7.5,
+            17.497130763118218
+          ],
+          "terminal_segment_end_mm": [
+            114.68383569537131,
+            14.678768009715322,
+            28.0
+          ],
+          "exit_segment_fraction": 0.04787922476611544,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:55",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 55,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            93.0072058507852,
+            7.590710519617479,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.26492613338533516,
+            -0.09320083586286006,
+            0.9597540039218174
+          ],
+          "incoming_energy_lumen": 8.000013163047913e-08,
+          "terminal_segment_start_mm": [
+            97.97584404499949,
+            9.338674100572899,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            90.24685129844393,
+            6.619619641308914,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:56",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 56,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.33998134442638,
+            21.89103341318407,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.019001136453178247,
+            0.5004368219399006,
+            0.8655645233373304
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.5595021996545,
+            16.109467694175834,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.12045829396774,
+            27.672656948427655,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:57",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 57,
+          "receiver_id": "right",
+          "exit_point_mm": [
+            112.30834907551274,
+            21.815993151500997,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.526362621040188,
+            -0.8480997503963391,
+            0.06057395933378169
+          ],
+          "incoming_energy_lumen": 1.1124698804741055e-07,
+          "terminal_segment_start_mm": [
+            112.0,
+            22.312819414468727,
+            17.964515101160096
+          ],
+          "terminal_segment_end_mm": [
+            130.0,
+            -6.6896114134766975,
+            20.03596019324011
+          ],
+          "exit_segment_fraction": 0.017130504195152198,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:58",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 58,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.20956831394506,
+            25.416121545982527,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.08600489534776631,
+            0.22784861614656132,
+            0.9698908011195471
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.32282894906461,
+            23.066925766443262,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.09631654630782,
+            27.765340817714513,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:59",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 59,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.34473516861605,
+            7.8369851613599915,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5847291715026252,
+            -0.05421093670017529,
+            0.8094152026839768
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            109.56875718194122,
+            8.506732831172092,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            95.12064091434834,
+            7.167230794004217,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:60",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 60,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            95.8146759574917,
+            7.7862200647557716,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.2728645453880563,
+            -0.04209934139272778,
+            0.9611308887578569
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            92.97570969457986,
+            8.224234500580652,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            98.65367061035006,
+            7.348201248742731,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:61",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 61,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            93.83964338286835,
+            7.958308514270279,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.6001329215821222,
+            0.11233331732651794,
+            0.7919732964259125
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            86.26202778697373,
+            6.53992490840519,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            101.41733475567669,
+            9.376706304113267,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:62",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 62,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            108.26434460310419,
+            7.523536219005617,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.41269361506607005,
+            -0.23955545719574411,
+            0.8788043940556035
+          ],
+          "incoming_energy_lumen": 8.071538929361799e-08,
+          "terminal_segment_start_mm": [
+            109.08517149024101,
+            8.0,
+            16.25210216770779
+          ],
+          "terminal_segment_end_mm": [
+            103.56826413448562,
+            4.797611555722845,
+            28.0
+          ],
+          "exit_segment_fraction": 0.1487838809329487,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:63",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 63,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            95.51262523220811,
+            7.814158241861068,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.8728409464283232,
+            0.2614781469235727,
+            0.41204109129979194
+          ],
+          "incoming_energy_lumen": 4.885246795344091e-07,
+          "terminal_segment_start_mm": [
+            94.46393271093817,
+            7.5,
+            17.504944843994576
+          ],
+          "terminal_segment_end_mm": [
+            116.69597235117939,
+            14.160082287900618,
+            28.0
+          ],
+          "exit_segment_fraction": 0.04717032437148713,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:64",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 64,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            100.5205552097685,
+            7.5146604863037325,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.43208438320035103,
+            -0.19078950457491103,
+            0.8814207001985104
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            109.34439936937888,
+            11.410882893577533,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            95.6184195655405,
+            5.350092482262732,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:65",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 65,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            96.20207444838081,
+            7.631101710859021,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.5229954439097794,
+            -0.5922706348378723,
+            0.6129365878770466
+          ],
+          "incoming_energy_lumen": 8.004077025993537e-08,
+          "terminal_segment_start_mm": [
+            95.8763245071573,
+            8.0,
+            17.61822983393116
+          ],
+          "terminal_segment_end_mm": [
+            104.73469355211574,
+            -2.0317353028237077,
+            28.0
+          ],
+          "exit_segment_fraction": 0.036773128277930375,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:66",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 66,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.14629214198695,
+            17.834998077930823,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.0007829444794300609,
+            0.7522883329214664,
+            0.6588335534474419
+          ],
+          "incoming_energy_lumen": 4.1000179934899235e-07,
+          "terminal_segment_start_mm": [
+            112.16485392564712,
+            -3.552713678800501e-15,
+            2.380596315006108
+          ],
+          "terminal_segment_end_mm": [
+            112.13440834409394,
+            29.25348654113991,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6096708524930531,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:67",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 67,
+          "receiver_id": "bottom",
+          "exit_point_mm": [
+            112.44814457412214,
+            8.116566340428136,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.06747036867432621,
+            -0.8817801379649284,
+            0.4668099588071169
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.00280921445992,
+            27.00586601211512,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.83435340042051,
+            -10.0,
+            27.59081887081247
+          ],
+          "exit_segment_fraction": 0.5104406870387234,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:68",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 68,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            96.12093383402407,
+            7.614856657032944,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.4751835597731148,
+            -0.14719780280048234,
+            0.867486824898258
+          ],
+          "incoming_energy_lumen": 8.263015314575473e-08,
+          "terminal_segment_start_mm": [
+            86.26106757390049,
+            10.669151401762274,
+            -1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            101.5986373118705,
+            5.9180262432944275,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:69",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 69,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.38292329268604,
+            9.363758806813713,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.03899476625073845,
+            0.6222244733275332,
+            0.7818670686231288
+          ],
+          "incoming_energy_lumen": 4.000000000000001e-07,
+          "terminal_segment_start_mm": [
+            112.96974943269194,
+            3.552713678800501e-15,
+            6.2338047386258575
+          ],
+          "terminal_segment_end_mm": [
+            111.88418421266049,
+            17.3219463082169,
+            28.0
+          ],
+          "exit_segment_fraction": 0.5405719796263244,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:70",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 70,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.18433228807511,
+            25.429374363657963,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.39336341577841566,
+            -0.774942306800581,
+            0.4947015709068767
+          ],
+          "incoming_energy_lumen": 3.2424558065176043e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            25.792516645855397,
+            17.768180087873294
+          ],
+          "terminal_segment_end_mm": [
+            120.13586183461182,
+            9.764530094415548,
+            28.0
+          ],
+          "exit_segment_fraction": 0.022656762347034128,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:71",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 71,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.22516350534731,
+            19.67139252270256,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.09169138740005676,
+            -0.0410991309216876,
+            0.9949389684368255
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.30359471173337,
+            20.08447032178555,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.14674151474135,
+            19.25831059280027,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:72",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 72,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.55082183717995,
+            7.990559491966694,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.7326710641901152,
+            0.03141208466893987,
+            0.6798576267390661
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            113.32754491365247,
+            7.52852495248878,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            91.77399099239899,
+            8.452598651836206,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:73",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 73,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.33575080333968,
+            24.299965660506935,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.08689269367160932,
+            0.3520131610608864,
+            0.9319530000093429
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.40338806891207,
+            20.522847705784468,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.26812286148787,
+            28.07712138678667,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:74",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 74,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            95.82199022970543,
+            7.882165705473248,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.21714136108586093,
+            0.8011115132330567,
+            0.5577364724233316
+          ],
+          "incoming_energy_lumen": 1.4356703637673786e-07,
+          "terminal_segment_start_mm": [
+            95.71840417448585,
+            7.5,
+            17.73393497792633
+          ],
+          "terminal_segment_end_mm": [
+            99.71525114811722,
+            22.24578639092484,
+            28.0
+          ],
+          "exit_segment_fraction": 0.025916943006067703,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:75",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 75,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.02740055447488,
+            22.69948899315355,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5929156863930474,
+            0.04344960121195259,
+            0.8040914879437439
+          ],
+          "incoming_energy_lumen": 4.000505045305461e-07,
+          "terminal_segment_start_mm": [
+            112.5,
+            22.66485631617721,
+            17.359077184033605
+          ],
+          "terminal_segment_end_mm": [
+            104.65366640502783,
+            23.239845430989547,
+            28.0
+          ],
+          "exit_segment_fraction": 0.06023188280293779,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:76",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 76,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            94.61256380173937,
+            7.758186352005344,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.29196444308751873,
+            -0.10067126392109499,
+            0.9511162182368275
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            97.68223623340418,
+            8.816629634521098,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            91.54286067304328,
+            6.699732484950919,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:77",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 77,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.00417887795254,
+            25.528061227245505,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.9164675766167409,
+            0.23984048385578746,
+            0.32025571550568765
+          ],
+          "incoming_energy_lumen": 3.0480049517159183e-06,
+          "terminal_segment_start_mm": [
+            112.5,
+            25.39830434238463,
+            17.826737407568377
+          ],
+          "terminal_segment_end_mm": [
+            83.38743506216684,
+            33.017091781378674,
+            28.0
+          ],
+          "exit_segment_fraction": 0.017031172729240415,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:78",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 78,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.22432922468434,
+            13.213508326458765,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.10400582731978814,
+            -0.289967417832121,
+            0.9513683221966657
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            114.19213164996752,
+            18.69972580837659,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            111.13110565508258,
+            10.165609725393306,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:79",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 79,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            94.497082638204,
+            7.839382521951809,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.6629233708848569,
+            0.08515643936968928,
+            0.7438285993214666
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            85.58485820564155,
+            6.6945544273749675,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            103.40939619390201,
+            8.984222064924081,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:80",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 80,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.38573428633626,
+            9.68845264331385,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5047486842424844,
+            0.13776128824450518,
+            0.8522033755018195
+          ],
+          "incoming_energy_lumen": 4.3678155682356553e-07,
+          "terminal_segment_start_mm": [
+            112.5,
+            9.65726605004889,
+            17.80707700697723
+          ],
+          "terminal_segment_end_mm": [
+            106.46286776465341,
+            11.30498330025222,
+            28.0
+          ],
+          "exit_segment_fraction": 0.018927151039483794,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:81",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 81,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            109.54771221447004,
+            7.944013196610859,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.8460912788352528,
+            0.5242685047834359,
+            0.09629165473220883
+          ],
+          "incoming_energy_lumen": 6.097055976761886e-07,
+          "terminal_segment_start_mm": [
+            110.26428337965073,
+            7.500000000000001,
+            17.918448724204293
+          ],
+          "terminal_segment_end_mm": [
+            21.680151812868402,
+            62.38990533975129,
+            28.0
+          ],
+          "exit_segment_fraction": 0.008089159452226335,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:82",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 82,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            95.02800260740767,
+            7.896678030719239,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.7235595742284805,
+            -0.0031583538412439374,
+            0.690254711931265
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            105.51039883195946,
+            7.942433926377943,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            84.54550155784537,
+            7.850921677497004,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:83",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 83,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            94.31674542433412,
+            7.644079192241414,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.3651848864768269,
+            0.08239979211674088,
+            0.9272811186193888
+          ],
+          "incoming_energy_lumen": 1e-05,
+          "terminal_segment_start_mm": [
+            94.95528518409236,
+            7.500000000000002,
+            16.378613451328697
+          ],
+          "terminal_segment_end_mm": [
+            90.37851267976423,
+            8.53269635981002,
+            28.0
+          ],
+          "exit_segment_fraction": 0.1395174785625455,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:84",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 84,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            102.20031131298543,
+            7.963303380016855,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.37603223447098233,
+            0.08597463967771349,
+            0.9226094081305738
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            94.86396706933368,
+            6.285948368718483,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            106.27605811501418,
+            8.895167275182617,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:85",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 85,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.3569029353545,
+            20.645019226359405,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.060575490880331775,
+            0.07912362522858167,
+            0.9950226438806776
+          ],
+          "incoming_energy_lumen": 4.001537552517003e-07,
+          "terminal_segment_start_mm": [
+            113.45271602317878,
+            19.213669635600482,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            111.74811788656322,
+            21.440213443447696,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:86",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 86,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.42768566270685,
+            13.056693500611335,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.031793281372488755,
+            0.4631939432491777,
+            0.8856864897901782
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.78664974092382,
+            7.826972638328835,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.06871799481321,
+            18.286466660625436,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:87",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 87,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.20258063989186,
+            13.644693481069215,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.06266332087832706,
+            -0.5423189704645911,
+            0.8378325861953125
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.45466637542435,
+            20.117508649760495,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.95050238357682,
+            7.171813583578958,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:88",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 88,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.0776656554318,
+            26.574495540501857,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.18894587143249944,
+            -0.7512453296380777,
+            0.6324001204661409
+          ],
+          "incoming_energy_lumen": 2.045647049271605e-06,
+          "terminal_segment_start_mm": [
+            112.43619458294015,
+            28.0,
+            16.80000692670402
+          ],
+          "terminal_segment_end_mm": [
+            109.08990734676438,
+            14.69522314118074,
+            28.0
+          ],
+          "exit_segment_fraction": 0.10714230494991187,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:89",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 89,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.87758339563021,
+            7.708152887728222,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.334864787485127,
+            -0.09763203399924932,
+            0.9371945155834568
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            96.45060301182784,
+            8.7498902864808,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            89.30452804887912,
+            6.666405071497481,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:90",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 90,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.01584007609918,
+            7.897824246057715,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5451850425222207,
+            -0.37678881979949796,
+            0.7488681156813567
+          ],
+          "incoming_energy_lumen": 2.3393911299921444e-06,
+          "terminal_segment_start_mm": [
+            101.16368069617758,
+            8.0,
+            17.79692559783542
+          ],
+          "terminal_segment_end_mm": [
+            93.73571916954697,
+            2.8663799648884307,
+            28.0
+          ],
+          "exit_segment_fraction": 0.019903256034426192,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:91",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 91,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.25130900155179,
+            24.30644659193054,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.5453469413275648,
+            0.33722374915463843,
+            0.7673831224302233
+          ],
+          "incoming_energy_lumen": 2.13948453863314e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            24.151045768569727,
+            17.646371379958282
+          ],
+          "terminal_segment_end_mm": [
+            119.35788882312133,
+            28.700910573451083,
+            28.0
+          ],
+          "exit_segment_fraction": 0.03415504196830011,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:92",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 92,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.37744033023858,
+            18.08283444219166,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.13553228887142144,
+            0.36426793738149,
+            0.9213793293042276
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            110.90648337214319,
+            14.129367253198094,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            113.84841199805066,
+            22.036341166252466,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:93",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 93,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            111.80533513892941,
+            7.848539627096728,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.48866154091651626,
+            -0.5631103946505774,
+            0.6664207243667973
+          ],
+          "incoming_energy_lumen": 2.6405064138557703e-06,
+          "terminal_segment_start_mm": [
+            111.67389934958187,
+            8.0,
+            17.820752143128708
+          ],
+          "terminal_segment_end_mm": [
+            119.13796335784953,
+            -0.6012335276265048,
+            28.0
+          ],
+          "exit_segment_fraction": 0.017609145527416815,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:94",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 94,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.43383902228646,
+            23.129778235193932,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.31957749911015493,
+            -0.08161548136628333,
+            0.9440387361034762
+          ],
+          "incoming_energy_lumen": 2.0575334301888317e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            23.24057446064153,
+            16.718430291831925
+          ],
+          "terminal_segment_end_mm": [
+            115.81905497676321,
+            22.26524293335715,
+            28.0
+          ],
+          "exit_segment_fraction": 0.11359852762689517,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:95",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 95,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.04799900970617,
+            11.226110926212929,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.17342543632530455,
+            -0.7491872545434767,
+            0.6392511835460187
+          ],
+          "incoming_energy_lumen": 1.3262130565529757e-05,
+          "terminal_segment_start_mm": [
+            112.5,
+            13.17872749817858,
+            16.33391125239948
+          ],
+          "terminal_segment_end_mm": [
+            109.3350523497831,
+            -0.49365235036994193,
+            28.0
+          ],
+          "exit_segment_fraction": 0.14281468139381331,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:96",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 96,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.16850117461864,
+            20.545651486943846,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.08617439874014395,
+            -0.492861431150434,
+            0.8658299964116054
+          ],
+          "incoming_energy_lumen": 8.451391633095448e-08,
+          "terminal_segment_start_mm": [
+            112.0,
+            21.509368452622912,
+            16.30699867305903
+          ],
+          "terminal_segment_end_mm": [
+            113.1637819929928,
+            14.853293481410695,
+            28.0
+          ],
+          "exit_segment_fraction": 0.14478757673962214,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:97",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 97,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            111.67326425786794,
+            7.617661197051332,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.6388578986571837,
+            -0.09135921499528053,
+            0.7638809325796618
+          ],
+          "incoming_energy_lumen": 1.1449593366900096e-05,
+          "terminal_segment_start_mm": [
+            112.5,
+            7.735887689309598,
+            17.011473958412058
+          ],
+          "terminal_segment_end_mm": [
+            103.3099464761329,
+            6.4216735620837175,
+            28.0
+          ],
+          "exit_segment_fraction": 0.0899598397316162,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:98",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 98,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            99.70560991016838,
+            7.677250547052889,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.34120358164638526,
+            -0.05724200937788403,
+            0.938244887134516
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            103.34218895567349,
+            8.287341129401925,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            96.06899449850916,
+            7.06715386373702,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:99",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 99,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            105.15761198826561,
+            7.977510652393028,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.830732372277951,
+            0.18924500499954178,
+            0.5235170042435787
+          ],
+          "incoming_energy_lumen": 1.4753988857043232e-05,
+          "terminal_segment_start_mm": [
+            107.25374951671141,
+            7.5,
+            16.679040716367652
+          ],
+          "terminal_segment_end_mm": [
+            89.28931419575622,
+            11.592388554458097,
+            28.0
+          ],
+          "exit_segment_fraction": 0.11668262825944165,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 1,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:100",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 100,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.0430120198084,
+            12.687584077778133,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.016674126523047495,
+            -0.5181211413573515,
+            0.8551446990908899
+          ],
+          "incoming_energy_lumen": 2.0000002969527652e-06,
+          "terminal_segment_start_mm": [
+            112.39398686387155,
+            23.59355186819659,
+            -1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            111.84802599532887,
+            6.628713083101214,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:101",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 101,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.47792747576226,
+            15.533311963470398,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.721250005639293,
+            0.15372021826896684,
+            0.6754024902683297
+          ],
+          "incoming_energy_lumen": 2.7763033731569055e-06,
+          "terminal_segment_start_mm": [
+            112.5,
+            15.52860764011921,
+            17.97933055428753
+          ],
+          "terminal_segment_end_mm": [
+            101.79910979250573,
+            17.809291405120007,
+            28.0
+          ],
+          "exit_segment_fraction": 0.002062681123696282,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:102",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 102,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.79049078782784,
+            7.855257755282494,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.15953748550088823,
+            0.13221032453694823,
+            0.9782986357988489
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            100.15974242236823,
+            6.503840124757588,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            103.42125546093416,
+            9.206688900118849,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:103",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 103,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.30918213495193,
+            20.825292149873807,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.0516143950013838,
+            -0.3534690585434627,
+            0.9340211875974973
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.86178072203747,
+            24.60963375310945,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            111.75657802182525,
+            17.04091270284369,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:104",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 104,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.32985119806797,
+            20.31928862337401,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.1601027259556071,
+            -0.049227609147837796,
+            0.9858720807686824
+          ],
+          "incoming_energy_lumen": 1.0513613650181886e-07,
+          "terminal_segment_start_mm": [
+            112.5,
+            20.371605151206307,
+            16.952266725005384
+          ],
+          "terminal_segment_end_mm": [
+            110.70588061325563,
+            19.819958029597025,
+            28.0
+          ],
+          "exit_segment_fraction": 0.09483694518277795,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:105",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 105,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            108.44787953337232,
+            7.713333246652182,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.25830242363657974,
+            -0.1365053374160975,
+            0.9563713456604532
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            103.58633318262127,
+            10.282519457258406,
+            0.0
+          ],
+          "terminal_segment_end_mm": [
+            111.14873861712289,
+            6.286007574093169,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:106",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 106,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.10562736234228,
+            18.681115097873946,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.06089684908625757,
+            -0.6850750294646446,
+            0.7259227078521389
+          ],
+          "incoming_energy_lumen": 9.35349986816822e-08,
+          "terminal_segment_start_mm": [
+            113.61562735503558,
+            35.66825490901117,
+            4.440892098500626e-16
+          ],
+          "terminal_segment_end_mm": [
+            111.26673847751266,
+            9.243815202797713,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:107",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 107,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.13300431377988,
+            16.219061784225435,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.008864325086582173,
+            -0.18650902363485503,
+            0.9824132571599044
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            112.22323351598911,
+            18.117521085190074,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.0427742092696,
+            14.320583498477937,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:108",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 108,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            106.97875521331844,
+            7.797002282947305,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.8815859873030305,
+            0.012610288963854816,
+            0.47185498577761054
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            88.29553265521977,
+            7.529755708447645,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            125.66216460551101,
+            8.064251529939433,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:109",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 109,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.25222305563328,
+            9.121870513956468,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.12243986073506763,
+            -0.4629920059618917,
+            0.877864957108188
+          ],
+          "incoming_energy_lumen": 4.12527776416445e-07,
+          "terminal_segment_start_mm": [
+            112.0,
+            10.075622484731515,
+            16.191620109775286
+          ],
+          "terminal_segment_end_mm": [
+            113.64696902132717,
+            3.8478018521083728,
+            28.0
+          ],
+          "exit_segment_fraction": 0.15314377645672952,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:110",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 110,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            109.9936846512204,
+            7.744735603332948,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.8114790872502882,
+            0.00011957430642263719,
+            0.5843814479066086
+          ],
+          "incoming_energy_lumen": 4.000485629934501e-07,
+          "terminal_segment_start_mm": [
+            112.5,
+            7.7443662889239695,
+            16.19509311399096
+          ],
+          "terminal_segment_end_mm": [
+            96.10756471779,
+            7.74678177209568,
+            28.0
+          ],
+          "exit_segment_fraction": 0.15289463131201672,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:111",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 111,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            101.39253776563224,
+            7.742218693870853,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            -0.5934972802769678,
+            0.14360716588396769,
+            0.7919204254283487
+          ],
+          "incoming_energy_lumen": 8.543344822404144e-08,
+          "terminal_segment_start_mm": [
+            102.39357511052869,
+            7.5,
+            16.6642871898754
+          ],
+          "terminal_segment_end_mm": [
+            93.89813225189712,
+            9.555622683372585,
+            28.0
+          ],
+          "exit_segment_fraction": 0.11783227332043879,
+          "last_event_type": "surface",
+          "last_component_id": 2,
+          "reflection_depth": 4,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:112",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 112,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            92.74362720038212,
+            7.633352441570463,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.33406662061812675,
+            -0.0796913476156217,
+            0.9391745216433369
+          ],
+          "incoming_energy_lumen": 2.0000000005376723e-06,
+          "terminal_segment_start_mm": [
+            86.34098420639994,
+            9.160698237292484,
+            1.7763568394002505e-15
+          ],
+          "terminal_segment_end_mm": [
+            96.30065108592778,
+            6.784826999502674,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:113",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 113,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.24089112546874,
+            26.19192679944164,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.04032190035595076,
+            0.24547125174682866,
+            0.96856492240713
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            111.82458968604908,
+            23.657571163019675,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            112.65719672794441,
+            28.726307779673405,
+            28.0
+          ],
+          "exit_segment_fraction": 0.4999974999874999,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:114",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 114,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            109.444129774047,
+            7.589959222834786,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.02225044442260258,
+            -0.18057635559935076,
+            0.983309258332013
+          ],
+          "incoming_energy_lumen": 2.0000000000000003e-06,
+          "terminal_segment_start_mm": [
+            109.03682353116038,
+            10.895505645027457,
+            -3.552713678800501e-15
+          ],
+          "terminal_segment_end_mm": [
+            109.67041102009513,
+            5.753544543838858,
+            28.0
+          ],
+          "exit_segment_fraction": 0.6428571428571429,
+          "last_event_type": "surface",
+          "last_component_id": 0,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:115",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 115,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.47684182281243,
+            16.02757457901727,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.12836048659818244,
+            -0.8224584451381336,
+            0.5541531300112287
+          ],
+          "incoming_energy_lumen": 5e-05,
+          "terminal_segment_start_mm": [
+            110.16052894751178,
+            30.869144102174474,
+            8.0001
+          ],
+          "terminal_segment_end_mm": [
+            114.79317786147347,
+            1.1858566386806686,
+            27.999999999999996
+          ],
+          "exit_segment_fraction": 0.49999749998750004,
+          "last_event_type": "emitter",
+          "last_component_id": null,
+          "reflection_depth": 0,
+          "ray_kind": "direct"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:116",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 116,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            112.37785590005525,
+            17.19396619270023,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.5059385625713652,
+            -0.7212695041591636,
+            0.47307131943631425
+          ],
+          "incoming_energy_lumen": 2.323197734823597e-06,
+          "terminal_segment_start_mm": [
+            112.0,
+            17.732640169815834,
+            17.646690720139123
+          ],
+          "terminal_segment_end_mm": [
+            123.07261886252387,
+            1.947438353756441,
+            28.0
+          ],
+          "exit_segment_fraction": 0.03412525119365744,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 2,
+          "ray_kind": "lambertian"
+        },
+        {
+          "sample_id": "rt3-64044e983b19:stored-path:117",
+          "run_id": "rt3-64044e983b19",
+          "stored_path_index": 117,
+          "receiver_id": "front",
+          "exit_point_mm": [
+            106.66270305433062,
+            7.520042508687186,
+            18.0
+          ],
+          "outgoing_direction_unit": [
+            0.5749235440011948,
+            -0.23720622941607322,
+            0.7830684026822403
+          ],
+          "incoming_energy_lumen": 4.0384207424745173e-07,
+          "terminal_segment_start_mm": [
+            105.49941631201041,
+            8.0,
+            16.415557858649418
+          ],
+          "terminal_segment_end_mm": [
+            114.00463566241329,
+            4.490853377781484,
+            28.0
+          ],
+          "exit_segment_fraction": 0.1367732793705212,
+          "last_event_type": "surface",
+          "last_component_id": 1,
+          "reflection_depth": 3,
+          "ray_kind": "lambertian"
+        }
+      ]
+    }
+  ]
+}

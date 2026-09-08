@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  AdditiveBlending,
   ACESFilmicToneMapping,
   Box3,
   BufferGeometry,
@@ -25,10 +26,12 @@ import {
   OrthographicCamera,
   Plane,
   PlaneGeometry,
+  Points,
   PerspectiveCamera,
   Quaternion,
   Raycaster,
   Scene,
+  ShaderMaterial,
   ShapeUtils,
   SphereGeometry,
   SRGBColorSpace,
@@ -45,6 +48,7 @@ import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls
 
 import type {
   EmitterSpec,
+  RayTraceRequest,
   RayTraceResult,
   SceneComponent,
   ScenePayload,
@@ -58,6 +62,14 @@ import {
   rayPathFilterOrder,
   rayPathStyles,
 } from '@/features/results/ray-paths'
+import type {
+  LeakagePreviewBounds,
+  LeakagePreviewCoverage,
+  LeakagePreviewSample,
+} from '@/features/results/leakage-preview-data'
+import {
+  prototypeLeakageDisplayEnergyGain,
+} from '@/features/results/leakage-preview-connectivity'
 import {
   findBaseMaterial,
   findSurfaceProperty,
@@ -67,6 +79,10 @@ import {
   roiClippedSurfaceCentroid,
   type RoiComponentPointTransform,
 } from '@/features/roi/roi-clipped-geometry'
+import { createLeakageSurfaceMesh } from './leakage-surface-mesh'
+import { createLeakageDisplayCompositor, type LeakageDisplayCompositor } from './leakage-display-compositor'
+import type { LeakageSurfacePreview } from '@/features/results/leakage-surface-preview'
+import { leakageExteriorStyle, type LeakageExteriorColor, type LeakageExteriorFinish } from './leakage-exterior-style'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -129,6 +145,15 @@ export interface ViewerRayObjectContextTarget {
   returnFocusElement: HTMLElement | null
 }
 
+export interface ViewerCameraSnapshot {
+  position: [number, number, number]
+  target: [number, number, number]
+  up: [number, number, number]
+  fov: number
+  near: number
+  far: number
+}
+
 interface ThreeViewerCanvasProps {
   scene: ScenePayload
   cadModelVisible?: boolean
@@ -141,6 +166,18 @@ interface ThreeViewerCanvasProps {
   roiFaceIds: number[]
   roiScopes: RoiScope[]
   rayTraceResult?: RayTraceResult | null
+  leakagePreviewActive?: boolean
+  leakageInitialView?: { id: string; preset: ViewerCameraPreset; distanceScale: number } | null
+  leakageCameraRestore?: { id: string; snapshot: ViewerCameraSnapshot } | null
+  onCameraSnapshotChange?(snapshot: ViewerCameraSnapshot): void
+  leakageSurfacePreview?: LeakageSurfacePreview | null
+  leakageExteriorBrightness?: number
+  leakageExteriorColor?: LeakageExteriorColor
+  leakageExteriorFinish?: LeakageExteriorFinish
+  leakagePreviewBounds?: LeakagePreviewBounds | null
+  leakagePreviewCoverage?: LeakagePreviewCoverage | null
+  leakagePreviewSamples?: LeakagePreviewSample[]
+  leakagePreviewRequest?: RayTraceRequest | null
   editingComponentId?: number | null
   editingComponentMode?: 'material' | 'transform' | null
   onRoiBoxSelection(result: RoiBoxSelectionResult): void
@@ -171,8 +208,15 @@ interface ViewerRuntime {
   axisScalePercent: number
   camera: PerspectiveCamera
   controls: TrackballControls
+  fillLight: DirectionalLight
   globalOriginAxes: Group
+  hemisphereLight: HemisphereLight
+  exteriorHeadlight: DirectionalLight
+  keyLight: DirectionalLight
   modelRoot: Group
+  leakageRoot: Group
+  leakageCompositor: LeakageDisplayCompositor | null
+  leakageCompositorUnavailable: boolean
   nodes: Map<number, ComponentRenderNode>
   originAxisBaseScale: number
   pipCamera: PerspectiveCamera
@@ -260,6 +304,8 @@ const selectedComponentEdgeColor = 0xffb000
 // the warm emitter yellow/orange palette, unlike the previous lavender
 // purple which tended to wash out against similarly light surfaces.
 const receiverOverlayColor = 0x22d3ee
+const leakagePreviewMinimumSurfaceOffsetMm = 0.002
+const leakagePreviewRelativeSurfaceOffset = 0.000002
 
 function cameraPresetVectors(preset: RoiCameraPreset): {
   direction: Vector3
@@ -323,7 +369,11 @@ function disposeMaterial(material: Material | Material[]): void {
 
 function disposeObject(object: Object3D): void {
   object.traverse((child) => {
-    if (child instanceof Mesh || child instanceof LineSegments) {
+    if (
+      child instanceof Mesh ||
+      child instanceof LineSegments ||
+      child instanceof Points
+    ) {
       if (child.userData.sharedGeometry !== true) {
         child.geometry.dispose()
       }
@@ -596,6 +646,11 @@ function addSectionCapGeometry(
     cap.userData.componentId = componentId
     sectionRoot.add(cap)
   }
+}
+
+function viewerCameraSnapshot(runtime: ViewerRuntime): ViewerCameraSnapshot {
+  return { position: runtime.camera.position.toArray(), target: runtime.controls.target.toArray(),
+    up: runtime.camera.up.toArray(), fov: runtime.camera.fov, near: runtime.camera.near, far: runtime.camera.far }
 }
 
 function viewerCameraFrame(runtime: ViewerRuntime): ViewerCameraFrame {
@@ -1147,6 +1202,75 @@ function createPivotMarker(armLength: number): Group {
   return marker
 }
 
+interface LeakageDisplayBin {
+  direction: Vector3
+  position: Vector3
+  weight: number
+}
+
+function aggregateLeakageDisplayBins(
+  samples: LeakagePreviewSample[],
+  cellSize: number,
+): LeakageDisplayBin[] {
+  const safeCellSize = Math.max(cellSize, 1e-9)
+  const bins = new Map<
+    string,
+    {
+      direction: Vector3
+      position: Vector3
+      positionWeight: number
+      weight: number
+    }
+  >()
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.weight) || sample.weight <= 0) continue
+    const position = new Vector3(...sample.exitPoint)
+    const direction = new Vector3(...sample.outgoingDirection)
+    if (
+      !Number.isFinite(position.lengthSq()) ||
+      !Number.isFinite(direction.lengthSq()) ||
+      direction.lengthSq() <= 1e-18
+    ) continue
+    direction.normalize()
+    const key = [
+      Math.floor(position.x / safeCellSize),
+      Math.floor(position.y / safeCellSize),
+      Math.floor(position.z / safeCellSize),
+      Math.round(direction.x * 4),
+      Math.round(direction.y * 4),
+      Math.round(direction.z * 4),
+    ].join(':')
+    const current = bins.get(key)
+    if (current) {
+      current.position.addScaledVector(position, sample.weight)
+      current.positionWeight += sample.weight
+      current.direction.addScaledVector(direction, sample.weight)
+      current.weight += sample.weight
+    } else {
+      bins.set(key, {
+        direction: direction.multiplyScalar(sample.weight),
+        position: position.multiplyScalar(sample.weight),
+        positionWeight: sample.weight,
+        weight: sample.weight,
+      })
+    }
+  }
+
+  return [...bins.values()].flatMap((bin) => {
+    if (bin.weight < 1e-10 || bin.positionWeight <= 0) return []
+    bin.position.multiplyScalar(1 / bin.positionWeight)
+    if (bin.direction.lengthSq() <= 1e-18) return []
+    bin.direction.normalize()
+    return [
+      {
+        position: bin.position,
+        direction: bin.direction,
+        weight: bin.weight,
+      },
+    ]
+  })
+}
+
 function clearGroup(group: Group | undefined): void {
   if (!group) return
   for (const child of [...group.children]) {
@@ -1260,6 +1384,22 @@ function applyComponentTransform(
   )
 }
 
+function resultComponentTransformRules(
+  request: RayTraceRequest | null | undefined,
+): ComponentTransformRule[] {
+  return (request?.transform_rules ?? []).map((rule) => ({
+    ruleId: rule.rule_id,
+    componentId: rule.object_id,
+    targetType: 'component',
+    selectionMethod: 'click',
+    faceIds: [],
+    move: { ...rule.move },
+    tilt: { ...rule.tilt },
+    ...(rule.pivot ? { pivot: { ...rule.pivot } } : {}),
+    enabled: rule.enabled,
+  }))
+}
+
 function createRoiPointTransform(
   runtime: ViewerRuntime,
   transformRules: ComponentTransformRule[],
@@ -1313,9 +1453,11 @@ function fitCamera(
   runtime: ViewerRuntime,
   preset: ViewerCameraPreset,
 ): void {
-  const fitRoot = runtime.roiPreviewRoot.visible
-    ? runtime.roiPreviewRoot
-    : runtime.modelRoot
+  const fitRoot = runtime.leakageRoot.visible && runtime.leakageRoot.children.length > 0
+    ? runtime.leakageRoot
+    : runtime.roiPreviewRoot.visible
+      ? runtime.roiPreviewRoot
+      : runtime.modelRoot
   fitRoot.updateMatrixWorld(true)
   const bounds = new Box3().setFromObject(fitRoot)
   if (bounds.isEmpty()) return
@@ -1658,6 +1800,18 @@ export function ThreeViewerCanvas({
   roiFaceIds,
   roiScopes,
   rayTraceResult,
+  leakagePreviewActive = false,
+  leakageCameraRestore = null,
+  leakageInitialView = null,
+  onCameraSnapshotChange,
+  leakageSurfacePreview = null,
+  leakageExteriorBrightness = 60,
+  leakageExteriorColor = 'black',
+  leakageExteriorFinish = 'matte',
+  leakagePreviewBounds = null,
+  leakagePreviewCoverage = null,
+  leakagePreviewSamples = [],
+  leakagePreviewRequest = null,
   editingComponentId,
   editingComponentMode,
   onRoiBoxSelection,
@@ -1669,6 +1823,10 @@ export function ThreeViewerCanvas({
 }: ThreeViewerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
+  const leakagePreviewActiveRef = useRef(leakagePreviewActive)
+  const onCameraSnapshotChangeRef = useRef(onCameraSnapshotChange)
+  const appliedInitialViewIdRef = useRef('')
+  const appliedCameraRestoreIdRef = useRef<string | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
   const emitterFaceSelectionArmedRef = useRef(false)
   const materialFacePickArmedRef = useRef(false)
@@ -1821,6 +1979,14 @@ export function ThreeViewerCanvas({
   }, [roiBoxSelectionArmed])
 
   useEffect(() => {
+    leakagePreviewActiveRef.current = leakagePreviewActive
+  }, [leakagePreviewActive])
+
+  useEffect(() => {
+    onCameraSnapshotChangeRef.current = onCameraSnapshotChange
+  }, [onCameraSnapshotChange])
+
+  useEffect(() => {
     onRoiBoxSelectionRef.current = onRoiBoxSelection
   }, [onRoiBoxSelection])
 
@@ -1925,6 +2091,9 @@ export function ThreeViewerCanvas({
     }
 
     const modelRoot = new Group()
+    const leakageRoot = new Group()
+    leakageRoot.name = 'leakage-preview-root'
+    leakageRoot.visible = false
     const placementRoot = new Group()
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
@@ -1945,6 +2114,7 @@ export function ThreeViewerCanvas({
     pivotMarkerRoot.visible = false
     threeScene.add(
       modelRoot,
+      leakageRoot,
       roiPreviewRoot,
       roiSelectionRoot,
       roiBoundsMarker,
@@ -1953,7 +2123,15 @@ export function ThreeViewerCanvas({
       rayPathRoot,
       sectionRoot,
     )
-    threeScene.add(new HemisphereLight(0xe7f5ff, 0x182337, 2.5))
+    const hemisphereLight = new HemisphereLight(0xe7f5ff, 0x182337, 2.5)
+    threeScene.add(hemisphereLight)
+    // A camera-relative display light keeps the visible side readable while orbiting.
+    // It illuminates CAD only; the leakage ShaderMaterials are unlit.
+    const exteriorHeadlight = new DirectionalLight(0xffffff, 0)
+    exteriorHeadlight.position.set(0.4, 0.6, 0.5)
+    exteriorHeadlight.target.position.set(0, 0, -1)
+    camera.add(exteriorHeadlight, exteriorHeadlight.target)
+    threeScene.add(camera)
     const keyLight = new DirectionalLight(0xffffff, 3.2)
     keyLight.position.set(1.5, -2.2, 3.4)
     threeScene.add(keyLight)
@@ -1985,7 +2163,14 @@ export function ThreeViewerCanvas({
       axisScalePercent: 50,
       camera,
       controls,
+      fillLight,
       globalOriginAxes,
+      hemisphereLight,
+      exteriorHeadlight,
+      keyLight,
+      leakageRoot,
+      leakageCompositor: null,
+      leakageCompositorUnavailable: false,
       modelRoot,
       nodes,
       originAxisBaseScale,
@@ -2032,9 +2217,11 @@ export function ThreeViewerCanvas({
     resizeObserver.observe(canvas)
     resize()
     fitCamera(runtime, 'Iso')
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
 
     const emitCameraFrame = () => {
+      onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
       onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
     }
 
@@ -2097,12 +2284,15 @@ export function ThreeViewerCanvas({
         interactionVisibility.clear()
       }
       controlsInteracting = false
-      runtime.sectionRoot.visible = sectionViewRef.current.enabled
+      runtime.sectionRoot.visible =
+        sectionViewRef.current.enabled && !leakagePreviewActiveRef.current
       lastMainFrameTime = -Infinity
     }
     runtime.restoreRenderQuality = restoreRenderQuality
     const handleControlsEnd = () => {
       restoreRenderQuality()
+      // Wheel end fires before TrackballControls applies its queued zoom.
+      controls.update()
       emitCameraFrame()
     }
     controls.addEventListener('start', handleControlsStart)
@@ -2127,7 +2317,36 @@ export function ThreeViewerCanvas({
       renderer.setScissorTest(false)
       renderer.setViewport(0, 0, viewportWidth, viewportHeight)
       renderer.clear()
-      renderer.render(threeScene, camera)
+      const leakageActive = leakagePreviewActiveRef.current
+      let composedLeakage = false
+      let attemptedComposition = false
+      if (leakageActive) {
+        if (!runtime.leakageCompositor && !runtime.leakageCompositorUnavailable) {
+          runtime.leakageCompositor = createLeakageDisplayCompositor(renderer)
+          runtime.leakageCompositorUnavailable = runtime.leakageCompositor === null
+        }
+        if (runtime.leakageCompositor) {
+          attemptedComposition = true
+          composedLeakage = runtime.leakageCompositor.render(threeScene, camera,
+            leakageRoot, viewportWidth, viewportHeight)
+          if (!composedLeakage) {
+            runtime.leakageCompositor.dispose()
+            runtime.leakageCompositor = null
+            runtime.leakageCompositorUnavailable = true
+          }
+        }
+      } else if (runtime.leakageCompositor) {
+        runtime.leakageCompositor.dispose()
+        runtime.leakageCompositor = null
+      }
+      const leakageDisplayMode = !leakageActive ? 'inactive' : composedLeakage ? 'linear-psf' : 'direct'
+      if (canvas.dataset.leakageDisplayMode !== leakageDisplayMode) {
+        canvas.dataset.leakageDisplayMode = leakageDisplayMode
+      }
+      if (!composedLeakage) {
+        if (attemptedComposition) renderer.clear()
+        renderer.render(threeScene, camera)
+      }
 
       const gizmoSize = Math.max(
         44,
@@ -2749,6 +2968,7 @@ export function ThreeViewerCanvas({
       )
       pointerDown = null
       if (movement > 5) return
+      if (leakagePreviewActiveRef.current) return
 
       const hit = resolveSurfaceHit(event.clientX, event.clientY)
       const additive = event.ctrlKey || event.metaKey || event.shiftKey
@@ -3108,6 +3328,7 @@ export function ThreeViewerCanvas({
       }
       event.preventDefault()
       if (sectionShortcut) {
+        if (leakagePreviewActiveRef.current) return
         toggleSectionViewRef.current()
         return
       }
@@ -3132,6 +3353,13 @@ export function ThreeViewerCanvas({
       setBoxDrag(null)
     }
     const handleContextMenu = (event: MouseEvent) => {
+      if (leakagePreviewActiveRef.current) {
+        rightPointerDown = null
+        rightPointerMoved = false
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       if (
         runtime.roiPreviewRoot.visible &&
         pointInPipViewport(canvasPoint(event))
@@ -3253,6 +3481,7 @@ export function ThreeViewerCanvas({
       controls.removeEventListener('start', handleControlsStart)
       controls.removeEventListener('end', handleControlsEnd)
       controls.dispose()
+      runtime.leakageCompositor?.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
       disposeObject(pipCompositeScene)
@@ -3273,6 +3502,7 @@ export function ThreeViewerCanvas({
       runtime.pipUserAdjusted = false
       runtime.pipLastRenderTime = 0
     }
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
     if (
       roiBoxSelectionArmed &&
@@ -3363,6 +3593,16 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
 
+    const displayTransformRules = leakagePreviewActive
+      ? resultComponentTransformRules(leakagePreviewRequest)
+      : transformRules
+    const displayHiddenComponentIds = leakagePreviewActive
+      ? []
+      : hiddenComponentIds
+    const displayDeletedComponentIds = leakagePreviewActive
+      ? (leakagePreviewRequest?.excluded_component_ids ?? [])
+      : deletedComponentIds
+
     const activeBoxScopes = roiScopes.filter(
       (scope) => scope.active && scope.clipBox,
     )
@@ -3379,7 +3619,7 @@ export function ThreeViewerCanvas({
     // rectangular ROI and look like a broken orange tail.
     const roiPointTransform = createRoiPointTransform(
       runtime,
-      transformRules,
+      displayTransformRules,
     )
     const previewKey = JSON.stringify({
       scopes: activeBoxScopes.map((scope) => ({
@@ -3389,12 +3629,12 @@ export function ThreeViewerCanvas({
           (component) => component.faceIds,
         ),
       })),
-      hiddenComponentIds,
-      deletedComponentIds,
+      hiddenComponentIds: displayHiddenComponentIds,
+      deletedComponentIds: displayDeletedComponentIds,
       renderMode,
       surfaceOpacity,
       componentColorOverrides,
-      componentTransforms: transformRules
+      componentTransforms: displayTransformRules
         .filter(
           (rule) =>
             rule.enabled && rule.targetType === 'component',
@@ -3448,7 +3688,7 @@ export function ThreeViewerCanvas({
         scene,
         boxFaceIds,
         clipBoxes,
-        [...hiddenComponentIds, ...deletedComponentIds],
+        [...displayHiddenComponentIds, ...displayDeletedComponentIds],
         roiPointTransform,
       )
       if (clipped) {
@@ -3618,7 +3858,10 @@ export function ThreeViewerCanvas({
               scene,
               assignmentFaceIds,
               clipBoxes,
-              [...hiddenComponentIds, ...deletedComponentIds],
+              [
+                ...displayHiddenComponentIds,
+                ...displayDeletedComponentIds,
+              ],
               roiPointTransform,
               { includeCaps: false, includeFeatureEdges: false },
             )
@@ -3759,8 +4002,8 @@ export function ThreeViewerCanvas({
         }),
       )
       const unavailableSelectionComponentIds = [
-        ...hiddenComponentIds,
-        ...deletedComponentIds,
+        ...displayHiddenComponentIds,
+        ...displayDeletedComponentIds,
         ...scene.components
           .map((component) => component.component_id)
           .filter(
@@ -4035,8 +4278,8 @@ export function ThreeViewerCanvas({
 
         for (const [componentId, emitterFaceIds] of componentFaceGroups) {
           const unavailableComponentIds = [
-            ...hiddenComponentIds,
-            ...deletedComponentIds,
+            ...displayHiddenComponentIds,
+            ...displayDeletedComponentIds,
             ...scene.components
               .map((component) => component.component_id)
               .filter((candidateId) => candidateId !== componentId),
@@ -4154,15 +4397,16 @@ export function ThreeViewerCanvas({
     for (const [componentId, node] of runtime.nodes) {
       const isEditing = editingComponentId === componentId
       const isSelected =
+        !leakagePreviewActive &&
         !datumFacePickArmed &&
         (isEditing ||
           (!emitterFaceSelectionArmed &&
             selectedComponentIds.includes(componentId)))
       const isUnavailable =
-        hiddenComponentIds.includes(componentId) ||
-        deletedComponentIds.includes(componentId)
+        displayHiddenComponentIds.includes(componentId) ||
+        displayDeletedComponentIds.includes(componentId)
       node.group.visible = !isUnavailable
-      applyComponentTransform(node, transformRules)
+      applyComponentTransform(node, displayTransformRules)
       if (!node.wireframeFill) {
         node.wireframeFill = new Mesh(
           node.surface.geometry.clone(),
@@ -4196,12 +4440,14 @@ export function ThreeViewerCanvas({
         node.group.add(node.hiddenEdges)
       }
 
-      const partAssignment = materialAssignments.find(
-        (assignment) =>
-          assignment.enabled &&
-          assignment.componentId === componentId &&
-          assignment.targetType === 'part',
-      )
+      const partAssignment = leakagePreviewActive
+        ? undefined
+        : materialAssignments.find(
+            (assignment) =>
+              assignment.enabled &&
+              assignment.componentId === componentId &&
+              assignment.targetType === 'part',
+          )
       const authoredColor = resolveComponentColor(
         node.component,
         scene.components.indexOf(node.component),
@@ -4210,7 +4456,12 @@ export function ThreeViewerCanvas({
       const displayBaseColor = customColor
         ? Number.parseInt(customColor.slice(1), 16)
         : authoredColor
-      const style = viewerMaterialStyle(partAssignment, displayBaseColor)
+      const style = leakagePreviewActive
+        ? (() => {
+            const exterior = leakageExteriorStyle(leakageExteriorColor, leakageExteriorFinish)
+            return { ...exterior, color: new Color(exterior.color) }
+          })()
+        : viewerMaterialStyle(partAssignment, displayBaseColor)
       const displayColor = style.color.clone()
       const highlightColor = selectedComponentEdgeColor
       const showHighlightedEdges =
@@ -4269,7 +4520,13 @@ export function ThreeViewerCanvas({
       clearGroup(node.roiOverlayRoot)
       clearGroup(node.selectionOverlayRoot)
       clearGroup(node.transformOverlayRoot)
-      node.materialOverlayRoot.visible = renderMode !== 'Wireframe'
+      const standardOverlaysVisible = !leakagePreviewActive
+      node.emitterOverlayRoot.visible = standardOverlaysVisible
+      node.materialOverlayRoot.visible =
+        standardOverlaysVisible && renderMode !== 'Wireframe'
+      node.roiOverlayRoot.visible = standardOverlaysVisible
+      node.selectionOverlayRoot.visible = standardOverlaysVisible
+      node.transformOverlayRoot.visible = standardOverlaysVisible
 
       const componentEmitterFaceIds =
         emitterFaceIdsByComponent.get(componentId) ?? []
@@ -4495,13 +4752,15 @@ export function ThreeViewerCanvas({
         }
       }
 
-      const faceAssignments = materialAssignments.filter(
-        (assignment) =>
-          assignment.enabled &&
-          assignment.componentId === componentId &&
-          assignment.targetType === 'faces' &&
-          assignment.faceIds.length > 0,
-      )
+      const faceAssignments = leakagePreviewActive
+        ? []
+        : materialAssignments.filter(
+            (assignment) =>
+              assignment.enabled &&
+              assignment.componentId === componentId &&
+              assignment.targetType === 'faces' &&
+              assignment.faceIds.length > 0,
+          )
       for (const assignment of faceAssignments) {
         const bundle = createFaceGeometry(
           scene,
@@ -4523,7 +4782,7 @@ export function ThreeViewerCanvas({
         node.materialOverlayRoot.add(overlay)
       }
 
-      const faceTransformRules = transformRules.filter(
+      const faceTransformRules = displayTransformRules.filter(
         (rule) =>
           rule.enabled &&
           rule.componentId === componentId &&
@@ -4574,6 +4833,7 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot.visible = false
       runtime.roiBoundsMarker.visible = false
     }
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
@@ -4583,6 +4843,10 @@ export function ThreeViewerCanvas({
     editingComponentId,
     editingComponentMode,
     hiddenComponentIds,
+    leakagePreviewActive,
+    leakagePreviewRequest,
+    leakageExteriorColor,
+    leakageExteriorFinish,
     materialFacePickArmed,
     materialAssignments,
     componentColorOverrides,
@@ -4612,7 +4876,7 @@ export function ThreeViewerCanvas({
       runtime.roiBoundsMarker,
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
-    if (!sectionView.enabled) {
+    if (leakagePreviewActive || !sectionView.enabled) {
       for (const root of clippingRoots) setObjectClippingPlane(root, null)
       sectionBoundsRef.current = null
       clearGroup(runtime.sectionRoot)
@@ -4642,6 +4906,7 @@ export function ThreeViewerCanvas({
 
   }, [
     componentColorOverrides,
+    leakagePreviewActive,
     materialAssignments,
     renderMode,
     roiFaceIds,
@@ -4681,6 +4946,11 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     const bounds = sectionBoundsRef.current
     sectionCapRequestRef.current?.abort()
+    if (runtime && leakagePreviewActive) {
+      clearGroup(runtime.sectionRoot)
+      runtime.sectionRoot.visible = false
+      return
+    }
     if (!runtime || !bounds || !sectionView.enabled) return
     clearGroup(runtime.sectionRoot)
     runtime.sectionRoot.visible = false
@@ -4758,6 +5028,7 @@ export function ThreeViewerCanvas({
   }, [
     deletedComponentIds,
     hiddenComponentIds,
+    leakagePreviewActive,
     onStatusMessage,
     roiScopes,
     scene.metadata.scene_token,
@@ -4882,6 +5153,209 @@ export function ThreeViewerCanvas({
     )
   }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayTraceResult])
 
+  // Brightness changes only light uniforms: retain the camera, leakage geometry,
+  // fixed exposure, and recorded energy scale while the user adjusts the exterior.
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    const brightness = Number.isFinite(leakageExteriorBrightness)
+      ? Math.max(0, Math.min(100, leakageExteriorBrightness)) / 60
+      : 1
+    runtime.hemisphereLight.intensity = leakagePreviewActive ? 0.9 * brightness : 2.5
+    runtime.keyLight.intensity = leakagePreviewActive ? 1.5 * brightness : 3.2
+    runtime.fillLight.intensity = leakagePreviewActive ? 0.65 * brightness : 1.25
+    runtime.exteriorHeadlight.intensity = leakagePreviewActive ? 1.8 * brightness : 0
+  }, [leakagePreviewActive, leakageExteriorBrightness, scene])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.leakageRoot)
+    runtime.leakageRoot.visible = leakagePreviewActive
+    runtime.placementRoot.visible = !leakagePreviewActive
+    runtime.rayPathRoot.visible = !leakagePreviewActive
+    runtime.globalOriginAxes.visible = !leakagePreviewActive
+    runtime.roiSelectionRoot.visible =
+      !leakagePreviewActive && runtime.roiSelectionRoot.children.length > 0
+    runtime.roiBoundsMarker.visible =
+      !leakagePreviewActive && runtime.roiBoundsMarker.children.length > 0
+    runtime.sectionRoot.visible =
+      !leakagePreviewActive &&
+      sectionViewRef.current.enabled &&
+      runtime.sectionRoot.children.length > 0
+    runtime.renderer.setClearColor(0x000000, leakagePreviewActive ? 1 : 0)
+    if (!leakagePreviewActive) return
+    fitCamera(runtime, 'Fit')
+    if (leakagePreviewSamples.length === 0) return
+
+    const sceneBounds = getSceneBounds(scene)
+    const previewSize = leakagePreviewBounds
+      ? [
+          leakagePreviewBounds.maximum[0] - leakagePreviewBounds.minimum[0],
+          leakagePreviewBounds.maximum[1] - leakagePreviewBounds.minimum[1],
+          leakagePreviewBounds.maximum[2] - leakagePreviewBounds.minimum[2],
+        ]
+      : [sceneBounds.size.x, sceneBounds.size.y, sceneBounds.size.z]
+    const maxDimension = Math.max(...previewSize, 1)
+    const fallbackSamples = leakageSurfacePreview?.fallbackSamples ?? leakagePreviewSamples
+
+    const focus = new Vector3()
+    let focusSampleCount = 0
+    const surfaceOffset = Math.max(
+      leakagePreviewMinimumSurfaceOffsetMm,
+      maxDimension * leakagePreviewRelativeSurfaceOffset,
+    )
+
+    for (const field of leakageSurfacePreview?.fields ?? []) {
+      const rendered = createLeakageSurfaceMesh(field, surfaceOffset)
+      if (rendered.focus) {
+        focus.addScaledVector(rendered.focus, field.usedSampleKeys.size)
+        focusSampleCount += field.usedSampleKeys.size
+      }
+      runtime.leakageRoot.add(rendered.mesh)
+    }
+
+    const bins = aggregateLeakageDisplayBins(
+      fallbackSamples,
+      maxDimension * 0.001,
+    )
+    if (bins.length > 0) {
+      const positions = new Float32Array(bins.length * 3)
+      const directions = new Float32Array(bins.length * 3)
+      const weights = new Float32Array(bins.length)
+      bins.forEach((bin, index) => {
+        const position = bin.position
+          .clone()
+          .addScaledVector(bin.direction, surfaceOffset)
+        positions.set(position.toArray(), index * 3)
+        directions.set(bin.direction.toArray(), index * 3)
+        weights[index] = bin.weight
+        focus.add(bin.position)
+      })
+      focusSampleCount += bins.length
+
+      const geometry = new BufferGeometry()
+      geometry.setAttribute(
+        'position',
+        new Float32BufferAttribute(positions, 3),
+      )
+      geometry.setAttribute(
+        'leakDirection',
+        new Float32BufferAttribute(directions, 3),
+      )
+      geometry.setAttribute(
+        'leakWeight',
+        new Float32BufferAttribute(weights, 1),
+      )
+      const material = new ShaderMaterial({
+        transparent: true,
+        depthTest: true,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        toneMapped: false,
+        uniforms: { leakageLinearOutput: { value: 0 } },
+        vertexShader: `
+          attribute vec3 leakDirection;
+          attribute float leakWeight;
+          varying float strength;
+          varying float rawDisplayEnergy;
+          void main() {
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vec3 direction = normalize(mat3(modelMatrix) * leakDirection);
+            vec3 toCamera = normalize(cameraPosition - worldPosition.xyz);
+            float alignment = max(dot(direction, toCamera), 0.0);
+            float angular = smoothstep(0.78, 0.985, alignment);
+            float energy = max(leakWeight, 0.0) * ${prototypeLeakageDisplayEnergyGain.toFixed(1)};
+            float visibleEnergy = smoothstep(0.02, 1.0, energy);
+            strength = clamp(visibleEnergy * angular, 0.0, 1.0);
+            rawDisplayEnergy = energy * visibleEnergy * angular;
+            vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * viewPosition;
+            gl_PointSize = mix(2.0, 8.0, strength);
+          }
+        `,
+        fragmentShader: `
+          uniform float leakageLinearOutput;
+          varying float strength;
+          varying float rawDisplayEnergy;
+          void main() {
+            vec2 centered = gl_PointCoord - vec2(0.5);
+            float radius = length(centered);
+            if (radius > 0.5 || strength <= 0.001) discard;
+            float softEdge = 1.0 - smoothstep(0.12, 0.5, radius);
+            vec3 leakColor = mix(
+              vec3(0.30, 0.56, 1.0),
+              vec3(0.90, 0.96, 1.0),
+              strength
+            );
+            gl_FragColor = leakageLinearOutput > 0.5
+              ? vec4(vec3(0.82, 0.91, 1.0) * rawDisplayEnergy, softEdge)
+              : vec4(leakColor * strength, softEdge * strength);
+            #include <colorspace_fragment>
+          }
+        `,
+      })
+      const points = new Points(geometry, material)
+      points.name = 'leakage-preview-exit-samples'
+      points.renderOrder = 21
+      runtime.leakageRoot.add(points)
+    }
+
+    if (focusSampleCount === 0) return
+    focus.multiplyScalar(1 / focusSampleCount)
+    const cameraShift = focus.clone().sub(runtime.controls.target)
+    runtime.camera.position.add(cameraShift)
+    runtime.controls.target.copy(focus)
+    runtime.controls.update()
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+  }, [
+    leakagePreviewActive,
+    leakageSurfacePreview,
+    leakagePreviewBounds,
+    leakagePreviewCoverage,
+    leakagePreviewSamples,
+    scene,
+  ])
+
+  // The explicit demo requests one overview; later user camera changes are free.
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime || !leakagePreviewActive || !leakageInitialView ||
+      runtime.leakageRoot.children.length === 0 ||
+      appliedInitialViewIdRef.current === leakageInitialView.id) return
+    fitCamera(runtime, leakageInitialView.preset)
+    const scale = Math.max(1, Math.min(6, leakageInitialView.distanceScale))
+    runtime.camera.position.sub(runtime.controls.target).multiplyScalar(scale).add(runtime.controls.target)
+    runtime.camera.far = Math.max(runtime.camera.far, runtime.camera.position.distanceTo(runtime.controls.target) * 20)
+    runtime.camera.updateProjectionMatrix()
+    runtime.controls.update()
+    appliedInitialViewIdRef.current = leakageInitialView.id
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+  }, [leakageInitialView, leakagePreviewActive, leakageSurfacePreview, scene])
+
+  // Apply the captured comparison pose after the new Case's normal fit and
+  // leakage-focus effects, including zero-light cases with no sample bounds.
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime || !leakagePreviewActive || !leakageCameraRestore ||
+      appliedCameraRestoreIdRef.current === leakageCameraRestore.id) return
+    const snapshot = leakageCameraRestore.snapshot
+    runtime.camera.position.fromArray(snapshot.position)
+    runtime.camera.up.fromArray(snapshot.up)
+    runtime.camera.fov = snapshot.fov
+    runtime.camera.near = snapshot.near
+    runtime.camera.far = snapshot.far
+    runtime.controls.target.fromArray(snapshot.target)
+    runtime.camera.lookAt(runtime.controls.target)
+    runtime.camera.updateProjectionMatrix()
+    runtime.controls.update()
+    appliedCameraRestoreIdRef.current = leakageCameraRestore.id
+    onCameraSnapshotChangeRef.current?.(viewerCameraSnapshot(runtime))
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+  }, [leakageCameraRestore, leakagePreviewActive, leakageSurfacePreview, scene])
+
   const showFullViewPip =
     !roiBoxSelectionArmed &&
     roiScopes.some((scope) => scope.active && scope.clipBox)
@@ -4917,7 +5391,7 @@ export function ThreeViewerCanvas({
           }}
         />
       ) : null}
-      {sectionView.enabled ? (
+      {sectionView.enabled && !leakagePreviewActive ? (
         <div
           data-testid="viewer-section-controls"
           className="absolute top-3 right-3 z-30 flex items-center gap-2 rounded-lg border border-orange-300/70 bg-background/90 px-2.5 py-2 text-xs shadow-lg backdrop-blur"
