@@ -16,6 +16,30 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('creates independent Cases when the same CAD path is imported again', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    const cad = { path: 'same-model.step', displayName: 'same-model.step' }
+
+    actions.addCadCase(cad)
+    const firstCaseId = store.getState().activeCadCaseId
+    actions.setHiddenComponentIds([3])
+    actions.addCadCase(cad)
+
+    const state = store.getState()
+    expect(state.cadCases).toHaveLength(2)
+    expect(state.cadCases.map((item) => item.cad.path)).toEqual([
+      cad.path,
+      cad.path,
+    ])
+    expect(state.activeCadCaseId).not.toBe(firstCaseId)
+    expect(state.cadCases.map((item) => item.visible)).toEqual([false, true])
+    expect(state.hiddenComponentIds).toEqual([])
+
+    actions.setActiveCadCase(firstCaseId!)
+    expect(store.getState().hiddenComponentIds).toEqual([3])
+  })
+
   it('normalizes CPU-only brute force to BVH whenever GPU is selected', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

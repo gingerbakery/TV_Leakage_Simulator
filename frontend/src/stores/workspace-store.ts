@@ -954,10 +954,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       addCadCase: (cad) => {
         set((state) => {
-          const existing = state.cadCases.find(
-            (item) => item.cad.path === cad.path,
-          )
-          const nextCase = existing ?? {
+          // The upload service intentionally reuses one content-addressed
+          // CAD path for identical files. Importing that path again must
+          // still create an independent analysis Case with its own setup and
+          // results instead of merely reactivating the first Case.
+          const nextCase = {
             caseId: `cad-case-${Date.now()}-${state.cadCases.length + 1}`,
             order: state.cadCases.length + 1,
             cad,
@@ -977,16 +978,10 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           return {
             activeCad: cad,
             activeCadCaseId: nextCase.caseId,
-            cadCases: existing
-              ? savedCases.map((item) =>
-                  item.caseId === existing.caseId
-                    ? { ...item, visible: true }
-                    : { ...item, visible: false },
-                )
-              : [
-                  ...savedCases.map((item) => ({ ...item, visible: false })),
-                  nextCase,
-                ],
+            cadCases: [
+              ...savedCases.map((item) => ({ ...item, visible: false })),
+              nextCase,
+            ],
             ...restoredSceneState(nextCase.workspaceState ?? blankProjectState()),
           }
         })

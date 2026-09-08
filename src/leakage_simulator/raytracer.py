@@ -128,6 +128,9 @@ from .wavefront_event_tape import (
 )
 
 
+RECEIVER_FLUX_CONTRACT = "geometric_incident_flux_v2"
+
+
 @dataclass
 class EngineInput:
     source_file: Optional[str]
@@ -3098,6 +3101,7 @@ def run_direct_ray_trace(
         "compute_backend": (
             "gpu_cuda" if gpu_compute_requested else "cpu"
         ),
+        "receiver_flux_contract": RECEIVER_FLUX_CONTRACT,
         "monte_carlo_contract": monte_carlo_contract,
         "acceleration_policy": (
             "gpu_cuda_auto_v1" if gpu_compute_requested else "cpu_compatible_v1"
@@ -4249,9 +4253,12 @@ def _find_first_receiver_hits_numeric(
         best_receiver[candidate_indices] = receiver_index
         best_row[candidate_indices] = rows
         best_column[candidate_indices] = columns
-        best_received_power[candidate_indices] = (
-            powers_lumen[candidate_indices] * acceptance_cosine
-        )
+        # A ray carries a luminous-flux packet. The projected-area cosine is
+        # already represented by which rays geometrically intersect this
+        # finite receiver plane, so applying it again here would bias
+        # off-axis incident flux low. Keep acceptance_cosine only as the
+        # configured angular gate above.
+        best_received_power[candidate_indices] = powers_lumen[candidate_indices]
         if include_points:
             best_points[candidate_indices, 0] = point_x
             best_points[candidate_indices, 1] = point_y
@@ -9312,7 +9319,9 @@ def _find_first_receiver_hit(
                 int((v + frame.half_height) * frame.inverse_height * frame.rows),
             ),
         )
-        received_power = power_lumen * cos_accept
+        # Geometric plane intersection already accounts for projected-area
+        # incidence. Acceptance cosine is a gate, not a second power weight.
+        received_power = power_lumen
         best_distance = t
         best_candidate = ReceiverHitCandidate(
             grid=grids[receiver.receiver_id],
