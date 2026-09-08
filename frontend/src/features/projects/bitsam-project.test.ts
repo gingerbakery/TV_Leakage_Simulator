@@ -11,6 +11,7 @@ import {
   compareBitsamProjectScene,
   createBitsamSettingsOnlyState,
   createBitsamProject,
+  createBitsamProjectFromLoadedProject,
   parseBitsamProject,
   serializeBitsamProject,
 } from './bitsam-project'
@@ -87,6 +88,43 @@ describe('BITSAM project format', () => {
     expect(restored.workspace.rayTraceConfig.compute_backend).toBe(
       'gpu_cuda',
     )
+  })
+
+  it('re-saves a loaded project with an edited Move rule without a live CAD scene', () => {
+    const { project } = createProjectFixture()
+    project.workspace.transformRules = [
+      {
+        ruleId: 'component:1',
+        componentId: 1,
+        targetType: 'component',
+        selectionMethod: 'click',
+        faceIds: [],
+        move: { x: 1, y: 2, z: 3 },
+        tilt: { x: 0, y: 0, z: 0 },
+        enabled: true,
+      },
+    ]
+    const loaded = parseBitsamProject(serializeBitsamProject(project))
+    const store = createWorkspaceStore()
+    store.getState().actions.restoreProjectState(loaded.workspace)
+    store.getState().actions.upsertTransformRule({
+      ...store.getState().transformRules[0],
+      move: { x: 11, y: -4.5, z: 8 },
+    })
+
+    const saved = createBitsamProjectFromLoadedProject(
+      loaded,
+      store.getState(),
+      new Date('2026-09-07T00:00:00.000Z'),
+    )
+    const restored = parseBitsamProject(serializeBitsamProject(saved))
+
+    expect(restored.cad).toEqual(loaded.cad)
+    expect(restored.workspace.transformRules[0].move).toEqual({
+      x: 11,
+      y: -4.5,
+      z: 8,
+    })
   })
 
   it('round-trips user-saved optical profiles', () => {

@@ -6,6 +6,7 @@ export {
   compareBitsamProjectScene,
   createBitsamSettingsOnlyState,
   createBitsamProject,
+  createBitsamProjectFromLoadedProject,
   downloadBitsamProject,
   saveBitsamProject,
   parseBitsamProject,

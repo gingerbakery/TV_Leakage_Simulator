@@ -609,6 +609,29 @@ export function createBitsamProject(
   }
 }
 
+/** Re-saves an already loaded project when its CAD scene is not currently
+ * available from the API cache. The original CAD fingerprint is retained,
+ * while editable settings come from the live workspace. */
+export function createBitsamProjectFromLoadedProject(
+  loadedProject: BitsamProject,
+  workspace: WorkspaceSnapshot,
+  savedAt = new Date(),
+  analysisResult?: RayTraceResult | null,
+): BitsamProject {
+  return {
+    format: bitsamFormat,
+    schema_version: bitsamSchemaVersion,
+    application_version: applicationVersion,
+    saved_at: savedAt.toISOString(),
+    project_name: loadedProject.project_name,
+    cad: structuredClone(loadedProject.cad),
+    workspace: createWorkspaceProjectState(workspace),
+    analysis_result: analysisResult
+      ? structuredClone(analysisResult)
+      : undefined,
+  }
+}
+
 export function serializeBitsamProject(
   project: BitsamProject,
 ): string {
@@ -774,8 +797,11 @@ export function bitsamDownloadFileName(project: BitsamProject): string {
   return `${baseName}${bitsamFileExtension}`
 }
 
-export function downloadBitsamProject(project: BitsamProject): void {
-  const blob = new Blob([serializeBitsamProject(project)], {
+export function downloadBitsamProject(
+  project: BitsamProject,
+  serialized = serializeBitsamProject(project),
+): void {
+  const blob = new Blob([serialized], {
     type: 'application/vnd.bitsam+json',
   })
   const objectUrl = URL.createObjectURL(blob)
@@ -816,9 +842,10 @@ type SaveFilePickerWindow = Window & {
 export async function saveBitsamProject(
   project: BitsamProject,
 ): Promise<BitsamSaveResult> {
+  const serialized = serializeBitsamProject(project)
   const picker = (window as SaveFilePickerWindow).showSaveFilePicker
   if (!picker) {
-    downloadBitsamProject(project)
+    downloadBitsamProject(project, serialized)
     return 'downloaded'
   }
 
@@ -829,14 +856,14 @@ export async function saveBitsamProject(
         {
           description: 'BITSAM simulation project',
           accept: {
-            'application/vnd.bitsam+json': [bitsamFileExtension],
+            'application/json': [bitsamFileExtension],
           },
         },
       ],
     })
     const writable = await handle.createWritable()
     await writable.write(
-      new Blob([serializeBitsamProject(project)], {
+      new Blob([serialized], {
         type: 'application/vnd.bitsam+json',
       }),
     )
@@ -846,7 +873,7 @@ export async function saveBitsamProject(
     if (error instanceof DOMException && error.name === 'AbortError') {
       return 'cancelled'
     }
-    downloadBitsamProject(project)
+    downloadBitsamProject(project, serialized)
     return 'fallback-downloaded'
   }
 }

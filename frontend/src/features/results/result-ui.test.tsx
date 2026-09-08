@@ -138,6 +138,90 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText(/run-second-case/)).not.toBeNull()
   })
 
+  it('selects the active Case and refreshes Receiver heatmap dimensions after retracing', async () => {
+    const first = createRayTraceResultFixture()
+    first.receivers[0].width_mm = 5
+    first.receivers[0].height_mm = 3
+    const second = structuredClone(first)
+    second.run_id = 'run-retraced-10x10'
+    second.receivers[0].width_mm = 10
+    second.receivers[0].height_mm = 10
+    second.receiver_grids[0].bin_area_mm2 =
+      100 /
+      (second.receiver_grids[0].resolution[0] *
+        second.receiver_grids[0].resolution[1])
+
+    const { rerender } = render(
+      <RayTraceResultWindow
+        open
+        result={first}
+        activeCaseId="case-1"
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: first },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: second },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    rerender(
+      <RayTraceResultWindow
+        open
+        result={second}
+        activeCaseId="case-2"
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: first },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: second },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('combobox', {
+          name: 'Report active case',
+        }) as HTMLSelectElement).value,
+      ).toBe('case-2')
+    })
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+    const frame = screen.getByTestId('receiver_001-heatmap-frame')
+    expect(frame.getAttribute('data-width-mm')).toBe('10')
+    expect(frame.getAttribute('data-height-mm')).toBe('10')
+    expect(frame.style.aspectRatio).toBe('10 / 10')
+  })
+
+  it('does not retain an invalidated active Case heatmap', () => {
+    const result = createRayTraceResultFixture()
+    const { rerender } = render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        activeCaseId="case-1"
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    rerender(
+      <RayTraceResultWindow
+        open
+        result={null}
+        activeCaseId="case-1"
+        reportCases={[]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.queryByRole('dialog', {
+        name: 'Ray Tracing Analysis Result',
+      }),
+    ).toBeNull()
+  })
+
   it('lets the user choose the comparison baseline case', () => {
     const first = createRayTraceResultFixture()
     const second = {

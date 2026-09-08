@@ -75,6 +75,7 @@ type ResultTab =
 interface RayTraceResultWindowProps {
   open: boolean
   result: RayTraceResult | null
+  activeCaseId?: string | null
   scene?: ScenePayload
   componentNameOverrides?: Record<number, string>
   roiFaceIds?: number[]
@@ -1724,6 +1725,7 @@ function Stat({
 export function RayTraceResultWindow({
   open,
   result: liveResult,
+  activeCaseId = null,
   scene,
   componentNameOverrides = {},
   roiFaceIds,
@@ -1775,6 +1777,16 @@ export function RayTraceResultWindow({
     })
     setReportCaseId((current) => current ?? reportCases[0]?.caseId ?? null)
   }, [reportCases])
+
+  useEffect(() => {
+    if (!open || !liveResult || !activeCaseId) return
+    const activeReport = reportCases.find(
+      (item) =>
+        item.caseId === activeCaseId &&
+        item.result.run_id === liveResult.run_id,
+    )
+    if (activeReport) setReportCaseId(activeReport.caseId)
+  }, [activeCaseId, liveResult?.run_id, open, reportCases])
 
   useEffect(() => {
     setBaselineCaseId((current) => {
@@ -1856,9 +1868,17 @@ export function RayTraceResultWindow({
     }
   }, [open])
 
+  const selectedAnalysisResult = analysisCases.find(
+    (item) => item.case_id === reportCaseId,
+  )?.result
+  const activeCaseHasCurrentReport = Boolean(
+    activeCaseId &&
+      reportCases.some((item) => item.caseId === activeCaseId),
+  )
   const result =
-    analysisCases.find((item) => item.case_id === reportCaseId)?.result ??
-    liveResult
+    reportCaseId === activeCaseId && !activeCaseHasCurrentReport
+      ? liveResult
+      : selectedAnalysisResult ?? liveResult
   useEffect(() => {
     if (result?.config.convergence_target_percent) {
       setErrorTargetPercent(result.config.convergence_target_percent)

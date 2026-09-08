@@ -128,6 +128,9 @@ export function ViewerWorkspace({
   const [surfaceTransparencyPercent, setSurfaceTransparencyPercent] =
     useState(0)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
+  const activeCadCaseId = useWorkspaceStore(
+    workspaceSelectors.activeCadCaseId,
+  )
   const reportCases = useMemo(
     () =>
       cadCases.flatMap((item) =>
@@ -728,6 +731,7 @@ export function ViewerWorkspace({
           <RayTraceResultWindow
             open={rayTraceResultOpen}
             result={rayTraceResult ?? null}
+            activeCaseId={activeCadCaseId}
             scene={scene}
             componentNameOverrides={componentNameOverrides}
             roiFaceIds={activeRoiFaceIds}

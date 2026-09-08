@@ -41,6 +41,7 @@ import {
   compareBitsamProjectScene,
   createBitsamSettingsOnlyState,
   createBitsamProject,
+  createBitsamProjectFromLoadedProject,
   saveBitsamProject,
   readBitsamProjectFile,
   type BitsamProject,
@@ -145,6 +146,8 @@ export function SimulatorShell() {
   const [copySetupProgress, setCopySetupProgress] = useState('')
   const [pendingProject, setPendingProject] =
     useState<BitsamProject | null>(null)
+  const [loadedProjectSource, setLoadedProjectSource] =
+    useState<BitsamProject | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
   const projectFileInputRef = useRef<HTMLInputElement>(null)
@@ -219,6 +222,11 @@ export function SimulatorShell() {
   }, [rawRayTraceResult, receivers, savedActiveCaseResult])
   const scene = sceneQuery.data
   const sceneErrorMessage = sceneQuery.error?.message
+  const canReuseLoadedProjectReference =
+    loadedProjectSource !== null &&
+    (!activeCad ||
+      activeCad.displayName.toLocaleLowerCase() ===
+        loadedProjectSource.cad.display_name.toLocaleLowerCase())
 
   useEffect(() => {
     if (!scene || !activeCadCaseId) return
@@ -381,6 +389,7 @@ export function SimulatorShell() {
           ? pendingProject.analysis_result
           : null
       actions.setRestoredRayTraceResult(restoredArchivedResult)
+      setLoadedProjectSource(pendingProject)
       setPendingProject(null)
       openFeatureNotice(
         restoredLegacyCpu
@@ -410,6 +419,7 @@ export function SimulatorShell() {
     actions.setRestoredRayTraceResult(
       pendingProject.analysis_result ?? null,
     )
+    setLoadedProjectSource(pendingProject)
     setPendingProject(null)
     projectLoadAttemptRef.current = ''
     openFeatureNotice(
@@ -429,7 +439,7 @@ export function SimulatorShell() {
   }, [actions, activeCad, pendingProject, scene])
 
   const handleSaveProject = async () => {
-    if (!activeCad || !scene) {
+    if ((!activeCad || !scene) && !canReuseLoadedProjectReference) {
       openFeatureNotice(
         '저장할 CAD가 없습니다',
         'CAD 모델을 불러온 뒤 BITSAM 프로젝트를 저장해 주세요.',
@@ -438,12 +448,19 @@ export function SimulatorShell() {
     }
 
     try {
-      const project = createBitsamProject(
-        scene,
-        workspaceStore.getState(),
-        new Date(),
-        displayedRayTraceResult,
-      )
+      const project = activeCad && scene
+        ? createBitsamProject(
+            scene,
+            workspaceStore.getState(),
+            new Date(),
+            displayedRayTraceResult,
+          )
+        : createBitsamProjectFromLoadedProject(
+            loadedProjectSource!,
+            workspaceStore.getState(),
+            new Date(),
+            displayedRayTraceResult,
+          )
       const saveResult = await saveBitsamProject(project)
       if (saveResult === 'cancelled') return
       openFeatureNotice(
@@ -747,9 +764,11 @@ export function SimulatorShell() {
             variant="outline"
             size="sm"
             aria-label="Save BITSAM project"
-            disabled={!activeCad || !scene}
+            disabled={
+              (!activeCad || !scene) && !canReuseLoadedProjectReference
+            }
             title={
-              activeCad && scene
+              (activeCad && scene) || canReuseLoadedProjectReference
                 ? '현재 시뮬레이션을 .bitsam 파일로 저장'
                 : 'CAD를 먼저 불러와 주세요'
             }
