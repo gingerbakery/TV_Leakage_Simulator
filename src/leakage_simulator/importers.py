@@ -414,6 +414,30 @@ def _subdivide_step_mesh(mesh: TriangleMesh) -> Tuple[TriangleMesh, float]:
     )
 
 
+def _selectable_step_components(
+    products: Optional[List[Tuple[object, str, Optional[str]]]],
+    leaf_shape_resolver: Callable[[object], List[object]],
+) -> List[Tuple[object, str, Optional[str]]]:
+    """Preserve authored products, with a body fallback for flat STEP files."""
+    if not products:
+        return []
+    if len(products) > 1:
+        return list(products)
+
+    component_shape, component_name, component_color = products[0]
+    leaf_shapes = leaf_shape_resolver(component_shape)
+    return [
+        (
+            leaf_shape,
+            component_name
+            if len(leaf_shapes) == 1
+            else "{} · Body {}".format(component_name, leaf_index),
+            component_color,
+        )
+        for leaf_index, leaf_shape in enumerate(leaf_shapes, start=1)
+    ]
+
+
 def _extract_brep_edge_segments(
     shape,
     component_index: int,
@@ -844,25 +868,20 @@ def _import_step_ocp(
             solid_explorer.Next()
         return solids or [component_shape]
 
-    # A STEP product occurrence can legally contain several independent
-    # solids. They must remain separate selectable simulator components so
-    # Material, Move, Hide and Traceability can be assigned body by body.
-    # Product occurrences that contain one solid keep their authored name;
-    # multi-solid occurrences receive a stable Body suffix.
-    component_parts: List[Tuple[object, str, Optional[str]]] = []
-    for component_shape, component_name, component_color in (
-        named_colored_solids or []
-    ):
-        leaf_shapes = component_leaf_shapes(component_shape)
-        for leaf_index, leaf_shape in enumerate(leaf_shapes, start=1):
-            selectable_name = (
-                component_name
-                if len(leaf_shapes) == 1
-                else "{} · Body {}".format(component_name, leaf_index)
-            )
-            component_parts.append(
-                (leaf_shape, selectable_name, component_color)
-            )
+    # Preserve authored product occurrences whenever XCAF recovered an actual
+    # multi-component product structure. Exploding every occurrence into its
+    # solids changes (for example) 10 NX components into 12 simulator
+    # components, discards the authored component identity, and can omit
+    # shell/surface geometry when an occurrence contains both solids and
+    # non-solid bodies.
+    #
+    # Some STEP exports flatten the whole model into one product item. Keep
+    # the existing body-level fallback for that specific case so a single
+    # compound containing several independent solids remains editable.
+    component_parts = _selectable_step_components(
+        named_colored_solids,
+        component_leaf_shapes,
+    )
 
     if (
         named_colored_solids
