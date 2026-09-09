@@ -176,6 +176,7 @@ export interface WorkspaceSnapshot {
   activeCadCaseId: string | null
   selectedFaceIds: number[]
   selectedComponentIds: number[]
+  selectionKind: 'component' | 'faces' | 'roi_cap' | null
   hiddenComponentIds: number[]
   excludedComponentIds: number[]
   deletedComponentIds: number[]
@@ -250,6 +251,11 @@ export interface WorkspaceActions {
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
   copyActiveSetupToCases(targets: Iterable<CopySetupTarget>): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
+  setFaceSelection(
+    faceIds: Iterable<number>,
+    componentIds: Iterable<number>,
+  ): void
+  setRoiCapSelection(): void
   toggleSelectedFaceId(faceId: number): void
   setSelectedComponentIds(componentIds: Iterable<number>): void
   toggleSelectedComponentId(componentId: number): void
@@ -447,7 +453,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   bounce_receiver_importance_fraction: 0.5,
 }
 
-export const maxReflectionDepth = 20
+export const maxReflectionDepth = 1000
 
 function normalizeRayTraceConfig(
   config: RayTraceConfigRequest,
@@ -687,6 +693,7 @@ function restoredSceneState(projectState: WorkspaceProjectState) {
     ...normalizeProjectState(projectState),
     selectedFaceIds: [],
     selectedComponentIds: [],
+    selectionKind: null,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
     materialFacePickArmed: false,
@@ -902,6 +909,7 @@ function createSceneSnapshot(): Omit<
   return {
     selectedFaceIds: [],
     selectedComponentIds: [],
+    selectionKind: null,
     hiddenComponentIds: [],
     excludedComponentIds: [],
     deletedComponentIds: [],
@@ -1142,23 +1150,62 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         }))
       },
       setSelectedFaceIds: (faceIds) => {
-        set({ selectedFaceIds: normalizeIds(faceIds) })
+        const selectedFaceIds = normalizeIds(faceIds)
+        set((state) => ({
+          selectedFaceIds,
+          selectionKind: selectedFaceIds.length > 0
+            ? 'faces'
+            : state.selectionKind === 'component'
+              ? 'component'
+              : null,
+        }))
+      },
+      setFaceSelection: (faceIds, componentIds) => {
+        const selectedFaceIds = normalizeIds(faceIds)
+        set({
+          selectedFaceIds,
+          selectedComponentIds: selectedFaceIds.length > 0
+            ? normalizeIds(componentIds)
+            : [],
+          selectionKind: selectedFaceIds.length > 0 ? 'faces' : null,
+        })
+      },
+      setRoiCapSelection: () => {
+        set({
+          selectedFaceIds: [],
+          selectedComponentIds: [],
+          selectionKind: 'roi_cap',
+        })
       },
       toggleSelectedFaceId: (faceId) => {
-        set((state) => ({
-          selectedFaceIds: toggleId(state.selectedFaceIds, faceId),
-        }))
+        set((state) => {
+          const selectedFaceIds = toggleId(state.selectedFaceIds, faceId)
+          return {
+            selectedFaceIds,
+            selectionKind: selectedFaceIds.length > 0 ? 'faces' : null,
+          }
+        })
       },
       setSelectedComponentIds: (componentIds) => {
-        set({ selectedComponentIds: normalizeIds(componentIds) })
+        const selectedComponentIds = normalizeIds(componentIds)
+        set({
+          selectedComponentIds,
+          selectedFaceIds: [],
+          selectionKind: selectedComponentIds.length > 0 ? 'component' : null,
+        })
       },
       toggleSelectedComponentId: (componentId) => {
-        set((state) => ({
-          selectedComponentIds: toggleId(
-            state.selectedComponentIds,
+        set((state) => {
+          const selectedComponentIds = toggleId(
+            state.selectionKind === 'component' ? state.selectedComponentIds : [],
             componentId,
-          ),
-        }))
+          )
+          return {
+            selectedComponentIds,
+            selectedFaceIds: [],
+            selectionKind: selectedComponentIds.length > 0 ? 'component' : null,
+          }
+        })
       },
       setHiddenComponentIds: (componentIds) => {
         set({ hiddenComponentIds: normalizeIds(componentIds) })
@@ -1681,6 +1728,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...normalized,
           selectedFaceIds: [],
           selectedComponentIds: [],
+          selectionKind: null,
           roiBoxSelectionArmed: false,
           emitterFaceSelectionArmed: false,
           materialFacePickArmed: false,
@@ -1725,6 +1773,7 @@ export const workspaceSelectors = {
   cadCases: (state: WorkspaceStore) => state.cadCases,
   activeCadCaseId: (state: WorkspaceStore) => state.activeCadCaseId,
   selectedFaceIds: (state: WorkspaceStore) => state.selectedFaceIds,
+  selectionKind: (state: WorkspaceStore) => state.selectionKind,
   selectedComponentIds: (state: WorkspaceStore) =>
     state.selectedComponentIds,
   hiddenComponentIds: (state: WorkspaceStore) => state.hiddenComponentIds,

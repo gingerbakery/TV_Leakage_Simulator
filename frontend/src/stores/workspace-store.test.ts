@@ -435,6 +435,23 @@ describe('workspace store', () => {
     })
   })
 
+  it('clears transient face selection intent on scene reset and CAD case changes', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'one.step', displayName: 'one.step' })
+    const firstCaseId = store.getState().activeCadCaseId!
+    actions.setFaceSelection([1, 2], [3])
+    expect(store.getState().selectionKind).toBe('faces')
+    actions.addCadCase({ path: 'two.step', displayName: 'two.step' })
+    expect(store.getState().selectionKind).toBeNull()
+    actions.setFaceSelection([4], [5])
+    actions.setActiveCadCase(firstCaseId)
+    expect(store.getState().selectionKind).toBeNull()
+    actions.setFaceSelection([1], [3])
+    actions.clearSceneState()
+    expect(store.getState().selectionKind).toBeNull()
+  })
+
   it('can clear scene state without forgetting the active CAD', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()
@@ -463,15 +480,18 @@ describe('workspace store', () => {
     expect(second.getState().selectedComponentIds).toEqual([])
   })
 
-  it('accepts deep-cavity reflection settings and clamps the V1 limit', () => {
+  it('accepts up to 1000 reflections and clamps values outside the limit', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()
 
-    actions.setRayTraceConfig({
-      ...store.getState().rayTraceConfig,
-      max_depth: 10,
-    })
-    expect(store.getState().rayTraceConfig.max_depth).toBe(10)
+    expect(maxReflectionDepth).toBe(1000)
+    for (const depth of [0, 10, 20, 50, 100, 300, 1000]) {
+      actions.setRayTraceConfig({
+        ...store.getState().rayTraceConfig,
+        max_depth: depth,
+      })
+      expect(store.getState().rayTraceConfig.max_depth).toBe(depth)
+    }
 
     actions.setRayTraceConfig({
       ...store.getState().rayTraceConfig,

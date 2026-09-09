@@ -13,6 +13,8 @@ import {
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import { RayTracingPanel } from './ray-tracing-panel'
+import { createDatumEmitter } from './ray-tracing-model'
+import { createEmitterAim } from './emitter-aim'
 
 const apiHookState = vi.hoisted(() => ({
   job: undefined as RayTraceJob | undefined,
@@ -46,6 +48,69 @@ afterEach(() => {
   apiHookState.start.mockReset()
   apiHookState.stop.mockReset()
   workspaceStore.getState().actions.resetWorkspace()
+})
+
+describe('RayTracingPanel Aim editing', () => {
+  it('previews Aim, applies it, and restores the original distribution when switched off', async () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    emitter.direction_distribution = 'gaussian'
+    const actions = workspaceStore.getState().actions
+    act(() => {
+      actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      actions.upsertEmitter(emitter)
+    })
+    const scene = createSceneFixture()
+    render(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    const summary = screen.getByText('Aim / Target')
+    expect(summary.closest('details')?.open).toBe(false)
+    fireEvent.click(summary)
+    fireEvent.click(screen.getByLabelText('Enable Aim Area'))
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Aim shape'), { target: { value: 'circle' } })
+    fireEvent.change(screen.getByLabelText('Aim diameter (mm)'), { target: { value: '6' } })
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter?.aim).toMatchObject({ enabled: true, shape: 'circle', radius_mm: 3 }))
+    expect(workspaceStore.getState().emitters[0].aim).toBeUndefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    await waitFor(() => expect(workspaceStore.getState().emitters[0].aim?.radius_mm).toBe(3))
+    expect(workspaceStore.getState().emitters[0].luminance_nit).toBe(500)
+    expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.click(screen.getByLabelText('Enable Aim Area'))
+    const distribution = screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement
+    expect(distribution.disabled).toBe(false)
+    expect(distribution.value).toBe('gaussian')
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    expect(workspaceStore.getState().emitters[0].aim?.enabled).toBe(false)
+  })
+
+  it('discards edited Target coordinates on Cancel and refuses a zero-size Target', async () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    emitter.aim = { ...createEmitterAim([0, 0, 30]), enabled: true }
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.keyDown(screen.getByText('Aim / Target'), { key: 'Enter' })
+    expect(screen.getByRole('button', { name: 'Save Emitter' })).not.toBeNull()
+    fireEvent.change(screen.getByLabelText('Aim position X'), { target: { value: '-1.25' } })
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter?.aim?.center[0]).toBe(-1.25))
+    fireEvent.change(screen.getByLabelText('Aim tilt Y'), { target: { value: '30' } })
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter?.aim?.u_axis[2]).toBeCloseTo(-0.5))
+    fireEvent.click(screen.getByLabelText('Show Aim Target'))
+    expect(workspaceStore.getState().placementPreviewEmitter?.aim?.show_in_viewer).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Target' }))
+    expect(workspaceStore.getState().placementPreviewEmitter?.aim).toMatchObject({ enabled: true, u_axis: [1, 0, 0], show_in_viewer: true })
+    fireEvent.change(screen.getByLabelText('Aim width (mm)'), { target: { value: '0' } })
+    expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(workspaceStore.getState().emitters[0].aim).toEqual(emitter.aim)
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter).toBeNull())
+  })
 })
 
 describe('RayTracingPanel Auto convergence', () => {

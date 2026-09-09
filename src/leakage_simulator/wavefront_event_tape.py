@@ -13,6 +13,14 @@ VALIDATION_STRICT = "strict_v1"
 VALIDATION_TRUSTED = "trusted_structural_v1"
 PATH_PAYLOAD_FULL = "full_path_v1"
 PATH_PAYLOAD_OMITTED = "omitted_v1"
+MAX_BATCH_EVENT_SLOTS = 2_097_152
+
+
+def bounded_wavefront_batch_size(requested_size: int, max_depth: int) -> int:
+    depth_count = max_depth + 1
+    available_rays = MAX_BATCH_EVENT_SLOTS // depth_count
+    capacity_limit = 1 << (available_rays.bit_length() - 1)
+    return min(requested_size, capacity_limit)
 
 LOBE_NONE = -1
 LOBE_SPECULAR = 0

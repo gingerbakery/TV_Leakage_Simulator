@@ -371,6 +371,16 @@ function comparisonConditionMismatches(
   for (let index = 0; index < Math.min(emitters.length, baselineEmitters.length); index += 1) {
     const emitter = emitters[index]
     const baseEmitter = baselineEmitters[index]
+    if (Boolean(emitter.aim?.enabled) !== Boolean(baseEmitter.aim?.enabled)) {
+      mismatches.push(`Emitter ${index + 1} · Aim On/Off`)
+    } else if (emitter.aim?.enabled && baseEmitter.aim?.enabled) {
+      const aimKeys = ['shape', 'center', 'u_axis', 'v_axis', 'distribution', 'power_reference'] as const
+      const geometryDiffers = aimKeys.some((key) => different(emitter.aim![key], baseEmitter.aim![key]))
+      const sizeDiffers = emitter.aim.shape === 'circle'
+        ? different(emitter.aim.radius_mm, baseEmitter.aim.radius_mm)
+        : different(emitter.aim.width_mm, baseEmitter.aim.width_mm) || different(emitter.aim.height_mm, baseEmitter.aim.height_mm)
+      if (geometryDiffers || sizeDiffers) mismatches.push(`Emitter ${index + 1} · Aim Target`)
+    }
     for (const [label, key] of commonEmitterFields) {
       if (different(emitter[key], baseEmitter[key])) {
         mismatches.push(`Emitter ${index + 1} · ${label}`)
@@ -2646,6 +2656,28 @@ export function RayTraceResultWindow({
 
           {tab === 'bounce' ? (
             <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Stat
+                  label="Reflection limit"
+                  value={result.config.max_depth.toLocaleString()}
+                  help="이번 해석에서 허용한 광선 1개당 최대 반사 횟수입니다."
+                />
+                <Stat
+                  label="Max observed depth"
+                  value={numeric(reflection.max_observed_depth).toLocaleString()}
+                  help="실제로 관측된 최대 반사 깊이입니다. 설정한 상한보다 작으면 그 전에 도달·탈출·에너지 조건으로 끝난 것입니다."
+                />
+                <Stat
+                  label="Depth-limit stops"
+                  value={numeric(reflection.depth_limit_count).toLocaleString()}
+                  help="반사 횟수 상한 때문에 더 추적하지 못한 경로 수입니다. 이 값이 있다고 광량 오차가 크다는 뜻은 아닙니다. 상한을 늘린 결과와 비교하세요."
+                />
+                <Stat
+                  label="Below-energy events"
+                  value={numeric(reflection.reflection_below_energy_count).toLocaleString()}
+                  help="반사 후 에너지가 Minimum energy보다 낮아진 횟수입니다. Threshold 모드에서는 종료하며 Russian roulette에서는 일부 경로가 가중치를 조정해 계속됩니다."
+                />
+              </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Stat
                   label="Direct hits"

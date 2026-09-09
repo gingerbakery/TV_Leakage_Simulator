@@ -70,6 +70,7 @@ from .native_cpu_wavefront import (
     TERMINATION_THRESHOLD,
 )
 from .wavefront_event_tape import (
+    MAX_BATCH_EVENT_SLOTS,
     PrimaryMajorEventTape,
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT,
@@ -80,6 +81,7 @@ from .wavefront_event_tape import (
     TERMINAL_ESCAPED,
     TERMINAL_RECEIVER,
 )
+from .types import MAX_REFLECTION_DEPTH
 
 
 FloatArray = NDArray[np.float64]
@@ -93,7 +95,7 @@ STATE_LAYOUT = "primary_thread_resident_masked_v1"
 COMPACT_WORKSPACE_CONTRACT = "compact_summary_sparse_path_retrace_v1"
 FULL_WORKSPACE_CONTRACT = "full_event_geometry_workspace_v1"
 THREADS_PER_BLOCK = 128
-MAX_SUPPORTED_DEPTH = 32
+MAX_SUPPORTED_DEPTH = MAX_REFLECTION_DEPTH
 
 _MASK64 = (1 << 64) - 1
 _DEPTH_SALT = 0xD2B74407B1CE6E93
@@ -656,6 +658,10 @@ def _ensure_workspace(
     started = time.perf_counter()
     capacity = _workspace_capacity(ray_count)
     depth_capacity = max(1, depth_count)
+    if capacity * depth_capacity > MAX_BATCH_EVENT_SLOTS:
+        raise GpuResidentWavefrontProviderError(
+            "allocate", "gpu_resident_event_budget_exceeded"
+        )
     geometry_capacity = _workspace_capacity(max(1, geometry_count))
     geometry_capacity = min(capacity, geometry_capacity)
     event_shape = (capacity, depth_capacity)

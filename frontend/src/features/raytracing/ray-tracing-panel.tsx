@@ -61,6 +61,8 @@ import {
 } from './ray-tracing-model'
 import { ComputeDeviceSelector } from './compute-device-selector'
 import { isGpuCudaStatusReady } from './gpu-cuda-status'
+import { createEmitterAim, isEmitterAimValid } from './emitter-aim'
+import { EmitterAimEditor } from './emitter-aim-editor'
 
 export interface RayObjectEditRequest {
   id: string
@@ -240,6 +242,8 @@ function EmitterDialog({
     useState<EmitterDistribution>('lambertian')
   const [sigma, setSigma] = useState(12)
   const [normalFlip, setNormalFlip] = useState(false)
+  const defaultAimCenter = useMemo<Vec3>(() => [defaultCenter[0], defaultCenter[1], defaultCenter[2] + 30], [defaultCenter])
+  const [aim, setAim] = useState(() => createEmitterAim(defaultAimCenter))
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
   const [sourceFaceIds, setSourceFaceIds] = useState<number[]>([])
   const actions = useWorkspaceStore(workspaceSelectors.actions)
@@ -277,6 +281,7 @@ function EmitterDialog({
     )
     setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
     setNormalFlip(initialEmitter?.normal_flip ?? false)
+    setAim(initialEmitter?.aim ?? createEmitterAim(defaultAimCenter))
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialEmitter),
     )
@@ -290,7 +295,7 @@ function EmitterDialog({
     } else if (mode === 'datum_plane') {
       actions.setSelectedFaceIds(initialSourceFaceIds)
     }
-  }, [actions, defaultCenter, initialEmitter, mode, open])
+  }, [actions, defaultCenter, defaultAimCenter, initialEmitter, mode, open])
 
   // Same pick-a-face-in-the-viewer channel Receiver's Datum Plane uses -
   // reused as-is since both just want a starting center/rotation.
@@ -334,15 +339,13 @@ function EmitterDialog({
   const luminanceTotalFlux =
     luminancePowerDensity * emitterAreaMm2 * 1e-6
   const canApply =
-    mode === 'datum_plane' || emitterFaceIds.length > 0
+    (mode === 'datum_plane' || emitterFaceIds.length > 0)
+    && (!aim.enabled || isEmitterAimValid(aim))
   const previewEmitter = useMemo(() => {
-    if (!open || mode !== 'datum_plane') return null
-    const emitter = createDatumEmitter(
-      initialEmitter?.emitter_id ??
-        '__placement_preview_emitter__',
-      center,
-      rotation,
-    )
+    if (!open) return null
+    const previewId = initialEmitter?.emitter_id ?? '__placement_preview_emitter__'
+    if (mode === 'face') return { ...createFaceEmitter(previewId, emitterFaceIds), aim, normal_flip: normalFlip, enabled: initialEmitter?.enabled ?? true }
+    const emitter = createDatumEmitter(previewId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
     return {
       ...emitter,
@@ -353,9 +356,12 @@ function EmitterDialog({
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
+      aim,
       enabled: initialEmitter?.enabled ?? true,
     }
   }, [
+    aim,
+    emitterFaceIds,
     center,
     height,
     initialEmitter,
@@ -407,6 +413,7 @@ function EmitterDialog({
       direction_distribution: distribution,
       gaussian_sigma_deg: Math.max(0.1, sigma),
       normal_flip: normalFlip,
+      aim,
       enabled: initialEmitter?.enabled ?? true,
     })
     onOpenChange(false)
@@ -528,6 +535,7 @@ function EmitterDialog({
           </>
         )}
 
+        <EmitterAimEditor aim={aim} defaultCenter={defaultAimCenter} onChange={setAim} />
         <div className="grid gap-2 sm:grid-cols-2">
           <label className={fieldLabelClassName}>
             <span className="flex items-center gap-1.5">
@@ -612,6 +620,7 @@ function EmitterDialog({
             <select
               className={inputClassName}
               aria-label="Emitter direction distribution"
+              disabled={aim.enabled}
               value={distribution}
               onChange={(event) =>
                 setDistribution(
@@ -619,12 +628,13 @@ function EmitterDialog({
                 )
               }
             >
-              <option value="lambertian">Lambertian</option>
-              <option value="isotropic">Isotropic</option>
-              <option value="gaussian">Gaussian</option>
+              {aim.enabled ? <option value={distribution}>Aim · Target 면적 균일</option> : null}
+              {!aim.enabled ? <option value="lambertian">Lambertian</option> : null}
+              {!aim.enabled ? <option value="isotropic">Isotropic</option> : null}
+              {!aim.enabled ? <option value="gaussian">Gaussian</option> : null}
             </select>
           </label>
-          {distribution === 'gaussian' ? (
+          {!aim.enabled && distribution === 'gaussian' ? (
             <NumberField
               label="Gaussian sigma (deg)"
               value={sigma}
@@ -638,6 +648,7 @@ function EmitterDialog({
           <input
             type="checkbox"
             checked={normalFlip}
+            disabled={aim.enabled}
             onChange={(event) => setNormalFlip(event.currentTarget.checked)}
           />
           <span className="flex items-center gap-1.5">
@@ -1923,8 +1934,16 @@ export function RayTracingPanel({
             onChange={(value) =>
               updateConfig({ max_depth: Math.trunc(value) })
             }
-            description="반사를 최대 몇 번까지 추적할지 (0 = 직접광만, 반사 없음). 클수록 정확하지만 계산이 느려집니다 - quick 체크는 1, 일반 비교는 3, 밀폐된 고반사 경로는 10, 수렴성 확인 목적일 때만 20을 권장합니다."
+            description="광선 1개당 최대 반사 횟수입니다 (0 = 직접광만, 최대 1,000회). Receiver 도달·탈출·에너지 종료 조건을 만나면 그 전에 끝납니다. 20 → 50 → 100 → 300 → 1,000 순서로 광량 변화를 비교하세요. 상한을 높인다고 실측 정확도가 자동으로 보장되지는 않습니다."
           />
+          {config.max_depth > 100 ? (
+            <p role="status" className="rounded-lg border border-border bg-muted/30 p-2.5 text-xs text-muted-foreground">
+              고반사 경로 검증 설정입니다. 메모리 보호를 위해 Ray를 작은 배치로
+              나누어 처리하지만 실제 반사가 많으면 계산이 오래 걸릴 수 있습니다.
+              대량 해석에서는 저장할 Ray path 수를 줄이세요. 결과의 최대 관측
+              반사 횟수와 에너지·반사 한도 종료 건수도 함께 확인하세요.
+            </p>
+          ) : null}
           <label className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5 text-sm font-semibold">
             <input
               type="checkbox"

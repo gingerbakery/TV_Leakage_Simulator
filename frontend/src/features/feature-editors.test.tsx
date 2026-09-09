@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,6 +22,8 @@ import { TransformEditorDialog } from '@/features/transforms'
 import { ViewerWorkspace } from '@/components/layout/viewer-workspace'
 import { workspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
+import { resolveCadFacePick, updateCadFaceSelection } from '@/features/viewer/viewer-selection'
+import { buildRayTraceRequest } from '@/features/raytracing/ray-tracing-model'
 
 vi.mock('@/features/viewer', () => ({
   ThreeViewerCanvas: ({
@@ -112,13 +115,43 @@ describe('Step 07·08 feature editors', () => {
       workspaceStore.getState().actions.setSelectedFaceIds([0])
     })
 
-    expect(screen.getByText('Face selected')).not.toBeNull()
+    expect(screen.getByText('CAD Face · 1')).not.toBeNull()
     expect(
-      screen.getByText('Component · STEP Solid 1'),
+      screen.getByText('Part · STEP Solid 1'),
     ).not.toBeNull()
     expect(
       screen.getByText('2 visible · 1 component'),
     ).not.toBeNull()
+  })
+
+  it('labels hatched ROI sections and identifies a clicked cap without selecting a CAD face', () => {
+    render(<ViewerWorkspace scene={createSceneFixture()} />)
+    expect(screen.queryByText('빗금 · ROI 절단면')).toBeNull()
+    act(() => {
+      workspaceStore.getState().actions.addRoiScope({
+        label: 'section',
+        source: 'box',
+        view: 'front_xy',
+        clipBox: { xMin: 10, xMax: 40, yMin: 10, yMax: 40, zMin: -1, zMax: 1 },
+        components: [{
+          componentId: 1,
+          componentName: 'STEP Solid 1',
+          faceIds: [0, 1],
+          areaMm2: 10,
+          bboxMin: { x: 10, y: 10, z: -1 },
+          bboxMax: { x: 40, y: 40, z: 1 },
+        }],
+      })
+    })
+    expect(screen.getByText('빗금 · ROI 절단면')).not.toBeNull()
+    act(() => workspaceStore.getState().actions.setRoiCapSelection())
+    expect(screen.getByText('ROI 절단면 · 표시 전용')).not.toBeNull()
+    expect(screen.queryByText(/CAD Face ·/)).toBeNull()
+    act(() => workspaceStore.getState().actions.setFaceSelection([0, 1], [1]))
+    expect(screen.getByText('빗금 · ROI 절단면')).not.toBeNull()
+    act(() => workspaceStore.getState().actions.setRoiBoxSelectionArmed(true))
+    expect(screen.queryByText('빗금 · ROI 절단면')).toBeNull()
+    expect(screen.queryByText('ROI 절단면 · 표시 전용')).toBeNull()
   })
 
   it('shows the active component editor target in the Viewer', async () => {
@@ -1123,6 +1156,67 @@ describe('Step 07·08 feature editors', () => {
         face_indices: [2],
       }),
     ])
+  })
+
+  it('applies an ROI CAD face property only to the picked face IDs, not its parent part', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const actions = workspaceStore.getState().actions
+    actions.addRoiScope({
+      source: 'box',
+      view: 'front_xy',
+      clipBox: { xMin: 0, xMax: 40, yMin: 0, yMax: 40, zMin: 0, zMax: 20 },
+      components: [{
+        componentId: 1,
+        componentName: 'STEP Solid 1',
+        faceIds: [0, 2],
+        areaMm2: 100,
+        bboxMin: { x: 0, y: 0, z: 0 },
+        bboxMax: { x: 40, y: 40, z: 20 },
+      }],
+    })
+    render(
+      <AppProviders>
+        <MaterialEditorDialog
+          open onOpenChange={vi.fn()} scene={scene}
+          component={scene.components[0]} componentName="STEP Solid 1"
+        />
+      </AppProviders>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '뷰어에서 CAD Face 선택' }))
+    const faceEditor = screen.getByText('새 Surface Property').parentElement!.parentElement!
+    const apply = within(faceEditor).getByRole('button', { name: 'Apply' })
+    expect(apply).toHaveProperty('disabled', true)
+    act(() => {
+      const patch = resolveCadFacePick(scene, 1, 0, [0, 2])
+      const next = updateCadFaceSelection(scene, [], patch, true)
+      actions.setFaceSelection(next.faceIds, next.componentIds)
+    })
+    fireEvent.click(apply)
+    expect(workspaceStore.getState().materialAssignments).toEqual([
+      expect.objectContaining({ componentId: 1, targetType: 'faces', faceIds: [0] }),
+    ])
+    const state = workspaceStore.getState()
+    const request = buildRayTraceRequest({
+      scene,
+      projectName: 'ROI face property regression',
+      emitters: [],
+      receivers: [],
+      materialAssignments: state.materialAssignments,
+      transformRules: state.transformRules,
+      excludedComponentIds: [],
+      deletedComponentIds: [],
+      roiScopes: state.roiScopes,
+      config: state.rayTraceConfig,
+    })
+    expect(request.optical_assignments).toEqual([
+      expect.objectContaining({ component_id: 1, target_type: 'faces', face_indices: [0] }),
+    ])
+    expect(request.roi_faces).toEqual([0, 2])
+    expect(workspaceStore.getState().selectionKind).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit face group 1 surface property' }))
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0])
+    expect(workspaceStore.getState().selectionKind).toBe('faces')
   })
 
   it('applies and saves user-entered optical values', () => {

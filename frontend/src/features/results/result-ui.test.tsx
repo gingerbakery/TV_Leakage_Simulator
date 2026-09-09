@@ -16,6 +16,7 @@ import {
   createRayTraceResultFixture,
 } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
+import { createEmitterAim } from '@/features/raytracing/emitter-aim'
 
 import { ResultPanel } from './result-panel'
 import { RayTraceResultWindow } from './result-window'
@@ -27,6 +28,24 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('shows reflection truncation separately from energy termination', () => {
+    const result = createRayTraceResultFixture()
+    result.config.max_depth = 1000
+    result.metrics._reflection_summary = {
+      max_observed_depth: 300,
+      depth_limit_count: 17,
+      reflection_below_energy_count: 23,
+    }
+    render(
+      <RayTraceResultWindow open result={result} onOpenChange={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-bounce' }))
+    expect(screen.getByText('Reflection limit').parentElement?.textContent).toContain('1,000')
+    expect(screen.getByText('Max observed depth').parentElement?.textContent).toContain('300')
+    expect(screen.getByText('Depth-limit stops').parentElement?.textContent).toContain('17')
+    expect(screen.getByText('Below-energy events').parentElement?.textContent).toContain('23')
+  })
+
   it('separates the actual compute device from the acceleration structure', () => {
     const result = createRayTraceResultFixture()
     result.config.compute_backend = 'gpu_cuda'
@@ -356,6 +375,25 @@ describe('Step 11 result UI', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
       target: { value: 'name:front receiver' },
     })
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
+  it('does not score Aim-only and ordinary emission as the same optical conditions', () => {
+    const baseline = createRayTraceResultFixture()
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-aim-enabled'
+    comparison.emitters[0].aim = { ...createEmitterAim([0, 0, 30]), enabled: true }
+    render(
+      <RayTraceResultWindow
+        open result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })
 

@@ -100,6 +100,8 @@ from .fast_sampling import (
     supports_fast_virtual_plane_sampling,
 )
 from .wavefront_event_tape import (
+    MAX_BATCH_EVENT_SLOTS,
+    bounded_wavefront_batch_size,
     EVENT_TAPE_CONTRACT as WAVEFRONT_EVENT_TAPE_CONTRACT,
     LOBE_GAUSSIAN as TAPE_LOBE_GAUSSIAN,
     LOBE_LAMBERTIAN as TAPE_LOBE_LAMBERTIAN,
@@ -126,6 +128,7 @@ from .wavefront_event_tape import (
     TERMINAL_ESCAPED as TAPE_TERMINAL_ESCAPED,
     TERMINAL_RECEIVER as TAPE_TERMINAL_RECEIVER,
 )
+from .aim_sampling import AIM_SAMPLING_CONTRACT, sample_aim_ray, validate_emitter_aim
 
 
 RECEIVER_FLUX_CONTRACT = "geometric_incident_flux_v2"
@@ -2098,6 +2101,10 @@ def run_direct_ray_trace(
     ):
         raise ValueError("intersection_batch_size must be a positive integer")
     intersection_batch_size = int(intersection_batch_size)
+    requested_intersection_batch_size = intersection_batch_size
+    intersection_batch_size = bounded_wavefront_batch_size(
+        intersection_batch_size, trace_input.config.max_depth
+    )
 
     requested_intersection_dispatch = intersection_dispatch
     requested_intersection_provider = intersection_provider
@@ -2374,6 +2381,7 @@ def run_direct_ray_trace(
     for emitter in trace_input.emitters:
         if not emitter.enabled:
             continue
+        validate_emitter_aim(emitter, trace_input.mesh, trace_input.config.epsilon_mm)
         emitter_seed = (
             emitter.seed
             if emitter.seed is not None
@@ -2415,6 +2423,7 @@ def run_direct_ray_trace(
         )
         receiver_mis_enabled = bool(
             trace_input.config.primary_sampling_strategy == "receiver_mis"
+            and not (emitter.aim is not None and emitter.aim.enabled)
             and receiver_importance_geometry is not None
             and use_batch_dispatch
             and emitter.direction_distribution in {"lambertian", "isotropic"}
@@ -2422,6 +2431,8 @@ def run_direct_ray_trace(
         if trace_input.config.primary_sampling_strategy == "receiver_mis":
             if receiver_mis_enabled:
                 primary_sampling_stats.applied_emitter_count += 1
+            elif emitter.aim is not None and emitter.aim.enabled:
+                primary_sampling_stats.record_fallback("aim_area_overrides_receiver_mis")
             elif receiver_importance_geometry is None:
                 primary_sampling_stats.record_fallback("no_enabled_receivers")
             elif emitter.direction_distribution not in {"lambertian", "isotropic"}:
@@ -3093,6 +3104,11 @@ def run_direct_ray_trace(
         "fast_primary_ray_count": fast_primary_ray_count,
         "face_batch_primary_ray_count": face_batch_primary_ray_count,
         "scalar_primary_ray_count": scalar_primary_ray_count,
+        "aim_sampling_contract": AIM_SAMPLING_CONTRACT,
+        "aim_emitter_count": sum(
+            1 for emitter in trace_input.emitters
+            if emitter.enabled and emitter.aim is not None and emitter.aim.enabled
+        ),
         "resolved_optical_face_cache_count": len(resolved_optical_by_face),
         "stored_path_count": len(stored_paths),
         "stopped_early": stopped_early,
@@ -3109,6 +3125,11 @@ def run_direct_ray_trace(
         "requested_intersection_dispatch": requested_intersection_dispatch,
         "effective_intersection_dispatch_request": intersection_dispatch,
         "intersection_batch_size": intersection_batch_size,
+        "requested_intersection_batch_size": requested_intersection_batch_size,
+        "wavefront_batch_event_slot_limit": MAX_BATCH_EVENT_SLOTS,
+        "wavefront_batch_memory_limited": (
+            intersection_batch_size < requested_intersection_batch_size
+        ),
         "multi_bounce_wavefront_used": multi_bounce_wavefront_used,
         "requested_wavefront_pipeline": wavefront_summary[
             "requested_pipeline"
@@ -9100,6 +9121,9 @@ def _sample_face_emitter_ray(
         (1.0 - sqrt_r1) * a[1] + sqrt_r1 * (1.0 - r2) * b[1] + sqrt_r1 * r2 * c[1],
         (1.0 - sqrt_r1) * a[2] + sqrt_r1 * (1.0 - r2) * b[2] + sqrt_r1 * r2 * c[2],
     )
+    if emitter.aim is not None and emitter.aim.enabled:
+        origin, direction = sample_aim_ray(rng, point, emitter.aim, epsilon_mm)
+        return origin, direction, face_index
     normal = emitter.custom_normal if emitter.normal_mode == "custom" and emitter.custom_normal is not None else mesh.normal(face_index)
     normal = vec_norm(normal)
     if emitter.normal_flip:
@@ -9141,6 +9165,9 @@ def _sample_virtual_plane_emitter_ray(
             emitter.center,
             vec_add(vec_mul(u_axis, u_offset), vec_mul(v_axis, v_offset)),
         )
+    if emitter.aim is not None and emitter.aim.enabled:
+        origin, direction = sample_aim_ray(rng, point, emitter.aim, epsilon_mm)
+        return origin, direction, -1
     direction = _sample_emitter_direction(rng, emitter, normal)
     origin = vec_add(point, vec_mul(normal, epsilon_mm))
     return origin, direction, -1

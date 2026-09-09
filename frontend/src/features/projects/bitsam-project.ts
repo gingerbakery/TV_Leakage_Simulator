@@ -281,6 +281,19 @@ function isRoiScope(value: unknown): value is RoiScope {
   )
 }
 
+function isEmitterAim(value: unknown): boolean {
+  if (value === undefined || value === null) return true
+  if (!isRecord(value) || !isBoolean(value.enabled) || !isBoolean(value.show_in_viewer)
+    || !isOneOf(value.shape, ['rectangle', 'circle']) || !isVec3(value.center)
+    || !isVec3(value.u_axis) || !isVec3(value.v_axis)
+    || value.distribution !== 'uniform_target_area' || value.power_reference !== 'aim_region') return false
+  if (![value.width_mm, value.height_mm, value.radius_mm].every((size) => isFiniteNumber(size) && size > 0)) return false
+  const lengthU = Math.hypot(...value.u_axis)
+  const lengthV = Math.hypot(...value.v_axis)
+  const dot = value.u_axis.reduce((sum, entry, axis) => sum + entry * (value.v_axis as number[])[axis], 0)
+  return lengthU > 1e-12 && lengthV > 1e-12 && Math.abs(dot / (lengthU * lengthV)) <= 1e-6
+}
+
 function isEmitterSpec(value: unknown): value is EmitterSpec {
   return (
     isRecord(value) &&
@@ -295,6 +308,7 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&
     isBoolean(value.normal_flip) &&
+    isEmitterAim(value.aim) &&
     (value.custom_normal === null || isVec3(value.custom_normal)) &&
     isOneOf(value.direction_distribution, [
       'lambertian',

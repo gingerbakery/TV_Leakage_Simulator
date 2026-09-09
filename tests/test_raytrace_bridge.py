@@ -312,6 +312,23 @@ class RoiFilteringTests(unittest.TestCase):
         self.assertEqual(trace_input.receivers[0].receiver_id, "r1")
         self.assertEqual(trace_input.optical_assignments[0].component_id, 7)
 
+    def test_roi_remap_and_transform_keep_aim_in_world_coordinates(self) -> None:
+        payload = self._payload(roi_faces=[1])
+        payload["emitters"][0]["face_indices"] = [1]
+        payload["emitters"][0]["aim"] = {
+            "enabled": True, "shape": "circle", "center": [12, 1, 15], "radius_mm": 2,
+        }
+        payload["transform_rules"] = [{
+            "rule_id": "move_8", "target_type": "component", "object_id": 8,
+            "enabled": True, "move": {"x": 2, "y": 0, "z": 1},
+            "tilt": {"x": 0, "y": 0, "z": 0},
+        }]
+        trace_input = build_direct_trace_input(self.scene_mesh, payload)
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+        self.assertEqual(trace_input.mesh.face_vertices(0)[0], (12.0, 0.0, 1.0))
+        self.assertEqual(trace_input.emitters[0].aim.center, (12.0, 1.0, 15.0))
+        self.assertEqual(trace_input.emitters[0].aim.radius_mm, 2.0)
+
     def test_roi_faces_excluding_all_emitter_faces_raises(self) -> None:
         with self.assertRaisesRegex(ValueError, "no faces left inside the selected ROI"):
             build_direct_trace_input(self.scene_mesh, self._payload(roi_faces=[1]))

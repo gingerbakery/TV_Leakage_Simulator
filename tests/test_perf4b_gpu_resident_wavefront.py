@@ -20,6 +20,7 @@ from leakage_simulator import gpu_cuda_intersection as gpu_cuda
 from leakage_simulator.gpu_cuda_resident_wavefront import (
     GpuResidentWavefrontBatch,
     GpuResidentWavefrontProviderError,
+    MAX_SUPPORTED_DEPTH,
     PROVIDER_CONTRACT,
 )
 from leakage_simulator.raytracer import run_direct_ray_trace
@@ -95,7 +96,7 @@ class Perf4AccuracyContractTests(unittest.TestCase):
             GpuResidentWavefrontBatch(
                 **common,
                 directions=[(0.0, 0.0, 1.0)],
-                max_depth=33,
+                max_depth=MAX_SUPPORTED_DEPTH + 1,
             )
 
 

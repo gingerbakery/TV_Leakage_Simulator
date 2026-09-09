@@ -72,11 +72,6 @@ function NumberInput({
 
   const handleFocus = (event: FocusEvent<HTMLInputElement>) => {
     focusedRef.current = true
-    if (value === 0) {
-      setDraft('')
-    } else {
-      event.currentTarget.select()
-    }
     onFocus?.(event)
   }
 

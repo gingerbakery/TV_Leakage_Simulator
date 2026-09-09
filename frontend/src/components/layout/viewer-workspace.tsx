@@ -36,6 +36,7 @@ import type {
   ViewerRenderMode,
 } from '@/features/viewer'
 import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
+import { countSelectedCadFaces } from '@/features/viewer/viewer-selection'
 import type {
   RayObjectEditRequest,
   ViewerCameraFrame,
@@ -164,6 +165,7 @@ export function ViewerWorkspace({
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
+  const selectionKind = useWorkspaceStore(workspaceSelectors.selectionKind)
   const hiddenComponentIds = useWorkspaceStore(
     workspaceSelectors.hiddenComponentIds,
   )
@@ -490,7 +492,7 @@ export function ViewerWorkspace({
 
       <div className="relative flex min-h-0 flex-1 p-3">
         <div className="relative flex min-h-[30rem] w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-[radial-gradient(circle_at_center,var(--sim-panel-raised)_0,transparent_58%)] lg:min-h-0">
-          <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2">
+          <div className="pointer-events-none absolute top-3 right-3 left-3 z-10 flex flex-wrap items-center gap-2">
             <Badge
               variant="outline"
               className="border-border bg-background/70 text-muted-foreground backdrop-blur"
@@ -508,7 +510,7 @@ export function ViewerWorkspace({
             !editingComponent &&
             selectedComponentIds.length > 0 ? (
               <Badge className="border border-amber-400/60 bg-amber-400/20 text-amber-200">
-                Component ·{' '}
+                {selectionKind === 'faces' ? 'Part' : 'Component'} ·{' '}
                 {selectedComponentIds
                   .map((componentId) => {
                     const component = components.find(
@@ -533,7 +535,7 @@ export function ViewerWorkspace({
               </Badge>
             ) : selectedFaceIds.length > 0 ? (
               <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
-                Face selected
+                CAD Face · {scene ? countSelectedCadFaces(scene, selectedFaceIds) : 0}
               </Badge>
             ) : editingComponent && editingComponentMode ? (
               <Badge className="border border-amber-400/60 bg-amber-400/20 text-amber-200">
@@ -545,6 +547,26 @@ export function ViewerWorkspace({
             ) : null}
             {activeRoiFaceIds.length > 0 ? (
               <Badge className="bg-warning/15 text-warning">ROI</Badge>
+            ) : null}
+            {cadModelVisible && activeRoiFaceIds.length > 0 &&
+            !roiBoxSelectionArmed &&
+            roiScopes.some((scope) => scope.active && scope.clipBox) ? (
+              <Badge
+                variant="outline"
+                className="border-border bg-background/90 text-foreground backdrop-blur"
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-3 rounded-sm border border-current"
+                  style={{
+                    backgroundImage:
+                      'repeating-linear-gradient(135deg, transparent 0 3px, currentColor 3px 4px, transparent 4px 7px)',
+                  }}
+                />
+                {selectionKind === 'roi_cap'
+                  ? 'ROI 절단면 · 표시 전용'
+                  : '빗금 · ROI 절단면'}
+              </Badge>
             ) : null}
           </div>
 

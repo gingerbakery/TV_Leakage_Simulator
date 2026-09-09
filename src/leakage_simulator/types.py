@@ -95,7 +95,7 @@ INTERSECTION_BACKENDS = ("auto", "brute_force", "bvh")
 COMPUTE_BACKENDS = ("cpu", "gpu_cuda")
 PRIMARY_SAMPLING_STRATEGIES = ("source", "receiver_mis")
 BOUNCE_SAMPLING_STRATEGIES = ("source", "receiver_mis")
-MAX_REFLECTION_DEPTH = 20
+MAX_REFLECTION_DEPTH = 1000
 
 
 @dataclass
@@ -158,6 +158,42 @@ class ReceiverPatchConfig:
 
 
 @dataclass
+class EmitterAimSpec:
+    enabled: bool = False
+    shape: str = "rectangle"
+    center: Vec3 = (0.0, 0.0, 30.0)
+    u_axis: Vec3 = (1.0, 0.0, 0.0)
+    v_axis: Vec3 = (0.0, 1.0, 0.0)
+    width_mm: float = 20.0
+    height_mm: float = 20.0
+    radius_mm: float = 10.0
+    show_in_viewer: bool = True
+    distribution: str = "uniform_target_area"
+    power_reference: str = "aim_region"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool) or not isinstance(self.show_in_viewer, bool):
+            raise ValueError("Aim enabled/show_in_viewer must be boolean")
+        self.shape = require_choice(self.shape, "aim.shape", ("rectangle", "circle"))
+        require_choice(self.distribution, "aim.distribution", ("uniform_target_area",))
+        require_choice(self.power_reference, "aim.power_reference", ("aim_region",))
+        for name in ("center", "u_axis", "v_axis"):
+            values = vec3_from(getattr(self, name), f"aim.{name}")
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(f"aim.{name} must be finite")
+            setattr(self, name, values)
+        self.u_axis = normalize_vec3(self.u_axis, "aim.u_axis")
+        self.v_axis = normalize_vec3(self.v_axis, "aim.v_axis")
+        if abs(sum(first * second for first, second in zip(self.u_axis, self.v_axis))) > 1e-6:
+            raise ValueError("Aim axes must be perpendicular")
+        for name in ("width_mm", "height_mm", "radius_mm"):
+            value = require_positive(getattr(self, name), f"aim.{name}")
+            if not math.isfinite(value):
+                raise ValueError(f"aim.{name} must be finite")
+            setattr(self, name, value)
+
+
+@dataclass
 class EmitterSpec:
     emitter_id: str
     emitter_type: str = "face"
@@ -188,8 +224,13 @@ class EmitterSpec:
     ray_count: int = 10000
     seed: Optional[int] = None
     enabled: bool = True
+    aim: Optional[EmitterAimSpec] = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.aim, dict):
+            self.aim = EmitterAimSpec(**self.aim)
+        if self.aim is not None and not isinstance(self.aim, EmitterAimSpec):
+            raise ValueError("aim must be an Aim definition or null")
         self.emitter_type = require_choice(self.emitter_type, "emitter_type", EMITTER_TYPES)
         self.normal_mode = require_choice(self.normal_mode, "normal_mode", EMITTER_NORMAL_MODES)
         self.direction_distribution = require_choice(

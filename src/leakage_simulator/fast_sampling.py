@@ -8,6 +8,7 @@ import numpy as np
 
 from .geometry import TriangleMesh
 from .types import EmitterSpec
+from .aim_sampling import sample_aim_ray_batch
 
 
 RayBatch = Tuple[np.ndarray, np.ndarray]
@@ -144,18 +145,21 @@ def iter_virtual_plane_ray_batches(
             u_axis,
             v_axis,
             normal,
-            epsilon_mm,
+            0.0 if emitter.aim is not None and emitter.aim.enabled else epsilon_mm,
             count,
             polygon_geometry,
         )
-        directions = _sample_direction_batch(
-            generator,
-            emitter,
-            normal,
-            basis_u,
-            basis_v,
-            count,
-        )
+        if emitter.aim is not None and emitter.aim.enabled:
+            origins, directions = sample_aim_ray_batch(generator, origins, emitter.aim, epsilon_mm)
+        else:
+            directions = _sample_direction_batch(
+                generator,
+                emitter,
+                normal,
+                basis_u,
+                basis_v,
+                count,
+            )
         yield origins, directions
 
 
@@ -252,12 +256,15 @@ def iter_face_emitter_ray_batches(
             + weight_b[:, None] * selected_triangles[:, 1, :]
             + weight_c[:, None] * selected_triangles[:, 2, :]
         )
-        origins = points + epsilon_mm * selected_normals
-        directions = _sample_direction_rows(
-            generator,
-            emitter,
-            selected_normals,
-        )
+        if emitter.aim is not None and emitter.aim.enabled:
+            origins, directions = sample_aim_ray_batch(generator, points, emitter.aim, epsilon_mm)
+        else:
+            origins = points + epsilon_mm * selected_normals
+            directions = _sample_direction_rows(
+                generator,
+                emitter,
+                selected_normals,
+            )
         source_faces = geometry.face_indices[selected_slots]
         yield (
             np.ascontiguousarray(origins, dtype=np.float64),

@@ -76,6 +76,7 @@ describe('BITSAM project format', () => {
     store.getState().actions.setRayTraceConfig({
       ...store.getState().rayTraceConfig,
       compute_backend: 'gpu_cuda',
+      max_depth: 1000,
     })
     const project = createBitsamProject(
       createSceneFixture(),
@@ -88,6 +89,9 @@ describe('BITSAM project format', () => {
     expect(restored.workspace.rayTraceConfig.compute_backend).toBe(
       'gpu_cuda',
     )
+    const reloadedStore = createWorkspaceStore()
+    reloadedStore.getState().actions.restoreProjectState(restored.workspace)
+    expect(reloadedStore.getState().rayTraceConfig.max_depth).toBe(1000)
   })
 
   it('re-saves a loaded project with an edited Move rule without a live CAD scene', () => {

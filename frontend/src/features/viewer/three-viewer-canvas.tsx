@@ -41,7 +41,6 @@ import {
   type Material,
   type Object3D,
 } from 'three'
-import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
 import type {
   EmitterSpec,
@@ -86,6 +85,14 @@ import {
   getSceneBounds,
 } from './scene-geometry'
 import { fitPerspectiveCameraToBounds } from './camera-fit'
+import { createEmitterAimOverlay } from './emitter-aim-overlay'
+import { createRoiCapMaterial } from './roi-cap-material'
+import { ViewerTrackballControls } from './viewer-controls'
+import {
+  resolveCadFacePick,
+  resolveViewerHighlight,
+  updateCadFaceSelection,
+} from './viewer-selection'
 import {
   viewerSectionAxisNormal,
   viewerSectionPlane,
@@ -170,7 +177,7 @@ interface ComponentRenderNode {
 interface ViewerRuntime {
   axisScalePercent: number
   camera: PerspectiveCamera
-  controls: TrackballControls
+  controls: ViewerTrackballControls
   globalOriginAxes: Group
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
@@ -1677,7 +1684,6 @@ export function ThreeViewerCanvas({
   const selectedFaceIdsRef = useRef<number[]>([])
   const roiFaceIdsRef = useRef<number[]>(roiFaceIds)
   const roiScopesRef = useRef<RoiScope[]>(roiScopes)
-  const selectedComponentIdsRef = useRef<number[]>([])
   const emittersRef = useRef<EmitterSpec[]>([])
   const onRoiBoxSelectionRef = useRef(onRoiBoxSelection)
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
@@ -1711,6 +1717,7 @@ export function ThreeViewerCanvas({
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
+  const selectionKind = useWorkspaceStore(workspaceSelectors.selectionKind)
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
   )
@@ -1807,10 +1814,6 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     roiScopesRef.current = roiScopes
   }, [roiScopes])
-
-  useEffect(() => {
-    selectedComponentIdsRef.current = selectedComponentIds
-  }, [selectedComponentIds])
 
   useEffect(() => {
     emittersRef.current = emitters
@@ -1913,11 +1916,10 @@ export function ThreeViewerCanvas({
         }),
       ),
     )
-    const controls = new TrackballControls(camera, canvas)
+    const controls = new ViewerTrackballControls(camera, canvas)
     controls.staticMoving = true
     controls.rotateSpeed = 2.3
     controls.zoomSpeed = 1.2
-    controls.panSpeed = 0.2
     controls.mouseButtons = {
       LEFT: MOUSE.ROTATE,
       MIDDLE: MOUSE.DOLLY,
@@ -2959,24 +2961,17 @@ export function ThreeViewerCanvas({
         // click grabs/releases the whole CAD surface as drawn, regardless
         // of modifier keys, so all four "면 지정" pickers in the app behave
         // identically.
-        const component = scene.components.find(
-          (candidate) => candidate.component_id === componentId,
-        )
-        const patchFaceIds = findCadSurfaceFaceIds(
+        const patchFaceIds = resolveCadFacePick(
           scene,
-          component?.face_indices ?? [faceId],
+          componentId,
           faceId,
+          runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
         )
-        const nextFaceIds = new Set(selectedFaceIdsRef.current)
-        const removePatch = patchFaceIds.every((id) => nextFaceIds.has(id))
-        for (const id of patchFaceIds) {
-          if (removePatch) nextFaceIds.delete(id)
-          else nextFaceIds.add(id)
-        }
-        actions.setSelectedFaceIds(nextFaceIds)
-        actions.setSelectedComponentIds([
-          ...new Set([...selectedComponentIdsRef.current, componentId]),
-        ])
+        const next = updateCadFaceSelection(
+          scene, selectedFaceIdsRef.current, patchFaceIds, true,
+        )
+        const removePatch = next.faceIds.length < selectedFaceIdsRef.current.length
+        actions.setFaceSelection(next.faceIds, next.componentIds)
         onStatusMessage(
           `Emitter surface picking · Component ${componentId} · surface ${removePatch ? '해제' : '추가'}`,
         )
@@ -2995,43 +2990,44 @@ export function ThreeViewerCanvas({
         // coplanar patch (same helper the Emitter surface picker uses), and
         // toggle add/remove regardless of modifier keys so several surfaces
         // can be gathered without holding Ctrl/Shift for each one.
-        const component = scene.components.find(
-          (candidate) => candidate.component_id === componentId,
-        )
-        const patchFaceIds = findCadSurfaceFaceIds(
+        const patchFaceIds = resolveCadFacePick(
           scene,
-          component?.face_indices ?? [faceId],
+          componentId,
           faceId,
+          runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
         )
-        const nextFaceIds = new Set(selectedFaceIdsRef.current)
-        const removePatch = patchFaceIds.every((id) => nextFaceIds.has(id))
-        for (const id of patchFaceIds) {
-          if (removePatch) nextFaceIds.delete(id)
-          else nextFaceIds.add(id)
-        }
-        actions.setSelectedFaceIds(nextFaceIds)
-        actions.setSelectedComponentIds([
-          ...new Set([...selectedComponentIdsRef.current, componentId]),
-        ])
+        const next = updateCadFaceSelection(
+          scene, selectedFaceIdsRef.current, patchFaceIds, true,
+        )
+        const removePatch = next.faceIds.length < selectedFaceIdsRef.current.length
+        actions.setFaceSelection(next.faceIds, next.componentIds)
         onStatusMessage(
           `Material face picking · Component ${componentId} · surface ${removePatch ? '해제' : '추가'}`,
         )
         return
       }
 
-      if (additive) {
-        actions.toggleSelectedComponentId(componentId)
-        if (faceId !== null) actions.toggleSelectedFaceId(faceId)
-      } else {
-        actions.setSelectedComponentIds([componentId])
-        actions.setSelectedFaceIds(
-          faceId === null ? [] : [faceId],
+      if (faceId === null) {
+        actions.setRoiCapSelection()
+        onStatusMessage(
+          `Viewer picking · Component ${componentId} · ROI section cap (원본 CAD 면 아님)`,
         )
+        return
       }
+      const patchFaceIds = resolveCadFacePick(
+        scene,
+        componentId,
+        faceId,
+        runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
+      )
+      const next = updateCadFaceSelection(
+        scene, selectedFaceIdsRef.current, patchFaceIds, additive,
+      )
+      actions.setFaceSelection(next.faceIds, next.componentIds)
       onStatusMessage(
-        faceId === null
-          ? `Viewer picking · Component ${componentId} · ROI section cap`
-          : `Viewer picking · Component ${componentId} · face selected`,
+        next.faceIds.length === 0
+          ? 'Viewer selection을 해제했습니다.'
+          : `Viewer picking · Component ${componentId} · CAD face selected`,
       )
     }
     const handleDoubleClick = (event: MouseEvent) => {
@@ -3513,27 +3509,7 @@ export function ThreeViewerCanvas({
         runtime.roiPreviewRoot.add(surface)
 
         if (clipped.capGeometry) {
-          const capMaterial = isWireframe
-            ? new MeshBasicMaterial({
-                color: 0x314a5c,
-                transparent: true,
-                opacity: 0.75,
-                side: DoubleSide,
-                depthTest: true,
-                depthWrite: true,
-                toneMapped: false,
-              })
-            : new MeshStandardMaterial({
-                color: 0x6f9fb5,
-                roughness: 0.78,
-                metalness: 0.02,
-                flatShading: true,
-                transparent: surfaceOpacity < 1,
-                opacity: surfaceOpacity,
-                side: DoubleSide,
-                depthTest: true,
-                depthWrite: surfaceOpacity >= 1,
-              })
+          const capMaterial = createRoiCapMaterial(isWireframe, surfaceOpacity)
           const caps = new Mesh(
             clipped.capGeometry,
             capMaterial,
@@ -3708,12 +3684,12 @@ export function ThreeViewerCanvas({
     }
     clearGroup(runtime.roiSelectionRoot)
     runtime.roiSelectionRoot.visible = false
-    const selectedRoiComponentIds = new Set(
-      editingComponentId === null ||
-        editingComponentId === undefined
-        ? selectedComponentIds
-        : [...selectedComponentIds, editingComponentId],
+    const selectionHighlight = resolveViewerHighlight(
+      { selectionKind, selectedFaceIds, selectedComponentIds },
+      emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed,
+      editingComponentMode === 'transform' ? editingComponentId : null,
     )
+    const selectedRoiComponentIds = new Set(selectionHighlight.componentIds)
     const activeRoiFaceIds = [
       ...new Set(
         activeBoxScopes.flatMap((scope) =>
@@ -3725,8 +3701,8 @@ export function ThreeViewerCanvas({
     ]
     const activeRoiFaceSet = new Set(activeRoiFaceIds)
     const selectionFaceIds =
-      emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed
-      ? selectedFaceIds.filter((faceId) =>
+      selectionHighlight.componentIds.length === 0
+      ? selectionHighlight.faceIds.filter((faceId) =>
           activeRoiFaceSet.has(faceId),
         )
       : [
@@ -3919,7 +3895,10 @@ export function ThreeViewerCanvas({
       return grouped
     }
 
-    const enabledFaceEmitters = emitters.filter(
+    const visibleEmitters = placementPreviewEmitter
+      ? [...emitters.filter((emitter) => emitter.emitter_id !== placementPreviewEmitter.emitter_id), placementPreviewEmitter]
+      : emitters
+    const enabledFaceEmitters = visibleEmitters.filter(
       (emitter) =>
         emitter.enabled && emitter.emitter_type === 'face',
     )
@@ -3951,6 +3930,29 @@ export function ThreeViewerCanvas({
         ]
       : receivers
     for (const emitter of placementEmitters) {
+      if (emitter.aim?.enabled) {
+        let sourceCenter = emitter.center
+        if (emitter.emitter_type === 'face') {
+          const weightedCenter = new Vector3()
+          let totalArea = 0
+          for (const faceId of emitter.face_indices) {
+            const point = scene.mesh.face_centroids[faceId]
+            const area = scene.mesh.face_areas_mm2[faceId] ?? 0
+            if (!point || area <= 0) continue
+            const componentId = scene.mesh.face_component_ids?.[faceId]
+            const transformed = roiPointTransform && componentId != null
+              ? roiPointTransform(componentId, point)
+              : point
+            weightedCenter.addScaledVector(new Vector3(...transformed), area)
+            totalArea += area
+          }
+          sourceCenter = totalArea > 0 ? weightedCenter.multiplyScalar(1 / totalArea).toArray() : null
+        }
+        if (sourceCenter) {
+          const aimOverlay = createEmitterAimOverlay(emitter, sourceCenter)
+          if (aimOverlay) runtime.placementRoot.add(aimOverlay)
+        }
+      }
       if (
         !emitter.enabled ||
         emitter.emitter_type === 'face' ||
@@ -3971,12 +3973,14 @@ export function ThreeViewerCanvas({
         emitter.center,
         emitter.u_axis,
         emitter.v_axis,
-        emitter.custom_normal ?? fallbackNormal,
+        emitter.aim?.enabled
+          ? new Vector3(...emitter.aim.center).sub(new Vector3(...emitter.center)).normalize().toArray()
+          : emitter.custom_normal ?? fallbackNormal,
         emitter.width_mm,
         emitter.height_mm,
         emitterOverlayColor,
         emitterDirectionColor,
-        emitter.normal_flip,
+        emitter.aim?.enabled ? false : emitter.normal_flip,
         emitter === placementPreviewEmitter ? 0.42 : 0.28,
         true,
       )
@@ -4095,7 +4099,7 @@ export function ThreeViewerCanvas({
           )
           const emitterBounds =
             clippedEmitter.surfaceGeometry.boundingBox
-          if (frame && emitterBounds) {
+          if (frame && emitterBounds && !emitter.aim?.enabled) {
             let directionNormal = new Vector3(...frame.normal)
             if (roiPointTransform) {
               const transformedCenter = roiPointTransform(
@@ -4148,16 +4152,12 @@ export function ThreeViewerCanvas({
       enabledFaceEmitters.flatMap((emitter) => emitter.face_indices),
     )
     const selectedFaceIdsByComponent =
-      groupFaceIdsByComponent(selectedFaceIds)
+      groupFaceIdsByComponent(selectionHighlight.faceIds)
     const roiFaceIdsByComponent = groupFaceIdsByComponent(roiFaceIds)
     const denseScene = scene.mesh.face_component_ids.length >= 1_000_000
     for (const [componentId, node] of runtime.nodes) {
       const isEditing = editingComponentId === componentId
-      const isSelected =
-        !datumFacePickArmed &&
-        (isEditing ||
-          (!emitterFaceSelectionArmed &&
-            selectedComponentIds.includes(componentId)))
+      const isSelected = selectionHighlight.componentIds.includes(componentId)
       const isUnavailable =
         hiddenComponentIds.includes(componentId) ||
         deletedComponentIds.includes(componentId)
@@ -4326,7 +4326,7 @@ export function ThreeViewerCanvas({
           false,
         )
         if (boundary) reference.add(boundary)
-        reference.add(
+        if (!emitter.aim?.enabled) reference.add(
           createDirectionArrow(
             `${reference.name}-direction`,
             localCenter,
@@ -4596,6 +4596,7 @@ export function ThreeViewerCanvas({
     scene,
     selectedComponentIds,
     selectedFaceIds,
+    selectionKind,
     surfaceOpacity,
     transformRules,
     cadModelVisible,

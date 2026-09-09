@@ -263,11 +263,11 @@ class MultiBounceRT3Tests(unittest.TestCase):
             10,
         )
 
-    def test_v1_reflection_depth_contract_accepts_twenty_and_rejects_more(self) -> None:
+    def test_reflection_depth_contract_accepts_thousand_and_rejects_more(self) -> None:
         config = RayTraceConfig(max_depth=MAX_REFLECTION_DEPTH)
 
-        self.assertEqual(config.max_depth, 20)
-        with self.assertRaisesRegex(ValueError, "must not exceed 20"):
+        self.assertEqual(config.max_depth, 1000)
+        with self.assertRaisesRegex(ValueError, "must not exceed 1000"):
             RayTraceConfig(max_depth=MAX_REFLECTION_DEPTH + 1)
 
 

@@ -9,6 +9,20 @@ export type EmitterPowerMode =
   | 'power_per_area'
 export type EmitterSurfaceConstruction = 'rectangular_fit' | 'polygon_auto'
 
+export interface EmitterAimSpec {
+  enabled: boolean
+  shape: 'rectangle' | 'circle'
+  center: Vec3
+  u_axis: Vec3
+  v_axis: Vec3
+  width_mm: number
+  height_mm: number
+  radius_mm: number
+  show_in_viewer: boolean
+  distribution: 'uniform_target_area'
+  power_reference: 'aim_region'
+}
+
 export interface EmitterSpec {
   emitter_id: string
   emitter_type: EmitterType
@@ -40,6 +54,7 @@ export interface EmitterSpec {
   ray_count: number
   seed: number | null
   enabled: boolean
+  aim?: EmitterAimSpec | null
 }
 
 export type ReceiverType = 'rectangle'
