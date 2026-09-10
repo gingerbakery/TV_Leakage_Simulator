@@ -7,6 +7,7 @@ import type {
 } from '@/api'
 import type {
   ActiveCad,
+  FaceDisplayColor,
   ComponentTransformRule,
   MaterialAssignment,
   OpticalValueOverride,
@@ -230,7 +231,7 @@ function isRoiClipBox(value: unknown): value is RoiClipBox {
   if (!isRecord(value)) return false
   if (
     value.plane !== undefined &&
-    !isOneOf(value.plane, ['xy', 'yz', 'zx'])
+    !isOneOf(value.plane, ['xy', 'yz', 'zx', 'xyz'])
   ) {
     return false
   }
@@ -468,6 +469,11 @@ function isComponentColorOverrides(
   )
 }
 
+function isFaceDisplayColor(value: unknown): value is FaceDisplayColor {
+  return isRecord(value) && isSafeId(value.componentId) && isIdArray(value.faceIds) &&
+    isString(value.color) && /^#[0-9a-fA-F]{6}$/.test(value.color)
+}
+
 function isWorkspaceProjectState(
   value: unknown,
 ): value is WorkspaceProjectState {
@@ -479,6 +485,8 @@ function isWorkspaceProjectState(
     isComponentNameOverrides(value.componentNameOverrides) &&
     (value.componentColorOverrides === undefined ||
       isComponentColorOverrides(value.componentColorOverrides)) &&
+    (value.faceColorOverrides === undefined ||
+      isArrayOf(value.faceColorOverrides, isFaceDisplayColor)) &&
     isArrayOf(value.materialAssignments, isMaterialAssignment) &&
     (value.customOpticalProfiles === undefined ||
       isArrayOf(value.customOpticalProfiles, isSavedOpticalProfile)) &&
@@ -579,6 +587,7 @@ function createWorkspaceProjectState(
     deletedComponentIds: workspace.deletedComponentIds,
     componentNameOverrides: workspace.componentNameOverrides,
     componentColorOverrides: workspace.componentColorOverrides,
+    faceColorOverrides: workspace.faceColorOverrides,
     materialAssignments: workspace.materialAssignments,
     customOpticalProfiles: workspace.customOpticalProfiles,
     transformRules: workspace.transformRules,
@@ -768,6 +777,7 @@ export function createBitsamSettingsOnlyState(
     source.deletedComponentIds.length +
     Object.keys(source.componentNameOverrides).length +
     Object.keys(source.componentColorOverrides).length +
+    (source.faceColorOverrides?.length ?? 0) +
     source.materialAssignments.length +
     source.transformRules.length +
     source.roiScopes.length +
@@ -781,6 +791,7 @@ export function createBitsamSettingsOnlyState(
       deletedComponentIds: [],
       componentNameOverrides: {},
       componentColorOverrides: {},
+      faceColorOverrides: [],
       materialAssignments: [],
       customOpticalProfiles: source.customOpticalProfiles ?? [],
       transformRules: [],

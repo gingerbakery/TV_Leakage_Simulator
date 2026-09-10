@@ -6,6 +6,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
   countSelectedCadFaces,
+  cadFaceContextSelection,
   resolveCadFacePick,
   resolveViewerHighlight,
   updateCadFaceSelection,
@@ -18,6 +19,14 @@ function cadScene() {
 }
 
 describe('CAD face selection and component highlight contract', () => {
+  it('preserves selected CAD faces on context click, but never promotes them to the entire part', () => {
+    const scene = cadScene()
+    expect(cadFaceContextSelection(scene, 1, 0, [0, 1], null)).toEqual({ faceIds: [0, 1], componentIds: [1] })
+    expect(cadFaceContextSelection(scene, 1, 2, [0, 1], null)).toEqual({ faceIds: [2], componentIds: [1] })
+    expect(cadFaceContextSelection(scene, 1, 0, [0, 1, 2], null).faceIds).toEqual([0, 1, 2])
+    expect(cadFaceContextSelection(scene, 1, null, [0, 1], null)).toEqual({ faceIds: [], componentIds: [] })
+    expect(cadFaceContextSelection(scene, 1, 0, [], [0, 2]).faceIds).toEqual([0])
+  })
   it('selects all triangles in a curved CAD face, not its adjacent face or another part', () => {
     const scene = cadScene()
     expect(resolveCadFacePick(scene, 1, 0)).toEqual([0, 1])

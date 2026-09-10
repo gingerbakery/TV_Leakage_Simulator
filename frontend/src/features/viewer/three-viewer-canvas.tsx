@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   Box3,
@@ -87,11 +87,14 @@ import {
 import { fitPerspectiveCameraToBounds } from './camera-fit'
 import { createEmitterAimOverlay } from './emitter-aim-overlay'
 import { createRoiCapMaterial } from './roi-cap-material'
+import { roiSurfaceAppearance } from './roi-surface-appearance'
+import { applyFaceDisplayColors, resolveFaceDisplayColors, setDisplayVertexColors } from './face-display-colors'
 import { ViewerTrackballControls } from './viewer-controls'
 import {
   resolveCadFacePick,
   resolveViewerHighlight,
   updateCadFaceSelection,
+  cadFaceContextSelection,
 } from './viewer-selection'
 import {
   viewerSectionAxisNormal,
@@ -1689,6 +1692,7 @@ export function ThreeViewerCanvas({
   const onCameraFrameChangeRef = useRef(onCameraFrameChange)
   const onCameraPresetChangeRef = useRef(onCameraPresetChange)
   const onComponentContextMenuRef = useRef(onComponentContextMenu)
+  const editingComponentIdRef = useRef(editingComponentId)
   const onRayObjectContextMenuRef = useRef(onRayObjectContextMenu)
   const boxDragRef = useRef<ViewerBoxDrag | null>(null)
   const fullViewCameraSyncRef = useRef(false)
@@ -1752,6 +1756,8 @@ export function ThreeViewerCanvas({
     workspaceSelectors.componentColorOverrides,
   )
   const componentColorOverridesRef = useRef(componentColorOverrides)
+  const faceColorOverrides = useWorkspaceStore(workspaceSelectors.faceColorOverrides)
+  const faceDisplayColors = useMemo(() => resolveFaceDisplayColors(scene, faceColorOverrides), [scene, faceColorOverrides])
   componentColorOverridesRef.current = componentColorOverrides
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
@@ -1838,6 +1844,8 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     onComponentContextMenuRef.current = onComponentContextMenu
   }, [onComponentContextMenu])
+
+  useEffect(() => { editingComponentIdRef.current = editingComponentId }, [editingComponentId])
 
   useEffect(() => {
     onRayObjectContextMenuRef.current = onRayObjectContextMenu
@@ -2979,6 +2987,10 @@ export function ThreeViewerCanvas({
       }
 
       if (materialFacePickArmedRef.current) {
+        if (editingComponentIdRef.current != null && componentId !== editingComponentIdRef.current) {
+          onStatusMessage('현재 Surface Property 창의 부품에서 면을 선택하세요.')
+          return
+        }
         if (faceId === null) {
           onStatusMessage(
             `Material face picking · Component ${componentId}의 ROI 절단면은 원본 CAD face가 아니므로 선택할 수 없습니다.`,
@@ -3202,8 +3214,9 @@ export function ThreeViewerCanvas({
         return
       }
 
-      actions.setSelectedComponentIds([hit.componentId])
-      actions.setSelectedFaceIds([])
+      const contextSelection = cadFaceContextSelection(scene, hit.componentId, hit.faceId,
+        selectedFaceIdsRef.current, runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null)
+      actions.setFaceSelection(contextSelection.faceIds, contextSelection.componentIds)
       onComponentContextMenuRef.current?.({
         clientX: event.clientX,
         clientY: event.clientY,
@@ -3211,7 +3224,7 @@ export function ThreeViewerCanvas({
         returnFocusElement: canvas,
       })
       onStatusMessage(
-        `Component menu · Component ${hit.componentId}`,
+        `Component menu · Component ${hit.componentId} · ${hit.faceId === null ? 'ROI 절단면' : 'CAD face selected'}`,
       )
       event.preventDefault()
       event.stopPropagation()
@@ -3566,69 +3579,6 @@ export function ThreeViewerCanvas({
           runtime.roiPreviewRoot.add(capEdges)
         }
 
-        if (renderMode !== 'Wireframe') {
-          const boxFaceIdSet = new Set(boxFaceIds)
-          const roiMaterialAssignments = materialAssignments
-            .filter((assignment) => assignment.enabled)
-            .sort((left, right) => {
-              if (left.targetType === right.targetType) return 0
-              return left.targetType === 'part' ? -1 : 1
-            })
-          for (const [
-            assignmentIndex,
-            assignment,
-          ] of roiMaterialAssignments.entries()) {
-            const assignmentFaceIds =
-              assignment.targetType === 'part'
-                ? boxFaceIds.filter(
-                    (faceId) =>
-                      scene.mesh.face_component_ids[faceId] ===
-                      assignment.componentId,
-                  )
-                : assignment.faceIds.filter((faceId) =>
-                    boxFaceIdSet.has(faceId),
-                  )
-            if (assignmentFaceIds.length === 0) continue
-
-            const assignmentGeometry = buildRoiClippedGeometries(
-              scene,
-              assignmentFaceIds,
-              clipBoxes,
-              [...hiddenComponentIds, ...deletedComponentIds],
-              roiPointTransform,
-              { includeCaps: false, includeFeatureEdges: false },
-            )
-            if (!assignmentGeometry) continue
-
-            const componentIndex = scene.components.findIndex(
-              (component) =>
-                component.component_id === assignment.componentId,
-            )
-            const fallbackColor = resolveComponentColor(
-              componentIndex >= 0 ? scene.components[componentIndex] : undefined,
-              componentIndex,
-            )
-            const customColor =
-              componentColorOverrides[assignment.componentId]
-            const assignmentDisplayColor = customColor
-              ? Number.parseInt(customColor.slice(1), 16)
-              : fallbackColor
-            const overlay = new Mesh(
-              assignmentGeometry.surfaceGeometry,
-              faceOverlayMaterial(
-                viewerMaterialStyle(assignment, assignmentDisplayColor),
-                surfaceOpacity,
-              ),
-            )
-            overlay.name = `roi-material-${assignment.assignmentId}`
-            overlay.renderOrder = 10 + assignmentIndex
-            runtime.roiPreviewRoot.add(overlay)
-
-            assignmentGeometry.capGeometry?.dispose()
-            assignmentGeometry.capEdgeGeometry?.dispose()
-            assignmentGeometry.featureEdgeGeometry?.dispose()
-          }
-        }
 
         runtime.roiPreviewRoot.userData.capLoopCount =
           clipped.capLoopCount
@@ -3719,169 +3669,6 @@ export function ThreeViewerCanvas({
           ),
         ]
 
-    if (
-      showRoiPreview &&
-      runtime.roiPreviewRoot.visible &&
-      selectionFaceIds.length > 0
-    ) {
-      const selectionClipBoxes = activeBoxScopes.flatMap((scope) =>
-        scope.clipBox ? [scope.clipBox] : [],
-      )
-      const selectedComponentIdsForOverlay = new Set(
-        selectionFaceIds.flatMap((faceId) => {
-          const componentId =
-            scene.mesh.face_component_ids[faceId]
-          return componentId === null ? [] : [componentId]
-        }),
-      )
-      const unavailableSelectionComponentIds = [
-        ...hiddenComponentIds,
-        ...deletedComponentIds,
-        ...scene.components
-          .map((component) => component.component_id)
-          .filter(
-            (componentId) =>
-              !selectedComponentIdsForOverlay.has(componentId),
-          ),
-      ]
-      const selectedClipped = buildRoiClippedGeometries(
-        scene,
-        selectionFaceIds,
-        selectionClipBoxes,
-        unavailableSelectionComponentIds,
-        roiPointTransform,
-        { includeCaps: false, includeFeatureEdges: false },
-      )
-      if (selectedClipped) {
-        const selectionColor = datumFacePickArmed
-          ? selectedComponentSurfaceColor
-          : materialFacePickArmed
-          ? selectedMaterialFaceHighlightColor
-          : emitterFaceSelectionArmed
-            ? selectedFaceHighlightColorArmed
-            : selectedComponentSurfaceColor
-        const selectionOpacity = datumFacePickArmed
-          ? 0.72
-          : materialFacePickArmed
-          ? 0.62
-          : emitterFaceSelectionArmed
-            ? 0.52
-            : 0.36
-        const createSelectionMaterial = () =>
-          new MeshBasicMaterial({
-            color: selectionColor,
-            side: DoubleSide,
-            transparent: true,
-            opacity: selectionOpacity,
-            depthTest: true,
-            depthWrite: false,
-            polygonOffset: true,
-            polygonOffsetFactor: -4,
-            polygonOffsetUnits: -4,
-            toneMapped: false,
-          })
-        const selectedSurface = new Mesh(
-          selectedClipped.surfaceGeometry,
-          createSelectionMaterial(),
-        )
-        selectedSurface.name = 'roi-selected-surface'
-        selectedSurface.renderOrder = emitterFaceSelectionArmed
-          ? 94
-          : 90
-        runtime.roiSelectionRoot.add(selectedSurface)
-
-        if (selectedClipped.capGeometry) {
-          const selectedCaps = new Mesh(
-            selectedClipped.capGeometry,
-            createSelectionMaterial(),
-          )
-          selectedCaps.name = 'roi-selected-section-caps'
-          selectedCaps.renderOrder = selectedSurface.renderOrder
-          runtime.roiSelectionRoot.add(selectedCaps)
-        }
-
-        if (
-          emitterFaceSelectionArmed &&
-          selectedClipped.featureEdgeGeometry
-        ) {
-          selectedClipped.featureEdgeGeometry.dispose()
-        }
-        const suppressMaterialTargetEdges =
-          editingComponentMode === 'material' &&
-          !materialFacePickArmed &&
-          !emitterFaceSelectionArmed
-        const selectionEdgeGeometries = suppressMaterialTargetEdges
-          ? []
-          : [
-              emitterFaceSelectionArmed
-                ? null
-                : selectedClipped.featureEdgeGeometry,
-              selectedClipped.capEdgeGeometry,
-            ].filter(
-              (
-                geometry,
-              ): geometry is BufferGeometry => geometry !== null,
-            )
-        if (suppressMaterialTargetEdges) {
-          selectedClipped.featureEdgeGeometry?.dispose()
-          selectedClipped.capEdgeGeometry?.dispose()
-        }
-        for (const [
-          edgeIndex,
-          edgeGeometry,
-        ] of selectionEdgeGeometries.entries()) {
-          const selectedEdges = new LineSegments(
-            edgeGeometry,
-            new LineBasicMaterial({
-              color: selectionColor,
-              transparent: true,
-              opacity:
-                emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed
-                  ? 1
-                  : 0.88,
-              depthTest:
-                emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed,
-              depthWrite: false,
-              toneMapped: false,
-            }),
-          )
-          selectedEdges.name = `roi-selected-edges-${edgeIndex}`
-          selectedEdges.renderOrder =
-            selectedSurface.renderOrder + 1
-          runtime.roiSelectionRoot.add(selectedEdges)
-        }
-
-        if (emitterFaceSelectionArmed) {
-          const frame = resolveFacePlacementFrame(
-            scene,
-            selectionFaceIds,
-          )
-          const selectedBounds =
-            selectedClipped.surfaceGeometry.boundingBox
-          if (frame && selectedBounds) {
-            const direction = createDirectionArrow(
-              'roi-selected-emitter-direction',
-              selectedBounds.getCenter(new Vector3()),
-              new Vector3(...frame.normal),
-              MathUtils.clamp(
-                Math.min(frame.width, frame.height) * 0.18,
-                2,
-                18,
-              ),
-              emitterDirectionColor,
-            )
-            direction.traverse((child) => {
-              child.renderOrder = Math.max(
-                child.renderOrder,
-                96,
-              )
-            })
-            runtime.roiSelectionRoot.add(direction)
-          }
-        }
-        runtime.roiSelectionRoot.visible = true
-      }
-    }
 
     const groupFaceIdsByComponent = (faceIds: readonly number[]) => {
       const grouped = new Map<number, number[]>()
@@ -3907,6 +3694,45 @@ export function ThreeViewerCanvas({
       faceIds: new Set(emitter.face_indices),
       faceIdsByComponent: groupFaceIdsByComponent(emitter.face_indices),
     }))
+
+    const roiSurface = runtime.roiPreviewRoot.getObjectByName('roi-clipped-surface') as Mesh<BufferGeometry, Material | Material[]> | undefined
+    if (showRoiPreview && roiSurface) {
+      const previousMaterials = Array.isArray(roiSurface.material) ? roiSurface.material : [roiSurface.material]
+      roiSurface.material = roiSurfaceAppearance(roiSurface.geometry, scene, {
+        assignments: materialAssignments, colorOverrides: componentColorOverrides,
+        faceColors: faceDisplayColors,
+        selectedFaceIds: selectionFaceIds,
+        emitterFaceIds: enabledFaceEmitters.flatMap((emitter) => emitter.face_indices),
+        selectionColor: emitterFaceSelectionArmed ? selectedFaceHighlightColorArmed : selectedComponentSurfaceColor,
+        selectionStrength: materialFacePickArmed || datumFacePickArmed ? 0.72 : 0.6,
+        wireframe: renderMode === 'Wireframe', opacity: surfaceOpacity,
+      })
+      previousMaterials.forEach((material) => material.dispose())
+      if (emitterFaceSelectionArmed && selectionFaceIds.length) {
+        const frame = resolveFacePlacementFrame(scene, selectionFaceIds)
+        if (frame) {
+          const selectedBounds = new Box3()
+          const selectedIds = new Set(selectionFaceIds)
+          const positions = roiSurface.geometry.getAttribute('position')
+          const sourceIds = roiSurface.geometry.userData.sourceFaceIds as number[]
+          for (const [index, faceId] of sourceIds.entries()) {
+            if (!selectedIds.has(faceId)) continue
+            for (let corner = 0; corner < 3; corner += 1) {
+              selectedBounds.expandByPoint(new Vector3().fromBufferAttribute(positions, index * 3 + corner))
+            }
+          }
+          const componentId = scene.mesh.face_component_ids[selectionFaceIds[0]]
+          const normalEnd: [number, number, number] = [frame.center[0] + frame.normal[0], frame.center[1] + frame.normal[1], frame.center[2] + frame.normal[2]]
+          const origin = roiPointTransform && componentId != null ? roiPointTransform(componentId, frame.center) : frame.center
+          const end = roiPointTransform && componentId != null ? roiPointTransform(componentId, normalEnd) : normalEnd
+          runtime.roiSelectionRoot.add(createDirectionArrow('roi-selected-emitter-direction',
+            selectedBounds.isEmpty() ? new Vector3(...origin) : selectedBounds.getCenter(new Vector3()),
+            new Vector3(...end).sub(new Vector3(...origin)).normalize(),
+            MathUtils.clamp(Math.min(frame.width, frame.height) * 0.18, 2, 18), emitterDirectionColor))
+          runtime.roiSelectionRoot.visible = true
+        }
+      }
+    }
 
     clearGroup(runtime.placementRoot)
     const placementEmitters = placementPreviewEmitter
@@ -4059,25 +3885,6 @@ export function ThreeViewerCanvas({
           emitterRoot.name = `roi-emitter-reference-${emitter.emitter_id}-${componentId}`
           emitterRoot.userData.rayObjectKind = 'emitter'
           emitterRoot.userData.rayObjectId = emitter.emitter_id
-          const emitterSurface = new Mesh(
-            clippedEmitter.surfaceGeometry,
-            new MeshStandardMaterial({
-              color: emitterOverlayColor,
-              emissive: 0x713f12,
-              emissiveIntensity: 0.32,
-              roughness: 0.5,
-              side: DoubleSide,
-              transparent: true,
-              opacity: renderMode === 'Wireframe' ? 0.16 : 0.52,
-              depthTest: true,
-              depthWrite: false,
-              polygonOffset: true,
-              polygonOffsetFactor: -5,
-              polygonOffsetUnits: -5,
-            }),
-          )
-          emitterSurface.name = `${emitterRoot.name}-surface`
-          emitterSurface.renderOrder = 38
           const emitterBoundary = new LineSegments(
             new EdgesGeometry(clippedEmitter.surfaceGeometry, 24),
             new LineBasicMaterial({
@@ -4091,7 +3898,7 @@ export function ThreeViewerCanvas({
           )
           emitterBoundary.name = `${emitterRoot.name}-boundary`
           emitterBoundary.renderOrder = 39
-          emitterRoot.add(emitterSurface, emitterBoundary)
+          emitterRoot.add(emitterBoundary)
 
           const frame = resolveFacePlacementFrame(
             scene,
@@ -4141,6 +3948,7 @@ export function ThreeViewerCanvas({
           }
 
           clippedEmitter.capGeometry?.dispose()
+          clippedEmitter.surfaceGeometry.dispose()
           clippedEmitter.capEdgeGeometry?.dispose()
           clippedEmitter.featureEdgeGeometry?.dispose()
           runtime.placementRoot.add(emitterRoot)
@@ -4216,11 +4024,13 @@ export function ThreeViewerCanvas({
       const showHighlightedEdges =
         isSelected &&
         !(isEditing && editingComponentMode === 'material')
+      const hasFaceColors = applyFaceDisplayColors(node.surface.geometry, faceDisplayColors, displayColor)
+      setDisplayVertexColors(node.surface.material, hasFaceColors && !showHighlightedEdges)
       // Reuse the existing CAD surface for whole-component selection. A
       // second multi-million-triangle overlay made large models react very
       // slowly to every click.
       node.surface.material.color.set(
-        showHighlightedEdges ? selectedComponentSurfaceColor : displayColor,
+        showHighlightedEdges ? selectedComponentSurfaceColor : hasFaceColors ? 0xffffff : displayColor,
       )
       node.surface.material.emissive.set(
         showHighlightedEdges ? 0x8a2d00 : 0x000000,
@@ -4244,8 +4054,10 @@ export function ThreeViewerCanvas({
       node.surface.material.polygonOffsetUnits = 0
       node.surface.visible = !isWireframe
       node.wireframeFill.visible = isWireframe
+      const hasWireColors = applyFaceDisplayColors(node.wireframeFill.geometry, faceDisplayColors, displayColor)
+      setDisplayVertexColors(node.wireframeFill.material, hasWireColors && !isSelected)
       node.wireframeFill.material.color.set(
-        isSelected ? selectedComponentSurfaceColor : 0x263b4d,
+        isSelected ? selectedComponentSurfaceColor : hasWireColors ? 0xffffff : 0x263b4d,
       )
       node.wireframeFill.material.opacity = isSelected
         ? selectedWireframeSurfaceOpacity
@@ -4520,6 +4332,10 @@ export function ThreeViewerCanvas({
           ),
         )
         overlay.renderOrder = 2
+        if (applyFaceDisplayColors(bundle.geometry, faceDisplayColors, style.color)) {
+          overlay.material.color.set(0xffffff)
+          setDisplayVertexColors(overlay.material, true)
+        }
         node.materialOverlayRoot.add(overlay)
       }
 
@@ -4586,6 +4402,7 @@ export function ThreeViewerCanvas({
     materialFacePickArmed,
     materialAssignments,
     componentColorOverrides,
+    faceDisplayColors,
     placementPreviewEmitter,
     placementPreviewReceiver,
     renderMode,
@@ -4643,6 +4460,7 @@ export function ThreeViewerCanvas({
 
   }, [
     componentColorOverrides,
+    faceDisplayColors,
     materialAssignments,
     renderMode,
     roiFaceIds,

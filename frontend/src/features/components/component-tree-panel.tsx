@@ -6,6 +6,7 @@ import {
   EyeOff,
   Move3D,
   Palette,
+  ScanLine,
   Pencil,
   Search,
   Trash2,
@@ -22,6 +23,7 @@ import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
 import { cn } from '@/lib/utils'
 import {
   useWorkspaceStore,
+  workspaceStore,
   workspaceSelectors,
 } from '@/stores'
 
@@ -30,6 +32,7 @@ import { formatArea, getComponentDisplayName } from './component-utils'
 export interface ComponentEditorRequest {
   componentId: number
   returnFocusElement: HTMLElement | null
+  surfaceOnly?: boolean
 }
 
 interface ComponentTreePanelProps {
@@ -102,6 +105,13 @@ function ComponentTreeRow({
     onEditTransform(request())
   }
 
+  const editSurfaces = () => {
+    const selectedFaces = workspaceStore.getState().selectedFaceIds.filter((id) => component.face_indices.includes(id))
+    actions.setFaceSelection(selectedFaces, selectedFaces.length ? [componentId] : [])
+    if (!visible) actions.toggleComponentVisibility(componentId)
+    onEditMaterial({ ...request(), surfaceOnly: true })
+  }
+
   const beginRename = () => {
     cancelRenameRef.current = false
     setNameDraft(displayName)
@@ -133,6 +143,8 @@ function ComponentTreeRow({
       actions.toggleComponentTraceability(componentId)
     } else if (action === 'material') {
       editMaterial()
+    } else if (action === 'surface') {
+      editSurfaces()
     } else if (action === 'transform') {
       editTransform()
     } else {
@@ -271,7 +283,7 @@ function ComponentTreeRow({
           </Button>
         </div>
 
-        <div className="mt-2 grid grid-cols-5 gap-1 rounded-md border border-blue-100 bg-blue-50/75 p-1.5 dark:border-blue-900/70 dark:bg-blue-950/30">
+        <div className="mt-2 grid grid-cols-6 gap-1 rounded-md border border-blue-100 bg-blue-50/75 p-1.5 dark:border-blue-900/70 dark:bg-blue-950/30">
           <Button
             type="button"
             variant="ghost"
@@ -281,6 +293,11 @@ function ComponentTreeRow({
             onClick={editMaterial}
           >
             <Palette />
+          </Button>
+          <Button type="button" variant="ghost" size="icon-xs"
+            aria-label={`Surface property for ${displayName}`} title="Surface property · 면별 속성"
+            onClick={editSurfaces}>
+            <ScanLine />
           </Button>
           <Button
             type="button"

@@ -36,6 +36,7 @@ import { Button } from '@/components/ui/button'
 import type { ComponentEditorRequest } from '@/features/components'
 import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
+import { SurfacePropertyDialog } from '@/features/materials/surface-property-dialog'
 import {
   BitsamProjectError,
   compareBitsamProjectScene,
@@ -134,6 +135,7 @@ export function SimulatorShell() {
   const [componentDialog, setComponentDialog] = useState<{
     type: ComponentDialogType
     componentId: number
+    surfaceOnly?: boolean
   } | null>(null)
   const [noticeDialog, setNoticeDialog] = useState<{
     title: string
@@ -517,6 +519,7 @@ export function SimulatorShell() {
     setComponentDialog({
       type,
       componentId: request.componentId,
+      surfaceOnly: request.surfaceOnly,
     })
   }
 
@@ -1090,13 +1093,20 @@ export function SimulatorShell() {
       />
 
       <MaterialEditorDialog
-        open={componentDialog?.type === 'material'}
+        open={componentDialog?.type === 'material' && !componentDialog.surfaceOnly}
         onOpenChange={(open) => {
           if (!open) setComponentDialog(null)
         }}
         component={activeComponent}
         scene={scene}
         componentName={activeComponentName}
+        returnFocusRef={componentReturnFocusRef}
+      />
+
+      <SurfacePropertyDialog
+        open={componentDialog?.type === 'material' && !!componentDialog.surfaceOnly}
+        onOpenChange={(open) => { if (!open) setComponentDialog(null) }}
+        component={activeComponent} scene={scene} componentName={activeComponentName}
         returnFocusRef={componentReturnFocusRef}
       />
 

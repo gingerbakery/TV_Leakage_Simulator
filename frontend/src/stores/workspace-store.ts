@@ -1,5 +1,6 @@
 import { useStore } from 'zustand'
 import { createStore, type StoreApi } from 'zustand/vanilla'
+import { normalizeFaceDisplayColors, updateFaceDisplayColors, type FaceDisplayColor } from './face-display-color'
 
 import type {
   EmitterSpec,
@@ -182,6 +183,7 @@ export interface WorkspaceSnapshot {
   deletedComponentIds: number[]
   componentNameOverrides: Record<number, string>
   componentColorOverrides: Record<number, string>
+  faceColorOverrides: FaceDisplayColor[]
   materialAssignments: MaterialAssignment[]
   customOpticalProfiles: SavedOpticalProfile[]
   transformRules: ComponentTransformRule[]
@@ -225,6 +227,7 @@ export type WorkspaceProjectState = Pick<
   | 'deletedComponentIds'
   | 'componentNameOverrides'
   | 'componentColorOverrides'
+  | 'faceColorOverrides'
   | 'materialAssignments'
   | 'customOpticalProfiles'
   | 'transformRules'
@@ -266,6 +269,7 @@ export interface WorkspaceActions {
   toggleComponentTraceability(componentId: number): void
   renameComponent(componentId: number, name: string): void
   setComponentColor(componentId: number, color: string | null): void
+  setFaceColor(componentId: number, faceIds: Iterable<number>, color: string | null): void
   deleteComponent(componentId: number, faceIds?: Iterable<number>): void
   upsertMaterialAssignment(assignment: MaterialAssignment): void
   removeMaterialAssignment(assignmentId: string): void
@@ -625,6 +629,8 @@ function normalizeProjectState(
     componentColorOverrides: normalizeComponentColorOverrides(
       projectState.componentColorOverrides,
     ),
+    faceColorOverrides: normalizeFaceDisplayColors(projectState.faceColorOverrides)
+      .filter((entry) => !deletedComponentSet.has(entry.componentId)),
     materialAssignments: projectState.materialAssignments
       .map(normalizeMaterialAssignment)
       .filter(
@@ -666,6 +672,7 @@ function projectStateFromSnapshot(
     deletedComponentIds: state.deletedComponentIds,
     componentNameOverrides: state.componentNameOverrides,
     componentColorOverrides: state.componentColorOverrides,
+    faceColorOverrides: state.faceColorOverrides,
     materialAssignments: state.materialAssignments,
     customOpticalProfiles: state.customOpticalProfiles,
     transformRules: state.transformRules,
@@ -915,6 +922,7 @@ function createSceneSnapshot(): Omit<
     deletedComponentIds: [],
     componentNameOverrides: {},
     componentColorOverrides: {},
+    faceColorOverrides: [],
     materialAssignments: [],
     customOpticalProfiles: [],
     transformRules: [],
@@ -1259,6 +1267,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 componentColorOverrides: remapComponentRecord(
                   source.componentColorOverrides,
                 ),
+                faceColorOverrides: [],
                 materialAssignments: source.materialAssignments.flatMap(
                   (assignment) => {
                     const targetId = remapId(assignment.componentId)
@@ -1370,6 +1379,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           return { componentColorOverrides }
         })
       },
+      setFaceColor: (componentId, faceIds, color) => {
+        set((state) => ({ faceColorOverrides: updateFaceDisplayColors(state.faceColorOverrides, componentId, faceIds, color) }))
+      },
       deleteComponent: (componentId, faceIds = []) => {
         if (!Number.isSafeInteger(componentId) || componentId < 0) return
         const deletedFaceIds = new Set(normalizeIds(faceIds))
@@ -1406,6 +1418,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 ([id]) => Number(id) !== componentId,
               ),
             ),
+            faceColorOverrides: state.faceColorOverrides.filter((entry) => entry.componentId !== componentId),
             materialAssignments: state.materialAssignments.filter(
               (assignment) => assignment.componentId !== componentId,
             ),
@@ -1419,11 +1432,15 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       upsertMaterialAssignment: (assignment) => {
         const normalized = normalizeMaterialAssignment(assignment)
+        const claimed = new Set(normalized.faceIds)
         set((state) => ({
           materialAssignments: [
-            ...state.materialAssignments.filter(
-              (item) => item.assignmentId !== normalized.assignmentId,
-            ),
+            ...state.materialAssignments.flatMap((item) => {
+              if (item.assignmentId === normalized.assignmentId) return []
+              if (!normalized.enabled || normalized.targetType !== 'faces' || item.targetType !== 'faces' || item.componentId !== normalized.componentId) return [item]
+              const faceIds = item.faceIds.filter((id) => !claimed.has(id))
+              return faceIds.length ? [{ ...item, faceIds }] : []
+            }),
             normalized,
           ],
           ...invalidateRayTraceState(state),
@@ -1785,6 +1802,7 @@ export const workspaceSelectors = {
     state.componentNameOverrides,
   componentColorOverrides: (state: WorkspaceStore) =>
     state.componentColorOverrides,
+  faceColorOverrides: (state: WorkspaceStore) => state.faceColorOverrides,
   materialAssignments: (state: WorkspaceStore) =>
     state.materialAssignments,
   customOpticalProfiles: (state: WorkspaceStore) =>

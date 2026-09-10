@@ -13,6 +13,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ComponentTreePanel } from '@/features/components'
 import { AppProviders } from '@/app/providers'
 import { MaterialEditorDialog } from '@/features/materials'
+import { SurfacePropertyDialog } from '@/features/materials/surface-property-dialog'
+import { compileOpticalProfile } from '@/features/materials/material-catalog'
+import { createBitsamProject, parseBitsamProject, serializeBitsamProject } from '@/features/projects/bitsam-project'
 import {
   createFaceEmitter,
   RayTracingPanel,
@@ -95,6 +98,124 @@ afterEach(() => {
 })
 
 describe('Step 07·08 feature editors', () => {
+  it('edits face display colors without selecting a face or changing its optical property', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const actions = workspaceStore.getState().actions
+    actions.setComponentColor(1, '#2563eb')
+    actions.upsertMaterialAssignment({ assignmentId: 'face', componentId: 1, targetType: 'faces', faceIds: [0, 1],
+      baseMaterialId: 'pc_black', surfaceId: 'matte_black_resin', profileId: '', bsdfAssetId: '', enabled: true })
+    actions.setActiveRayTraceJobId('completed')
+    const original = workspaceStore.getState()
+    render(<AppProviders><SurfacePropertyDialog open onOpenChange={vi.fn()} component={scene.components[0]}
+      scene={scene} componentName="STEP Solid 1" /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Face 1 표시색' }))
+    expect(screen.getByLabelText('Face 1 사용자 정의 표시색')).toHaveProperty('value', '#2563eb')
+    fireEvent.click(screen.getByRole('button', { name: '표시색 #ef4444' }))
+    expect(workspaceStore.getState().faceColorOverrides).toEqual([{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }])
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([])
+    expect(workspaceStore.getState().materialAssignments).toBe(original.materialAssignments)
+    expect(workspaceStore.getState().activeRayTraceJobId).toBe('completed')
+    act(() => actions.setComponentColor(1, '#22c55e'))
+    expect(screen.getByLabelText('Face 1 사용자 정의 표시색')).toHaveProperty('value', '#ef4444')
+    fireEvent.click(screen.getByRole('button', { name: 'Face 2 표시색' }))
+    fireEvent.change(screen.getByLabelText('Face 2 사용자 정의 표시색'), { target: { value: '#a855f7' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Face 1 표시색' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Face 1 부품 기본색으로 되돌리기' }))
+    expect(screen.getByLabelText('Face 1 사용자 정의 표시색')).toHaveProperty('value', '#22c55e')
+    expect(workspaceStore.getState().faceColorOverrides).toEqual([{ componentId: 1, faceIds: [2], color: '#a855f7' }])
+    fireEvent.click(screen.getByLabelText('Select Face 2'))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to selected faces' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use part default' }))
+    expect(workspaceStore.getState().faceColorOverrides).toEqual([{ componentId: 1, faceIds: [2], color: '#a855f7' }])
+  })
+  it('opens component Surface Property without clearing the selected face', () => {
+    const actions = workspaceStore.getState().actions
+    actions.setFaceSelection([0, 1], [1])
+    const onEditMaterial = vi.fn()
+    render(<ComponentTreePanel scene={createSceneFixture()} onEditMaterial={onEditMaterial} onEditTransform={vi.fn()} onDelete={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Surface property for STEP Solid 1' }))
+    expect(onEditMaterial).toHaveBeenCalledWith(expect.objectContaining({ componentId: 1, surfaceOnly: true }))
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
+    expect(workspaceStore.getState().selectionKind).toBe('faces')
+  })
+
+  it('keeps face context when choosing Surface Property from the viewer menu', async () => {
+    const actions = workspaceStore.getState().actions
+    actions.setFaceSelection([0, 1], [1])
+    const onEditMaterial = vi.fn()
+    render(<ViewerWorkspace scene={createSceneFixture()} onEditMaterial={onEditMaterial} />)
+    fireEvent.contextMenu(await screen.findByLabelText('Interactive 3D CAD viewer'), { clientX: 500, clientY: 300 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Surface Property · 선택 면' }))
+    expect(onEditMaterial).toHaveBeenCalledWith(expect.objectContaining({ componentId: 1, surfaceOnly: true }))
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
+  })
+
+  it('assigns separate CAD surfaces and round-trips their properties through BITSAM and the optical request', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const actions = workspaceStore.getState().actions
+    actions.setActiveCad({ path: 'test.step', displayName: 'test.step' })
+    actions.setFaceSelection([0], [1])
+    render(<AppProviders><SurfacePropertyDialog open onOpenChange={vi.fn()} component={scene.components[0]}
+      scene={scene} componentName="STEP Solid 1" /></AppProviders>)
+    expect(screen.queryByRole('button', { name: 'Apply to part' })).toBeNull()
+    expect(screen.getAllByRole('checkbox', { name: /Select Face/ })).toHaveLength(2)
+    fireEvent.change(screen.getByLabelText('Face surface property'), { target: { value: 'semi_gloss_black_resin' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to selected faces' }))
+    expect(workspaceStore.getState().materialAssignments[0].faceIds).toEqual([0, 1])
+    act(() => actions.setFaceSelection([2], [1]))
+    const select = screen.getByLabelText('Face surface property') as HTMLSelectElement
+    const different = [...select.options].find((option) => option.value !== 'semi_gloss_black_resin')!.value
+    fireEvent.change(select, { target: { value: different } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to selected faces' }))
+    const assignments = workspaceStore.getState().materialAssignments
+    expect(assignments.map((item) => item.faceIds)).toEqual([[0, 1], [2]])
+    act(() => actions.upsertMaterialAssignment({ assignmentId: 'part', componentId: 1, targetType: 'part', faceIds: [],
+      baseMaterialId: 'pc_gray', surfaceId: 'semi_gloss_black_resin', profileId: '', bsdfAssetId: '', enabled: true }))
+    const restored = parseBitsamProject(serializeBitsamProject(createBitsamProject(scene, workspaceStore.getState())))
+    const state = workspaceStore.getState()
+    const request = buildRayTraceRequest({ scene, projectName: 'face properties', emitters: [], receivers: [],
+      materialAssignments: restored.workspace.materialAssignments, transformRules: [], excludedComponentIds: [], deletedComponentIds: [], roiScopes: [], config: state.rayTraceConfig })
+    expect(request.optical_assignments.filter((item) => item.target_type === 'faces').map((item) => item.face_indices)).toEqual([[0, 1], [2]])
+    expect(request.optical_profiles.find((item) => item.profile_id.includes(assignments[0].assignmentId))?.reflectance)
+      .toBeCloseTo(compileOpticalProfile('pc_gray', 'semi_gloss_black_resin').reflectance)
+    fireEvent.click(screen.getByRole('button', { name: 'Use part default' }))
+    expect(workspaceStore.getState().materialAssignments.filter((item) => item.targetType === 'faces').map((item) => item.faceIds)).toEqual([[0, 1]])
+  })
+
+  it('reassigns a subset without leaving hidden conflicting face overrides', () => {
+    const actions = workspaceStore.getState().actions
+    const assignment = { assignmentId: 'old', componentId: 1, targetType: 'faces' as const, faceIds: [0, 1, 2], baseMaterialId: 'pc_black',
+      surfaceId: 'semi_gloss_black_resin', profileId: '', bsdfAssetId: '', enabled: true }
+    actions.upsertMaterialAssignment(assignment)
+    actions.upsertMaterialAssignment({ ...assignment, assignmentId: 'new', faceIds: [2] })
+    expect(workspaceStore.getState().materialAssignments.map((item) => item.faceIds)).toEqual([[0, 1], [2]])
+    actions.removeMaterialAssignment('new')
+    expect(workspaceStore.getState().materialAssignments.map((item) => item.faceIds)).toEqual([[0, 1]])
+  })
+
+  it('lists original CAD faces while disabling faces outside the active ROI', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const actions = workspaceStore.getState().actions
+    actions.addRoiScope({ source: 'box', view: 'coordinate',
+      clipBox: { plane: 'xyz', xMin: 0, xMax: 40, yMin: 0, yMax: 40, zMin: -1, zMax: 20 },
+      components: [{ componentId: 1, componentName: 'STEP Solid 1', faceIds: [0], areaMm2: 100,
+        bboxMin: { x: 0, y: 0, z: 0 }, bboxMax: { x: 40, y: 40, z: 20 } }],
+    })
+    render(<AppProviders><SurfacePropertyDialog open onOpenChange={vi.fn()} component={scene.components[0]}
+      scene={scene} componentName="STEP Solid 1" /></AppProviders>)
+    expect(screen.getByLabelText('Select Face 2')).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Face 2 표시색' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Face 1 표시색' }))
+    fireEvent.click(screen.getByRole('button', { name: '표시색 #ef4444' }))
+    expect(workspaceStore.getState().faceColorOverrides).toEqual([{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }])
+    fireEvent.click(screen.getByLabelText('Select Face 1'))
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0])
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to selected faces' }))
+    expect(workspaceStore.getState().materialAssignments[0].faceIds).toEqual([0, 1])
+  })
   it('renders ScenePayload components in the Viewer state bridge', async () => {
     render(<ViewerWorkspace scene={createSceneFixture()} />)
 
@@ -1158,7 +1279,7 @@ describe('Step 07·08 feature editors', () => {
     ])
   })
 
-  it('applies an ROI CAD face property only to the picked face IDs, not its parent part', () => {
+  it('applies an ROI CAD face property to the original CAD face, not its parent part', () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
     const actions = workspaceStore.getState().actions
@@ -1194,7 +1315,7 @@ describe('Step 07·08 feature editors', () => {
     })
     fireEvent.click(apply)
     expect(workspaceStore.getState().materialAssignments).toEqual([
-      expect.objectContaining({ componentId: 1, targetType: 'faces', faceIds: [0] }),
+      expect.objectContaining({ componentId: 1, targetType: 'faces', faceIds: [0, 1] }),
     ])
     const state = workspaceStore.getState()
     const request = buildRayTraceRequest({
@@ -1210,12 +1331,12 @@ describe('Step 07·08 feature editors', () => {
       config: state.rayTraceConfig,
     })
     expect(request.optical_assignments).toEqual([
-      expect.objectContaining({ component_id: 1, target_type: 'faces', face_indices: [0] }),
+      expect.objectContaining({ component_id: 1, target_type: 'faces', face_indices: [0, 1] }),
     ])
     expect(request.roi_faces).toEqual([0, 2])
     expect(workspaceStore.getState().selectionKind).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Edit face group 1 surface property' }))
-    expect(workspaceStore.getState().selectedFaceIds).toEqual([0])
+    expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
     expect(workspaceStore.getState().selectionKind).toBe('faces')
   })
 

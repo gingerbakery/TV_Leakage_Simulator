@@ -122,6 +122,19 @@
 - transform preview:
   - 대상은 component id 또는 face id 집합으로 표현한다.
 
+- ROI skin의 재질·선택·CAD 면 광원 색상은 동일한 삼각형 geometry의 material group에 합성한다. 동일 위치에 polygon-offset mesh를 중첩하여 경계의 깊이 충돌을 재발시키지 않는다.
+- ROI material group을 갱신할 때 position, normal, triangle 순서 및 `sourceFaceIds`를 변경하지 않는다. Picking과 ray tracing의 ID 계약은 표시 색상과 독립적이다.
+- ROI cap의 빗금 표시와 원본 CAD 면의 선택은 분리한다. 가상 cap에 물성을 부여하기 위해 임의의 원본 face ID를 붙이지 않는다.
+
+## 면별 Display Color (2026-09-10)
+- 표시색 우선순위: `faceColorOverrides` → `componentColorOverrides` → CAD 원본색 → 기본 팔레트.
+- `faceColorOverrides`는 `{ componentId, faceIds, color }[]` 형식이다. `faceIds`는 원본 CAD 면을 구성하는 scene 삼각형 ID의 집합이며, `color`는 `#rrggbb`이다.
+- 색상 선택은 원본 CAD 면 전체에 적용한다. ROI에 해당 면 일부만 보여도 다른 ROI나 전체 뷰에서 동일한 면색을 유지한다. 빗금으로 표시하는 가상 절단면에는 적용하지 않는다.
+- Full CAD는 기존 indexed geometry의 vertex color, ROI는 기존 skin의 material group을 사용한다. 색상만을 위한 coplanar overlay나 삼각형 재분할을 추가하지 않는다.
+- 선택/광원 하이라이트는 표시색 위에 일시적으로 표시할 수 있으나 저장된 면색을 변경하지 않는다.
+- Components의 색상 변경은 부품 기본색을 바꾼다. 면별 지정색은 유지하며, 면 팔레트의 `부품 기본색으로 되돌리기`로 개별 해제한다.
+- `.bitsam`과 Case 상태에 색상을 저장한다. 구버전의 필드 누락은 빈 목록이다. 다른 CAD에 설정만 불러오기/Copy Setup에서는 면 ID를 검증할 수 없으므로 면색을 복사하지 않는다.
+
 ## 현재 제한
 - component id는 scene payload 내부에서만 안정적이다.
 - STEP 원본의 assembly 이름이나 CAD feature 이름은 아직 보존하지 않는다.

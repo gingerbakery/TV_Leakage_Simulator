@@ -38,6 +38,7 @@ import {
   opticalProfilePresets,
   surfacePropertiesForCategory,
 } from './material-catalog'
+import { componentCadSurfaces } from './surface-assignment-model'
 
 interface MaterialEditorDialogProps {
   open: boolean
@@ -138,14 +139,16 @@ function OpticalValueEditor({
   )
 }
 
-function CompiledPreview({
+export function CompiledPreview({
   baseMaterialId,
   surfaceId,
   opticalOverride,
+  compact = false,
 }: {
   baseMaterialId: string
   surfaceId: string
   opticalOverride?: OpticalValueOverride
+  compact?: boolean
 }) {
   const catalogProfile = compileOpticalProfile(baseMaterialId, surfaceId)
   const compiledProfile = opticalOverride
@@ -163,7 +166,7 @@ function CompiledPreview({
         <Sparkles className="size-3.5 text-primary" />
         Compiled optical preview
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className={`mt-3 grid grid-cols-2 gap-2 ${compact ? '' : 'sm:grid-cols-4'}`}>
         {[
           ['Reflectance', compiledProfile.reflectance.toFixed(3)],
           ['Loss', compiledProfile.loss.toFixed(3)],
@@ -291,8 +294,15 @@ export function MaterialEditorDialog({
     [component],
   )
   const targetFaceIds = useMemo(
-    () => selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId)),
-    [componentFaceIds, selectedFaceIds],
+    () => {
+      const picked = selectedFaceIds.filter((faceId) => componentFaceIds.has(faceId))
+      if (!scene || !component || !scene.mesh.face_source_ids) return picked
+      const selected = new Set(picked)
+      return componentCadSurfaces(scene, component)
+        .filter((group) => group.faceIds.some((id) => selected.has(id)))
+        .flatMap((group) => group.faceIds)
+    },
+    [scene, component, componentFaceIds, selectedFaceIds],
   )
   const cadFaceCount = (faceIds: number[]) => {
     const sourceIds = scene?.mesh.face_source_ids

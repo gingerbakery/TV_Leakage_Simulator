@@ -687,6 +687,7 @@ describe('workspace store', () => {
       deletedComponentIds: [5],
       componentNameOverrides: { 3: 'Frame Middle' },
       componentColorOverrides: { 3: '#336699' },
+      faceColorOverrides: [],
       materialAssignments: [],
       customOpticalProfiles: [],
       transformRules: [],

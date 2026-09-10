@@ -64,6 +64,17 @@ Material Library에서 `OpticalProfile`을 생성할 때의 반사율 우선순�
 
 Assignment가 존재하지만 해당 `profile_id`가 전달되지 않았으면 그 assignment는 건너뛰고 다음 fallback을 조회한다.
 
+### React 면별 관리 규칙 (2026-09-10)
+- Components의 Surface Property 아이콘과 Viewer 우클릭의 Surface Property는 동일한 면별 관리창을 연다. 부품 Material 설정과 별도 진입점이다.
+- 면 선택 상태에서 우클릭해도 부품 전체 선택으로 확대하지 않는다. 같은 부품의 선택 면 안에서 우클릭하면 다중 면 선택을 유지하고, 다른 면을 우클릭하면 해당 CAD 면을 선택한다.
+- UI의 Face 항목은 `(component_id, mesh.face_source_ids)` 기준의 원본 CAD 면이다. 화면용 삼각형 하나를 독립 CAD 면으로 취급하지 않는다.
+- ROI는 선택 가능한 화면 영역을 제한한다. 적용 시에는 해당 원본 CAD 면의 삼각형 ID 전체를 assignment에 저장한다. 같은 부품의 다른 CAD 면에는 전파하지 않는다. 기존 Material 창의 면 그룹 편집에도 같은 규칙을 사용한다.
+- API의 `face_indices`에는 여전히 scene 원본 삼각형 index를 전달한다. `mesh.face_source_ids`의 CAD topology ID와 혼용하지 않으며, Viewer/Trace mesh 사이의 기존 bridge 매핑을 유지한다.
+- ROI 절단면(cap)은 표시용 가상 면이며 물성·Emitter 대상에 추가하지 않는다. ROI 밖의 원본 면은 목록에 남기되 선택을 비활성화한다.
+- Face Override의 Base Material은 해석 요청을 만들 때 현재 활성 Part Assignment에서 상속한다. Part Assignment가 없으면 face assignment의 저장된 base를 사용한다. Surface Property는 해당 면의 지정값을 유지한다.
+- 활성 Face Override를 새로 적용하면 같은 부품의 이전 face assignment에서 중복 ID를 제거한다. `Use part default`는 선택 면의 override만 제거하며, 다른 면과 Part Assignment는 유지한다.
+- `.bitsam`은 기존 `materialAssignments` 형식으로 저장한다. 좌표형 ROI의 `clipBox.plane = xyz`도 유효한 저장 형식이다.
+
 ## 충돌 이벤트 출력 계약
 Surface `RayHit`에는 다음 항목을 기록한다.
 
@@ -122,6 +133,7 @@ Emitter event → first surface event → Receiver 또는 secondary surface even
 `unassigned_surface_hit_count > 0`이면 분석 결과에 미지정 optical property 경고를 표시해야 한다.
 
 ## 개발 경계
+- `faceColorOverrides`와 `componentColorOverrides`는 시각적 표시 전용이다. 반사율/산란 모델/재료 assignment와 독립적이며 광학 요청에 전송하지 않는다. 표시색 변경 및 초기화는 완료된 해석 결과를 무효화하지 않는다.
 - CAD 담당: `component_id`, `source_face_index`, `material_id`를 안정적으로 유지한다.
 - Material 담당: profile/assignment를 생성하고 ID 참조 무결성을 유지한다.
 - Ray Tracing 담당: 조회 우선순위를 변경하지 않고 energy conservation을 보장한다.

@@ -36,6 +36,7 @@ export type ComponentContextAction =
   | 'visibility'
   | 'traceability'
   | 'material'
+  | 'surface'
   | 'transform'
   | 'delete'
 
@@ -49,6 +50,7 @@ export interface ComponentContextMenuProps {
 
 export interface ViewerComponentActionMenuProps {
   componentName: string
+  faceCount?: number
   open: boolean
   position: { x: number; y: number }
   visible: boolean
@@ -121,6 +123,9 @@ export function ComponentContextMenu({
           Transform
           <ContextMenuShortcut>T</ContextMenuShortcut>
         </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onAction('surface')}>
+          <ScanLine />Surface Property
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           variant="destructive"
@@ -136,6 +141,7 @@ export function ComponentContextMenu({
 
 export function ViewerComponentActionMenu({
   componentName,
+  faceCount = 0,
   open,
   position,
   visible,
@@ -175,7 +181,7 @@ export function ViewerComponentActionMenu({
     8,
     Math.min(
       position.y,
-      window.innerHeight - (colorPaletteOpen ? 348 : 272),
+      window.innerHeight - (colorPaletteOpen ? 388 : 312),
     ),
   )
   const select = (action: ComponentContextAction) => {
@@ -254,6 +260,7 @@ export function ViewerComponentActionMenu({
           <span className="mt-0.5 block text-xs text-muted-foreground">
             {visible ? 'Visible' : 'Hidden'} ·{' '}
             {traceable ? 'Traceability on' : 'Traceability off'}
+            {faceCount > 0 ? ` · CAD 면 ${faceCount}개 선택` : ''}
           </span>
         </div>
         <div className="-mx-1 my-1 h-px bg-border" />
@@ -311,6 +318,9 @@ export function ViewerComponentActionMenu({
           <span className="ml-auto text-xs tracking-widest text-muted-foreground">
             M
           </span>
+        </button>
+        <button type="button" role="menuitem" className={itemClassName} onClick={() => select('surface')}>
+          <ScanLine />{faceCount > 0 ? 'Surface Property · 선택 면' : 'Surface Property · 면 관리'}
         </button>
         <button
           type="button"

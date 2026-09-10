@@ -852,8 +852,11 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
     if (!assignment.enabled) continue
     const profileId =
       assignment.profileId.trim() || `compiled-${assignment.assignmentId}`
+    const baseMaterialId = assignment.targetType === 'faces'
+      ? assignments.findLast((item) => item.enabled && item.targetType === 'part' && item.componentId === assignment.componentId)?.baseMaterialId ?? assignment.baseMaterialId
+      : assignment.baseMaterialId
     const compiled = compileOpticalProfile(
-      assignment.baseMaterialId,
+      baseMaterialId,
       assignment.surfaceId,
     )
     const custom = assignment.opticalOverride
@@ -867,7 +870,7 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
       roughness: compiled.roughness,
       gaussian_sigma_deg: compiled.scatterSigmaDeg,
       bsdf_asset_id: assignment.bsdfAssetId || null,
-      notes: `Compiled from ${assignment.baseMaterialId} / ${assignment.surfaceId}`,
+      notes: `Compiled from ${baseMaterialId} / ${assignment.surfaceId}`,
     })
     opticalAssignments.push({
       assignment_id: assignment.assignmentId,

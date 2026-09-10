@@ -1,3 +1,4 @@
+export type { FaceDisplayColor } from './face-display-color'
 export {
   createWorkspaceStore,
   defaultRayPathDisplayFilters,
