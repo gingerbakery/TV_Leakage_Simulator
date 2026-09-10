@@ -17,6 +17,7 @@ release/
 build/
 dist/
 *.zip
+*.bitsam
 
 # Embedded/local runtimes
 _tools/

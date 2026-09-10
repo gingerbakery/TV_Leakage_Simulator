@@ -13,6 +13,7 @@ export interface JsonRequestOptions extends Omit<RequestInit, 'body'> {
 }
 
 export interface HttpClient {
+  requestResponse(path: string, options?: RequestInit): Promise<Response>
   requestJson<T>(path: string, options?: JsonRequestOptions): Promise<T>
   requestText(path: string, options?: RequestInit): Promise<string>
   requestArrayBuffer(path: string, options?: RequestInit): Promise<ArrayBuffer>
@@ -126,6 +127,9 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
   }
 
   return {
+    requestResponse(path, requestOptions = {}) {
+      return request(path, requestOptions)
+    },
     async requestJson<T>(
       path: string,
       requestOptions: JsonRequestOptions = {},

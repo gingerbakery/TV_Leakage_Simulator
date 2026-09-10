@@ -49,6 +49,7 @@ export interface BitsamProject {
   project_name: string
   cad: BitsamCadReference
   workspace: WorkspaceProjectState
+  case_metadata?: { name?: string; note?: string }
   /** Last completed analysis, including receiver grids and stored ray paths. */
   analysis_result?: RayTraceResult | null
 }
@@ -613,6 +614,7 @@ export function createBitsamProject(
   }
 
   const displayName = workspace.activeCad.displayName
+  const activeCase = workspace.cadCases.find((item) => item.caseId === workspace.activeCadCaseId)
   return {
     format: bitsamFormat,
     schema_version: bitsamSchemaVersion,
@@ -626,6 +628,7 @@ export function createBitsamProject(
       fingerprint: createSceneFingerprint(scene),
     },
     workspace: createWorkspaceProjectState(workspace),
+    case_metadata: activeCase ? { name: activeCase.name, note: activeCase.note } : undefined,
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
@@ -648,6 +651,7 @@ export function createBitsamProjectFromLoadedProject(
     saved_at: savedAt.toISOString(),
     project_name: loadedProject.project_name,
     cad: structuredClone(loadedProject.cad),
+    case_metadata: loadedProject.case_metadata ? structuredClone(loadedProject.case_metadata) : undefined,
     workspace: createWorkspaceProjectState(workspace),
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
@@ -693,6 +697,10 @@ export function parseBitsamProject(source: string): BitsamProject {
     !isString(parsed.project_name) ||
     !isBitsamCadReference(parsed.cad) ||
     !isWorkspaceProjectState(parsed.workspace) ||
+    (parsed.case_metadata !== undefined &&
+      (!isRecord(parsed.case_metadata) ||
+        (parsed.case_metadata.name !== undefined && !isString(parsed.case_metadata.name)) ||
+        (parsed.case_metadata.note !== undefined && !isString(parsed.case_metadata.note)))) ||
     (parsed.analysis_result !== undefined &&
       parsed.analysis_result !== null &&
       !isSavedRayTraceResult(parsed.analysis_result))

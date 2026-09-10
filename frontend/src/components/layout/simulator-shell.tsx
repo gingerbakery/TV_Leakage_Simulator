@@ -10,10 +10,14 @@ import {
 } from 'react'
 import {
   apiClient,
+  apiQueryKeys,
   useRayTraceJobQuery,
   useSceneQuery,
   type RayTraceResult,
 } from '@/api'
+import { useQueryClient } from '@tanstack/react-query'
+import { isPortableProject, loadPortableProject, savePortableProject } from '@/features/projects/portable-project'
+import { ProjectFileDialog, type ProjectFileNotice } from '@/features/projects/project-file-dialog'
 import {
   Box,
   BookOpen,
@@ -22,6 +26,7 @@ import {
   FolderOpen,
   Moon,
   Save,
+  LoaderCircle,
   Sun,
 } from 'lucide-react'
 
@@ -38,7 +43,7 @@ import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
 import { SurfacePropertyDialog } from '@/features/materials/surface-property-dialog'
 import {
-  BitsamProjectError,
+  bitsamDownloadFileName,
   compareBitsamProjectScene,
   createBitsamSettingsOnlyState,
   createBitsamProject,
@@ -101,6 +106,8 @@ function clampWorkflowSidebarWidth(
 }
 
 export function SimulatorShell() {
+  const queryClient = useQueryClient()
+  const [projectProgress, setProjectProgress] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     window.localStorage.getItem('tv-leakage-theme') === 'dark'
       ? 'dark'
@@ -142,6 +149,7 @@ export function SimulatorShell() {
     description: string
     action?: 'select-gpu'
   } | null>(null)
+  const [projectFileNotice, setProjectFileNotice] = useState<ProjectFileNotice | null>(null)
   const [copySetupOpen, setCopySetupOpen] = useState(false)
   const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
   const [copySetupPending, setCopySetupPending] = useState(false)
@@ -151,6 +159,7 @@ export function SimulatorShell() {
   const [loadedProjectSource, setLoadedProjectSource] =
     useState<BitsamProject | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
+  const projectFileReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
   const projectFileInputRef = useRef<HTMLInputElement>(null)
   const projectLoadAttemptRef = useRef('')
@@ -424,6 +433,16 @@ export function SimulatorShell() {
     setLoadedProjectSource(pendingProject)
     setPendingProject(null)
     projectLoadAttemptRef.current = ''
+    if (!restoredLegacyCpu) {
+      setProjectFileNotice({
+        operation: 'load',
+        fileName: bitsamDownloadFileName(pendingProject),
+        includesCad: true,
+        includesResult: !!pendingProject.analysis_result,
+        notes: compatibility.warnings,
+      })
+      return
+    }
     openFeatureNotice(
       restoredLegacyCpu
         ? 'CPU 모드로 프로젝트를 불러왔습니다'
@@ -441,6 +460,9 @@ export function SimulatorShell() {
   }, [actions, activeCad, pendingProject, scene])
 
   const handleSaveProject = async () => {
+    if (document.activeElement instanceof HTMLElement) {
+      projectFileReturnFocusRef.current = document.activeElement
+    }
     if ((!activeCad || !scene) && !canReuseLoadedProjectReference) {
       openFeatureNotice(
         '저장할 CAD가 없습니다',
@@ -463,16 +485,27 @@ export function SimulatorShell() {
             new Date(),
             displayedRayTraceResult,
           )
+      if (activeCad && scene) {
+        setProjectProgress('저장 위치 선택 중…')
+        const saved = await savePortableProject(project, scene.metadata.scene_token, setProjectProgress)
+        if (!saved.cancelled) setProjectFileNotice({
+          operation: 'save',
+          fileName: bitsamDownloadFileName(project),
+          includesCad: true,
+          includesResult: !!project.analysis_result,
+          downloadStarted: !!saved.downloaded,
+        })
+        return
+      }
       const saveResult = await saveBitsamProject(project)
       if (saveResult === 'cancelled') return
-      openFeatureNotice(
-        'BITSAM 프로젝트 저장 완료',
-        saveResult === 'picked'
-          ? `${project.project_name}.bitsam 파일을 선택한 위치에 저장했습니다. 원본 CAD 파일은 포함되지 않으므로 함께 보관해 주세요.`
-          : saveResult === 'fallback-downloaded'
-            ? `저장 위치 선택 기능을 사용할 수 없어 ${project.project_name}.bitsam 파일을 다운로드 폴더에 안전하게 저장했습니다.`
-            : `${project.project_name}.bitsam 파일을 다운로드 폴더에 저장했습니다. 이 브라우저에서는 저장 위치 선택을 지원하지 않습니다.`,
-      )
+      setProjectFileNotice({
+        operation: 'save',
+        fileName: bitsamDownloadFileName(project),
+        includesCad: false,
+        includesResult: !!project.analysis_result,
+        downloadStarted: saveResult !== 'picked',
+      })
     } catch (error) {
       openFeatureNotice(
         'BITSAM 프로젝트 저장 실패',
@@ -480,6 +513,8 @@ export function SimulatorShell() {
           ? error.message
           : '알 수 없는 오류가 발생했습니다.',
       )
+    } finally {
+      setProjectProgress('')
     }
   }
 
@@ -491,6 +526,30 @@ export function SimulatorShell() {
     if (!file) return
 
     try {
+      if (await isPortableProject(file)) {
+        const restored = await loadPortableProject(file, setProjectProgress)
+        queryClient.setQueryData(apiQueryKeys.scene(restored.cad.path), restored.scene)
+        setPendingProject(null)
+        actions.addCadCase(restored.cad)
+        const restoredCaseId = workspaceStore.getState().activeCadCaseId
+        if (restoredCaseId && restored.project.case_metadata) {
+          actions.updateCadCaseMetadata(restoredCaseId, restored.project.case_metadata.name ?? '', restored.project.case_metadata.note ?? '')
+        }
+        actions.restoreProjectState(restored.project.workspace)
+        actions.setRestoredRayTraceResult(restored.project.analysis_result ?? null)
+        if (restored.project.analysis_result) actions.setActiveCadCaseResult(restored.project.analysis_result)
+        setLoadedProjectSource(restored.project)
+        setDisplayedRayTraceResult(restored.project.analysis_result ?? null)
+        setActiveSection(restored.project.analysis_result ? 'result' : 'model-import')
+        setProjectFileNotice({
+          operation: 'load',
+          fileName: file.name,
+          includesCad: true,
+          includesResult: !!restored.project.analysis_result,
+          notes: restored.traceCached ? [] : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
+        })
+        return
+      }
       const project = await readBitsamProjectFile(file)
       projectLoadAttemptRef.current = ''
       setPendingProject(project)
@@ -504,10 +563,12 @@ export function SimulatorShell() {
       setPendingProject(null)
       openFeatureNotice(
         'BITSAM 프로젝트 불러오기 실패',
-        error instanceof BitsamProjectError
+        error instanceof Error
           ? error.message
           : '파일을 읽는 중 알 수 없는 오류가 발생했습니다.',
       )
+    } finally {
+      setProjectProgress('')
     }
   }
 
@@ -734,6 +795,14 @@ export function SimulatorShell() {
 
   return (
     <div className="grid min-h-svh w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)] bg-background text-foreground lg:h-svh lg:grid-rows-[3.25rem_minmax(0,1fr)] lg:overflow-hidden">
+      {projectProgress && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-background/70 backdrop-blur-sm" role="status" aria-live="polite">
+          <div className="flex items-center gap-3 rounded-xl border bg-card p-6 shadow-lg">
+            <LoaderCircle className="size-5 animate-spin" />
+            <span>{projectProgress}</span>
+          </div>
+        </div>
+      )}
       <header className="sticky top-0 z-30 flex h-13 items-center justify-between border-b border-border bg-background/92 px-3 backdrop-blur-xl lg:static lg:px-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
@@ -758,7 +827,7 @@ export function SimulatorShell() {
           <input
             ref={projectFileInputRef}
             type="file"
-            accept=".bitsam,application/vnd.bitsam+json"
+            accept=".bitsam,application/vnd.bitsam+json,application/vnd.bitsam+zip"
             className="hidden"
             aria-label="BITSAM project file"
             onChange={handleLoadProject}
@@ -768,11 +837,12 @@ export function SimulatorShell() {
             size="sm"
             aria-label="Save BITSAM project"
             disabled={
-              (!activeCad || !scene) && !canReuseLoadedProjectReference
+              !!projectProgress || rayTraceJob?.status === 'running' || rayTraceJob?.status === 'queued' ||
+              ((!activeCad || !scene) && !canReuseLoadedProjectReference)
             }
             title={
               (activeCad && scene) || canReuseLoadedProjectReference
-                ? '현재 시뮬레이션을 .bitsam 파일로 저장'
+                ? '현재 Case의 CAD·설정·결과를 .bitsam 파일 하나로 저장'
                 : 'CAD를 먼저 불러와 주세요'
             }
             onClick={handleSaveProject}
@@ -798,8 +868,12 @@ export function SimulatorShell() {
             variant="outline"
             size="sm"
             aria-label="Load BITSAM project"
+            disabled={!!projectProgress || rayTraceJob?.status === 'running' || rayTraceJob?.status === 'queued'}
             title=".bitsam 시뮬레이션 파일 불러오기"
-            onClick={() => projectFileInputRef.current?.click()}
+            onClick={(event) => {
+              projectFileReturnFocusRef.current = event.currentTarget
+              projectFileInputRef.current?.click()
+            }}
           >
             <FolderOpen data-icon="inline-start" />
             <span className="hidden sm:inline">Load</span>
@@ -1090,6 +1164,12 @@ export function SimulatorShell() {
             ) : null}
           </>
         }
+      />
+
+      <ProjectFileDialog
+        notice={projectFileNotice}
+        onClose={() => setProjectFileNotice(null)}
+        returnFocusRef={projectFileReturnFocusRef}
       />
 
       <MaterialEditorDialog

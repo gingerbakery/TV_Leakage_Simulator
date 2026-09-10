@@ -1,4 +1,6 @@
-# BITSAM 시뮬레이션 프로젝트 파일
+# BITSAM V1 설정 문서 (이전 형식)
+
+현재 CAD가 열린 상태의 Save는 원본 CAD를 포함하는 **V2 패키지**를 생성한다. 새 저장 방식과 제한 사항은 [BITSAM V2](bitsam-portable-v2.md)를 참고한다. 아래는 기존 JSON V1 및 V2 내부 `project.json`의 설정 구조 설명이다.
 
 ## 목적
 
@@ -32,6 +34,8 @@
 - Emitter와 Receiver 정의
 - Ray tracing 설정
 - Ray path 표시 필터
+- Component/Face 색상, 사용자 광학 프로파일
+- 선택적 마지막 분석 결과: Receiver grid, 지표, Stored paths
 
 ## 저장되지 않는 항목
 
@@ -40,7 +44,6 @@
 - 현재 선택한 면 또는 부품
 - 편집 중인 Preview와 팝업 상태
 - 실행 중인 Ray tracing Job ID
-- 완료된 Ray tracing 결과
 
 로컬 절대 경로를 저장하지 않으므로 사내 경로 정보가 프로젝트 파일에 포함되지 않는다.
 
@@ -78,4 +81,4 @@
 
 - 스키마 변경 시 `bitsam-project.v2`처럼 버전을 올린다.
 - 새 버전 구현 시 이전 버전 마이그레이션 함수를 별도로 제공한다.
-- 원본 CAD와 결과까지 포함하는 단일 휴대형 패키지는 V2 이후 별도 옵션으로 검토한다.
+- 원본 CAD와 형상 캐시를 포함하는 V2 패키지는 `bitsam-portable-v2.md`를 참고한다.
