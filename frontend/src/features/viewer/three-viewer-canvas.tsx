@@ -259,6 +259,8 @@ interface FacePlacementFrame {
 
 const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
+const surfaceEdgeColor = 0x000000
+const wireframeEdgeColor = 0xb9d5e8
 const emitterOverlayColor = 0xfacc15
 const emitterDirectionColor = 0xffb000
 // The "this part is selected / being edited" tint is amber/gold
@@ -1590,7 +1592,7 @@ function createComponentNode(
   const edges = new LineSegments(
     edgeGeometry,
     new LineBasicMaterial({
-      color: 0xb9d5e8,
+      color: surfaceEdgeColor,
       transparent: true,
       opacity: 0.72,
       depthTest: true,
@@ -3668,9 +3670,9 @@ export function ThreeViewerCanvas({
           const featureEdges = new LineSegments(
             clipped.featureEdgeGeometry,
             new LineBasicMaterial({
-              color: 0xd7edf8,
+              color: isWireframe ? wireframeEdgeColor : surfaceEdgeColor,
               transparent: true,
-              opacity: isWireframe ? 0.82 : 0.74,
+              opacity: isWireframe ? 0.82 : 0.88,
               depthTest: true,
               depthWrite: false,
             }),
@@ -3683,7 +3685,7 @@ export function ThreeViewerCanvas({
           const capEdges = new LineSegments(
             clipped.capEdgeGeometry,
             new LineBasicMaterial({
-              color: 0xe0f2fe,
+              color: isWireframe ? 0xe0f2fe : surfaceEdgeColor,
               transparent: true,
               opacity: isWireframe ? 0.72 : 0.9,
               depthTest: true,
@@ -4383,15 +4385,19 @@ export function ThreeViewerCanvas({
       node.hiddenEdges.material.opacity = 0.16
       node.edges.visible = renderMode !== 'Surface'
       node.edges.material.color.set(
-        showHighlightedEdges ? highlightColor : 0xb9d5e8,
+        showHighlightedEdges
+          ? highlightColor
+          : isWireframe
+            ? wireframeEdgeColor
+            : surfaceEdgeColor,
       )
       node.edges.material.opacity = showHighlightedEdges
         ? 1
         : isWireframe
           ? 0.82
           : denseScene
-            ? 0.32
-            : 0.62
+            ? 0.52
+            : 0.82
 
       clearGroup(node.emitterOverlayRoot)
       clearGroup(node.materialOverlayRoot)
