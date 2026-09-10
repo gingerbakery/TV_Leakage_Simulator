@@ -329,6 +329,17 @@ function normalizeIds(ids: Iterable<number>): number[] {
     .sort((left, right) => left - right)
 }
 
+function normalizeEmitter(emitter: EmitterSpec): EmitterSpec {
+  return {
+    ...emitter,
+    face_indices: normalizeIds(emitter.face_indices),
+    ...(emitter.source_face_indices
+      ? { source_face_indices: normalizeIds(emitter.source_face_indices) }
+      : {}),
+    ray_count: Math.max(1, Math.trunc(emitter.ray_count || 1)),
+  }
+}
+
 function toggleId(ids: number[], id: number): number[] {
   if (!Number.isSafeInteger(id) || id < 0) {
     return ids
@@ -890,16 +901,29 @@ function invalidateReceiverRayTraceState(
   }
 }
 
+function canonicalSerializable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalSerializable)
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalSerializable(entry)]),
+    )
+  }
+  return value
+}
+
+function sameSerializableValue(current: unknown, next: unknown): boolean {
+  return current === next || JSON.stringify(canonicalSerializable(current)) ===
+    JSON.stringify(canonicalSerializable(next))
+}
+
 function samePlacementPreview(
   current: EmitterSpec | ReceiverSpec | null,
   next: EmitterSpec | ReceiverSpec | null,
 ): boolean {
-  return (
-    current === next ||
-    (current !== null &&
-      next !== null &&
-      JSON.stringify(current) === JSON.stringify(next))
-  )
+  return sameSerializableValue(current, next)
 }
 
 function createSceneSnapshot(): Omit<
@@ -1576,19 +1600,24 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set({ roiDraftLabel })
       },
       upsertEmitter: (emitter) => {
-        set((state) => ({
-          emitters: [
-            ...state.emitters.filter(
-              (item) => item.emitter_id !== emitter.emitter_id,
-            ),
-            {
-              ...emitter,
-              face_indices: normalizeIds(emitter.face_indices),
-              ray_count: Math.max(1, Math.trunc(emitter.ray_count || 1)),
-            },
-          ],
-          ...invalidateRayTraceState(state),
-        }))
+        set((state) => {
+          const normalized = normalizeEmitter(emitter)
+          const current = state.emitters.find(
+            (item) => item.emitter_id === normalized.emitter_id,
+          )
+          if (current && sameSerializableValue(current, normalized)) {
+            return state
+          }
+          return {
+            emitters: [
+              ...state.emitters.filter(
+                (item) => item.emitter_id !== normalized.emitter_id,
+              ),
+              normalized,
+            ],
+            ...invalidateRayTraceState(state),
+          }
+        })
       },
       setEmitterRayCount: (rayCount) => {
         const normalizedRayCount = Math.max(

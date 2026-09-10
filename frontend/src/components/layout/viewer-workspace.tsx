@@ -43,6 +43,7 @@ import type {
 } from '@/features/raytracing'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import { RayTraceResultWindow } from '@/features/results'
+import { useLeakPreviewStore } from '@/features/leak-preview/leak-preview-store'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -187,6 +188,15 @@ export function ViewerWorkspace({
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
   )
+  const ignoreAreaSelectionArmed = useLeakPreviewStore(
+    (state) => state.ignoreAreaSelectionArmed,
+  )
+  const addLeakPreviewIgnoreArea = useLeakPreviewStore(
+    (state) => state.addIgnoreArea,
+  )
+  const setIgnoreAreaSelectionArmed = useLeakPreviewStore(
+    (state) => state.setIgnoreAreaSelectionArmed,
+  )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
   )
@@ -218,6 +228,14 @@ export function ViewerWorkspace({
     ({ clipBox, view }: RoiBoxSelectionResult) => {
       if (!scene) return
 
+      if (ignoreAreaSelectionArmed) {
+        addLeakPreviewIgnoreArea({ clipBox })
+        setIgnoreAreaSelectionArmed(false)
+        actions.setRoiBoxSelectionArmed(false)
+        setStatusMessage('Ignore Area 추가')
+        return
+      }
+
       const faceIds = resolveFacesInRoiBox(
         scene,
         clipBox,
@@ -248,11 +266,14 @@ export function ViewerWorkspace({
     },
     [
       actions,
+      addLeakPreviewIgnoreArea,
       componentNameOverrides,
       deletedComponentIds,
       hiddenComponentIds,
+      ignoreAreaSelectionArmed,
       roiDraftLabel,
       scene,
+      setIgnoreAreaSelectionArmed,
     ],
   )
 

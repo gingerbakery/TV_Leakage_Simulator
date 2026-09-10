@@ -46,7 +46,6 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
-  receiverHeatmapPhysicalScale,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -719,7 +718,6 @@ function ReceiverHeatmap({
   errorTargetPercent,
   sampleCount,
   faceSourceIds,
-  physicalScalePxPerMm,
 }: {
   grid: ReceiverGrid
   receiver: ReceiverSpec
@@ -737,7 +735,6 @@ function ReceiverHeatmap({
   errorTargetPercent: number
   sampleCount: number
   faceSourceIds?: number[]
-  physicalScalePxPerMm?: number
 }) {
   const receiverLabel = rayObjectDisplayName(
     'receiver',
@@ -769,7 +766,6 @@ function ReceiverHeatmap({
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
-    physicalScalePxPerMm,
   )
   const columns = Math.max(1, grid.resolution[0])
   const rows = Math.max(1, grid.resolution[1])
@@ -1902,10 +1898,6 @@ export function RayTraceResultWindow({
     ]),
   )
   const orderedResultReceivers = receiversInDisplayOrder(result.receivers)
-  const heatmapPhysicalScalePxPerMm = receiverHeatmapPhysicalScale(
-    orderedResultReceivers,
-  )
-
   const begin = (
     event: ReactPointerEvent,
     kind: PointerOperation['kind'],
@@ -3009,7 +3001,6 @@ export function RayTraceResultWindow({
                               result.total_rays,
                           )}
                           faceSourceIds={scene?.mesh.face_source_ids}
-                          physicalScalePxPerMm={heatmapPhysicalScalePxPerMm}
                         />
                       </div>
                     ) : null}

@@ -152,6 +152,26 @@ describe('workspace store', () => {
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-b')
   })
 
+  it('preserves Ray results when an unchanged Emitter is applied again', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const emitter = createFaceEmitter('emitter-001', [11, 10, 11])
+    actions.upsertEmitter(emitter)
+    actions.setActiveRayTraceJobId('ray-job-a')
+    const result = createRayTraceResultFixture()
+    actions.setActiveCadCaseResult(result)
+
+    actions.upsertEmitter(structuredClone(emitter))
+
+    const state = store.getState()
+    expect(state.activeRayTraceJobId).toBe('ray-job-a')
+    expect(
+      state.cadCases.find((item) => item.caseId === caseId)?.latestResult?.run_id,
+    ).toBe(result.run_id)
+  })
+
   it('preserves unchecked Receiver results and replaces only the recalculated Receiver', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
+  AdditiveBlending,
   Box3,
+  BoxGeometry,
   BufferGeometry,
   CanvasTexture,
   Color,
@@ -34,6 +36,8 @@ import {
   SRGBColorSpace,
   Sprite,
   SpriteMaterial,
+  Points,
+  PointsMaterial,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -51,6 +55,13 @@ import type {
 } from '@/api'
 import { apiClient } from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
+import {
+  getLeakPreviewBounds,
+} from '@/features/leak-preview/leak-preview-geometry'
+import {
+  leakPreviewStore,
+  useLeakPreviewStore,
+} from '@/features/leak-preview/leak-preview-store'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
   buildRayPathVisualization,
@@ -178,6 +189,7 @@ interface ViewerRuntime {
   axisScalePercent: number
   camera: PerspectiveCamera
   controls: ViewerTrackballControls
+  leakPreviewRoot: Group
   globalOriginAxes: Group
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
@@ -1765,9 +1777,19 @@ export function ThreeViewerCanvas({
     workspaceSelectors.placementPreviewReceiver,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
+  const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
+  const selectedLeakCandidateId = useLeakPreviewStore(
+    (state) => state.selectedCandidateId,
+  )
+  const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const surfaceOpacity = surfaceOpacityFromTransparency(
     surfaceTransparencyPercent,
   )
+
+  useEffect(() => {
+    leakPreviewStore.getState().ensureScene(scene.metadata.scene_token)
+  }, [scene.metadata.scene_token])
 
   toggleSectionViewRef.current = () => {
     const runtime = runtimeRef.current
@@ -1927,6 +1949,8 @@ export function ThreeViewerCanvas({
     }
 
     const modelRoot = new Group()
+    const leakPreviewRoot = new Group()
+    leakPreviewRoot.name = 'whole-set-leak-preview-root'
     const placementRoot = new Group()
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
@@ -1947,6 +1971,7 @@ export function ThreeViewerCanvas({
     pivotMarkerRoot.visible = false
     threeScene.add(
       modelRoot,
+      leakPreviewRoot,
       roiPreviewRoot,
       roiSelectionRoot,
       roiBoundsMarker,
@@ -1987,6 +2012,7 @@ export function ThreeViewerCanvas({
       axisScalePercent: 50,
       camera,
       controls,
+      leakPreviewRoot,
       globalOriginAxes,
       modelRoot,
       nodes,
@@ -3257,6 +3283,109 @@ export function ThreeViewerCanvas({
       runtimeRef.current = null
     }
   }, [actions, onStatusMessage, scene])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.leakPreviewRoot)
+
+    const bounds = getLeakPreviewBounds(scene, transformRules)
+    const markerSize = Math.max(...bounds.size, 1) * 0.012
+    for (const area of leakPreviewIgnoreAreas) {
+      if (!area.enabled) continue
+      const clip = area.clipBox
+      const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
+      const sizeY = Math.max(clip.yMax - clip.yMin, markerSize * 0.25)
+      const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize * 0.25)
+      const geometry = new BoxGeometry(sizeX, sizeY, sizeZ)
+      const outline = new LineSegments(
+        new EdgesGeometry(geometry),
+        new LineBasicMaterial({
+          color: 0xef4444,
+          transparent: true,
+          opacity: 0.8,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      geometry.dispose()
+      outline.position.set(
+        (clip.xMin + clip.xMax) / 2,
+        (clip.yMin + clip.yMax) / 2,
+        ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
+      )
+      outline.name = area.id
+      outline.renderOrder = 218
+      runtime.leakPreviewRoot.add(outline)
+    }
+
+    if (leakPreviewPoints.length === 0) return
+    const positions = new Float32Array(leakPreviewPoints.length * 3)
+    const colors = new Float32Array(leakPreviewPoints.length * 3)
+    const cold = new Color(0x38bdf8)
+    const warm = new Color(0xff9f1c)
+    const hot = new Color(0xffffff)
+    leakPreviewPoints.forEach((point, index) => {
+      positions.set(point.position, index * 3)
+      const strength = Math.max(0, Math.min(1, point.relativeStrength))
+      const color = strength < 0.65
+        ? cold.clone().lerp(warm, strength / 0.65)
+        : warm.clone().lerp(hot, (strength - 0.65) / 0.35)
+      colors.set(color.toArray(), index * 3)
+    })
+    const pointGeometry = new BufferGeometry()
+    pointGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    pointGeometry.setAttribute('color', new Float32BufferAttribute(colors, 3))
+    const glowPoints = new Points(
+      pointGeometry,
+      new PointsMaterial({
+        size: markerSize,
+        sizeAttenuation: true,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        toneMapped: false,
+      }),
+    )
+    glowPoints.name = 'leak-preview-glow-points'
+    glowPoints.renderOrder = 220
+    runtime.leakPreviewRoot.add(glowPoints)
+
+    const selected = leakPreviewCandidates.find(
+      (candidate) => candidate.id === selectedLeakCandidateId,
+    )
+    if (selected) {
+      const clip = selected.clipBox
+      const sizeX = Math.max(clip.xMax - clip.xMin, markerSize)
+      const sizeY = Math.max(clip.yMax - clip.yMin, markerSize)
+      const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize)
+      const boxGeometry = new BoxGeometry(sizeX, sizeY, sizeZ)
+      const outline = new LineSegments(
+        new EdgesGeometry(boxGeometry),
+        new LineBasicMaterial({
+          color: 0xff7a00,
+          transparent: true,
+          opacity: 0.95,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      boxGeometry.dispose()
+      outline.position.set(
+        (clip.xMin + clip.xMax) / 2,
+        (clip.yMin + clip.yMax) / 2,
+        ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
+      )
+      outline.name = 'leak-preview-selected-roi'
+      outline.renderOrder = 225
+      runtime.leakPreviewRoot.add(outline)
+    }
+  }, [leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewPoints, scene, selectedLeakCandidateId, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

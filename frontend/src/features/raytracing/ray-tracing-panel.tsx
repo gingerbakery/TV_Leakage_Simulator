@@ -825,6 +825,8 @@ function ReceiverDialog({
   }, [actions, open])
 
   const canApply = mode === 'datum_plane' || capturedFrame !== null
+  const isLeakPreviewReceiver =
+    initialReceiver?.reference_mode === 'leak_preview_candidate'
   const updatePixelSizeFromResolution = (
     nextResolutionX: number,
     nextResolutionY: number,
@@ -846,6 +848,14 @@ function ReceiverDialog({
   }
   const previewReceiver = useMemo(() => {
     if (!open) return null
+    const datumAxes = planeAxesFromRotation(rotation)
+    const datumCenter: Vec3 = isLeakPreviewReceiver
+      ? [
+          center[0] - datumAxes.normal[0] * Math.max(0.001, viewDistance),
+          center[1] - datumAxes.normal[1] * Math.max(0.001, viewDistance),
+          center[2] - datumAxes.normal[2] * Math.max(0.001, viewDistance),
+        ]
+      : center
     const receiver =
       mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
@@ -859,7 +869,7 @@ function ReceiverDialog({
         : createDatumReceiver(
             initialReceiver?.receiver_id ??
               '__placement_preview_receiver__',
-            center,
+            datumCenter,
             rotation,
             positionOffset,
           )
@@ -875,6 +885,7 @@ function ReceiverDialog({
     center,
     height,
     initialReceiver,
+    isLeakPreviewReceiver,
     mode,
     normalFlip,
     open,
@@ -899,6 +910,14 @@ function ReceiverDialog({
     const receiverId =
       initialReceiver?.receiver_id ??
       nextSpecId('receiver', existingIds)
+    const datumAxes = planeAxesFromRotation(rotation)
+    const datumCenter: Vec3 = isLeakPreviewReceiver
+      ? [
+          center[0] - datumAxes.normal[0] * Math.max(0.001, viewDistance),
+          center[1] - datumAxes.normal[1] * Math.max(0.001, viewDistance),
+          center[2] - datumAxes.normal[2] * Math.max(0.001, viewDistance),
+        ]
+      : center
     const receiver =
       mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
@@ -910,7 +929,7 @@ function ReceiverDialog({
           )
         : createDatumReceiver(
             receiverId,
-            center,
+            datumCenter,
             rotation,
             positionOffset,
           )
@@ -931,6 +950,16 @@ function ReceiverDialog({
       acceptance_angle_deg: Math.max(0.1, Math.min(180, acceptance)),
       normal_flip: normalFlip,
       enabled: initialReceiver?.enabled ?? true,
+      ...(isLeakPreviewReceiver
+        ? {
+            reference_mode: 'leak_preview_candidate',
+            view_distance_mm: Math.max(0.001, viewDistance),
+            base_center: [...center] as Vec3,
+            base_u_axis: [...datumAxes.uAxis] as Vec3,
+            base_v_axis: [...datumAxes.vAxis] as Vec3,
+            base_normal: [...datumAxes.normal] as Vec3,
+          }
+        : {}),
     })
     onOpenChange(false)
   }
@@ -1018,6 +1047,14 @@ function ReceiverDialog({
           value={center}
           onChange={setCenter}
         />
+        {isLeakPreviewReceiver ? (
+          <NumberField
+            label="Receiver Distance (mm)"
+            value={viewDistance}
+            min={0.001}
+            onChange={setViewDistance}
+          />
+        ) : null}
         <VectorFields
           label="Receiver Offset (mm)"
           help="Center 좌표에 추가하는 이동값입니다 (mm)."

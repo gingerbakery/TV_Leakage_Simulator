@@ -194,7 +194,7 @@ describe('SimulatorShell', () => {
     expect(rayTracingStep.className).not.toContain('-mx-')
     expect(
       view.container.querySelectorAll('[data-workflow-section-help]'),
-    ).toHaveLength(6)
+    ).toHaveLength(7)
     expect(modelImportTitleRow?.contains(modelImportHelp)).toBe(true)
     expect(modelImportHelp.className).toContain('size-4')
     expect(modelImportHelp.querySelector('svg')?.className.baseVal).toContain(
