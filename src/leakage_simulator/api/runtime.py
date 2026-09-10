@@ -335,7 +335,10 @@ class ApiRuntime:
     ) -> dict[str, Any]:
         scene_token = str(request_payload.get("scene_token") or "")
         with self._state_lock:
-            scene_mesh = self._scene_mesh_cache.get(scene_token)
+            if request_payload.get("geometry_mode") == "preview":
+                scene_mesh = self._scene_viewer_mesh_cache.get(scene_token)
+            else:
+                scene_mesh = self._scene_mesh_cache.get(scene_token)
         if scene_mesh is None:
             raise ValueError(
                 "CAD scene cache expired. Reload the CAD model and run again"
@@ -364,6 +367,9 @@ class ApiRuntime:
         })
         geometry_state = {
             "scene_token": str(request_payload.get("scene_token") or ""),
+            "geometry_mode": str(
+                request_payload.get("geometry_mode") or "precision"
+            ),
             "transform_rules": request_payload.get("transform_rules", []),
             "excluded_component_ids": excluded,
             "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),

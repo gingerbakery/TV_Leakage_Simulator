@@ -184,6 +184,8 @@ export type RayTraceConfigRequest = Omit<
 export interface RayTraceRequest {
   scene_token: string
   project_name: string
+  /** Preview runs may use the already-loaded display tessellation. */
+  geometry_mode?: 'precision' | 'preview'
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
   optical_profiles: OpticalProfile[]

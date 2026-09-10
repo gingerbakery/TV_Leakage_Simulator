@@ -27,6 +27,7 @@ describe('whole-set leak preview', () => {
     })
 
     expect(request.roi_faces).toBeUndefined()
+    expect(request.geometry_mode).toBe('preview')
     expect(request.emitters).toHaveLength(2)
     expect(request.emitters.map((emitter) => emitter.normal_flip)).toEqual([
       false,

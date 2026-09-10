@@ -85,6 +85,37 @@ class FastApiLayerTests(unittest.TestCase):
         )
         self.client = TestClient(create_app(self.runtime))
 
+    def test_preview_geometry_uses_viewer_mesh_without_precision_materialization(self):
+        viewer_mesh = _scene_loader("preview.step")["mesh"]
+        precision_mesh = dict(viewer_mesh)
+        precision_mesh["precision_marker"] = True
+
+        def dual_mesh_loader(cad_path: str):
+            payload = _scene_loader(cad_path)
+            payload["mesh"] = viewer_mesh
+            payload["_trace_mesh"] = precision_mesh
+            return payload
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name) / "preview-geometry",
+            scene_loader=dual_mesh_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=_trace_runner,
+        )
+        scene = runtime.load_scene("preview.step")
+        scene_token = scene["metadata"]["scene_token"]
+
+        preview_mesh = runtime._scene_mesh_for_request({
+            "scene_token": scene_token,
+            "geometry_mode": "preview",
+        })
+        precision = runtime._scene_mesh_for_request({
+            "scene_token": scene_token,
+        })
+
+        self.assertIs(preview_mesh, viewer_mesh)
+        self.assertTrue(precision["precision_marker"])
+
     def test_default_runtime_reuses_prepared_bvh_for_non_geometry_changes(self):
         runtime = ApiRuntime(Path(self.temp_dir.name))
         scene_mesh = {

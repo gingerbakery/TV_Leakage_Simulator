@@ -225,6 +225,10 @@ export function buildLeakPreviewRequest({
     roiScopes: [],
     config: baseConfig,
   })
+  // Whole-set Preview is a risk-location search, not the final quantitative
+  // solve. Reuse the display tessellation so a large STEP does not have to
+  // materialize its precision trace mesh before the first Preview ray.
+  request.geometry_mode = 'preview'
   // The production tracer deliberately treats unassigned surfaces as perfect
   // absorbers. Preview needs a neutral fallback so a novice can still locate
   // reflected leak paths without first completing Material Assignment.

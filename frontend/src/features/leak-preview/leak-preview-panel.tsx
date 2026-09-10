@@ -105,6 +105,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }, [ensureScene, scene])
 
   const isRunning = startMutation.isPending || job?.status === 'queued' || job?.status === 'running'
+  const isPreparing = job?.status === 'running' && job.phase === 'preparing'
   const existingEmitterFaces = emitters
     .filter((emitter) => emitter.enabled && emitter.emitter_type === 'face')
     .flatMap((emitter) => emitter.face_indices)
@@ -352,7 +353,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               <div className="h-full bg-sky-500 transition-[width]" style={{ width: `${Math.round((job?.progress ?? 0) * 100)}%` }} />
             </div>
             <div className="text-right text-xs text-muted-foreground">
-              {Math.round((job?.progress ?? 0) * 100)}% · {(job?.processed_rays ?? 0).toLocaleString()} / {(job?.total_rays ?? 0).toLocaleString()} Rays
+              {isPreparing
+                ? '경량 CAD · BVH 준비 중'
+                : `${Math.round((job?.progress ?? 0) * 100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays`}
             </div>
           </div>
         ) : null}
