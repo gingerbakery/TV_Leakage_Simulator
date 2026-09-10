@@ -2534,6 +2534,7 @@ export function RayTraceResultWindow({
                 />
               </div>
               <ComputeExecutionStatus
+                key={result.run_id}
                 configuredBackend={result.config.compute_backend}
                 performance={performance}
               />

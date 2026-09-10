@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveComputeExecution } from './compute-execution-model'
@@ -37,10 +37,24 @@ describe('compute execution status', () => {
     expect(screen.getByRole('status').textContent).toContain(
       'Compute device · GPU 활성 · CPU 보조',
     )
+    const toggle = screen.getByRole('button', { name: 'Compute device · GPU 활성 · CPU 보조' })
+    const details = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(details.hidden).toBe(true)
+    expect(screen.queryByRole('region', { name: '연산 장치 상세 정보' })).toBeNull()
+    expect(toggle.textContent).not.toContain('GPU requested')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(details.hidden).toBe(false)
+    expect(screen.getByRole('region', { name: '연산 장치 상세 정보' })).not.toBeNull()
+    expect(screen.getByText('GPU requested')).not.toBeNull()
     expect(screen.getByText('CUDA batches · 4/4')).not.toBeNull()
     expect(screen.getByText('GPU Resident · 4/4')).not.toBeNull()
     expect(screen.getByText('NVIDIA RTX Test')).not.toBeNull()
     expect(screen.getByText('CPU/GPU 동일 샘플 계약')).not.toBeNull()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(details.hidden).toBe(true)
   })
 
   it('warns when a GPU request fell back with zero CUDA batches', () => {
@@ -65,6 +79,10 @@ describe('compute execution status', () => {
 
     const alert = screen.getByRole('alert')
     expect(alert.textContent).toContain('CPU 대체 실행 · GPU 미사용')
+    const toggle = screen.getByRole('button', { name: 'Compute device · CPU 대체 실행 · GPU 미사용' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(alert.className).toContain('bg-orange-500/8')
+    fireEvent.click(toggle)
     expect(alert.textContent).toContain('CUDA batches · 0/0')
     expect(alert.textContent).toContain('NVIDIA 드라이버 사용 불가')
   })
@@ -83,6 +101,16 @@ describe('compute execution status', () => {
         intersection_provider: 'numba_cpu',
       }).state,
     ).toBe('cpu')
+  })
+
+  it('also starts collapsed for ordinary CPU results without changing the displayed device', () => {
+    render(<ComputeExecutionStatus configuredBackend="cpu" performance={{ compute_backend: 'cpu', intersection_provider: 'numba_cpu' }} />)
+    const toggle = screen.getByRole('button', { name: 'Compute device · CPU 실행' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(screen.getByText('CPU requested')).not.toBeNull()
+    expect(screen.getByText('Provider · numba_cpu')).not.toBeNull()
+    expect(screen.queryByText('GPU requested')).toBeNull()
   })
 
   it('prefers the backend execution verdict while retaining legacy derivation', () => {
@@ -113,6 +141,7 @@ describe('compute execution status', () => {
       />,
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Compute device · GPU 활성' }))
     expect(
       screen.getByText(/동일 샘플 정확도 계약이 기록되지 않은 이전 결과/),
     ).not.toBeNull()

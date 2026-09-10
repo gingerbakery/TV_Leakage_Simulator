@@ -1,4 +1,5 @@
-import { CheckCircle2, CircleAlert, Cpu, Gauge, TriangleAlert } from 'lucide-react'
+import { useId, useState } from 'react'
+import { CheckCircle2, ChevronDown, CircleAlert, Cpu, Gauge, TriangleAlert } from 'lucide-react'
 
 import type { ComputeBackend } from '@/api'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +12,8 @@ export function ComputeExecutionStatus({
   configuredBackend: ComputeBackend
   performance: Record<string, unknown>
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailsId = useId()
   const summary = resolveComputeExecution(configuredBackend, performance)
   const warning = summary.state === 'gpu-fallback' || summary.state === 'gpu-zero'
   const active = summary.state === 'gpu-active' || summary.state === 'gpu-mixed'
@@ -34,56 +37,69 @@ export function ComputeExecutionStatus({
             : 'rounded-lg border border-border bg-muted/20 p-3'
       }
     >
-      <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        aria-expanded={detailsOpen}
+        aria-controls={detailsId}
+        title={detailsOpen ? '연산 장치 상세 정보 닫기' : '연산 장치 상세 정보 열기'}
+        className="flex w-full min-w-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        onClick={() => setDetailsOpen((open) => !open)}
+      >
         <Icon
-          className={active ? 'size-5 text-emerald-600' : warning ? 'size-5 text-orange-600' : 'size-5 text-primary'}
+          className={active ? 'size-5 shrink-0 text-emerald-600' : warning ? 'size-5 shrink-0 text-orange-600' : 'size-5 shrink-0 text-primary'}
           aria-hidden="true"
         />
-        <span className="font-semibold">Compute device · {summary.title}</span>
-        <Badge variant={active ? 'default' : warning ? 'destructive' : 'outline'}>
-          {summary.requested === 'gpu_cuda' ? 'GPU requested' : 'CPU requested'}
-        </Badge>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
-        {summary.deviceName ? <Badge variant="outline">{summary.deviceName}</Badge> : null}
-        <Badge variant="outline">Provider · {summary.provider}</Badge>
-        {summary.requested === 'gpu_cuda' ? (
-          <Badge variant={summary.gpuSuccesses > 0 ? 'secondary' : 'destructive'}>
-            CUDA batches · {summary.gpuSuccesses}/{summary.gpuAttempts}
+        <span className="min-w-0 flex-1 font-semibold">Compute device · {summary.title}</span>
+        <ChevronDown
+          className={`size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none ${detailsOpen ? 'rotate-180' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+      <div id={detailsId} hidden={!detailsOpen} role="region" aria-label="연산 장치 상세 정보">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+          <Badge variant={active ? 'default' : warning ? 'destructive' : 'outline'}>
+            {summary.requested === 'gpu_cuda' ? 'GPU requested' : 'CPU requested'}
           </Badge>
+          {summary.deviceName ? <Badge variant="outline">{summary.deviceName}</Badge> : null}
+          <Badge variant="outline">Provider · {summary.provider}</Badge>
+          {summary.requested === 'gpu_cuda' ? (
+            <Badge variant={summary.gpuSuccesses > 0 ? 'secondary' : 'destructive'}>
+              CUDA batches · {summary.gpuSuccesses}/{summary.gpuAttempts}
+            </Badge>
+          ) : null}
+          {summary.requested === 'gpu_cuda' ? (
+            <Badge
+              variant={
+                summary.gpuResidentMode === 'gpu_resident' &&
+                summary.gpuResidentSuccesses > 0
+                  ? 'secondary'
+                  : 'destructive'
+              }
+            >
+              GPU Resident · {summary.gpuResidentSuccesses}/
+              {summary.gpuResidentAttempts}
+            </Badge>
+          ) : null}
+          {summary.cpuSmallWaveSuccesses > 0 ? (
+            <Badge variant="outline">CPU small waves · {summary.cpuSmallWaveSuccesses}</Badge>
+          ) : null}
+          {summary.accuracyParityVerified ? (
+            <Badge variant="secondary">CPU/GPU 동일 샘플 계약</Badge>
+          ) : null}
+        </div>
+        {summary.reason ? (
+          <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
+            <Gauge className="size-3.5" aria-hidden="true" />
+            {summary.reason}
+          </p>
         ) : null}
-        {summary.requested === 'gpu_cuda' ? (
-          <Badge
-            variant={
-              summary.gpuResidentMode === 'gpu_resident' &&
-              summary.gpuResidentSuccesses > 0
-                ? 'secondary'
-                : 'destructive'
-            }
-          >
-            GPU Resident · {summary.gpuResidentSuccesses}/
-            {summary.gpuResidentAttempts}
-          </Badge>
-        ) : null}
-        {summary.cpuSmallWaveSuccesses > 0 ? (
-          <Badge variant="outline">CPU small waves · {summary.cpuSmallWaveSuccesses}</Badge>
-        ) : null}
-        {summary.accuracyParityVerified ? (
-          <Badge variant="secondary">CPU/GPU 동일 샘플 계약</Badge>
+        {active && !summary.accuracyParityVerified ? (
+          <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
+            <TriangleAlert className="size-3.5" aria-hidden="true" />
+            CPU/GPU 동일 샘플 정확도 계약이 기록되지 않은 이전 결과입니다. 현재 버전에서 다시 해석해 주세요.
+          </p>
         ) : null}
       </div>
-      {summary.reason ? (
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
-          <Gauge className="size-3.5" aria-hidden="true" />
-          {summary.reason}
-        </p>
-      ) : null}
-      {active && !summary.accuracyParityVerified ? (
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-800 dark:text-orange-200">
-          <TriangleAlert className="size-3.5" aria-hidden="true" />
-          CPU/GPU 동일 샘플 정확도 계약이 기록되지 않은 이전 결과입니다. 현재 버전에서 다시 해석해 주세요.
-        </p>
-      ) : null}
     </section>
   )
 }

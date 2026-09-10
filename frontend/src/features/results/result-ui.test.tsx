@@ -61,7 +61,7 @@ describe('Step 11 result UI', () => {
       gpu_cuda_gpu_success_count: 3,
     }
 
-    render(
+    const view = render(
       <RayTraceResultWindow
         open
         result={result}
@@ -72,6 +72,10 @@ describe('Step 11 result UI', () => {
     expect(
       screen.getByLabelText('Compute execution status').textContent,
     ).toContain('Compute device · GPU 활성')
+    const computeToggle = screen.getByRole('button', { name: 'Compute device · GPU 활성' })
+    expect(computeToggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(computeToggle)
+    expect(computeToggle.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('CUDA batches · 3/3')).not.toBeNull()
     const accelerationHelp = screen.getByRole('button', {
       name: 'Acceleration structure 설명',
@@ -80,6 +84,8 @@ describe('Step 11 result UI', () => {
       'Acceleration structure',
     )
     expect(screen.queryByText('Intersection backend')).toBeNull()
+    view.rerender(<RayTraceResultWindow open result={{ ...result, run_id: 'next-compute-result' }} onOpenChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Compute device · GPU 활성' }).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('shows a formatted Receiver name instead of its internal ID', () => {
