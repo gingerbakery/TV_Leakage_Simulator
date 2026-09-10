@@ -1785,6 +1785,7 @@ export function ThreeViewerCanvas({
     (state) => state.selectedCandidateId,
   )
   const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
+  const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
   const surfaceOpacity = surfaceOpacityFromTransparency(
     surfaceTransparencyPercent,
   )
@@ -1943,7 +1944,9 @@ export function ThreeViewerCanvas({
     const controls = new ViewerTrackballControls(camera, canvas)
     controls.staticMoving = true
     controls.rotateSpeed = 2.3
-    controls.zoomSpeed = 1.2
+    // Reverse Three.js' default wheel direction to match the requested CAD
+    // navigation convention (front-to-back = zoom in).
+    controls.zoomSpeed = -1.2
     controls.mouseButtons = {
       LEFT: MOUSE.ROTATE,
       MIDDLE: MOUSE.DOLLY,
@@ -3099,7 +3102,8 @@ export function ThreeViewerCanvas({
       // main camera instead.
       event.preventDefault()
       event.stopImmediatePropagation()
-      zoomPipCamera(runtime, event.deltaY)
+      // Keep the ROI Full View navigation consistent with the main Viewer.
+      zoomPipCamera(runtime, -event.deltaY)
       runtime.pipUserAdjusted = true
       runtime.pipLastRenderTime = 0
     }
@@ -3293,6 +3297,56 @@ export function ThreeViewerCanvas({
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
+    for (const blocker of leakPreviewBlockers) {
+      if (!blocker.enabled) continue
+      const normal = new Vector3(...blocker.normal)
+        .normalize()
+        .multiplyScalar(blocker.reverse ? -1 : 1)
+      const center = new Vector3(...blocker.baseCenter)
+        .addScaledVector(normal, blocker.offsetMm + blocker.depthMm / 2)
+      const geometry = new BoxGeometry(
+        Math.max(blocker.widthMm, 0.1),
+        Math.max(blocker.heightMm, 0.1),
+        Math.max(blocker.depthMm, 0.1),
+      )
+      const orientation = new Matrix4().makeBasis(
+        new Vector3(...blocker.uAxis).normalize(),
+        new Vector3(...blocker.vAxis).normalize(),
+        normal,
+      )
+      const solid = new Mesh(
+        geometry,
+        new MeshBasicMaterial({
+          color: 0x64748b,
+          transparent: true,
+          opacity: 0.32,
+          depthTest: true,
+          depthWrite: false,
+          side: DoubleSide,
+          toneMapped: false,
+        }),
+      )
+      solid.position.copy(center)
+      solid.setRotationFromMatrix(orientation)
+      solid.name = `${blocker.id}-solid`
+      solid.renderOrder = 214
+      const outline = new LineSegments(
+        new EdgesGeometry(geometry),
+        new LineBasicMaterial({
+          color: 0x334155,
+          transparent: true,
+          opacity: 0.95,
+          depthTest: true,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      outline.position.copy(center)
+      outline.setRotationFromMatrix(orientation)
+      outline.name = `${blocker.id}-outline`
+      outline.renderOrder = 215
+      runtime.leakPreviewRoot.add(solid, outline)
+    }
     for (const area of leakPreviewIgnoreAreas) {
       if (!area.enabled) continue
       const clip = area.clipBox
@@ -3387,7 +3441,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewPoints, scene, selectedLeakCandidateId, transformRules])
+  }, [leakPreviewBlockers, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewPoints, scene, selectedLeakCandidateId, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

@@ -186,6 +186,17 @@ export interface RayTraceRequest {
   project_name: string
   /** Preview runs may use the already-loaded display tessellation. */
   geometry_mode?: 'precision' | 'preview'
+  preview_blockers?: Array<{
+    blocker_id: string
+    center: Vec3
+    u_axis: Vec3
+    v_axis: Vec3
+    normal: Vec3
+    width_mm: number
+    height_mm: number
+    depth_mm: number
+    enabled: boolean
+  }>
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
   optical_profiles: OpticalProfile[]

@@ -157,6 +157,48 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(mesh.metadata(0)["component_id"], 8)
         self.assertEqual(mesh.material_id(0), "kept")
 
+    def test_preview_blocker_is_appended_as_a_closed_box(self) -> None:
+        mesh = build_transformed_mesh(
+            self.scene_mesh,
+            [],
+            preview_blockers=[{
+                "blocker_id": "main-board",
+                "center": [5.0, 6.0, 7.0],
+                "u_axis": [1.0, 0.0, 0.0],
+                "v_axis": [0.0, 1.0, 0.0],
+                "normal": [0.0, 0.0, 1.0],
+                "width_mm": 10.0,
+                "height_mm": 8.0,
+                "depth_mm": 2.0,
+                "enabled": True,
+            }],
+        )
+
+        self.assertEqual(len(mesh.faces), 13)
+        blocker_faces = [
+            index for index in range(len(mesh.faces))
+            if mesh.metadata(index).get("preview_blocker_id") == "main-board"
+        ]
+        self.assertEqual(len(blocker_faces), 12)
+        blocker_points = {
+            point
+            for face_index in blocker_faces
+            for point in mesh.face_vertices(face_index)
+        }
+        self.assertEqual(len(blocker_points), 8)
+        self.assertEqual(
+            {point[2] for point in blocker_points},
+            {6.0, 8.0},
+        )
+        hit = mesh.intersect_ray((5.0, 6.0, 0.0), (0.0, 0.0, 1.0))
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(
+            mesh.metadata(hit.face_index).get("preview_blocker_id"),
+            "main-board",
+        )
+        self.assertAlmostEqual(hit.point[2], 6.0)
+
     def test_face_emitter_is_remapped_after_component_deletion(self) -> None:
         scene_mesh = {
             "vertices": [

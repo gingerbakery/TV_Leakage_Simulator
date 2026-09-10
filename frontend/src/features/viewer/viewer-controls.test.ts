@@ -57,7 +57,35 @@ function rightDrag(canvas: HTMLCanvasElement, dx: number, dy: number) {
   }
 }
 
+function wheel(canvas: HTMLCanvasElement, deltaY: number) {
+  canvas.dispatchEvent(new WheelEvent('wheel', {
+    deltaY,
+    bubbles: true,
+    cancelable: true,
+  }))
+}
+
 describe('projection-aware viewer panning', () => {
+  it('zooms in when the wheel is rolled from front to back', () => {
+    const { canvas, camera, controls } = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    controls.zoomSpeed = -1.2
+    const before = camera.position.distanceTo(controls.target)
+    wheel(canvas, 120)
+    controls.update()
+    expect(camera.position.distanceTo(controls.target)).toBeLessThan(before)
+    controls.dispose()
+  })
+
+  it('zooms out when the wheel is rolled from back to front', () => {
+    const { canvas, camera, controls } = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    controls.zoomSpeed = -1.2
+    const before = camera.position.distanceTo(controls.target)
+    wheel(canvas, -120)
+    controls.update()
+    expect(camera.position.distanceTo(controls.target)).toBeGreaterThan(before)
+    controls.dispose()
+  })
+
   it('reduces the default ISO sensitivity by 20 percent', () => {
     const camera = new PerspectiveCamera(DEFAULT_CAMERA_FOV_DEGREES)
     expect(projectionAwarePanSpeed(camera)).toBeCloseTo(0.2 * 0.8)

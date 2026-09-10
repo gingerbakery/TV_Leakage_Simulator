@@ -4,6 +4,7 @@ import { createStore } from 'zustand/vanilla'
 import type { RayTraceResult } from '@/api'
 import type {
   LeakPreviewCandidate,
+  LeakPreviewBlocker,
   LeakPreviewIgnoreArea,
   LeakPreviewPoint,
   LeakPreviewQuality,
@@ -20,6 +21,7 @@ interface LeakPreviewState {
   selectedCandidateId: string | null
   ignoreAreaSelectionArmed: boolean
   ignoreAreas: LeakPreviewIgnoreArea[]
+  blockers: LeakPreviewBlocker[]
   runSignature: string | null
   ensureScene(sceneToken: string): void
   setSourceFaceIds(faceIds: number[]): void
@@ -33,6 +35,9 @@ interface LeakPreviewState {
   addIgnoreArea(area: Omit<LeakPreviewIgnoreArea, 'id' | 'label' | 'enabled'>): void
   setIgnoreAreaEnabled(areaId: string, enabled: boolean): void
   removeIgnoreArea(areaId: string): void
+  addBlocker(blocker: LeakPreviewBlocker): void
+  updateBlocker(blockerId: string, patch: Partial<LeakPreviewBlocker>): void
+  removeBlocker(blockerId: string): void
   clear(): void
 }
 
@@ -47,6 +52,7 @@ const store = createStore<LeakPreviewState>()((set) => ({
   selectedCandidateId: null,
   ignoreAreaSelectionArmed: false,
   ignoreAreas: [],
+  blockers: [],
   runSignature: null,
   ensureScene: (sceneToken) => set((state) =>
     state.sceneToken === sceneToken
@@ -61,6 +67,7 @@ const store = createStore<LeakPreviewState>()((set) => ({
           selectedCandidateId: null,
           ignoreAreaSelectionArmed: false,
           ignoreAreas: [],
+          blockers: [],
           runSignature: null,
         }),
   setSourceFaceIds: (sourceFaceIds) => set({ sourceFaceIds: [...new Set(sourceFaceIds)] }),
@@ -106,6 +113,17 @@ const store = createStore<LeakPreviewState>()((set) => ({
   removeIgnoreArea: (areaId) => set((state) => ({
     ignoreAreas: state.ignoreAreas.filter((area) => area.id !== areaId),
   })),
+  addBlocker: (blocker) => set((state) => ({
+    blockers: [...state.blockers, blocker],
+  })),
+  updateBlocker: (blockerId, patch) => set((state) => ({
+    blockers: state.blockers.map((blocker) =>
+      blocker.id === blockerId ? { ...blocker, ...patch, id: blocker.id } : blocker,
+    ),
+  })),
+  removeBlocker: (blockerId) => set((state) => ({
+    blockers: state.blockers.filter((blocker) => blocker.id !== blockerId),
+  })),
   clear: () => set({
     sceneToken: null,
     sourceFaceIds: [],
@@ -116,6 +134,7 @@ const store = createStore<LeakPreviewState>()((set) => ({
     selectedCandidateId: null,
     ignoreAreaSelectionArmed: false,
     ignoreAreas: [],
+    blockers: [],
     runSignature: null,
   }),
 }))

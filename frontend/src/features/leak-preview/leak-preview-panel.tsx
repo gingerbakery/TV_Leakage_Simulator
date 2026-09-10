@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BoxSelect, Eye, EyeOff, Lightbulb, LocateFixed, Play, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
+import { BoxSelect, Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Pencil, Play, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
 
 import type { ScenePayload } from '@/api'
 import {
@@ -8,6 +8,7 @@ import {
   useStopRayTraceMutation,
 } from '@/api'
 import { Button } from '@/components/ui/button'
+import { NumberInput } from '@/components/ui/number-input'
 import { createFaceEmitter, nextSpecId } from '@/features/raytracing'
 import {
   groupRoiFacesByComponent,
@@ -17,6 +18,7 @@ import { useWorkspaceStore, workspaceSelectors } from '@/stores'
 
 import {
   buildLeakPreviewRequest,
+  createLeakPreviewBlockerFromFaces,
   createCandidateReceiver,
   detectLeakPreviewCandidates,
   resolveLeakPreviewRoiFaces,
@@ -63,7 +65,6 @@ const previewQualityName: Record<LeakPreviewQuality, string> = {
 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
-  const emitterFaceSelectionArmed = useWorkspaceStore(workspaceSelectors.emitterFaceSelectionArmed)
   const materialAssignments = useWorkspaceStore(workspaceSelectors.materialAssignments)
   const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const excludedComponentIds = useWorkspaceStore(workspaceSelectors.excludedComponentIds)
@@ -82,6 +83,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const selectedCandidateId = useLeakPreviewStore((state) => state.selectedCandidateId)
   const ignoreAreaSelectionArmed = useLeakPreviewStore((state) => state.ignoreAreaSelectionArmed)
   const ignoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
+  const blockers = useLeakPreviewStore((state) => state.blockers)
   const runSignature = useLeakPreviewStore((state) => state.runSignature)
   const setSourceFaceIds = useLeakPreviewStore((state) => state.setSourceFaceIds)
   const setQuality = useLeakPreviewStore((state) => state.setQuality)
@@ -93,12 +95,17 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const setIgnoreAreaSelectionArmed = useLeakPreviewStore((state) => state.setIgnoreAreaSelectionArmed)
   const setIgnoreAreaEnabled = useLeakPreviewStore((state) => state.setIgnoreAreaEnabled)
   const removeIgnoreArea = useLeakPreviewStore((state) => state.removeIgnoreArea)
+  const addBlocker = useLeakPreviewStore((state) => state.addBlocker)
+  const updateBlocker = useLeakPreviewStore((state) => state.updateBlocker)
+  const removeBlocker = useLeakPreviewStore((state) => state.removeBlocker)
   const startMutation = useStartRayTraceMutation()
   const stopMutation = useStopRayTraceMutation()
   const jobQuery = useRayTraceJobQuery(jobId)
   const job = jobQuery.data
   const handledRunRef = useRef<string | null>(null)
   const [message, setMessage] = useState('광원으로 사용할 CAD Face를 선택하세요.')
+  const [pickingTarget, setPickingTarget] = useState<'source' | 'blocker' | null>(null)
+  const [editingBlockerId, setEditingBlockerId] = useState<string | null>(null)
 
   useEffect(() => {
     if (scene) ensureScene(scene.metadata.scene_token)
@@ -118,7 +125,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     transformRules,
     excludedComponentIds,
     deletedComponentIds,
+    blockers,
   }), [
+    blockers,
     deletedComponentIds,
     excludedComponentIds,
     materialAssignments,
@@ -168,12 +177,29 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     setMessage(`Preview 실행 실패: ${job.error}`)
   }, [job])
 
-  const finishFaceSelection = () => {
+  const finishFaceSelection = (target: 'source' | 'blocker') => {
     if (selectedFaceIds.length === 0) {
-      setMessage('3D Viewer에서 광원 CAD Face를 하나 이상 선택하세요.')
+      setMessage('3D Viewer에서 CAD Face를 하나 이상 선택하세요.')
+      return
+    }
+    if (target === 'blocker') {
+      if (!scene) return
+      const blocker = createLeakPreviewBlockerFromFaces(scene, selectedFaceIds, blockers.length + 1)
+      if (!blocker) {
+        setMessage('Preview Blocker는 하나의 평평한 CAD Surface를 선택해야 합니다.')
+        return
+      }
+      addBlocker(blocker)
+      setEditingBlockerId(blocker.id)
+      setPickingTarget(null)
+      actions.setSelectedFaceIds([])
+      actions.setEmitterFaceSelectionArmed(false)
+      clearDetection()
+      setMessage('Preview Blocker를 생성했습니다. 위치와 Depth를 조정하세요.')
       return
     }
     setSourceFaceIds(selectedFaceIds)
+    setPickingTarget(null)
     actions.setEmitterFaceSelectionArmed(false)
     clearDetection()
     setRunSignature(previewInputSignature)
@@ -196,6 +222,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           transformRules,
           excludedComponentIds,
           deletedComponentIds,
+          blockers,
         }),
       })
       setJobId(started.job_id)
@@ -279,19 +306,20 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         <div className="text-sm font-semibold">Preview Light Source</div>
         <div className="grid grid-cols-2 gap-2">
           <Button
-            variant={emitterFaceSelectionArmed ? 'default' : 'outline'}
+            variant={pickingTarget === 'source' ? 'default' : 'outline'}
             onClick={() => {
-              if (emitterFaceSelectionArmed) {
-                finishFaceSelection()
+              if (pickingTarget === 'source') {
+                finishFaceSelection('source')
                 return
               }
               actions.setSelectedFaceIds([])
               actions.setEmitterFaceSelectionArmed(true)
+              setPickingTarget('source')
               setMessage('3D Viewer에서 광원 Face를 선택한 뒤 선택 완료를 누르세요.')
             }}
           >
             <LocateFixed />
-            {emitterFaceSelectionArmed ? '선택 완료' : 'CAD Face 선택'}
+            {pickingTarget === 'source' ? '선택 완료' : 'CAD Face 선택'}
           </Button>
           <Button
             variant="outline"
@@ -364,7 +392,89 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-semibold">Ignore Area</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold">
+            <Cuboid className="size-4 text-slate-500" /> Preview Blockers
+          </span>
+          <Button
+            size="sm"
+            variant={pickingTarget === 'blocker' ? 'default' : 'outline'}
+            disabled={isRunning}
+            onClick={() => {
+              if (pickingTarget === 'blocker') {
+                finishFaceSelection('blocker')
+                return
+              }
+              actions.setSelectedFaceIds([])
+              actions.setEmitterFaceSelectionArmed(true)
+              setPickingTarget('blocker')
+              setMessage('Blocker 기준으로 사용할 평평한 CAD Surface를 선택하세요.')
+            }}
+          >
+            <Cuboid /> {pickingTarget === 'blocker' ? '선택 완료' : 'Add Blocker'}
+          </Button>
+        </div>
+        {blockers.map((blocker) => {
+          const editing = editingBlockerId === blocker.id
+          const fieldClass = 'mt-1 h-8 w-full rounded-md border border-border bg-background/70 px-2 text-xs outline-none focus:border-primary/60'
+          return (
+            <div key={blocker.id} className="rounded-md border border-border p-2">
+              <div className="flex items-center gap-1">
+                <input
+                  aria-label={`${blocker.label} name`}
+                  className="h-8 min-w-0 flex-1 rounded-md bg-transparent px-1 text-xs font-semibold outline-none focus:bg-muted/50"
+                  value={blocker.label}
+                  onChange={(event) => updateBlocker(blocker.id, { label: event.currentTarget.value })}
+                />
+                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} ${blocker.enabled ? 'Hide' : 'Show'}`} onClick={() => updateBlocker(blocker.id, { enabled: !blocker.enabled })}>
+                  {blocker.enabled ? <Eye /> : <EyeOff />}
+                </Button>
+                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} Edit`} onClick={() => setEditingBlockerId(editing ? null : blocker.id)}>
+                  <Pencil />
+                </Button>
+                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} Delete`} onClick={() => removeBlocker(blocker.id)}>
+                  <Trash2 />
+                </Button>
+              </div>
+              {editing ? (
+                <div className="mt-2 space-y-2">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['x', 'y', 'z'] as const).map((axis, axisIndex) => (
+                      <label key={axis} className="text-[11px] font-medium text-muted-foreground">
+                        {axis.toUpperCase()} (mm)
+                        <NumberInput value={blocker.baseCenter[axisIndex]} decimals={1} className={fieldClass} onValueChange={(value) => {
+                          const baseCenter = [...blocker.baseCenter] as [number, number, number]
+                          baseCenter[axisIndex] = value
+                          updateBlocker(blocker.id, { baseCenter })
+                        }} />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {([
+                      ['Width', 'widthMm', blocker.widthMm],
+                      ['Height', 'heightMm', blocker.heightMm],
+                      ['Offset', 'offsetMm', blocker.offsetMm],
+                      ['Depth H', 'depthMm', blocker.depthMm],
+                    ] as const).map(([label, key, value]) => (
+                      <label key={key} className="text-[11px] font-medium text-muted-foreground">
+                        {label} (mm)
+                        <NumberInput value={value} min={key === 'offsetMm' ? undefined : 0.1} decimals={1} className={fieldClass} onValueChange={(next) => updateBlocker(blocker.id, { [key]: next })} />
+                      </label>
+                    ))}
+                  </div>
+                  <Button size="sm" variant={blocker.reverse ? 'default' : 'outline'} className="w-full" onClick={() => updateBlocker(blocker.id, { reverse: !blocker.reverse })}>
+                    Reverse
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+      </section>
+
+      <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold">Allowed Area</span>
           <Button
             size="sm"
             variant={ignoreAreaSelectionArmed ? 'default' : 'outline'}

@@ -43,6 +43,7 @@ def build_prepared_trace_geometry(
         request_payload.get("transform_rules", []),
         request_payload.get("excluded_component_ids", []),
         emitter_source_face_indices=emitter_source_faces,
+        preview_blockers=request_payload.get("preview_blockers", []),
     )
     roi_faces = request_payload.get("roi_faces")
     roi_is_active = bool(roi_faces)
@@ -184,6 +185,7 @@ def build_transformed_mesh(
     transform_rules: List[Dict[str, Any]],
     excluded_component_ids: Optional[List[int]] = None,
     emitter_source_face_indices: Optional[Set[int]] = None,
+    preview_blockers: Optional[List[Dict[str, Any]]] = None,
 ) -> TriangleMesh:
     vertices = scene_mesh.get("vertices") or []
     faces = scene_mesh.get("faces") or []
@@ -270,7 +272,57 @@ def build_transformed_mesh(
                 "trace_excluded": component_is_excluded,
             },
         )
+    _append_preview_blockers(mesh, preview_blockers or [])
     return mesh
+
+
+def _append_preview_blockers(
+    mesh: TriangleMesh,
+    blockers: List[Dict[str, Any]],
+) -> None:
+    """Append lightweight rectangular solids used only by leak Preview."""
+    triangles = (
+        (0, 2, 1), (0, 3, 2),
+        (4, 5, 6), (4, 6, 7),
+        (0, 1, 5), (0, 5, 4),
+        (3, 7, 6), (3, 6, 2),
+        (0, 4, 7), (0, 7, 3),
+        (1, 2, 6), (1, 6, 5),
+    )
+    for blocker_index, blocker in enumerate(blockers):
+        if not blocker.get("enabled", True):
+            continue
+        center = tuple(float(value) for value in blocker.get("center", (0, 0, 0)))
+        u_axis = tuple(float(value) for value in blocker.get("u_axis", (1, 0, 0)))
+        v_axis = tuple(float(value) for value in blocker.get("v_axis", (0, 1, 0)))
+        normal = tuple(float(value) for value in blocker.get("normal", (0, 0, 1)))
+        half_width = max(float(blocker.get("width_mm", 0.0)), 1e-6) / 2.0
+        half_height = max(float(blocker.get("height_mm", 0.0)), 1e-6) / 2.0
+        half_depth = max(float(blocker.get("depth_mm", 0.0)), 1e-6) / 2.0
+        corners: List[Vec3] = []
+        for depth_sign in (-1.0, 1.0):
+            for u_sign, v_sign in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+                corners.append((
+                    center[0] + u_axis[0] * half_width * u_sign + v_axis[0] * half_height * v_sign + normal[0] * half_depth * depth_sign,
+                    center[1] + u_axis[1] * half_width * u_sign + v_axis[1] * half_height * v_sign + normal[1] * half_depth * depth_sign,
+                    center[2] + u_axis[2] * half_width * u_sign + v_axis[2] * half_height * v_sign + normal[2] * half_depth * depth_sign,
+                ))
+        vertex_indices = [mesh.add_vertex(point) for point in corners]
+        component_id = -1_000_000 - blocker_index
+        blocker_id = str(blocker.get("blocker_id") or "preview-blocker")
+        for triangle in triangles:
+            mesh.add_face(
+                vertex_indices[triangle[0]],
+                vertex_indices[triangle[1]],
+                vertex_indices[triangle[2]],
+                "default",
+                {
+                    "source_face_index": -1,
+                    "component_id": component_id,
+                    "preview_blocker_id": blocker_id,
+                    "trace_excluded": False,
+                },
+            )
 
 
 def _transform_point(point: Vec3, pivot: Vec3, rule: Dict[str, Any]) -> Vec3:

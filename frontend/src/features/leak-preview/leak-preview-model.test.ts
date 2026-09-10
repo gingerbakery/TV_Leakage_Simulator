@@ -6,6 +6,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import {
   buildLeakPreviewRequest,
   createCandidateReceiver,
+  createLeakPreviewBlockerFromFaces,
   createLeakPreviewReceivers,
   detectLeakPreviewCandidates,
   leakPreviewReceiverDistanceMm,
@@ -61,6 +62,33 @@ describe('whole-set leak preview', () => {
 
     expect(request.emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(1_000_000)
     expect(request.config.max_depth).toBe(8)
+  })
+
+  it('creates an editable planar blocker and sends it to Preview tracing', () => {
+    const scene = createSceneFixture()
+    const blocker = createLeakPreviewBlockerFromFaces(scene, [0], 1)
+    expect(blocker).not.toBeNull()
+    expect(blocker?.depthMm).toBe(1.5)
+
+    const request = buildLeakPreviewRequest({
+      scene,
+      sourceFaceIds: [0],
+      quality: 'fast',
+      computeBackend: 'cpu',
+      materialAssignments: [],
+      transformRules: [],
+      excludedComponentIds: [],
+      deletedComponentIds: [],
+      blockers: blocker ? [{ ...blocker, offsetMm: 2, depthMm: 3 }] : [],
+    })
+
+    expect(request.preview_blockers).toHaveLength(1)
+    expect(request.preview_blockers?.[0]).toMatchObject({
+      width_mm: blocker?.widthMm,
+      height_mm: blocker?.heightMm,
+      depth_mm: 3,
+      enabled: true,
+    })
   })
 
   it('turns exterior receiver cells into ranked 3D candidates', () => {

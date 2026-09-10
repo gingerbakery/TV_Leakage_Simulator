@@ -374,6 +374,7 @@ class ApiRuntime:
             "excluded_component_ids": excluded,
             "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),
             "preserved_emitter_faces": preserved_emitter_faces,
+            "preview_blockers": request_payload.get("preview_blockers", []),
         }
         encoded = json.dumps(
             geometry_state,

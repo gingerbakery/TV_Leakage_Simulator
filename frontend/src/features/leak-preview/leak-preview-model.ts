@@ -33,6 +33,22 @@ export interface LeakPreviewIgnoreArea {
   enabled: boolean
 }
 
+export interface LeakPreviewBlocker {
+  id: string
+  label: string
+  enabled: boolean
+  referenceFaceIds: number[]
+  baseCenter: Vec3
+  uAxis: Vec3
+  vAxis: Vec3
+  normal: Vec3
+  widthMm: number
+  heightMm: number
+  offsetMm: number
+  depthMm: number
+  reverse: boolean
+}
+
 export interface LeakPreviewPoint {
   position: Vec3
   relativeStrength: number
@@ -68,6 +84,7 @@ export interface BuildLeakPreviewRequestOptions {
   transformRules: ComponentTransformRule[]
   excludedComponentIds: number[]
   deletedComponentIds: number[]
+  blockers?: LeakPreviewBlocker[]
 }
 
 const directionLabels: Record<string, string> = {
@@ -85,6 +102,117 @@ function addScaled(origin: Vec3, axis: Vec3, scale: number): Vec3 {
     origin[1] + axis[1] * scale,
     origin[2] + axis[2] * scale,
   ]
+}
+
+function subtract(left: Vec3, right: Vec3): Vec3 {
+  return [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+function dot(left: Vec3, right: Vec3): number {
+  return left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+function cross(left: Vec3, right: Vec3): Vec3 {
+  return [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ]
+}
+
+function normalized(value: Vec3): Vec3 {
+  const length = Math.hypot(...value)
+  return length > 1e-12
+    ? [value[0] / length, value[1] / length, value[2] / length]
+    : [0, 0, 0]
+}
+
+export function createLeakPreviewBlockerFromFaces(
+  scene: ScenePayload,
+  faceIds: number[],
+  sequence: number,
+): LeakPreviewBlocker | null {
+  const suggestedLabels = ['Main Board', 'Power Board', 'Speaker']
+  const points: Vec3[] = []
+  let normal: Vec3 = [0, 0, 0]
+  let referenceNormal: Vec3 | null = null
+  let longestEdge: Vec3 = [1, 0, 0]
+  let longestLength = 0
+  for (const faceId of faceIds) {
+    const face = scene.mesh.faces[faceId]
+    const rawNormal = scene.mesh.face_normals[faceId]
+    if (!face || !rawNormal) continue
+    let currentNormal = normalized(rawNormal)
+    if (!referenceNormal) referenceNormal = currentNormal
+    if (dot(currentNormal, referenceNormal) < 0) {
+      currentNormal = [-currentNormal[0], -currentNormal[1], -currentNormal[2]]
+    }
+    const weight = Math.max(scene.mesh.face_areas_mm2[faceId] ?? 0, 1e-6)
+    normal = addScaled(normal, currentNormal, weight)
+    const vertices = face.map((vertexId) => scene.mesh.vertices[vertexId]).filter(Boolean) as Vec3[]
+    points.push(...vertices)
+    for (let edgeIndex = 0; edgeIndex < vertices.length; edgeIndex += 1) {
+      const edge = subtract(vertices[(edgeIndex + 1) % vertices.length], vertices[edgeIndex])
+      const length = dot(edge, edge)
+      if (length > longestLength) {
+        longestLength = length
+        longestEdge = edge
+      }
+    }
+  }
+  if (points.length === 0 || !referenceNormal) return null
+  normal = normalized(normal)
+  if (Math.hypot(...normal) < 0.5) return null
+  const tolerance = Math.max(0.05, Math.sqrt(longestLength) * 0.002)
+  const planeOrigin = points[0]
+  if (points.some((point) => Math.abs(dot(subtract(point, planeOrigin), normal)) > tolerance)) {
+    return null
+  }
+  let uAxis = normalized(subtract(longestEdge, addScaled([0, 0, 0], normal, dot(longestEdge, normal))))
+  if (Math.hypot(...uAxis) < 0.5) {
+    uAxis = normalized(cross(Math.abs(normal[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0], normal))
+  }
+  const vAxis = normalized(cross(normal, uAxis))
+  let minU = Infinity
+  let maxU = -Infinity
+  let minV = Infinity
+  let maxV = -Infinity
+  for (const point of points) {
+    const relative = subtract(point, planeOrigin)
+    const u = dot(relative, uAxis)
+    const v = dot(relative, vAxis)
+    minU = Math.min(minU, u)
+    maxU = Math.max(maxU, u)
+    minV = Math.min(minV, v)
+    maxV = Math.max(maxV, v)
+  }
+  const baseCenter = addScaled(
+    addScaled(planeOrigin, uAxis, (minU + maxU) / 2),
+    vAxis,
+    (minV + maxV) / 2,
+  )
+  return {
+    id: `preview-blocker-${Date.now()}-${sequence}`,
+    label: suggestedLabels[sequence - 1] ?? `Preview Blocker ${String(sequence).padStart(2, '0')}`,
+    enabled: true,
+    referenceFaceIds: [...new Set(faceIds)],
+    baseCenter,
+    uAxis,
+    vAxis,
+    normal,
+    widthMm: Math.max(maxU - minU, 1),
+    heightMm: Math.max(maxV - minV, 1),
+    offsetMm: 0,
+    depthMm: 1.5,
+    reverse: false,
+  }
+}
+
+export function leakPreviewBlockerCenter(blocker: LeakPreviewBlocker): Vec3 {
+  const direction = blocker.reverse
+    ? ([-blocker.normal[0], -blocker.normal[1], -blocker.normal[2]] as Vec3)
+    : blocker.normal
+  return addScaled(blocker.baseCenter, direction, blocker.offsetMm + blocker.depthMm / 2)
 }
 
 function createPreviewReceiver(
@@ -179,6 +307,7 @@ export function buildLeakPreviewRequest({
   transformRules,
   excludedComponentIds,
   deletedComponentIds,
+  blockers = [],
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
@@ -229,6 +358,21 @@ export function buildLeakPreviewRequest({
   // solve. Reuse the display tessellation so a large STEP does not have to
   // materialize its precision trace mesh before the first Preview ray.
   request.geometry_mode = 'preview'
+  request.preview_blockers = blockers
+    .filter((blocker) => blocker.enabled)
+    .map((blocker) => ({
+      blocker_id: blocker.id,
+      center: leakPreviewBlockerCenter(blocker),
+      u_axis: blocker.uAxis,
+      v_axis: blocker.vAxis,
+      normal: blocker.reverse
+        ? [-blocker.normal[0], -blocker.normal[1], -blocker.normal[2]]
+        : blocker.normal,
+      width_mm: blocker.widthMm,
+      height_mm: blocker.heightMm,
+      depth_mm: blocker.depthMm,
+      enabled: true,
+    }))
   // The production tracer deliberately treats unassigned surfaces as perfect
   // absorbers. Preview needs a neutral fallback so a novice can still locate
   // reflected leak paths without first completing Material Assignment.
