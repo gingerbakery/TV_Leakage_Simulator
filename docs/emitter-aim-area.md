@@ -58,7 +58,7 @@ SET 값은 TV 화면에서 측면 누설광까지의 전달 효율을 보정한 
 | distribution | uniform_target_area, v1 고정 |
 | power_reference | aim_region, v1 고정 |
 
-XYZ Tilt는 기존 `planeAxesFromRotation`과 같은 순서를 쓰고 저장 시 U/V 축으로 변환한다. .bitsam 및 결과의 Emitter 설정에도 이 객체를 포함한다. 결과 Compare는 Aim On/Off, 형상, 위치, 방향, 크기가 다르면 동일 조건으로 점수화하지 않는다. 표시 여부는 비교 조건에서 제외한다.
+XYZ Tilt는 기존 `planeAxesFromRotation`과 같은 순서를 쓰고 저장 시 U/V 축으로 변환한다. 다시 열 때는 U/V의 외적으로 normal을 복원하여 Tilt 숫자를 계산한다. 기존 파일에도 저장된 축이 있으면 방향에 해당하는 각도를 표시하며 파일 형식 변경은 없다. Euler 각도의 주기성 및 ±90도 특이점에서는 같은 방향을 나타내는 동등한 숫자로 정규화될 수 있다. .bitsam 및 결과의 Emitter 설정에도 이 객체를 포함한다. 결과 Compare는 Aim On/Off, 형상, 위치, 방향, 크기가 다르면 동일 조건으로 점수화하지 않는다. 표시 여부는 비교 조건에서 제외한다.
 
 ## 계산 경로 / 책임 경계
 
@@ -77,7 +77,9 @@ GPU 모드에서도 초기 샘플 배열 준비는 기존 CPU/NumPy 경로이고
 ## v1 제한 및 후속 작업
 
 - 사각형/원형 World 고정 Target만 지원한다. CAD 면 직접 선택·부품 Transform 추종·Emitter 상대 좌표·Polygon Target은 후속 단계다.
-- 발광면이 Target의 무한 평면을 가로지르거나 접하는 배치는 명시적으로 거절한다. 매우 가까운 배치도 epsilon 기준으로 거절한다. v1의 보수적 유효성 조건이다.
+- 2026-09-10부터 Target의 **실제 사각형/원형 영역**과 발광 삼각형의 중첩·접촉을 검사한다. 무한 연장 평면만 교차하거나, 같은 평면 위라도 두 실제 영역이 분리되어 있으면 허용한다. 서로 떨어진 CAD 면들을 하나의 채워진 덩어리로 간주하지 않는다.
+- 수치 여유 `max(1e-9, 2 × epsilon_mm)`를 둔 국부 영역이 닿으면 거절하며 오류에 해당 mm 값을 표시한다. 단순히 중심 간 거리가 짧다는 이유로 거절하지 않는다. 예를 들어 epsilon `1e-6 mm`에서 분리된 평행면 간격 `1e-5 mm`는 허용되지만 접촉·중첩은 거절된다. 이는 기하 계산 검증 범위이며, 이 간격에서 기하광학이 실제 현상까지 정확하다는 뜻은 아니다.
+- Target은 물리적 충돌체가 아니다. 중첩 금지는 0 길이 방향과 발광 시작점 보정의 모호성을 피하기 위한 이 광원 모델의 안전 조건이다. 매우 얕은 방향, 실제 CAD 두께·틈새가 epsilon 수준인 배치는 별도로 수렴성 및 self-hit를 검토해야 한다.
 - ROI/Transform으로 원래 발광면이 바뀌어도 Target은 World에 고정된다. Source face ID는 기존 ROI remap을 사용한다. Target에 해당하는 CAD 반사면이 ROI에서 제외되면 그 반사는 계산되지 않는다.
 - Reference polygon 발광면은 계산·파일 계약에서 지원한다. 현재 React의 기존 생성 버튼(CAD/Datum)을 이 변경에서 확장하지는 않는다.
 - Lambertian/Gaussian을 유지하는 목표 제한 분포 및 원래 광원 유지 MIS는 별도 모드로 설계·검증한다.

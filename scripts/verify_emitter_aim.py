@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from leakage_simulator import gpu_cuda_intersection as gpu_cuda
 from leakage_simulator.raytracer import run_direct_ray_trace
 from test_emitter_aim import aim_scene
+from test_emitter_aim_proximity import proximity_scene
 
 
 def main() -> int:
@@ -37,12 +38,18 @@ def main() -> int:
     passed = True
     for emitter_type in ("face", "datum_plane", "reference_plane"):
         for shape in ("rectangle", "circle"):
-            for scenario in ("direct", "specular", "blocked"):
-                trace_input = aim_scene(
-                    emitter_type=emitter_type, shape=shape, rays=args.ray_count,
-                    reflection=scenario == "specular", blocker=scenario == "blocked",
-                )
-                expected_flux = {"direct": 1.0, "specular": 0.8, "blocked": 0.0}[scenario]
+            for scenario in ("direct", "specular", "blocked", "close_parallel", "close_tilted"):
+                if scenario.startswith("close_"):
+                    trace_input = proximity_scene(
+                        emitter_type=emitter_type, shape=shape, rays=args.ray_count,
+                        tilted=scenario == "close_tilted",
+                    )
+                else:
+                    trace_input = aim_scene(
+                        emitter_type=emitter_type, shape=shape, rays=args.ray_count,
+                        reflection=scenario == "specular", blocker=scenario == "blocked",
+                    )
+                expected_flux = {"specular": 0.8, "blocked": 0.0}.get(scenario, 1.0)
                 expected_hits = 0 if scenario == "blocked" else args.ray_count
                 reference = None
                 for backend in ("cpu", "gpu_cuda"):

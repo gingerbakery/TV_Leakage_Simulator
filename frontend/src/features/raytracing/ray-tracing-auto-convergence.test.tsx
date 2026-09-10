@@ -13,7 +13,7 @@ import {
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import { RayTracingPanel } from './ray-tracing-panel'
-import { createDatumEmitter } from './ray-tracing-model'
+import { createDatumEmitter, rotationFromPlaneAxes } from './ray-tracing-model'
 import { createEmitterAim } from './emitter-aim'
 
 const apiHookState = vi.hoisted(() => ({
@@ -51,6 +51,35 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it('keeps all Tilt axes when editing sequentially and reopening the saved emitter', async () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    emitter.aim = { ...createEmitterAim([0, 0, 30]), enabled: true }
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    for (const [axis, value] of [['X', 20], ['Y', -30], ['Z', 15]] as const) {
+      const input = screen.getByLabelText(`Aim tilt ${axis}`)
+      fireEvent.focus(input)
+      fireEvent.change(input, { target: { value: String(value) } })
+      fireEvent.blur(input)
+    }
+    const draft = workspaceStore.getState().placementPreviewEmitter!.aim!
+    rotationFromPlaneAxes(draft.u_axis, draft.v_axis, null).forEach(
+      (value, index) => expect(value).toBeCloseTo([20, -30, 15][index], 10),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    for (const [axis, value] of [['X', 20], ['Y', -30], ['Z', 15]] as const) {
+      expect((screen.getByLabelText(`Aim tilt ${axis}`) as HTMLInputElement).value).toBe(String(value))
+    }
+  })
+
   it('previews Aim, applies it, and restores the original distribution when switched off', async () => {
     const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
     emitter.direction_distribution = 'gaussian'

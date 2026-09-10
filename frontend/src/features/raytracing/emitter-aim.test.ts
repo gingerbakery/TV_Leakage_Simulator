@@ -10,7 +10,7 @@ import {
 } from '@/features/projects/bitsam-project'
 import { createEmitterAimOverlay } from '@/features/viewer/emitter-aim-overlay'
 import { createEmitterAim, emitterAimBoundary } from './emitter-aim'
-import { createDatumEmitter, planeAxesFromRotation } from './ray-tracing-model'
+import { createDatumEmitter, planeAxesFromRotation, rotationFromPlaneAxes } from './ray-tracing-model'
 
 describe('Emitter Aim geometry and persistence', () => {
   it('starts disabled and constructs rectangle and circle boundaries in world coordinates', () => {
@@ -46,7 +46,8 @@ describe('Emitter Aim geometry and persistence', () => {
     const store = createWorkspaceStore()
     const emitter = createDatumEmitter('aim', [0, 0, 0], [0, 0, 0])
     emitter.direction_distribution = 'gaussian'
-    emitter.aim = { ...createEmitterAim([1, 2, 30]), enabled: true, shape: 'circle' }
+    const axes = planeAxesFromRotation([20, -30, 15])
+    emitter.aim = { ...createEmitterAim([1, 2, 30]), enabled: true, shape: 'circle', u_axis: axes.uAxis, v_axis: axes.vAxis }
     store.getState().actions.setActiveCad({ path: 'aim.step', displayName: 'aim.step' })
     store.getState().actions.upsertEmitter(emitter)
     const project = createBitsamProject(createSceneFixture(), store.getState())
@@ -56,6 +57,9 @@ describe('Emitter Aim geometry and persistence', () => {
     const reopened = createWorkspaceStore()
     reopened.getState().actions.restoreProjectState(restored.workspace)
     expect(reopened.getState().emitters[0].aim).toEqual(emitter.aim)
+    const restoredAim = reopened.getState().emitters[0].aim!
+    const rotation = rotationFromPlaneAxes(restoredAim.u_axis, restoredAim.v_axis, null)
+    rotation.forEach((value, index) => expect(value).toBeCloseTo([20, -30, 15][index], 10))
     delete project.workspace.emitters[0].aim
     expect(parseBitsamProject(serializeBitsamProject(project)).workspace.emitters[0].aim).toBeUndefined()
   })

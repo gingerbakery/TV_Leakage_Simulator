@@ -563,14 +563,15 @@ export function rotationFromPlaneAxes(
   vAxis: Vec3 | null,
   normal: Vec3 | null,
 ): Vec3 {
-  if (!uAxis || !vAxis || !normal) return [0, 0, 0]
+  if (!uAxis || !vAxis) return [0, 0, 0]
+  const planeNormal = normal ?? crossVector(uAxis, vAxis)
   const rotationY = Math.asin(
     Math.max(-1, Math.min(1, -uAxis[2])),
   )
   const cosineY = Math.cos(rotationY)
   const rotationX =
     Math.abs(cosineY) > 1e-7
-      ? Math.atan2(vAxis[2], normal[2])
+      ? Math.atan2(vAxis[2], planeNormal[2])
       : 0
   const rotationZ =
     Math.abs(cosineY) > 1e-7

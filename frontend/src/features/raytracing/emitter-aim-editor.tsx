@@ -14,6 +14,7 @@ export function EmitterAimEditor({
   onChange(aim: EmitterAimSpec): void
 }) {
   const rotation = rotationFromPlaneAxes(aim.u_axis, aim.v_axis, null)
+    .map((value) => Number(value.toFixed(10))) as Vec3
   const setRotation = (next: Vec3) => {
     const axes = planeAxesFromRotation(next)
     onChange({ ...aim, u_axis: axes.uAxis, v_axis: axes.vAxis })
