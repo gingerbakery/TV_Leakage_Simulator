@@ -123,6 +123,34 @@ class BitsamPackageTests(unittest.TestCase):
         self.assertEqual(second._scene_mesh_for_request(request)["vertices"][0][2], 10)
         loader.assert_not_called()
 
+    def test_sphere_settings_results_and_retrace_survive_portable_restore(self):
+        first = ApiRuntime(self.root / "sphere-before", scene_loader=scene_fixture)
+        loaded = first.load_scene(str(self.source))
+        request = trace_request(loaded["metadata"]["scene_token"])
+        request["emitters"][0]["aim"] = {"enabled": True, "mode": "sphere", "distribution": "uniform_solid_angle"}
+        baseline = first.run_raytrace_direct(request)
+        self.project["workspace"]["emitters"] = baseline["emitters"]
+        self.project["analysis_result"] = baseline
+        exported = first.export_project({"scene_token": request["scene_token"], "project": self.project})
+        package, _ = first.project_export_file(exported["download_url"].split("/")[-1])
+        self.source.unlink()
+        loader = Mock(side_effect=AssertionError("Sphere restore must reuse cached geometry"))
+        second = ApiRuntime(self.root / "sphere-after", scene_loader=loader)
+        restored = second.import_project(package)
+        scene = second.load_scene(restored["cad"]["path"])
+        request["scene_token"] = scene["metadata"]["scene_token"]
+        request["emitters"] = copy.deepcopy(restored["project"]["workspace"]["emitters"])
+        repeated = second.run_raytrace_direct(request)
+        self.assertEqual(restored["project"]["analysis_result"], json.loads(json.dumps(baseline)))
+        self.assertEqual(repeated["receiver_grids"], baseline["receiver_grids"])
+        self.assertEqual(repeated["stored_paths"], baseline["stored_paths"])
+        self.assertEqual(request["emitters"][0]["aim"]["sphere_lower_deg"], 180)
+        request["emitters"][0]["aim"].update(sphere_lower_deg=5, sphere_beta_deg=180)
+        changed = second.run_raytrace_direct(request)
+        self.assertAlmostEqual(changed["metrics"]["observer"]["total_flux_lumen"], 1.0)
+        self.assertNotEqual(changed["receiver_grids"], baseline["receiver_grids"])
+        loader.assert_not_called()
+
     def test_deferred_trace_not_built_during_save_or_load(self):
         trace_loader = Mock(return_value=self.scene["mesh"])
         def deferred(path):

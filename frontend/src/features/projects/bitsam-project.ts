@@ -1,4 +1,5 @@
 import type {
+  EmitterAimSpec,
   EmitterSpec,
   RayTraceConfigRequest,
   RayTraceResult,
@@ -20,6 +21,7 @@ import type {
   WorkspaceProjectState,
   WorkspaceSnapshot,
 } from '@/stores'
+import { isEmitterAimValid } from '@/features/raytracing/emitter-aim'
 
 export const bitsamFileExtension = '.bitsam'
 export const bitsamSchemaVersion = 'bitsam-project.v1'
@@ -288,12 +290,17 @@ function isEmitterAim(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled) || !isBoolean(value.show_in_viewer)
     || !isOneOf(value.shape, ['rectangle', 'circle']) || !isVec3(value.center)
     || !isVec3(value.u_axis) || !isVec3(value.v_axis)
-    || value.distribution !== 'uniform_target_area' || value.power_reference !== 'aim_region') return false
-  if (![value.width_mm, value.height_mm, value.radius_mm].every((size) => isFiniteNumber(size) && size > 0)) return false
+    || !isOneOf(value.distribution, ['uniform_target_area', 'uniform_solid_angle']) || value.power_reference !== 'aim_region') return false
+  if (value.mode !== undefined && !isOneOf(value.mode, ['area', 'sphere'])) return false
+  if (!['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'].every(
+    (key) => value[key] === undefined || isFiniteNumber(value[key]),
+  )) return false
+  if (![value.width_mm, value.height_mm, value.radius_mm].every(isFiniteNumber)) return false
   const lengthU = Math.hypot(...value.u_axis)
   const lengthV = Math.hypot(...value.v_axis)
   const dot = value.u_axis.reduce((sum, entry, axis) => sum + entry * (value.v_axis as number[])[axis], 0)
   return lengthU > 1e-12 && lengthV > 1e-12 && Math.abs(dot / (lengthU * lengthV)) <= 1e-6
+    && isEmitterAimValid(value as unknown as EmitterAimSpec)
 }
 
 function isEmitterSpec(value: unknown): value is EmitterSpec {

@@ -128,7 +128,7 @@ from .wavefront_event_tape import (
     TERMINAL_ESCAPED as TAPE_TERMINAL_ESCAPED,
     TERMINAL_RECEIVER as TAPE_TERMINAL_RECEIVER,
 )
-from .aim_sampling import AIM_SAMPLING_CONTRACT, sample_aim_ray, validate_emitter_aim
+from .aim_sampling import AIM_SAMPLING_CONTRACT, AIM_SPHERE_SAMPLING_CONTRACT, sample_aim_ray, validate_emitter_aim
 
 
 RECEIVER_FLUX_CONTRACT = "geometric_incident_flux_v2"
@@ -2432,7 +2432,7 @@ def run_direct_ray_trace(
             if receiver_mis_enabled:
                 primary_sampling_stats.applied_emitter_count += 1
             elif emitter.aim is not None and emitter.aim.enabled:
-                primary_sampling_stats.record_fallback("aim_area_overrides_receiver_mis")
+                primary_sampling_stats.record_fallback(f"aim_{emitter.aim.mode}_overrides_receiver_mis")
             elif receiver_importance_geometry is None:
                 primary_sampling_stats.record_fallback("no_enabled_receivers")
             elif emitter.direction_distribution not in {"lambertian", "isotropic"}:
@@ -3104,7 +3104,18 @@ def run_direct_ray_trace(
         "fast_primary_ray_count": fast_primary_ray_count,
         "face_batch_primary_ray_count": face_batch_primary_ray_count,
         "scalar_primary_ray_count": scalar_primary_ray_count,
-        "aim_sampling_contract": AIM_SAMPLING_CONTRACT,
+        "aim_sampling_contract": (
+            "aim_regions_v2" if any(
+                emitter.enabled and emitter.aim is not None and emitter.aim.enabled and emitter.aim.mode == "sphere"
+                for emitter in trace_input.emitters
+            ) else AIM_SAMPLING_CONTRACT
+        ),
+        "aim_area_sampling_contract": AIM_SAMPLING_CONTRACT,
+        "aim_sphere_sampling_contract": AIM_SPHERE_SAMPLING_CONTRACT,
+        "aim_sphere_emitter_count": sum(
+            1 for emitter in trace_input.emitters
+            if emitter.enabled and emitter.aim is not None and emitter.aim.enabled and emitter.aim.mode == "sphere"
+        ),
         "aim_emitter_count": sum(
             1 for emitter in trace_input.emitters
             if emitter.enabled and emitter.aim is not None and emitter.aim.enabled

@@ -5,10 +5,12 @@
 - 계산 계약: `target_only_uniform_area_v1`
 - 적용 작업본: `main` / `d991858b0626c8bd2f2b713b14d385d82ffab5c1` 이후 로컬 변경. Commit/Push는 별도 요청 시 수행한다.
 
+2026-09-10부터 같은 Aim 메뉴에 각도 범위를 지정하는 Sphere 모드를 추가했다. 이 문서는 Area의 공간 Target 계약을 설명하며, Sphere의 앞뒤 발광·각도·광량 기준은 `docs/emitter-aim-sphere.md`를 따른다.
+
 ## 사용 방법
 
 1. 기존 CAD Surface 또는 Datum Plane Emitter를 생성하거나 편집한다.
-2. 기본적으로 닫혀 있는 **Aim / Target**을 펼치고 **Target 방향으로 발광**을 켠다.
+2. 기본적으로 닫혀 있는 **Aim / Target**을 펼치고 발광 방식에서 **Aim Area**를 선택한다.
 3. Rectangle의 Width/Height 또는 Circle의 Diameter를 정한다.
 4. Position X/Y/Z(mm), Tilt X/Y/Z(deg)로 목표 면을 배치한다.
 5. 보라색 Target 외곽선·안내선을 확인한 뒤 기존 Add Emitter / Save Emitter 또는 Enter로 확정한다.

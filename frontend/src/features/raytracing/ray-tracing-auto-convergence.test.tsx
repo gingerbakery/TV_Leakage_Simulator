@@ -51,6 +51,51 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it('edits a bidirectional Sphere on an existing surface without adding a new emitter type', async () => {
+    const emitter = createDatumEmitter('emitter_001', [2, 3, 4], [20, 0, 0])
+    emitter.direction_distribution = 'gaussian'
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    expect(screen.getByText('Aim / Target').closest('details')?.open).toBe(false)
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'sphere' } })
+    expect(screen.queryByLabelText('Aim position X')).toBeNull()
+    expect((screen.getByLabelText('Aim Sphere Lower') as HTMLInputElement).value).toBe('180')
+    for (const [label, value] of [['Upper', '20'], ['Lower', '140'], ['Alpha', '32.5'], ['Beta', '-65']]) {
+      const input = screen.getByLabelText(`Aim Sphere ${label}`)
+      fireEvent.focus(input)
+      fireEvent.change(input, { target: { value } })
+      fireEvent.blur(input)
+    }
+    const draft = workspaceStore.getState().placementPreviewEmitter!
+    expect(draft.emitter_type).toBe('datum_plane')
+    expect(draft.center).toEqual([2, 3, 4])
+    expect(draft.aim).toMatchObject({ mode: 'sphere', sphere_upper_deg: 20, sphere_lower_deg: 140, sphere_alpha_deg: 32.5, sphere_beta_deg: -65 })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    expect((screen.getByLabelText('Aim Sphere Alpha') as HTMLInputElement).value).toBe('32.5')
+    fireEvent.change(screen.getByLabelText('Aim Sphere Lower'), { target: { value: '10' } })
+    expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '평행광' }))
+    expect(workspaceStore.getState().placementPreviewEmitter!.aim).toMatchObject({ sphere_upper_deg: 0, sphere_lower_deg: 0 })
+    expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '전방위' }))
+    expect(workspaceStore.getState().placementPreviewEmitter!.aim?.sphere_lower_deg).toBe(180)
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'area' } })
+    expect(screen.getByLabelText('Aim position X')).not.toBeNull()
+    expect(screen.queryByLabelText('Aim Sphere Upper')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'off' } })
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('gaussian')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter).toBeNull())
+    expect(workspaceStore.getState().emitters[0].aim?.sphere_lower_deg).toBe(140)
+  })
+
   it('keeps all Tilt axes when editing sequentially and reopening the saved emitter', async () => {
     const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
     emitter.aim = { ...createEmitterAim([0, 0, 30]), enabled: true }
@@ -94,7 +139,7 @@ describe('RayTracingPanel Aim editing', () => {
     const summary = screen.getByText('Aim / Target')
     expect(summary.closest('details')?.open).toBe(false)
     fireEvent.click(summary)
-    fireEvent.click(screen.getByLabelText('Enable Aim Area'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'area' } })
     expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).disabled).toBe(true)
     fireEvent.change(screen.getByLabelText('Aim shape'), { target: { value: 'circle' } })
     fireEvent.change(screen.getByLabelText('Aim diameter (mm)'), { target: { value: '6' } })
@@ -106,7 +151,7 @@ describe('RayTracingPanel Aim editing', () => {
     expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
     fireEvent.click(screen.getByText('Aim / Target'))
-    fireEvent.click(screen.getByLabelText('Enable Aim Area'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'off' } })
     const distribution = screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement
     expect(distribution.disabled).toBe(false)
     expect(distribution.value).toBe('gaussian')

@@ -9,10 +9,62 @@ import {
   serializeBitsamProject,
 } from '@/features/projects/bitsam-project'
 import { createEmitterAimOverlay } from '@/features/viewer/emitter-aim-overlay'
-import { createEmitterAim, emitterAimBoundary } from './emitter-aim'
+import { createEmitterAim, emitterAimBoundary, emitterSphereDirection, isEmitterAimValid, setEmitterAimMode } from './emitter-aim'
 import { createDatumEmitter, planeAxesFromRotation, rotationFromPlaneAxes } from './ray-tracing-model'
 
 describe('Emitter Aim geometry and persistence', () => {
+  it('uses world Alpha X then Beta Y for the sphere axis and angular boundary', () => {
+    const aim = { ...setEmitterAimMode(createEmitterAim([50, 60, 70]), 'sphere'), sphere_alpha_deg: 35, sphere_beta_deg: -60 }
+    const axis = new Vector3(...emitterSphereDirection(aim))
+    const expected = new Vector3(0, 0, 1).applyAxisAngle(new Vector3(1, 0, 0), 35 * Math.PI / 180).applyAxisAngle(new Vector3(0, 1, 0), -60 * Math.PI / 180)
+    expect(axis.distanceTo(expected)).toBeLessThan(1e-12)
+    for (const azimuth of [0, 90, 180, 270]) {
+      const direction = new Vector3(...emitterSphereDirection(aim, 40, azimuth))
+      expect(direction.length()).toBeCloseTo(1, 12)
+      expect(direction.dot(axis)).toBeCloseTo(Math.cos(40 * Math.PI / 180), 12)
+    }
+    expect(emitterAimBoundary(aim)).toEqual([])
+  })
+
+  it('draws front and back angular guides around the source, not the old target', () => {
+    const emitter = createDatumEmitter('sphere', [1, 2, 3], [0, 0, 0])
+    emitter.aim = setEmitterAimMode(createEmitterAim([1000, 1000, 1000]), 'sphere')
+    const overlay = createEmitterAimOverlay(emitter, [1, 2, 3])!
+    const boundary = overlay.getObjectByName('aim-sphere-boundary') as import('three').LineSegments
+    boundary.geometry.computeBoundingBox()
+    const box = boundary.geometry.boundingBox!
+    expect(box.min.z).toBeLessThan(3)
+    expect(box.max.z).toBeGreaterThan(3)
+    expect(box.getCenter(new Vector3()).distanceTo(new Vector3(1, 2, 3))).toBeLessThan(1e-6)
+    expect(overlay.getObjectByName('aim-target-surface')).toBeUndefined()
+    expect(new Raycaster(new Vector3(), new Vector3(0, 0, 1)).intersectObject(overlay, true)).toEqual([])
+    emitter.aim.sphere_lower_deg = 0
+    expect(createEmitterAimOverlay(emitter, [1, 2, 3])!.getObjectByName('aim-sphere-center-direction')).toBeDefined()
+    emitter.aim.sphere_upper_deg = 30
+    expect(createEmitterAimOverlay(emitter, [1, 2, 3])).toBeNull()
+  })
+
+  it('round-trips sphere ranges and angles and preserves dormant Area settings', () => {
+    const store = createWorkspaceStore()
+    const emitter = createDatumEmitter('sphere', [0, 0, 0], [30, 45, 10])
+    const area = { ...createEmitterAim([30, 40, 50]), shape: 'circle' as const, radius_mm: 4 }
+    emitter.aim = { ...setEmitterAimMode(area, 'sphere'), sphere_upper_deg: 20, sphere_lower_deg: 160, sphere_alpha_deg: 12.5, sphere_beta_deg: -38 }
+    store.getState().actions.setActiveCad({ path: 'test.step', displayName: 'test.step' })
+    store.getState().actions.upsertEmitter(emitter)
+    const project = createBitsamProject(createSceneFixture(), store.getState())
+    const restored = parseBitsamProject(serializeBitsamProject(project)).workspace.emitters[0]
+    expect(restored.aim).toEqual(emitter.aim)
+    expect(restored.emitter_type).toBe('datum_plane')
+    expect(setEmitterAimMode(restored.aim!, 'area')).toMatchObject({ center: area.center, shape: 'circle', radius_mm: 4, distribution: 'uniform_target_area' })
+    for (const invalid of [{ sphere_lower_deg: 181 }, { sphere_upper_deg: 170 }, { sphere_alpha_deg: null }, { sphere_lower_deg: 20 }, { distribution: 'uniform_target_area' }, { mode: 'unknown' }]) {
+      project.workspace.emitters[0].aim = { ...emitter.aim, ...invalid } as typeof emitter.aim
+      expect(() => parseBitsamProject(JSON.stringify(project))).toThrow()
+    }
+    expect(isEmitterAimValid(setEmitterAimMode(area, 'sphere'))).toBe(true)
+    expect(isEmitterAimValid(setEmitterAimMode({ ...area, radius_mm: 0 }, 'sphere'))).toBe(true)
+    expect(isEmitterAimValid(setEmitterAimMode({ ...area, sphere_upper_deg: 120, sphere_lower_deg: 10 }, 'area'))).toBe(true)
+  })
+
   it('starts disabled and constructs rectangle and circle boundaries in world coordinates', () => {
     const aim = createEmitterAim([10, 20, 30])
     expect(aim.enabled).toBe(false)

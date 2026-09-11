@@ -628,7 +628,7 @@ function EmitterDialog({
                 )
               }
             >
-              {aim.enabled ? <option value={distribution}>Aim · Target 면적 균일</option> : null}
+              {aim.enabled ? <option value={distribution}>{aim.mode === 'sphere' ? 'Sphere · 입체각 균일' : 'Aim · Target 면적 균일'}</option> : null}
               {!aim.enabled ? <option value="lambertian">Lambertian</option> : null}
               {!aim.enabled ? <option value="isotropic">Isotropic</option> : null}
               {!aim.enabled ? <option value="gaussian">Gaussian</option> : null}

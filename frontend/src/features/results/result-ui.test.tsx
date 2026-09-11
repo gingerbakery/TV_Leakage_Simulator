@@ -403,6 +403,20 @@ describe('Step 11 result UI', () => {
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })
 
+  it.each(['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'] as const)('excludes changed Aim Sphere %s from like-for-like scoring', (field) => {
+    const baseline = createRayTraceResultFixture()
+    baseline.emitters[0].aim = { ...createEmitterAim([0, 0, 30]), enabled: true, mode: 'sphere', distribution: 'uniform_solid_angle' }
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-sphere-changed'
+    comparison.emitters[0].aim![field] = 45
+    render(<RayTraceResultWindow open result={baseline} onOpenChange={vi.fn()} reportCases={[
+      { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+      { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+    ]} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
   it('does not score reports produced by different Receiver flux contracts', () => {
     const baseline = createRayTraceResultFixture()
     const comparison = structuredClone(baseline)

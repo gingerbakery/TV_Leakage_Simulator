@@ -374,12 +374,23 @@ function comparisonConditionMismatches(
     if (Boolean(emitter.aim?.enabled) !== Boolean(baseEmitter.aim?.enabled)) {
       mismatches.push(`Emitter ${index + 1} · Aim On/Off`)
     } else if (emitter.aim?.enabled && baseEmitter.aim?.enabled) {
-      const aimKeys = ['shape', 'center', 'u_axis', 'v_axis', 'distribution', 'power_reference'] as const
-      const geometryDiffers = aimKeys.some((key) => different(emitter.aim![key], baseEmitter.aim![key]))
-      const sizeDiffers = emitter.aim.shape === 'circle'
-        ? different(emitter.aim.radius_mm, baseEmitter.aim.radius_mm)
-        : different(emitter.aim.width_mm, baseEmitter.aim.width_mm) || different(emitter.aim.height_mm, baseEmitter.aim.height_mm)
-      if (geometryDiffers || sizeDiffers) mismatches.push(`Emitter ${index + 1} · Aim Target`)
+      const mode = emitter.aim.mode ?? 'area'
+      const baseMode = baseEmitter.aim.mode ?? 'area'
+      if (mode !== baseMode) {
+        mismatches.push(`Emitter ${index + 1} · Aim 방식`)
+      } else if (mode === 'sphere') {
+        const sphereKeys = ['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'] as const
+        if (sphereKeys.some((key) => different(emitter.aim![key] ?? (key === 'sphere_lower_deg' ? 180 : 0), baseEmitter.aim![key] ?? (key === 'sphere_lower_deg' ? 180 : 0)))) {
+          mismatches.push(`Emitter ${index + 1} · Aim Sphere`)
+        }
+      } else {
+        const aimKeys = ['shape', 'center', 'u_axis', 'v_axis', 'distribution', 'power_reference'] as const
+        const geometryDiffers = aimKeys.some((key) => different(emitter.aim![key], baseEmitter.aim![key]))
+        const sizeDiffers = emitter.aim.shape === 'circle'
+          ? different(emitter.aim.radius_mm, baseEmitter.aim.radius_mm)
+          : different(emitter.aim.width_mm, baseEmitter.aim.width_mm) || different(emitter.aim.height_mm, baseEmitter.aim.height_mm)
+        if (geometryDiffers || sizeDiffers) mismatches.push(`Emitter ${index + 1} · Aim Target`)
+      }
     }
     for (const [label, key] of commonEmitterFields) {
       if (different(emitter[key], baseEmitter[key])) {

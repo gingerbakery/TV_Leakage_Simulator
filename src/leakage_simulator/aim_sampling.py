@@ -10,6 +10,29 @@ from .types import EmitterAimSpec, EmitterSpec, Vec3
 
 
 AIM_SAMPLING_CONTRACT = "target_only_uniform_area_v1"
+AIM_SPHERE_SAMPLING_CONTRACT = "angular_region_uniform_solid_angle_v1"
+
+
+def aim_sphere_rotation(aim: EmitterAimSpec) -> tuple[Vec3, Vec3, Vec3]:
+    alpha = math.radians(aim.sphere_alpha_deg % 360.0)
+    beta = math.radians(aim.sphere_beta_deg % 360.0)
+    sin_alpha, cos_alpha = math.sin(alpha), math.cos(alpha)
+    sin_beta, cos_beta = math.sin(beta), math.cos(beta)
+    return (
+        (cos_beta, sin_beta * sin_alpha, sin_beta * cos_alpha),
+        (0.0, cos_alpha, -sin_alpha),
+        (-sin_beta, cos_beta * sin_alpha, cos_beta * cos_alpha),
+    )
+
+
+def _sphere_local_direction(first, second, aim: EmitterAimSpec):
+    upper = math.sin(math.radians(aim.sphere_upper_deg) * 0.5) ** 2
+    lower = math.sin(math.radians(aim.sphere_lower_deg) * 0.5) ** 2
+    half_sine_squared = upper + (lower - upper) * first
+    cosine = 1.0 - 2.0 * half_sine_squared
+    sine = np.sqrt(np.maximum(0.0, 4.0 * half_sine_squared * (1.0 - half_sine_squared)))
+    azimuth = 2.0 * math.pi * second
+    return sine * np.cos(azimuth), sine * np.sin(azimuth), cosine
 
 
 def validate_emitter_aim(
@@ -19,6 +42,8 @@ def validate_emitter_aim(
 ) -> None:
     aim = emitter.aim
     if aim is None or not aim.enabled:
+        return
+    if aim.mode == "sphere":
         return
     if emitter.emitter_type == "face":
         triangles = [
@@ -120,6 +145,13 @@ def sample_aim_ray_batch(
     count = len(points)
     first = generator.random(count)
     second = generator.random(count)
+    if aim.mode == "sphere":
+        local = np.column_stack(_sphere_local_direction(first, second, aim))
+        directions = local @ np.asarray(aim_sphere_rotation(aim), dtype=np.float64).T
+        return (
+            np.ascontiguousarray(points + epsilon_mm * directions, dtype=np.float64),
+            np.ascontiguousarray(directions, dtype=np.float64),
+        )
     if aim.shape == "circle":
         radius = aim.radius_mm * np.sqrt(first)
         angle = 2.0 * math.pi * second
@@ -152,6 +184,11 @@ def sample_aim_ray(
 ) -> tuple[Vec3, Vec3]:
     first = generator.random()
     second = generator.random()
+    if aim.mode == "sphere":
+        local = _sphere_local_direction(first, second, aim)
+        direction = tuple(float(sum(row[axis] * local[axis] for axis in range(3))) for row in aim_sphere_rotation(aim))
+        origin = tuple(point[axis] + epsilon_mm * direction[axis] for axis in range(3))
+        return origin, direction
     if aim.shape == "circle":
         radius = aim.radius_mm * math.sqrt(first)
         angle = 2.0 * math.pi * second

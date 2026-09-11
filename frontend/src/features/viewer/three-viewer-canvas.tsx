@@ -86,6 +86,7 @@ import {
 } from './scene-geometry'
 import { fitPerspectiveCameraToBounds } from './camera-fit'
 import { createEmitterAimOverlay } from './emitter-aim-overlay'
+import { emitterSphereDirection } from '@/features/raytracing/emitter-aim'
 import { createRoiCapMaterial } from './roi-cap-material'
 import { roiSurfaceAppearance } from './roi-surface-appearance'
 import { applyFaceDisplayColors, resolveFaceDisplayColors, setDisplayVertexColors } from './face-display-colors'
@@ -3800,7 +3801,9 @@ export function ThreeViewerCanvas({
         emitter.u_axis,
         emitter.v_axis,
         emitter.aim?.enabled
-          ? new Vector3(...emitter.aim.center).sub(new Vector3(...emitter.center)).normalize().toArray()
+          ? emitter.aim.mode === 'sphere'
+            ? emitterSphereDirection(emitter.aim)
+            : new Vector3(...emitter.aim.center).sub(new Vector3(...emitter.center)).normalize().toArray()
           : emitter.custom_normal ?? fallbackNormal,
         emitter.width_mm,
         emitter.height_mm,
@@ -3812,6 +3815,10 @@ export function ThreeViewerCanvas({
       )
       emitterPlane.userData.rayObjectKind = 'emitter'
       emitterPlane.userData.rayObjectId = emitter.emitter_id
+      if (emitter.aim?.enabled && emitter.aim.mode === 'sphere') {
+        const arrow = emitterPlane.getObjectByName(`emitter-plane-${emitter.emitter_id}-direction`)
+        if (arrow) arrow.visible = false
+      }
       runtime.placementRoot.add(emitterPlane)
     }
     for (const receiver of placementReceivers) {

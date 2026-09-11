@@ -170,13 +170,28 @@ class EmitterAimSpec:
     show_in_viewer: bool = True
     distribution: str = "uniform_target_area"
     power_reference: str = "aim_region"
+    mode: str = "area"
+    sphere_upper_deg: float = 0.0
+    sphere_lower_deg: float = 180.0
+    sphere_alpha_deg: float = 0.0
+    sphere_beta_deg: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool) or not isinstance(self.show_in_viewer, bool):
             raise ValueError("Aim enabled/show_in_viewer must be boolean")
         self.shape = require_choice(self.shape, "aim.shape", ("rectangle", "circle"))
-        require_choice(self.distribution, "aim.distribution", ("uniform_target_area",))
+        self.mode = require_choice(self.mode, "aim.mode", ("area", "sphere"))
+        expected_distribution = "uniform_solid_angle" if self.mode == "sphere" else "uniform_target_area"
+        require_choice(self.distribution, "aim.distribution", (expected_distribution,))
         require_choice(self.power_reference, "aim.power_reference", ("aim_region",))
+        for name in ("sphere_upper_deg", "sphere_lower_deg", "sphere_alpha_deg", "sphere_beta_deg"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value):
+                raise ValueError(f"aim.{name} must be finite")
+            setattr(self, name, value)
+        upper, lower = self.sphere_upper_deg, self.sphere_lower_deg
+        if self.mode == "sphere" and not (0.0 <= upper < lower <= 180.0 or upper == lower == 0.0):
+            raise ValueError("Aim Sphere requires 0 <= Upper < Lower <= 180 degrees, or 0/0 for collimated light")
         for name in ("center", "u_axis", "v_axis"):
             values = vec3_from(getattr(self, name), f"aim.{name}")
             if not all(math.isfinite(value) for value in values):
@@ -187,7 +202,9 @@ class EmitterAimSpec:
         if abs(sum(first * second for first, second in zip(self.u_axis, self.v_axis))) > 1e-6:
             raise ValueError("Aim axes must be perpendicular")
         for name in ("width_mm", "height_mm", "radius_mm"):
-            value = require_positive(getattr(self, name), f"aim.{name}")
+            value = float(getattr(self, name))
+            if self.mode == "area":
+                value = require_positive(value, f"aim.{name}")
             if not math.isfinite(value):
                 raise ValueError(f"aim.{name} must be finite")
             setattr(self, name, value)
