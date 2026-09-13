@@ -563,14 +563,15 @@ export function rotationFromPlaneAxes(
   vAxis: Vec3 | null,
   normal: Vec3 | null,
 ): Vec3 {
-  if (!uAxis || !vAxis || !normal) return [0, 0, 0]
+  if (!uAxis || !vAxis) return [0, 0, 0]
+  const planeNormal = normal ?? crossVector(uAxis, vAxis)
   const rotationY = Math.asin(
     Math.max(-1, Math.min(1, -uAxis[2])),
   )
   const cosineY = Math.cos(rotationY)
   const rotationX =
     Math.abs(cosineY) > 1e-7
-      ? Math.atan2(vAxis[2], normal[2])
+      ? Math.atan2(vAxis[2], planeNormal[2])
       : 0
   const rotationZ =
     Math.abs(cosineY) > 1e-7
@@ -851,8 +852,11 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
     if (!assignment.enabled) continue
     const profileId =
       assignment.profileId.trim() || `compiled-${assignment.assignmentId}`
+    const baseMaterialId = assignment.targetType === 'faces'
+      ? assignments.findLast((item) => item.enabled && item.targetType === 'part' && item.componentId === assignment.componentId)?.baseMaterialId ?? assignment.baseMaterialId
+      : assignment.baseMaterialId
     const compiled = compileOpticalProfile(
-      assignment.baseMaterialId,
+      baseMaterialId,
       assignment.surfaceId,
     )
     const custom = assignment.opticalOverride
@@ -866,7 +870,7 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
       roughness: compiled.roughness,
       gaussian_sigma_deg: compiled.scatterSigmaDeg,
       bsdf_asset_id: assignment.bsdfAssetId || null,
-      notes: `Compiled from ${assignment.baseMaterialId} / ${assignment.surfaceId}`,
+      notes: `Compiled from ${baseMaterialId} / ${assignment.surfaceId}`,
     })
     opticalAssignments.push({
       assignment_id: assignment.assignmentId,

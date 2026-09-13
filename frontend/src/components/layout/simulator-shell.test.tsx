@@ -25,6 +25,7 @@ import {
 } from '@/features/projects'
 
 import { SimulatorShell } from './simulator-shell'
+import * as portableProjects from '@/features/projects/portable-project'
 
 const apiHookState = vi.hoisted(() => ({
   rayTraceJob: undefined as unknown,
@@ -81,6 +82,92 @@ afterEach(() => {
 })
 
 describe('SimulatorShell', () => {
+  it('shows the compact save summary with the actual saved result', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'original.step', displayName: 'original.step' })
+    actions.setRestoredRayTraceResult(createCompletedRayTraceJobFixture().result!)
+    const save = vi.spyOn(portableProjects, 'savePortableProject').mockResolvedValueOnce({
+      cancelled: false, traceCached: true, downloaded: false,
+    })
+    try {
+      renderShell()
+      fireEvent.click(screen.getByRole('button', { name: 'Save BITSAM project' }))
+      const dialog = await screen.findByRole('dialog', { name: '저장 완료' })
+      expect(within(dialog).getByText('해석 설정 및 결과')).not.toBeNull()
+      expect(within(dialog).getByText('원본 CAD 및 모델 형상')).not.toBeNull()
+      expect(save.mock.calls[0][0].analysis_result).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('button', { name: '확인' }))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '저장 완료' })).toBeNull())
+    } finally {
+      save.mockRestore()
+    }
+  })
+
+  it('does not show a save confirmation after the picker is cancelled', async () => {
+    apiHookState.scene = createSceneFixture()
+    workspaceStore.getState().actions.addCadCase({ path: 'original.step', displayName: 'original.step' })
+    const save = vi.spyOn(portableProjects, 'savePortableProject').mockResolvedValueOnce({ cancelled: true })
+    try {
+      renderShell()
+      fireEvent.click(screen.getByRole('button', { name: 'Save BITSAM project' }))
+      await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+      expect(screen.queryByRole('dialog', { name: '저장 완료' })).toBeNull()
+    } finally {
+      save.mockRestore()
+    }
+  })
+
+  it('loads a portable CAD as an independent case and keeps its saved result', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    workspaceStore.getState().actions.addCadCase({ path: 'existing.step', displayName: 'existing.step' })
+    const savedStore = createWorkspaceStore()
+    savedStore.getState().actions.setActiveCad({ path: 'original.step', displayName: 'original.step' })
+    const result = createCompletedRayTraceJobFixture().result!
+    const project = createBitsamProject(scene, savedStore.getState(), new Date(), result)
+    project.workspace.faceColorOverrides = [{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }]
+    const load = vi.spyOn(portableProjects, 'loadPortableProject').mockResolvedValueOnce({
+      project, scene, cad: { path: 'restored/original.step', displayName: 'original.step' }, traceCached: true,
+    })
+    try {
+      renderShell()
+      const file = new File([new Uint8Array([80, 75, 3, 4])], 'restored.bitsam')
+      fireEvent.change(screen.getByLabelText('BITSAM project file'), { target: { files: [file] } })
+      const dialog = await screen.findByRole('dialog', { name: '불러오기 완료' })
+      expect(within(dialog).getByText('restored.bitsam')).not.toBeNull()
+      expect(within(dialog).getByText('CAD 모델 형상')).not.toBeNull()
+      expect(within(dialog).getByText('해석 설정 및 결과')).not.toBeNull()
+      expect(dialog.className).toContain('sm:max-w-[26.25rem]')
+      expect(workspaceStore.getState().activeCad?.path).toBe('restored/original.step')
+      expect(workspaceStore.getState().cadCases).toHaveLength(2)
+      expect(workspaceStore.getState().cadCases[0].cad.path).toBe('existing.step')
+      expect(workspaceStore.getState().restoredRayTraceResult).toEqual(result)
+      expect(workspaceStore.getState().faceColorOverrides).toEqual(project.workspace.faceColorOverrides)
+      expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
+      fireEvent.click(within(dialog).getByRole('button', { name: '확인' }))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '불러오기 완료' })).toBeNull())
+    } finally {
+      load.mockRestore()
+    }
+  })
+  it('uses the same completion dialog for a compatible legacy project', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    workspaceStore.getState().actions.setActiveCad({ path: 'fixture.step', displayName: 'fixture.step' })
+    const project = createBitsamProject(scene, workspaceStore.getState())
+    project.workspace.rayTraceConfig.compute_backend = 'cpu'
+    renderShell()
+    fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+      target: { files: [new File([serializeBitsamProject(project)], 'fixture.bitsam')] },
+    })
+    const dialog = await screen.findByRole('dialog', { name: '불러오기 완료' })
+    expect(within(dialog).getByText('해석 설정')).not.toBeNull()
+    expect(within(dialog).queryByText('해석 설정 및 결과')).toBeNull()
+    expect(within(dialog).getByText('불러온 항목')).not.toBeNull()
+  })
+
   it('matches Copy Setup Components by CAD name instead of numeric ID', () => {
     const source = createSceneFixture()
     const target = structuredClone(source)

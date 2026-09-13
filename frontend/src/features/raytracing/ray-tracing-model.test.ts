@@ -20,6 +20,18 @@ import {
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
+  it.each([[20, 30, -15], [-45, 10, 90], [0, 90, 30], [0, -90, -30]])(
+    'recovers Target rotation from its two persisted axes: %s, %s, %s',
+    (rotationX, rotationY, rotationZ) => {
+      const axes = planeAxesFromRotation([rotationX, rotationY, rotationZ])
+      const restored = rotationFromPlaneAxes(axes.uAxis, axes.vAxis, null)
+      const recovered = planeAxesFromRotation(restored)
+      for (const axis of ['uAxis', 'vAxis', 'normal'] as const) {
+        recovered[axis].forEach((value, index) => expect(value).toBeCloseTo(axes[axis][index], 10))
+      }
+    },
+  )
+
   it('derives deterministic independent seeds for convergence segments', () => {
     expect(convergenceSegmentSeed(42, 0)).toBe(42)
     expect(convergenceSegmentSeed(42, 1)).toBe(1_000_045)

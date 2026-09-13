@@ -78,3 +78,11 @@ export function countSelectedCadFaces(scene: ScenePayload, faceIds: number[]): n
     `${scene.mesh.face_component_ids[faceId]}:${scene.mesh.face_source_ids?.[faceId] ?? faceId}`,
   )).size
 }
+
+export function cadFaceContextSelection(scene: ScenePayload, componentId: number, faceId: number | null, selectedFaceIds: number[], roiFaceIds: number[] | null) {
+  const patch = resolveCadFacePick(scene, componentId, faceId, roiFaceIds)
+  if (!patch.length) return { faceIds: [], componentIds: [] }
+  const current = selectedFaceIds.filter((id) => scene.mesh.face_component_ids[id] === componentId)
+  const faceIds = current.includes(faceId!) ? current : patch
+  return { faceIds, componentIds: [componentId] }
+}

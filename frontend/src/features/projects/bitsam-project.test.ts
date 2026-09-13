@@ -46,6 +46,42 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('round-trips face colors, rejects invalid entries and drops CAD-bound colors for a different model', () => {
+    const { project } = createProjectFixture()
+    project.workspace.faceColorOverrides = [{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }]
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    const store = createWorkspaceStore()
+    store.getState().actions.restoreProjectState(restored.workspace)
+    expect(store.getState().faceColorOverrides).toEqual(project.workspace.faceColorOverrides)
+    expect(createBitsamSettingsOnlyState(restored).workspace.faceColorOverrides).toEqual([])
+    expect(() => parseBitsamProject(serializeBitsamProject(project).replace('#ef4444', 'invalid'))).toThrow(BitsamProjectError)
+    const legacy = JSON.parse(serializeBitsamProject(project))
+    delete legacy.workspace.faceColorOverrides
+    store.getState().actions.restoreProjectState(parseBitsamProject(JSON.stringify(legacy)).workspace)
+    expect(store.getState().faceColorOverrides).toEqual([])
+  })
+  it('round-trips coordinate-volume ROI and independent surface properties', () => {
+    const store = createWorkspaceStore()
+    const scene = createSceneFixture()
+    const actions = store.getState().actions
+    actions.setActiveCad({ path: 'corner.step', displayName: 'corner.step' })
+    actions.addRoiScope({ source: 'box', view: 'coordinate',
+      clipBox: { plane: 'xyz', xMin: 0, xMax: 40, yMin: 10, yMax: 35, zMin: -1, zMax: 50 },
+      components: [{ componentId: 1, componentName: 'STEP Solid 1', faceIds: [0, 1, 2], areaMm2: 100,
+        bboxMin: { x: 0, y: 0, z: 0 }, bboxMax: { x: 50, y: 50, z: 20 } }],
+    })
+    for (const faceId of [0, 2]) actions.upsertMaterialAssignment({
+      assignmentId: `surface-${faceId}`, componentId: 1, targetType: 'faces', faceIds: [faceId],
+      baseMaterialId: 'pc_black', surfaceId: faceId === 0 ? 'high_gloss_resin' : 'matte_black_resin',
+      profileId: '', bsdfAssetId: '', enabled: true,
+    })
+    const project = createBitsamProject(scene, store.getState())
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.workspace.roiScopes).toEqual(project.workspace.roiScopes)
+    expect(restored.workspace.materialAssignments).toEqual(project.workspace.materialAssignments)
+    expect(() => parseBitsamProject(serializeBitsamProject(project).replace('"plane": "xyz"', '"plane": "invalid"'))).toThrow(BitsamProjectError)
+  })
+
   it('round-trips persistent simulation state without local CAD paths', () => {
     const { project } = createProjectFixture()
     const serialized = serializeBitsamProject(project)

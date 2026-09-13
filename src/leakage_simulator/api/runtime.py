@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
@@ -17,6 +18,9 @@ from leakage_simulator.raytrace_bridge import (
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.section_cap import build_section_cap_contours
+from leakage_simulator.bitsam_package import (
+    extract_package, mesh_identity, read_json, read_scene_cache, write_package,
+)
 
 
 class TraceResult(Protocol):
@@ -62,6 +66,9 @@ class ApiRuntime:
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_viewer_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
+        self._scene_records: dict[str, tuple[dict[str, Any], Path]] = {}
+        self._portable_sources: dict[str, Path] = {}
+        self._project_exports: dict[str, tuple[Path, str, float]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
@@ -106,7 +113,12 @@ class ApiRuntime:
             if load_state is None:
                 raise RuntimeError("CAD scene load state is unavailable")
             try:
-                payload = self._scene_loader(cad_path)
+                package_root = self._portable_sources.get(str(Path(cad_path).resolve()))
+                payload = (
+                    self._load_portable_scene(package_root)
+                    if package_root is not None
+                    else self._scene_loader(cad_path)
+                )
             except Exception as exc:
                 load_state.error = exc
                 with self._state_lock:
@@ -125,6 +137,9 @@ class ApiRuntime:
                 self._scene_loads.pop(cache_key, None)
             load_state.event.set()
 
+        return self._register_scene(payload, Path(cad_path))
+
+    def _register_scene(self, payload: dict[str, Any], source: Path) -> dict[str, Any]:
         viewer_mesh = payload.get("mesh")
         if not isinstance(viewer_mesh, dict):
             raise ValueError("Scene payload is missing mesh data")
@@ -150,10 +165,12 @@ class ApiRuntime:
         with self._state_lock:
             self._scene_mesh_cache[scene_token] = trace_mesh
             self._scene_viewer_mesh_cache[scene_token] = viewer_mesh
+            self._scene_records[scene_token] = (payload, source.resolve())
             while len(self._scene_mesh_cache) > self._max_cached_scenes:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
                 self._scene_viewer_mesh_cache.pop(oldest_token, None)
+                self._scene_records.pop(oldest_token, None)
 
         response_payload = dict(payload)
         # Trace tessellation can be hundreds of MB and must never be serialized
@@ -167,6 +184,128 @@ class ApiRuntime:
         metadata["scene_token"] = scene_token
         response_payload["metadata"] = metadata
         return response_payload
+
+    def export_project(self, request: dict[str, Any]) -> dict[str, Any]:
+        token = str(request.get("scene_token") or "")
+        project = request.get("project")
+        if not isinstance(project, dict):
+            raise ValueError("BITSAM project settings are required")
+        with self._state_lock:
+            record = self._scene_records.get(token)
+            trace = self._scene_mesh_cache.get(token)
+            stale = [key for key, (_, _, created) in self._project_exports.items() if time.time() - created > 3600]
+        for key in stale:
+            self.discard_project_export(key)
+        if record is None or trace is None:
+            raise ValueError("CAD scene cache expired. Reload the CAD before saving BITSAM.")
+        payload, source = record
+        fingerprint = (project.get("cad") or {}).get("fingerprint") or {}
+        for key in ("face_count", "vertex_count", "component_count"):
+            if fingerprint.get(key) != payload["metadata"].get(key):
+                raise ValueError("BITSAM settings do not match the active CAD scene")
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        export_id = uuid.uuid4().hex
+        path = self.upload_dir / ("export_" + export_id + ".bitsam")
+        temporary = path.with_suffix(".writing")
+        started = time.perf_counter()
+        try:
+            lock = trace.get("_deferred_trace_lock")
+            if lock is not None:
+                with lock:
+                    cached_trace = None if callable(trace.get("_deferred_trace_loader")) else trace
+            else:
+                cached_trace = trace
+            manifest = write_package(temporary, project, source, payload, cached_trace)
+            temporary.replace(path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(project.get("project_name") or "simulation")).strip(". ") + ".bitsam"
+        with self._state_lock:
+            self._project_exports[export_id] = (path, name, time.time())
+        return {
+            "download_url": "/api/projects/download/" + export_id,
+            "filename": name,
+            "size_bytes": path.stat().st_size,
+            "trace_cached": manifest["trace_cached"],
+            "elapsed_sec": time.perf_counter() - started,
+        }
+
+    def project_export_file(self, export_id: str) -> tuple[Path, str]:
+        with self._state_lock:
+            record = self._project_exports.get(export_id)
+        if record is None:
+            raise ValueError("BITSAM download expired. Save again.")
+        return record[0], record[1]
+
+    def discard_project_export(self, export_id: str) -> None:
+        with self._state_lock:
+            record = self._project_exports.pop(export_id, None)
+        if record is not None:
+            record[0].unlink(missing_ok=True)
+
+    def import_project(self, package: Path) -> dict[str, Any]:
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        started = time.perf_counter()
+        destination = self.upload_dir / ("project_" + uuid.uuid4().hex)
+        with tempfile.TemporaryDirectory(prefix="bitsam_", dir=self.upload_dir) as temporary:
+            staging = Path(temporary)
+            manifest = extract_package(package, staging)
+            project = read_json(staging / "project.json")
+            if project.get("schema_version") != "bitsam-project.v1" or not isinstance(project.get("workspace"), dict):
+                raise ValueError("Invalid BITSAM settings")
+            payload = self._load_portable_scene(staging)
+            fingerprint = (project.get("cad") or {}).get("fingerprint") or {}
+            for key in ("face_count", "vertex_count", "component_count"):
+                if fingerprint.get(key) != payload["metadata"].get(key):
+                    raise ValueError("BITSAM geometry and settings fingerprint mismatch")
+            staging.rename(destination)
+        source = (destination / manifest["source"]).resolve()
+        payload["metadata"]["source_file"] = str(source)
+        elapsed = time.perf_counter() - started
+        payload["metadata"]["import_timings_sec"] = {"package_restore": elapsed, "scene_payload_total": elapsed}
+        if not manifest["trace_cached"]:
+            payload["_trace_mesh_loader"] = self._portable_trace_loader(source, payload["mesh"])
+        with self._state_lock:
+            self._portable_sources[str(source)] = destination
+            self._scene_payload_cache[self._scene_cache_key(str(source))] = payload
+            while len(self._scene_payload_cache) > self._max_cached_scenes:
+                self._scene_payload_cache.pop(next(iter(self._scene_payload_cache)), None)
+        return {
+            "project": project,
+            "cad": {"path": str(source), "displayName": project["cad"]["display_name"]},
+            "trace_cached": manifest["trace_cached"],
+            "elapsed_sec": time.perf_counter() - started,
+        }
+
+    def _portable_trace_loader(self, source: Path, viewer: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+        def load() -> dict[str, Any]:
+            rebuilt = self._scene_loader(str(source))
+            if mesh_identity(rebuilt["mesh"]) != mesh_identity(viewer):
+                raise ValueError(
+                    "Embedded CAD tessellation changed. Face bindings cannot be reused safely; "
+                    "re-import the model and review face assignments."
+                )
+            loader = rebuilt.get("_trace_mesh_loader")
+            return loader() if callable(loader) else rebuilt.get("_trace_mesh") or rebuilt["mesh"]
+        return load
+
+    def _load_portable_scene(self, directory: Path) -> dict[str, Any]:
+        started = time.perf_counter()
+        manifest = read_json(directory / "manifest.json")
+        payload = read_scene_cache(directory / "scene.bin")
+        source = directory / manifest["source"]
+        payload["metadata"]["source_file"] = str(source)
+        payload["metadata"]["portable_project"] = True
+        payload["metadata"]["trace_mesh_deferred"] = not manifest["trace_cached"]
+        if manifest["trace_cached"]:
+            payload["_trace_mesh"] = read_scene_cache(directory / "trace.bin")["mesh"]
+        else:
+            payload["_trace_mesh_loader"] = self._portable_trace_loader(source, payload["mesh"])
+        elapsed = time.perf_counter() - started
+        payload["metadata"]["import_timings_sec"] = {"package_restore": elapsed, "scene_payload_total": elapsed}
+        return payload
 
     def save_upload(
         self,

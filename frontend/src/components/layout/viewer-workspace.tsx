@@ -340,6 +340,10 @@ export function ViewerWorkspace({
       componentId: contextComponentId,
       returnFocusElement: contextTarget?.returnFocusElement ?? null,
     }
+    if (action === 'surface') {
+      onEditMaterial?.({ ...request, surfaceOnly: true })
+      return
+    }
     actions.setSelectedComponentIds([contextComponentId])
     actions.setSelectedFaceIds([])
     if (action === 'material') onEditMaterial?.(request)
@@ -740,6 +744,7 @@ export function ViewerWorkspace({
                     )
                   }}
                   onAction={handleContextAction}
+                  faceCount={scene && selectionKind === 'faces' ? countSelectedCadFaces(scene, selectedFaceIds) : 0}
                 />
               ) : null}
               {contextRayObject && rayObjectContextTarget ? (

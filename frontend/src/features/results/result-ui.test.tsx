@@ -61,7 +61,7 @@ describe('Step 11 result UI', () => {
       gpu_cuda_gpu_success_count: 3,
     }
 
-    render(
+    const view = render(
       <RayTraceResultWindow
         open
         result={result}
@@ -72,6 +72,10 @@ describe('Step 11 result UI', () => {
     expect(
       screen.getByLabelText('Compute execution status').textContent,
     ).toContain('Compute device · GPU 활성')
+    const computeToggle = screen.getByRole('button', { name: 'Compute device · GPU 활성' })
+    expect(computeToggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(computeToggle)
+    expect(computeToggle.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('CUDA batches · 3/3')).not.toBeNull()
     const accelerationHelp = screen.getByRole('button', {
       name: 'Acceleration structure 설명',
@@ -80,6 +84,8 @@ describe('Step 11 result UI', () => {
       'Acceleration structure',
     )
     expect(screen.queryByText('Intersection backend')).toBeNull()
+    view.rerender(<RayTraceResultWindow open result={{ ...result, run_id: 'next-compute-result' }} onOpenChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Compute device · GPU 활성' }).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('shows a formatted Receiver name instead of its internal ID', () => {
@@ -393,6 +399,20 @@ describe('Step 11 result UI', () => {
         onOpenChange={vi.fn()}
       />,
     )
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
+  it.each(['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'] as const)('excludes changed Aim Sphere %s from like-for-like scoring', (field) => {
+    const baseline = createRayTraceResultFixture()
+    baseline.emitters[0].aim = { ...createEmitterAim([0, 0, 30]), enabled: true, mode: 'sphere', distribution: 'uniform_solid_angle' }
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-sphere-changed'
+    comparison.emitters[0].aim![field] = 45
+    render(<RayTraceResultWindow open result={baseline} onOpenChange={vi.fn()} reportCases={[
+      { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+      { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+    ]} />)
     fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })

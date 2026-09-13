@@ -22,6 +22,7 @@ export interface ComponentColorPaletteProps {
   value?: string | null
   fallbackColor?: string
   className?: string
+  resetLabel?: string
   onValueChange(value: string | null): void
 }
 
@@ -30,6 +31,7 @@ export function ComponentColorPalette({
   value,
   fallbackColor = '#64748b',
   className,
+  resetLabel = 'CAD 원본색',
   onValueChange,
 }: ComponentColorPaletteProps) {
   const effectiveColor = value ?? fallbackColor
@@ -61,9 +63,9 @@ export function ComponentColorPalette({
         ))}
         <button
           type="button"
-          aria-label={`${componentName} CAD 원본색으로 되돌리기`}
+          aria-label={`${componentName} ${resetLabel}으로 되돌리기`}
           aria-pressed={value == null}
-          title="CAD 원본색"
+          title={resetLabel}
           className="flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground ring-offset-1 transition-transform hover:scale-110 hover:text-foreground hover:ring-2 hover:ring-primary focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
           onClick={() => onValueChange(null)}
         >

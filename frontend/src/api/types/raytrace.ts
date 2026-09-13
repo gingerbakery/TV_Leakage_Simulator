@@ -19,8 +19,13 @@ export interface EmitterAimSpec {
   height_mm: number
   radius_mm: number
   show_in_viewer: boolean
-  distribution: 'uniform_target_area'
+  distribution: 'uniform_target_area' | 'uniform_solid_angle'
   power_reference: 'aim_region'
+  mode?: 'area' | 'sphere'
+  sphere_upper_deg?: number
+  sphere_lower_deg?: number
+  sphere_alpha_deg?: number
+  sphere_beta_deg?: number
 }
 
 export interface EmitterSpec {

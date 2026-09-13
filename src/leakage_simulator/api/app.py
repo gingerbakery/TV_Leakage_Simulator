@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+from leakage_simulator.bitsam_package import MAX_PACKAGE_BYTES, MEDIA_TYPE as PROJECT_MEDIA_TYPE
 
 from leakage_simulator.scene_binary import (
     MEDIA_TYPE,
@@ -217,6 +221,46 @@ def create_app(
                 "Upload failed: {}".format(exc),
                 status_code=400,
             )
+
+    @application.post("/api/projects/export")
+    def export_project(payload: dict[str, Any] = Body(...)) -> Any:
+        try:
+            return api_runtime.export_project(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
+    @application.get("/api/projects/download/{export_id}")
+    def download_project(export_id: str) -> Any:
+        try:
+            path, filename = api_runtime.project_export_file(export_id)
+            return FileResponse(
+                path, filename=filename, media_type=PROJECT_MEDIA_TYPE,
+                background=BackgroundTask(api_runtime.discard_project_export, export_id),
+            )
+        except ValueError as exc:
+            return _error(404, str(exc))
+
+    @application.post("/api/projects/import")
+    async def import_project(request: Request) -> Any:
+        api_runtime.upload_dir.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="package_", suffix=".uploading", dir=api_runtime.upload_dir, delete=False) as output:
+                temporary_path = Path(output.name)
+                size = 0
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_PACKAGE_BYTES:
+                        return _error(413, "BITSAM package exceeds the size limit")
+                    await run_in_threadpool(output.write, chunk)
+            return await run_in_threadpool(api_runtime.import_project, temporary_path)
+        except Exception as exc:
+            return _error(400, "BITSAM load failed: " + str(exc))
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     @application.post(
         "/api/scene/section-cap",

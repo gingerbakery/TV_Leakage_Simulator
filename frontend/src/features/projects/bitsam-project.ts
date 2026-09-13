@@ -1,4 +1,5 @@
 import type {
+  EmitterAimSpec,
   EmitterSpec,
   RayTraceConfigRequest,
   RayTraceResult,
@@ -7,6 +8,7 @@ import type {
 } from '@/api'
 import type {
   ActiveCad,
+  FaceDisplayColor,
   ComponentTransformRule,
   MaterialAssignment,
   OpticalValueOverride,
@@ -19,6 +21,7 @@ import type {
   WorkspaceProjectState,
   WorkspaceSnapshot,
 } from '@/stores'
+import { isEmitterAimValid } from '@/features/raytracing/emitter-aim'
 
 export const bitsamFileExtension = '.bitsam'
 export const bitsamSchemaVersion = 'bitsam-project.v1'
@@ -48,6 +51,7 @@ export interface BitsamProject {
   project_name: string
   cad: BitsamCadReference
   workspace: WorkspaceProjectState
+  case_metadata?: { name?: string; note?: string }
   /** Last completed analysis, including receiver grids and stored ray paths. */
   analysis_result?: RayTraceResult | null
 }
@@ -230,7 +234,7 @@ function isRoiClipBox(value: unknown): value is RoiClipBox {
   if (!isRecord(value)) return false
   if (
     value.plane !== undefined &&
-    !isOneOf(value.plane, ['xy', 'yz', 'zx'])
+    !isOneOf(value.plane, ['xy', 'yz', 'zx', 'xyz'])
   ) {
     return false
   }
@@ -286,12 +290,17 @@ function isEmitterAim(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled) || !isBoolean(value.show_in_viewer)
     || !isOneOf(value.shape, ['rectangle', 'circle']) || !isVec3(value.center)
     || !isVec3(value.u_axis) || !isVec3(value.v_axis)
-    || value.distribution !== 'uniform_target_area' || value.power_reference !== 'aim_region') return false
-  if (![value.width_mm, value.height_mm, value.radius_mm].every((size) => isFiniteNumber(size) && size > 0)) return false
+    || !isOneOf(value.distribution, ['uniform_target_area', 'uniform_solid_angle']) || value.power_reference !== 'aim_region') return false
+  if (value.mode !== undefined && !isOneOf(value.mode, ['area', 'sphere'])) return false
+  if (!['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'].every(
+    (key) => value[key] === undefined || isFiniteNumber(value[key]),
+  )) return false
+  if (![value.width_mm, value.height_mm, value.radius_mm].every(isFiniteNumber)) return false
   const lengthU = Math.hypot(...value.u_axis)
   const lengthV = Math.hypot(...value.v_axis)
   const dot = value.u_axis.reduce((sum, entry, axis) => sum + entry * (value.v_axis as number[])[axis], 0)
   return lengthU > 1e-12 && lengthV > 1e-12 && Math.abs(dot / (lengthU * lengthV)) <= 1e-6
+    && isEmitterAimValid(value as unknown as EmitterAimSpec)
 }
 
 function isEmitterSpec(value: unknown): value is EmitterSpec {
@@ -468,6 +477,11 @@ function isComponentColorOverrides(
   )
 }
 
+function isFaceDisplayColor(value: unknown): value is FaceDisplayColor {
+  return isRecord(value) && isSafeId(value.componentId) && isIdArray(value.faceIds) &&
+    isString(value.color) && /^#[0-9a-fA-F]{6}$/.test(value.color)
+}
+
 function isWorkspaceProjectState(
   value: unknown,
 ): value is WorkspaceProjectState {
@@ -479,6 +493,8 @@ function isWorkspaceProjectState(
     isComponentNameOverrides(value.componentNameOverrides) &&
     (value.componentColorOverrides === undefined ||
       isComponentColorOverrides(value.componentColorOverrides)) &&
+    (value.faceColorOverrides === undefined ||
+      isArrayOf(value.faceColorOverrides, isFaceDisplayColor)) &&
     isArrayOf(value.materialAssignments, isMaterialAssignment) &&
     (value.customOpticalProfiles === undefined ||
       isArrayOf(value.customOpticalProfiles, isSavedOpticalProfile)) &&
@@ -579,6 +595,7 @@ function createWorkspaceProjectState(
     deletedComponentIds: workspace.deletedComponentIds,
     componentNameOverrides: workspace.componentNameOverrides,
     componentColorOverrides: workspace.componentColorOverrides,
+    faceColorOverrides: workspace.faceColorOverrides,
     materialAssignments: workspace.materialAssignments,
     customOpticalProfiles: workspace.customOpticalProfiles,
     transformRules: workspace.transformRules,
@@ -604,6 +621,7 @@ export function createBitsamProject(
   }
 
   const displayName = workspace.activeCad.displayName
+  const activeCase = workspace.cadCases.find((item) => item.caseId === workspace.activeCadCaseId)
   return {
     format: bitsamFormat,
     schema_version: bitsamSchemaVersion,
@@ -617,6 +635,7 @@ export function createBitsamProject(
       fingerprint: createSceneFingerprint(scene),
     },
     workspace: createWorkspaceProjectState(workspace),
+    case_metadata: activeCase ? { name: activeCase.name, note: activeCase.note } : undefined,
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
@@ -639,6 +658,7 @@ export function createBitsamProjectFromLoadedProject(
     saved_at: savedAt.toISOString(),
     project_name: loadedProject.project_name,
     cad: structuredClone(loadedProject.cad),
+    case_metadata: loadedProject.case_metadata ? structuredClone(loadedProject.case_metadata) : undefined,
     workspace: createWorkspaceProjectState(workspace),
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
@@ -684,6 +704,10 @@ export function parseBitsamProject(source: string): BitsamProject {
     !isString(parsed.project_name) ||
     !isBitsamCadReference(parsed.cad) ||
     !isWorkspaceProjectState(parsed.workspace) ||
+    (parsed.case_metadata !== undefined &&
+      (!isRecord(parsed.case_metadata) ||
+        (parsed.case_metadata.name !== undefined && !isString(parsed.case_metadata.name)) ||
+        (parsed.case_metadata.note !== undefined && !isString(parsed.case_metadata.note)))) ||
     (parsed.analysis_result !== undefined &&
       parsed.analysis_result !== null &&
       !isSavedRayTraceResult(parsed.analysis_result))
@@ -768,6 +792,7 @@ export function createBitsamSettingsOnlyState(
     source.deletedComponentIds.length +
     Object.keys(source.componentNameOverrides).length +
     Object.keys(source.componentColorOverrides).length +
+    (source.faceColorOverrides?.length ?? 0) +
     source.materialAssignments.length +
     source.transformRules.length +
     source.roiScopes.length +
@@ -781,6 +806,7 @@ export function createBitsamSettingsOnlyState(
       deletedComponentIds: [],
       componentNameOverrides: {},
       componentColorOverrides: {},
+      faceColorOverrides: [],
       materialAssignments: [],
       customOpticalProfiles: source.customOpticalProfiles ?? [],
       transformRules: [],

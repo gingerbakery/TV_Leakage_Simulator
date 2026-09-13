@@ -174,10 +174,10 @@ class EmitterAimTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["observer"]["total_flux_lumen"], 0.8, places=11)
         self.assertIn("aim_area_overrides_receiver_mis", str(result.metrics["_performance_summary"]))
 
-    def test_coplanar_target_is_rejected_instead_of_silent_missing_rays(self):
+    def test_overlapping_coplanar_target_is_rejected(self):
         scene = aim_scene()
-        scene.emitters[0].aim.center = (10, 0, 0)
-        with self.assertRaisesRegex(ValueError, "Target plane must not intersect"):
+        scene.emitters[0].aim.center = (3, 0, 0)
+        with self.assertRaisesRegex(ValueError, "Target area overlaps or touches"):
             run_direct_ray_trace(scene)
 
     def test_scalar_trace_obeys_target(self):
