@@ -91,6 +91,14 @@ export function receiverHeatmapLayout(
   }
 }
 
+export interface ReceiverHeatmapPeakPosition {
+  column: number
+  displayRow: number
+  sourceRow: number
+  xMm: number
+  yMm: number
+}
+
 export function receiverHeatmapDisplayValues(
   grid: ReceiverGrid,
 ): number[] {
@@ -289,6 +297,39 @@ export function receiverHeatmapSample(
     yMm:
       (0.5 - normalizedDisplayY) *
       positiveDimension(heightMm),
+  }
+}
+
+/** Returns the center of the brightest Heatmap cell in Receiver Local X/Y.
+ * Equal peaks are resolved deterministically from top-left to bottom-right so
+ * reopening a saved result reports the same representative coordinate. */
+export function receiverHeatmapPeakPosition(
+  grid: ReceiverGrid,
+  widthMm: number,
+  heightMm: number,
+): ReceiverHeatmapPeakPosition | null {
+  const columns = Math.max(1, grid.resolution[0])
+  const rows = Math.max(1, grid.resolution[1])
+  const displayValues = receiverHeatmapDisplayValues(grid)
+  let peakIndex = -1
+  let peakValue = 0
+  for (let index = 0; index < displayValues.length; index += 1) {
+    const value = Number(displayValues[index])
+    if (Number.isFinite(value) && value > peakValue) {
+      peakValue = value
+      peakIndex = index
+    }
+  }
+  if (peakIndex < 0 || peakValue <= 0) return null
+
+  const displayRow = Math.floor(peakIndex / columns)
+  const column = peakIndex % columns
+  return {
+    column,
+    displayRow,
+    sourceRow: rows - 1 - displayRow,
+    xMm: ((column + 0.5) / columns - 0.5) * positiveDimension(widthMm),
+    yMm: (0.5 - (displayRow + 0.5) / rows) * positiveDimension(heightMm),
   }
 }
 

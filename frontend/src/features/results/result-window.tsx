@@ -46,6 +46,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
+  receiverHeatmapPeakPosition,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -1741,11 +1742,13 @@ function ReceiverProfileChart({
 function Stat({
   label,
   value,
+  detail,
   help,
   className = '',
 }: {
   label: string
   value: string
+  detail?: string
   help?: string
   className?: string
 }) {
@@ -1758,6 +1761,11 @@ function Stat({
         ) : null}
       </div>
       <div className="mt-1 text-base font-semibold">{value}</div>
+      {detail ? (
+        <div className="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+          {detail}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -2841,6 +2849,13 @@ export function RayTraceResultWindow({
                   receiver.receiver_id,
                 )
                 const currentPeakNit = numeric(values.peak_nit_est)
+                const peakPosition = grid
+                  ? receiverHeatmapPeakPosition(
+                      grid,
+                      receiver.width_mm,
+                      receiver.height_mm,
+                    )
+                  : null
                 const comparePeakNit = Math.max(
                   currentPeakNit,
                   ...selectedCases.map((item) =>
@@ -2953,7 +2968,10 @@ export function RayTraceResultWindow({
                         className="order-3 col-span-2"
                         label="Peak Nit"
                         value={formatMetric(values.peak_nit_est)}
-                        help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
+                        detail={peakPosition
+                          ? `X ${formatReceiverCoordinate(peakPosition.xMm)} mm · Y ${formatReceiverCoordinate(peakPosition.yMm)} mm`
+                          : 'X — · Y —'}
+                        help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 아래 X/Y는 같은 Peak 셀 중심의 Receiver Local 좌표이며 3D Viewer의 Receiver 축과 일치합니다."
                       />
                       <Stat
                         className="order-4 col-span-2"

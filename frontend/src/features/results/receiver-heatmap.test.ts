@@ -10,6 +10,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
+  receiverHeatmapPeakPosition,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -150,6 +151,38 @@ describe('receiver heatmap geometry', () => {
       xMm: 10,
       yMm: 5,
     })
+  })
+
+  it('reports the brightest cell center in Receiver Local X/Y coordinates', () => {
+    const grid: ReceiverGrid = {
+      receiver_id: 'receiver-test',
+      resolution: [4, 2],
+      bin_area_mm2: 1,
+      flux_lumen: [
+        [1, 2, 9, 4],
+        [5, 6, 7, 8],
+      ],
+      hit_count: 8,
+    }
+
+    expect(receiverHeatmapPeakPosition(grid, 40, 20)).toEqual({
+      column: 2,
+      displayRow: 1,
+      sourceRow: 0,
+      xMm: 5,
+      yMm: -5,
+    })
+  })
+
+  it('does not report a peak coordinate for an empty Heatmap', () => {
+    const grid: ReceiverGrid = {
+      receiver_id: 'receiver-test',
+      resolution: [1, 1],
+      bin_area_mm2: 1,
+      flux_lumen: [[0]],
+      hit_count: 0,
+    }
+    expect(receiverHeatmapPeakPosition(grid, 10, 10)).toBeNull()
   })
 
   it('uses a blue-to-red scientific heatmap palette', () => {
