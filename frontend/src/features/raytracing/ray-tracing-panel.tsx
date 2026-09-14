@@ -42,7 +42,9 @@ import {
   maxReflectionDepth,
   useWorkspaceStore,
   workspaceSelectors,
+  type RoiScope,
 } from '@/stores'
+import { roiClippedSurfaceCentroid } from '@/features/roi/roi-clipped-geometry'
 
 import {
   axesFromNormal,
@@ -212,6 +214,7 @@ function EmitterDialog({
   open,
   mode,
   scene,
+  roiScopes,
   selectedFaceIds,
   existingIds,
   initialEmitter,
@@ -221,6 +224,7 @@ function EmitterDialog({
   open: boolean
   mode: EmitterCreationMode
   scene?: ScenePayload
+  roiScopes: RoiScope[]
   selectedFaceIds: number[]
   existingIds: string[]
   initialEmitter?: EmitterSpec | null
@@ -326,6 +330,60 @@ function EmitterDialog({
   }, [actions, open])
 
   const emitterFaceIds = selectedFaceIds
+  const activeRoiClipBoxes = useMemo(
+    () => roiScopes.flatMap((scope) =>
+      scope.active && scope.clipBox ? [scope.clipBox] : [],
+    ),
+    [roiScopes],
+  )
+  const roiClippedEmitterCenter = useMemo(
+    () => scene && mode === 'face' && emitterFaceIds.length > 0
+      ? roiClippedSurfaceCentroid(scene, emitterFaceIds, activeRoiClipBoxes)
+      : null,
+    [activeRoiClipBoxes, emitterFaceIds, mode, scene],
+  )
+  useEffect(() => {
+    if (
+      !open ||
+      mode !== 'face' ||
+      initialEmitter ||
+      !scene ||
+      !roiClippedEmitterCenter ||
+      emitterFaceIds.length === 0
+    ) return
+    const normalSum = emitterFaceIds.reduce((sum, faceId) => {
+      const normal = scene.mesh.face_normals[faceId]
+      const area = scene.mesh.face_areas_mm2[faceId] ?? 0
+      if (!normal || area <= 0) return sum
+      return [
+        sum[0] + normal[0] * area,
+        sum[1] + normal[1] * area,
+        sum[2] + normal[2] * area,
+      ] as Vec3
+    }, [0, 0, 0] as Vec3)
+    const normalLength = Math.hypot(...normalSum)
+    const direction: Vec3 = normalLength > 1e-9
+      ? normalSum.map((value) =>
+          value / normalLength * (normalFlip ? -1 : 1),
+        ) as Vec3
+      : [0, 0, normalFlip ? -1 : 1]
+    setAim((current) => ({
+      ...current,
+      center: [
+        roiClippedEmitterCenter[0] + direction[0] * 30,
+        roiClippedEmitterCenter[1] + direction[1] * 30,
+        roiClippedEmitterCenter[2] + direction[2] * 30,
+      ],
+    }))
+  }, [
+    emitterFaceIds,
+    initialEmitter,
+    mode,
+    normalFlip,
+    open,
+    roiClippedEmitterCenter,
+    scene,
+  ])
   const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
   const emitterAreaMm2 =
     mode === 'datum_plane'
@@ -2394,6 +2452,7 @@ export function RayTracingPanel({
             : emitterMode ?? 'face'
         }
         scene={scene}
+        roiScopes={roiScopes}
         selectedFaceIds={selectedFaceIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
         initialEmitter={editingEmitter}

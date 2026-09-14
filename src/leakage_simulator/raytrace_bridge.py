@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import math
 
 from .geometry import TriangleMesh
@@ -16,15 +16,47 @@ class PreparedTraceGeometry:
     roi_is_active: bool
 
 
+def _emitter_source_faces(
+    scene_mesh: Dict[str, Any],
+    emitter: Dict[str, Any],
+    component_cache: Optional[Dict[Tuple[int, ...], List[int]]] = None,
+) -> List[int]:
+    """Expand compact Preview Body sources against the server-side CAD cache."""
+    explicit = [int(face_index) for face_index in emitter.get("face_indices", [])]
+    component_key = tuple(sorted({
+        int(component_id)
+        for component_id in emitter.get("source_component_ids", [])
+    }))
+    if not component_key:
+        return explicit
+    cache = component_cache if component_cache is not None else {}
+    expanded = cache.get(component_key)
+    if expanded is None:
+        selected = set(component_key)
+        expanded = [
+            face_index
+            for face_index, component_id in enumerate(
+                scene_mesh.get("face_component_ids") or []
+            )
+            if component_id is not None and int(component_id) in selected
+        ]
+        cache[component_key] = expanded
+    return list(dict.fromkeys([*explicit, *expanded]))
+
+
 def build_prepared_trace_geometry(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> PreparedTraceGeometry:
+    if should_stop is not None and should_stop():
+        raise InterruptedError("Ray trace preparation stopped")
+    component_cache: Dict[Tuple[int, ...], List[int]] = {}
     emitter_source_faces = {
-        int(face_index)
+        face_index
         for item in request_payload.get("emitters", [])
         if str(item.get("emitter_type") or "face") == "face"
-        for face_index in item.get("face_indices", [])
+        for face_index in _emitter_source_faces(scene_mesh, item, component_cache)
     }
     excluded_components = {
         int(component_id)
@@ -44,6 +76,7 @@ def build_prepared_trace_geometry(
         request_payload.get("excluded_component_ids", []),
         emitter_source_face_indices=emitter_source_faces,
         preview_blockers=request_payload.get("preview_blockers", []),
+        should_stop=should_stop,
     )
     roi_faces = request_payload.get("roi_faces")
     roi_is_active = bool(roi_faces)
@@ -62,7 +95,7 @@ def build_prepared_trace_geometry(
     # CUDA consumers.  Compute-device selection remains request-local in
     # RayTraceConfig and is deliberately not encoded in this geometry cache.
     mesh.set_acceleration_structure("bvh")
-    mesh.prepare_acceleration()
+    mesh.prepare_acceleration(should_stop)
     return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active)
 
 
@@ -80,10 +113,11 @@ def build_direct_trace_input(
     source_to_trace_face = geometry.source_to_trace_face
     roi_is_active = geometry.roi_is_active
     emitter_payloads = []
+    component_cache: Dict[Tuple[int, ...], List[int]] = {}
     for item in request_payload.get("emitters", []):
         normalized = dict(item)
         if str(normalized.get("emitter_type") or "face") == "face":
-            source_faces = [int(face_index) for face_index in normalized.get("face_indices", [])]
+            source_faces = _emitter_source_faces(scene_mesh, normalized, component_cache)
             normalized["face_indices"] = [
                 source_to_trace_face[face_index]
                 for face_index in source_faces
@@ -93,6 +127,7 @@ def build_direct_trace_input(
                 if roi_is_active:
                     raise ValueError("Face emitter has no faces left inside the selected ROI")
                 raise ValueError("Face emitter has no traceable faces after component exclusion")
+        normalized.pop("source_component_ids", None)
         emitter_payloads.append(normalized)
     emitters = [EmitterSpec.from_dict(item) for item in emitter_payloads]
     receivers = [ReceiverSpec.from_dict(dict(item)) for item in request_payload.get("receivers", [])]
@@ -186,6 +221,7 @@ def build_transformed_mesh(
     excluded_component_ids: Optional[List[int]] = None,
     emitter_source_face_indices: Optional[Set[int]] = None,
     preview_blockers: Optional[List[Dict[str, Any]]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> TriangleMesh:
     vertices = scene_mesh.get("vertices") or []
     faces = scene_mesh.get("faces") or []
@@ -207,6 +243,8 @@ def build_transformed_mesh(
     }
     component_bounds: Dict[int, List[List[float]]] = {}
     for face_index, component_id in enumerate(component_ids):
+        if face_index % 4096 == 0 and should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         if component_id is None:
             continue
         normalized_component_id = int(component_id)
@@ -245,6 +283,8 @@ def build_transformed_mesh(
 
     mesh = TriangleMesh()
     for face_index, face in enumerate(faces):
+        if face_index % 4096 == 0 and should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         if len(face) != 3:
             raise ValueError("Direct ray tracing requires triangle faces")
         component_id = component_ids[face_index]

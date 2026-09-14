@@ -11,6 +11,7 @@ import {
   detectLeakPreviewCandidates,
   leakPreviewReceiverDistanceMm,
   leakPreviewRoiOffsetMm,
+  resizeLeakPreviewBlockerOnFace,
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
@@ -38,9 +39,12 @@ describe('whole-set leak preview', () => {
     expect(request.receivers).toHaveLength(6)
     expect(request.config.max_depth).toBe(3)
     expect(request.config.contribution_mode).toBe('summary')
-    expect(request.config.store_ray_paths).toBe(false)
-    expect(request.config.receiver_importance_fraction).toBe(0.5)
-    expect(request.config.bounce_receiver_importance_fraction).toBe(0.5)
+    expect(request.config.store_ray_paths).toBe(true)
+    expect(request.config.max_stored_paths).toBe(4_000)
+    expect(request.config.primary_sampling_strategy).toBe('receiver_mis')
+    expect(request.config.receiver_importance_fraction).toBe(0.65)
+    expect(request.config.bounce_sampling_strategy).toBe('receiver_mis')
+    expect(request.config.bounce_receiver_importance_fraction).toBe(0.55)
     expect(request.optical_profiles[0]).toMatchObject({
       profile_id: 'default',
       reflectance: 0.35,
@@ -109,6 +113,45 @@ describe('whole-set leak preview', () => {
       depth_mm: 3,
       enabled: true,
     })
+  })
+
+  it('sends a Body light source as compact Component ids', () => {
+    const request = buildLeakPreviewRequest({
+      scene: createSceneFixture(),
+      sourceFaceIds: [],
+      sourceComponentIds: [1],
+      quality: 'fast',
+      directions: ['pos_z'],
+      computeBackend: 'cpu',
+      materialAssignments: [],
+      transformRules: [],
+      excludedComponentIds: [],
+      deletedComponentIds: [],
+    })
+
+    expect(request.emitters).toHaveLength(2)
+    expect(request.emitters[0].face_indices).toEqual([])
+    expect(request.emitters[0].source_component_ids).toEqual([1])
+    expect(request.receivers).toHaveLength(1)
+  })
+
+  it('resizes a blocker from a dragged rectangle on its CAD reference plane', () => {
+    const blocker = createLeakPreviewBlockerFromFaces(createSceneFixture(), [0], 1)
+    expect(blocker).not.toBeNull()
+    const point = (u: number, v: number): [number, number, number] => [
+      blocker!.baseCenter[0] + blocker!.uAxis[0] * u + blocker!.vAxis[0] * v,
+      blocker!.baseCenter[1] + blocker!.uAxis[1] * u + blocker!.vAxis[1] * v,
+      blocker!.baseCenter[2] + blocker!.uAxis[2] * u + blocker!.vAxis[2] * v,
+    ]
+    const resized = resizeLeakPreviewBlockerOnFace(blocker!, [
+      point(-5, -2),
+      point(5, -2),
+      point(5, 2),
+      point(-5, 2),
+    ])
+    expect(resized).not.toBeNull()
+    expect(resized?.widthMm).toBeCloseTo(10)
+    expect(resized?.heightMm).toBeCloseTo(4)
   })
 
   it('turns exterior receiver cells into ranked 3D candidates', () => {

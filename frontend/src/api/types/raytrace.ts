@@ -32,6 +32,8 @@ export interface EmitterSpec {
   emitter_id: string
   emitter_type: EmitterType
   face_indices: number[]
+  /** Preview-only compact Body source reference; expanded by the API cache. */
+  source_component_ids?: number[]
   /** CAD faces used to place a datum plane; display/edit reference only. */
   source_face_indices?: number[]
   normal_mode: EmitterNormalMode
@@ -312,6 +314,12 @@ export interface CompletedRayTraceJob extends RayTraceJobProgress {
   completed_at: number
 }
 
+export interface CancelledRayTraceJob extends RayTraceJobProgress {
+  status: 'cancelled'
+  phase: 'stopped'
+  completed_at: number
+}
+
 export interface FailedRayTraceJob extends RayTraceJobProgress {
   status: 'failed'
   phase: 'failed'
@@ -323,4 +331,5 @@ export type RayTraceJob =
   | QueuedRayTraceJob
   | RunningRayTraceJob
   | CompletedRayTraceJob
+  | CancelledRayTraceJob
   | FailedRayTraceJob

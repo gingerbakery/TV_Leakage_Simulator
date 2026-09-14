@@ -10,31 +10,38 @@ import type {
   LeakPreviewQuality,
   LeakPreviewDirection,
 } from './leak-preview-model'
-import { allLeakPreviewDirections } from './leak-preview-model'
 
 interface LeakPreviewState {
   sceneToken: string | null
+  sourceMode: 'face' | 'body'
   sourceFaceIds: number[]
+  sourceComponentIds: number[]
+  sourceBodyFaceCount: number
   quality: LeakPreviewQuality
   directions: LeakPreviewDirection[]
   jobId: string | null
   result: RayTraceResult | null
   points: LeakPreviewPoint[]
   candidates: LeakPreviewCandidate[]
+  visualizationVisible: boolean
   selectedCandidateId: string | null
   ignoreAreaSelectionArmed: boolean
   activeIgnoreAreaId: string | null
   ignoreAreas: LeakPreviewIgnoreArea[]
   blockers: LeakPreviewBlocker[]
+  blockerAreaSelectionId: string | null
   runSignature: string | null
   ensureScene(sceneToken: string): void
   setSourceFaceIds(faceIds: number[]): void
+  setSourceBody(componentIds: number[], faceCount: number): void
+  setSourceMode(mode: 'face' | 'body'): void
   setQuality(quality: LeakPreviewQuality): void
   toggleDirection(direction: LeakPreviewDirection): void
   setJobId(jobId: string | null): void
   setRunSignature(signature: string | null): void
   setDetection(result: RayTraceResult, points: LeakPreviewPoint[], candidates: LeakPreviewCandidate[]): void
   clearDetection(): void
+  setVisualizationVisible(visible: boolean): void
   selectCandidate(candidateId: string | null): void
   beginIgnoreAreaSelection(areaId?: string): void
   finishIgnoreAreaSelection(): void
@@ -44,58 +51,75 @@ interface LeakPreviewState {
   addBlocker(blocker: LeakPreviewBlocker): void
   updateBlocker(blockerId: string, patch: Partial<LeakPreviewBlocker>): void
   removeBlocker(blockerId: string): void
+  beginBlockerAreaSelection(blockerId: string): void
+  finishBlockerAreaSelection(): void
   clear(): void
 }
 
 const store = createStore<LeakPreviewState>()((set) => ({
   sceneToken: null,
+  sourceMode: 'face',
   sourceFaceIds: [],
+  sourceComponentIds: [],
+  sourceBodyFaceCount: 0,
   quality: 'balanced',
-  directions: [...allLeakPreviewDirections],
+  directions: ['pos_z'],
   jobId: null,
   result: null,
   points: [],
   candidates: [],
+  visualizationVisible: true,
   selectedCandidateId: null,
   ignoreAreaSelectionArmed: false,
   activeIgnoreAreaId: null,
   ignoreAreas: [],
   blockers: [],
+  blockerAreaSelectionId: null,
   runSignature: null,
   ensureScene: (sceneToken) => set((state) =>
     state.sceneToken === sceneToken
       ? state
       : {
           sceneToken,
+          sourceMode: 'face',
           sourceFaceIds: [],
+          sourceComponentIds: [],
+          sourceBodyFaceCount: 0,
           jobId: null,
           result: null,
           points: [],
           candidates: [],
+          visualizationVisible: true,
           selectedCandidateId: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
           ignoreAreas: [],
           blockers: [],
+          blockerAreaSelectionId: null,
           runSignature: null,
         }),
-  setSourceFaceIds: (sourceFaceIds) => set({ sourceFaceIds: [...new Set(sourceFaceIds)] }),
-  setQuality: (quality) => set({ quality }),
-  toggleDirection: (direction) => set((state) => {
-    const selected = state.directions.includes(direction)
-    if (selected && state.directions.length === 1) return state
-    return {
-      directions: selected
-        ? state.directions.filter((value) => value !== direction)
-        : [...state.directions, direction],
-    }
+  setSourceFaceIds: (sourceFaceIds) => set({
+    sourceMode: 'face',
+    sourceFaceIds: [...new Set(sourceFaceIds)],
+    sourceComponentIds: [],
+    sourceBodyFaceCount: 0,
   }),
+  setSourceBody: (sourceComponentIds, sourceBodyFaceCount) => set({
+    sourceMode: 'body',
+    sourceComponentIds: [...new Set(sourceComponentIds)],
+    sourceFaceIds: [],
+    sourceBodyFaceCount: Math.max(0, Math.trunc(sourceBodyFaceCount)),
+  }),
+  setSourceMode: (sourceMode) => set({ sourceMode }),
+  setQuality: (quality) => set({ quality }),
+  toggleDirection: (direction) => set({ directions: [direction] }),
   setJobId: (jobId) => set({ jobId }),
   setRunSignature: (runSignature) => set({ runSignature }),
   setDetection: (result, points, candidates) => set({
     result,
     points,
     candidates,
+    visualizationVisible: true,
     selectedCandidateId: candidates[0]?.id ?? null,
   }),
   clearDetection: () => set({
@@ -106,6 +130,7 @@ const store = createStore<LeakPreviewState>()((set) => ({
     selectedCandidateId: null,
     runSignature: null,
   }),
+  setVisualizationVisible: (visualizationVisible) => set({ visualizationVisible }),
   selectCandidate: (selectedCandidateId) => set({ selectedCandidateId }),
   beginIgnoreAreaSelection: (areaId) => set((state) => {
     if (areaId && state.ignoreAreas.some((area) => area.id === areaId)) {
@@ -160,20 +185,34 @@ const store = createStore<LeakPreviewState>()((set) => ({
   })),
   removeBlocker: (blockerId) => set((state) => ({
     blockers: state.blockers.filter((blocker) => blocker.id !== blockerId),
+    ...(state.blockerAreaSelectionId === blockerId
+      ? { blockerAreaSelectionId: null }
+      : {}),
   })),
+  beginBlockerAreaSelection: (blockerId) => set((state) => ({
+    blockerAreaSelectionId: state.blockers.some((blocker) => blocker.id === blockerId)
+      ? blockerId
+      : null,
+  })),
+  finishBlockerAreaSelection: () => set({ blockerAreaSelectionId: null }),
   clear: () => set({
     sceneToken: null,
+    sourceMode: 'face',
     sourceFaceIds: [],
-    directions: [...allLeakPreviewDirections],
+    sourceComponentIds: [],
+    sourceBodyFaceCount: 0,
+    directions: ['pos_z'],
     jobId: null,
     result: null,
     points: [],
     candidates: [],
+    visualizationVisible: true,
     selectedCandidateId: null,
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,
     ignoreAreas: [],
     blockers: [],
+    blockerAreaSelectionId: null,
     runSignature: null,
   }),
 }))

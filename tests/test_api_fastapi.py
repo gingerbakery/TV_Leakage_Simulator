@@ -195,12 +195,12 @@ class FastApiLayerTests(unittest.TestCase):
         release_build = threading.Event()
         build_count = 0
 
-        def slow_builder(mesh, request):
+        def slow_builder(mesh, request, should_stop=None):
             nonlocal build_count
             build_count += 1
             build_started.set()
             self.assertTrue(release_build.wait(timeout=3))
-            return original_builder(mesh, request)
+            return original_builder(mesh, request, should_stop=should_stop)
 
         with patch.object(runtime_module, "build_prepared_trace_geometry", side_effect=slow_builder):
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -687,6 +687,50 @@ class FastApiLayerTests(unittest.TestCase):
             )
         finally:
             client.close()
+
+    def test_stop_cancels_geometry_preparation_before_tracing(self):
+        import leakage_simulator.api.runtime as runtime_module
+
+        runtime = ApiRuntime(Path(self.temp_dir.name) / "prepare-stop")
+        scene_token = "prepare-stop-scene"
+        runtime._scene_mesh_cache[scene_token] = {
+            "vertices": [],
+            "faces": [],
+            "face_component_ids": [],
+            "face_material_ids": [],
+        }
+        preparation_started = threading.Event()
+
+        def cancellable_builder(mesh, request, should_stop=None):
+            preparation_started.set()
+            while should_stop is None or not should_stop():
+                time.sleep(0.002)
+            raise InterruptedError("Ray trace preparation stopped")
+
+        with patch.object(
+            runtime_module,
+            "build_prepared_trace_geometry",
+            side_effect=cancellable_builder,
+        ):
+            job = runtime.start_raytrace_job({
+                "scene_token": scene_token,
+                "emitters": [{"enabled": True, "ray_count": 100_000}],
+            })
+            self.assertTrue(preparation_started.wait(timeout=3))
+            stopped = runtime.stop_raytrace_job(job["job_id"])
+            self.assertIsNotNone(stopped)
+
+            snapshot = None
+            for _ in range(100):
+                snapshot = runtime.raytrace_job_snapshot(job["job_id"])
+                if snapshot and snapshot["status"] == "cancelled":
+                    break
+                time.sleep(0.005)
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["status"], "cancelled")
+        self.assertEqual(snapshot["phase"], "stopped")
+        self.assertTrue(snapshot["stopped_early"])
 
     def test_starting_a_new_job_stops_the_previous_active_job(self):
         class PartialResult:

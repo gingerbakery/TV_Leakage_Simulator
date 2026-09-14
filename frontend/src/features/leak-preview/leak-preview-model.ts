@@ -69,6 +69,7 @@ export interface LeakPreviewCandidate {
   widthMm: number
   heightMm: number
   fluxLumen: number
+  peakFluxLumen: number
   relativeStrength: number
   cellCount: number
   clipBox: RoiClipBox
@@ -82,6 +83,7 @@ export interface LeakPreviewDetection {
 export interface BuildLeakPreviewRequestOptions {
   scene: ScenePayload
   sourceFaceIds: number[]
+  sourceComponentIds?: number[]
   quality: LeakPreviewQuality
   computeBackend: RayTraceConfigRequest['compute_backend']
   materialAssignments: MaterialAssignment[]
@@ -230,6 +232,40 @@ export function leakPreviewBlockerCenter(blocker: LeakPreviewBlocker): Vec3 {
   return addScaled(blocker.baseCenter, direction, blocker.offsetMm + blocker.depthMm / 2)
 }
 
+/** Resize/reposition a blocker from four world-space points projected onto
+ * its reference CAD surface. The normal, offset and depth remain unchanged. */
+export function resizeLeakPreviewBlockerOnFace(
+  blocker: LeakPreviewBlocker,
+  points: Vec3[],
+): Partial<LeakPreviewBlocker> | null {
+  if (points.length < 2) return null
+  const uAxis = normalized(blocker.uAxis)
+  const vAxis = normalized(blocker.vAxis)
+  const coordinates = points.map((point) => {
+    const relative = subtract(point, blocker.baseCenter)
+    return [dot(relative, uAxis), dot(relative, vAxis)] as const
+  })
+  const uValues = coordinates.map(([u]) => u)
+  const vValues = coordinates.map(([, v]) => v)
+  const minU = Math.min(...uValues)
+  const maxU = Math.max(...uValues)
+  const minV = Math.min(...vValues)
+  const maxV = Math.max(...vValues)
+  if (![minU, maxU, minV, maxV].every(Number.isFinite)) return null
+  const widthMm = maxU - minU
+  const heightMm = maxV - minV
+  if (widthMm < 0.1 || heightMm < 0.1) return null
+  return {
+    baseCenter: addScaled(
+      addScaled(blocker.baseCenter, uAxis, (minU + maxU) / 2),
+      vAxis,
+      (minV + maxV) / 2,
+    ),
+    widthMm,
+    heightMm,
+  }
+}
+
 function createPreviewReceiver(
   id: string,
   center: Vec3,
@@ -240,8 +276,8 @@ function createPreviewReceiver(
   heightMm: number,
 ): ReceiverSpec {
   const longest = Math.max(widthMm, heightMm, 1)
-  const columns = Math.max(12, Math.round(44 * widthMm / longest))
-  const rows = Math.max(12, Math.round(44 * heightMm / longest))
+  const columns = Math.max(16, Math.round(72 * widthMm / longest))
+  const rows = Math.max(16, Math.round(72 * heightMm / longest))
   return {
     receiver_id: `__leak_preview_${id}`,
     receiver_type: 'rectangle',
@@ -286,15 +322,20 @@ export function createLeakPreviewReceivers(
   const center = bounds.center
   const size = bounds.size
   const margin = detectorMarginMm(size)
-  const span = (value: number) => value + margin * 2
+  // A selected exterior direction represents a viewing hemisphere rather
+  // than a CAD-sized stencil. Expand the escape envelope by a 45-degree
+  // guard cone
+  // so oblique corner leaks still reach (for example) the Front detector.
+  const span = (value: number, travelDepth: number) =>
+    value + 2 * (margin + Math.max(travelDepth, 0) * Math.tan(45 * Math.PI / 180))
   const enabledDirections = new Set(directions)
   return [
-    createPreviewReceiver('pos_x', [center[0] + size[0] / 2 + margin, center[1], center[2]], [-1, 0, 0], [0, 1, 0], [0, 0, 1], span(size[1]), span(size[2])),
-    createPreviewReceiver('neg_x', [center[0] - size[0] / 2 - margin, center[1], center[2]], [1, 0, 0], [0, -1, 0], [0, 0, 1], span(size[1]), span(size[2])),
-    createPreviewReceiver('pos_y', [center[0], center[1] + size[1] / 2 + margin, center[2]], [0, -1, 0], [1, 0, 0], [0, 0, 1], span(size[0]), span(size[2])),
-    createPreviewReceiver('neg_y', [center[0], center[1] - size[1] / 2 - margin, center[2]], [0, 1, 0], [-1, 0, 0], [0, 0, 1], span(size[0]), span(size[2])),
-    createPreviewReceiver('pos_z', [center[0], center[1], center[2] + size[2] / 2 + margin], [0, 0, -1], [1, 0, 0], [0, 1, 0], span(size[0]), span(size[1])),
-    createPreviewReceiver('neg_z', [center[0], center[1], center[2] - size[2] / 2 - margin], [0, 0, 1], [-1, 0, 0], [0, 1, 0], span(size[0]), span(size[1])),
+    createPreviewReceiver('pos_x', [center[0] + size[0] / 2 + margin, center[1], center[2]], [-1, 0, 0], [0, 1, 0], [0, 0, 1], span(size[1], size[0]), span(size[2], size[0])),
+    createPreviewReceiver('neg_x', [center[0] - size[0] / 2 - margin, center[1], center[2]], [1, 0, 0], [0, -1, 0], [0, 0, 1], span(size[1], size[0]), span(size[2], size[0])),
+    createPreviewReceiver('pos_y', [center[0], center[1] + size[1] / 2 + margin, center[2]], [0, -1, 0], [1, 0, 0], [0, 0, 1], span(size[0], size[1]), span(size[2], size[1])),
+    createPreviewReceiver('neg_y', [center[0], center[1] - size[1] / 2 - margin, center[2]], [0, 1, 0], [-1, 0, 0], [0, 0, 1], span(size[0], size[1]), span(size[2], size[1])),
+    createPreviewReceiver('pos_z', [center[0], center[1], center[2] + size[2] / 2 + margin], [0, 0, -1], [1, 0, 0], [0, 1, 0], span(size[0], size[2]), span(size[1], size[2])),
+    createPreviewReceiver('neg_z', [center[0], center[1], center[2] - size[2] / 2 - margin], [0, 0, 1], [-1, 0, 0], [0, 1, 0], span(size[0], size[2]), span(size[1], size[2])),
   ].filter((receiver) =>
     enabledDirections.has(receiver.receiver_id.replace('__leak_preview_', '') as LeakPreviewDirection),
   )
@@ -303,11 +344,13 @@ export function createLeakPreviewReceivers(
 function previewEmitter(
   id: string,
   faceIds: number[],
+  componentIds: number[],
   normalFlip: boolean,
   rayCount: number,
 ): EmitterSpec {
   return {
     ...createFaceEmitter(id, faceIds),
+    ...(componentIds.length > 0 ? { source_component_ids: componentIds } : {}),
     normal_flip: normalFlip,
     power_mode: 'total',
     power_lumen: 0.5,
@@ -320,6 +363,7 @@ function previewEmitter(
 export function buildLeakPreviewRequest({
   scene,
   sourceFaceIds,
+  sourceComponentIds = [],
   quality,
   computeBackend,
   materialAssignments,
@@ -349,22 +393,26 @@ export function buildLeakPreviewRequest({
     contribution_mode: 'summary',
     intersection_backend: 'auto',
     compute_backend: computeBackend,
-    store_ray_paths: false,
-    max_stored_paths: 0,
+    // A bounded receiver-path sample lets Preview reconstruct the actual
+    // model-envelope exit location rather than drawing every point on the
+    // remote virtual detector plane.
+    store_ray_paths: true,
+    max_stored_paths: 4_000,
     auto_convergence: false,
-    primary_sampling_strategy: 'source',
-    // The backend validates MIS fractions independently of the selected
-    // source-only strategy, so retain a valid dormant value here.
-    receiver_importance_fraction: 0.5,
-    bounce_sampling_strategy: 'source',
-    bounce_receiver_importance_fraction: 0.5,
+    // Preview uses the selected exterior envelope as an importance target.
+    // The MIS weights preserve energy while spending substantially more
+    // samples on weak escape paths in the chosen viewing direction.
+    primary_sampling_strategy: 'receiver_mis',
+    receiver_importance_fraction: 0.65,
+    bounce_sampling_strategy: 'receiver_mis',
+    bounce_receiver_importance_fraction: 0.55,
   }
   const request = buildRayTraceRequest({
     scene,
     projectName: 'Whole Set Leak Preview',
     emitters: [
-      previewEmitter('__leak_preview_source_a', sourceFaceIds, false, perSide),
-      previewEmitter('__leak_preview_source_b', sourceFaceIds, true, totalRays - perSide),
+      previewEmitter('__leak_preview_source_a', sourceFaceIds, sourceComponentIds, false, perSide),
+      previewEmitter('__leak_preview_source_b', sourceFaceIds, sourceComponentIds, true, totalRays - perSide),
     ],
     receivers: createLeakPreviewReceivers(scene, transformRules, directions),
     materialAssignments,
@@ -558,6 +606,7 @@ function mergeCornerCandidates(
       Math.max(totalFlux, 1e-30),
     ) as Vec3
     target.fluxLumen = totalFlux
+    target.peakFluxLumen = Math.max(target.peakFluxLumen, candidate.peakFluxLumen)
     target.cellCount += candidate.cellCount
     target.label = [...new Set([...target.label.split(' / '), ...candidate.label.split(' / ')])].join(' / ')
     target.clipBox = {
@@ -579,6 +628,74 @@ interface LeakPreviewDetectionOptions {
   transformRules?: ComponentTransformRule[]
 }
 
+function receiverGridCell(
+  receiver: ReceiverSpec,
+  grid: ReceiverGrid,
+  point: Vec3,
+): [number, number] | null {
+  const relative = subtract(point, receiver.center)
+  const u = dot(relative, receiver.u_axis ?? [1, 0, 0])
+  const v = dot(relative, receiver.v_axis ?? [0, 1, 0])
+  const column = Math.floor((u / receiver.width_mm + 0.5) * grid.resolution[0])
+  const row = Math.floor((v / receiver.height_mm + 0.5) * grid.resolution[1])
+  return row >= 0 && row < grid.resolution[1] && column >= 0 && column < grid.resolution[0]
+    ? [row, column]
+    : null
+}
+
+function segmentExitFromBounds(start: Vec3, end: Vec3, minimum: Vec3, maximum: Vec3): Vec3 | null {
+  const direction = subtract(end, start)
+  let enter = 0
+  let exit = 1
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (Math.abs(direction[axis]) < 1e-12) {
+      if (start[axis] < minimum[axis] || start[axis] > maximum[axis]) return null
+      continue
+    }
+    const first = (minimum[axis] - start[axis]) / direction[axis]
+    const second = (maximum[axis] - start[axis]) / direction[axis]
+    enter = Math.max(enter, Math.min(first, second))
+    exit = Math.min(exit, Math.max(first, second))
+    if (enter > exit) return null
+  }
+  if (exit < 0 || exit > 1) return null
+  return addScaled(start, direction, exit)
+}
+
+function sampledEscapeLocations(
+  result: RayTraceResult,
+  receivers: Map<string, ReceiverSpec>,
+  grids: Map<string, ReceiverGrid>,
+  minimum: Vec3,
+  maximum: Vec3,
+): Map<string, Vec3> {
+  const accumulated = new Map<string, { position: Vec3; weight: number }>()
+  for (const path of result.stored_paths) {
+    const receiverHit = path.at(-1)
+    const previous = path.at(-2)
+    if (!receiverHit?.receiver_id || receiverHit.event_type !== 'receiver' || !previous) continue
+    const receiver = receivers.get(receiverHit.receiver_id)
+    const grid = grids.get(receiverHit.receiver_id)
+    if (!receiver || !grid) continue
+    const cell = receiverGridCell(receiver, grid, receiverHit.point)
+    const exitPoint = segmentExitFromBounds(previous.point, receiverHit.point, minimum, maximum)
+    if (!cell || !exitPoint) continue
+    const key = `${receiver.receiver_id}:${cell[0]}:${cell[1]}`
+    const weight = Math.max(receiverHit.receiver_flux_lumen ?? receiverHit.incoming_energy_lumen, 1e-30)
+    const current = accumulated.get(key)
+    if (!current) {
+      accumulated.set(key, { position: exitPoint.map((value) => value * weight) as Vec3, weight })
+      continue
+    }
+    current.position = current.position.map((value, axis) => value + exitPoint[axis] * weight) as Vec3
+    current.weight += weight
+  }
+  return new Map([...accumulated].map(([key, value]) => [
+    key,
+    value.position.map((coordinate) => coordinate / value.weight) as Vec3,
+  ]))
+}
+
 export function detectLeakPreviewCandidates(
   scene: ScenePayload,
   result: RayTraceResult,
@@ -592,13 +709,23 @@ export function detectLeakPreviewCandidates(
   if (globalMaximum <= 0) return { points: [], candidates: [] }
 
   const bounds = getLeakPreviewBounds(scene, options.transformRules)
+  const boundsMinimum = bounds.center.map((value, axis) => value - bounds.size[axis] / 2) as Vec3
+  const boundsMaximum = bounds.center.map((value, axis) => value + bounds.size[axis] / 2) as Vec3
+  const grids = new Map(result.receiver_grids.map((grid) => [grid.receiver_id, grid]))
+  const escapeLocations = sampledEscapeLocations(
+    result,
+    receivers,
+    grids,
+    boundsMinimum,
+    boundsMaximum,
+  )
   const maxDimension = Math.max(...bounds.size, 1)
   const modelDepth = maxDimension * 0.18
   const detectorMargin = detectorMarginMm(bounds.size)
   const thresholdRatio = {
-    fast: { global: 0.04, local: 0.12 },
-    balanced: { global: 0.025, local: 0.08 },
-    deep: { global: 0.01, local: 0.04 },
+    fast: { global: 0.015, local: 0.06 },
+    balanced: { global: 0.006, local: 0.025 },
+    deep: { global: 0.002, local: 0.01 },
   }[options.quality ?? 'balanced']
   const ignoreAreas = options.ignoreAreas ?? []
   const points: LeakPreviewPoint[] = []
@@ -619,7 +746,7 @@ export function detectLeakPreviewCandidates(
         // The automatic Receiver sits outside the CAD. Move its bin back near
         // the model envelope so the glow reads as a leak on the product, not
         // as a detached heatmap plane floating around it.
-        const position = addScaled(
+        const position = escapeLocations.get(`${grid.receiver_id}:${row}:${column}`) ?? addScaled(
           cellPosition(receiver, grid, row, column),
           receiver.normal,
           detectorMargin,
@@ -654,6 +781,7 @@ export function detectLeakPreviewCandidates(
         widthMm: (Math.max(...columns) - Math.min(...columns) + 1) * cellWidth + leakPreviewRoiOffsetMm * 2,
         heightMm: (Math.max(...rows) - Math.min(...rows) + 1) * cellHeight + leakPreviewRoiOffsetMm * 2,
         fluxLumen,
+        peakFluxLumen: Math.max(...cluster.map((cell) => cell.flux)),
         relativeStrength: 0,
         cellCount: cluster.length,
         clipBox: candidateClipBox(cluster, receiver, grid, modelDepth),
@@ -661,16 +789,25 @@ export function detectLeakPreviewCandidates(
     }
   }
   const mergedCandidates = mergeCornerCandidates(candidates, maxDimension)
-    .sort((left, right) => right.fluxLumen - left.fluxLumen)
-  const strongest = mergedCandidates[0]?.fluxLumen ?? 1
+  const strongestFlux = Math.max(1e-30, ...mergedCandidates.map((candidate) => candidate.fluxLumen))
+  const strongestPeak = Math.max(1e-30, ...mergedCandidates.map((candidate) => candidate.peakFluxLumen))
+  // Preserve both narrow/bright spots and broad leakage regions. Ranking by
+  // total flux alone allowed large benign areas to consume all eight slots.
+  const rankedCandidates = mergedCandidates
+    .map((candidate) => ({
+      ...candidate,
+      relativeStrength:
+        0.65 * (candidate.peakFluxLumen / strongestPeak) +
+        0.35 * (candidate.fluxLumen / strongestFlux),
+    }))
+    .sort((left, right) => right.relativeStrength - left.relativeStrength)
   return {
     points: points
       .sort((left, right) => right.relativeStrength - left.relativeStrength)
       .slice(0, 800),
-    candidates: mergedCandidates.slice(0, 8).map((candidate, index) => ({
+    candidates: rankedCandidates.slice(0, 8).map((candidate, index) => ({
       ...candidate,
       id: `leak-candidate-${index + 1}`,
-      relativeStrength: candidate.fluxLumen / strongest,
     })),
   }
 }

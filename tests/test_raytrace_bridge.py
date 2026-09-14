@@ -138,6 +138,28 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(trace_input.optical_profiles[0].profile_id, "part_profile")
         self.assertEqual(trace_input.optical_assignments[0].component_id, 7)
 
+    def test_preview_body_emitter_expands_component_faces_server_side(self) -> None:
+        trace_input = build_direct_trace_input(
+            self.scene_mesh,
+            {
+                "emitters": [{
+                    "emitter_id": "body-source",
+                    "emitter_type": "face",
+                    "face_indices": [],
+                    "source_component_ids": [7],
+                }],
+                "receivers": [{
+                    "receiver_id": "receiver",
+                    "center": [0, 0, 10],
+                    "normal": [0, 0, -1],
+                    "width_mm": 10,
+                    "height_mm": 10,
+                }],
+            },
+        )
+
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+
     def test_excluded_component_is_removed_from_direct_mesh(self) -> None:
         scene_mesh = {
             "vertices": [
