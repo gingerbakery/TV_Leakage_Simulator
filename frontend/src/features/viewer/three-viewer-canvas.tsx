@@ -3363,31 +3363,32 @@ export function ThreeViewerCanvas({
     }
     for (const area of leakPreviewIgnoreAreas) {
       if (!area.enabled) continue
-      const clip = area.clipBox
-      const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
-      const sizeY = Math.max(clip.yMax - clip.yMin, markerSize * 0.25)
-      const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize * 0.25)
-      const geometry = new BoxGeometry(sizeX, sizeY, sizeZ)
-      const outline = new LineSegments(
-        new EdgesGeometry(geometry),
-        new LineBasicMaterial({
-          color: 0xef4444,
-          transparent: true,
-          opacity: 0.8,
-          depthTest: false,
-          depthWrite: false,
-          toneMapped: false,
-        }),
-      )
-      geometry.dispose()
-      outline.position.set(
-        (clip.xMin + clip.xMax) / 2,
-        (clip.yMin + clip.yMax) / 2,
-        ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
-      )
-      outline.name = area.id
-      outline.renderOrder = 218
-      runtime.leakPreviewRoot.add(outline)
+      for (const [regionIndex, clip] of area.regions.entries()) {
+        const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
+        const sizeY = Math.max(clip.yMax - clip.yMin, markerSize * 0.25)
+        const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize * 0.25)
+        const geometry = new BoxGeometry(sizeX, sizeY, sizeZ)
+        const outline = new LineSegments(
+          new EdgesGeometry(geometry),
+          new LineBasicMaterial({
+            color: 0xef4444,
+            transparent: true,
+            opacity: 0.8,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        geometry.dispose()
+        outline.position.set(
+          (clip.xMin + clip.xMax) / 2,
+          (clip.yMin + clip.yMax) / 2,
+          ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
+        )
+        outline.name = `${area.id}-${regionIndex}`
+        outline.renderOrder = 218
+        runtime.leakPreviewRoot.add(outline)
+      }
     }
 
     if (leakPreviewPoints.length === 0) return
@@ -3407,14 +3408,32 @@ export function ThreeViewerCanvas({
     const pointGeometry = new BufferGeometry()
     pointGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
     pointGeometry.setAttribute('color', new Float32BufferAttribute(colors, 3))
+    const glowHalo = new Points(
+      pointGeometry,
+      new PointsMaterial({
+        // Preview is a qualitative locator. Keep the marker readable at any
+        // camera distance instead of shrinking to a one-pixel speck.
+        size: 24,
+        sizeAttenuation: false,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.28,
+        depthTest: false,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        toneMapped: false,
+      }),
+    )
+    glowHalo.name = 'leak-preview-glow-halo'
+    glowHalo.renderOrder = 219
     const glowPoints = new Points(
       pointGeometry,
       new PointsMaterial({
-        size: markerSize,
-        sizeAttenuation: true,
+        size: 9,
+        sizeAttenuation: false,
         vertexColors: true,
         transparent: true,
-        opacity: 0.9,
+        opacity: 1,
         depthTest: false,
         depthWrite: false,
         blending: AdditiveBlending,
@@ -3423,7 +3442,7 @@ export function ThreeViewerCanvas({
     )
     glowPoints.name = 'leak-preview-glow-points'
     glowPoints.renderOrder = 220
-    runtime.leakPreviewRoot.add(glowPoints)
+    runtime.leakPreviewRoot.add(glowHalo, glowPoints)
 
     const selected = leakPreviewCandidates.find(
       (candidate) => candidate.id === selectedLeakCandidateId,

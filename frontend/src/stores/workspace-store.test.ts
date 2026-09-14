@@ -16,6 +16,24 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('keeps editable Case names and captions exactly as entered', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+
+    actions.updateCadCaseMetadata(
+      caseId,
+      'CASE 01 개선 구조',
+      'Front gap 0.3 mm / 보강 Rib 적용',
+    )
+
+    expect(store.getState().cadCases[0]).toMatchObject({
+      name: 'CASE 01 개선 구조',
+      note: 'Front gap 0.3 mm / 보강 Rib 적용',
+    })
+  })
+
   it('creates independent Cases when the same CAD path is imported again', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

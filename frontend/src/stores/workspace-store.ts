@@ -1176,7 +1176,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set((state) => ({
           cadCases: state.cadCases.map((item) =>
             item.caseId === caseId
-              ? { ...item, name: name.trim(), note: note.trim() }
+              ? { ...item, name, note }
               : item,
           ),
         }))

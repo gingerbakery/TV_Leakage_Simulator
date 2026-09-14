@@ -42,6 +42,13 @@ class _SceneLoadState:
         self.error: Optional[Exception] = None
 
 
+class _TraceGeometryBuildState:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.prepared: Optional[PreparedTraceGeometry] = None
+        self.error: Optional[Exception] = None
+
+
 class ApiRuntime:
     """Owns the short-lived state required by the local simulation API."""
 
@@ -70,6 +77,7 @@ class ApiRuntime:
         self._portable_sources: dict[str, Path] = {}
         self._project_exports: dict[str, tuple[Path, str, float]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
+        self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
         self._output_file_index: dict[str, Path] = {}
@@ -536,15 +544,47 @@ class ApiRuntime:
             return self._trace_input_builder(scene_mesh, request_payload)
         cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
         with self._state_lock:
-            prepared = self._trace_geometry_cache.get(cache_key)
+            # Refresh cache insertion order on a hit so the repeatedly used
+            # Preview geometry survives experiments with several alternatives.
+            prepared = self._trace_geometry_cache.pop(cache_key, None)
+            if prepared is not None:
+                self._trace_geometry_cache[cache_key] = prepared
+            build_state = self._trace_geometry_builds.get(cache_key)
+            is_builder = prepared is None and build_state is None
+            if is_builder:
+                build_state = _TraceGeometryBuildState()
+                self._trace_geometry_builds[cache_key] = build_state
         cache_hit = prepared is not None
         if prepared is None:
-            prepared = build_prepared_trace_geometry(scene_mesh, request_payload)
-            with self._state_lock:
-                self._trace_geometry_cache[cache_key] = prepared
-                while len(self._trace_geometry_cache) > self._max_jobs:
-                    oldest_key = next(iter(self._trace_geometry_cache))
-                    self._trace_geometry_cache.pop(oldest_key, None)
+            assert build_state is not None
+            if not is_builder:
+                # A superseded/restarted Preview may request the same geometry
+                # while the first worker is still preparing it. Reuse that
+                # build instead of creating a second multi-million-face BVH.
+                build_state.event.wait()
+                if build_state.error is not None:
+                    raise build_state.error
+                prepared = build_state.prepared
+                if prepared is None:
+                    raise RuntimeError("Prepared geometry build completed without a result")
+                cache_hit = True
+            else:
+                try:
+                    prepared = build_prepared_trace_geometry(scene_mesh, request_payload)
+                except Exception as exc:
+                    with self._state_lock:
+                        build_state.error = exc
+                        self._trace_geometry_builds.pop(cache_key, None)
+                        build_state.event.set()
+                    raise
+                with self._state_lock:
+                    self._trace_geometry_cache[cache_key] = prepared
+                    while len(self._trace_geometry_cache) > self._max_jobs:
+                        oldest_key = next(iter(self._trace_geometry_cache))
+                        self._trace_geometry_cache.pop(oldest_key, None)
+                    build_state.prepared = prepared
+                    self._trace_geometry_builds.pop(cache_key, None)
+                    build_state.event.set()
         return build_direct_trace_input(
             scene_mesh,
             request_payload,
@@ -710,6 +750,7 @@ class ApiRuntime:
         request_payload: dict[str, Any],
     ) -> None:
         try:
+            preparation_started_at = time.time()
             self._update_raytrace_job(
                 job_id,
                 status="running",
@@ -718,6 +759,18 @@ class ApiRuntime:
             trace_input = self._build_trace_input_for_request(
                 scene_mesh,
                 request_payload,
+            )
+            preparation_elapsed_sec = max(0.0, time.time() - preparation_started_at)
+            geometry_cache_hit = bool(
+                getattr(trace_input, "geometry_cache_hit", False)
+            )
+            print(
+                "[RAY] geometry ready | {} | cache={} | {:.3f}s".format(
+                    job_id[:8],
+                    "hit" if geometry_cache_hit else "rebuilt",
+                    preparation_elapsed_sec,
+                ),
+                flush=True,
             )
             total_ray_count = sum(
                 emitter.ray_count
@@ -733,6 +786,8 @@ class ApiRuntime:
                 progress=0.0,
                 elapsed_sec=0.0,
                 estimated_remaining_sec=None,
+                geometry_cache_hit=geometry_cache_hit,
+                preparation_elapsed_sec=preparation_elapsed_sec,
             )
 
             def report_progress(

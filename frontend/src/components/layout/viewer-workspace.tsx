@@ -191,11 +191,8 @@ export function ViewerWorkspace({
   const ignoreAreaSelectionArmed = useLeakPreviewStore(
     (state) => state.ignoreAreaSelectionArmed,
   )
-  const addLeakPreviewIgnoreArea = useLeakPreviewStore(
-    (state) => state.addIgnoreArea,
-  )
-  const setIgnoreAreaSelectionArmed = useLeakPreviewStore(
-    (state) => state.setIgnoreAreaSelectionArmed,
+  const addLeakPreviewIgnoreAreaRegion = useLeakPreviewStore(
+    (state) => state.addIgnoreAreaRegion,
   )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
@@ -229,10 +226,11 @@ export function ViewerWorkspace({
       if (!scene) return
 
       if (ignoreAreaSelectionArmed) {
-        addLeakPreviewIgnoreArea({ clipBox })
-        setIgnoreAreaSelectionArmed(false)
-        actions.setRoiBoxSelectionArmed(false)
-        setStatusMessage('Ignore Area 추가')
+        addLeakPreviewIgnoreAreaRegion(clipBox)
+        // Keep selection armed so multiple PEM-Nut holes or similar regions
+        // can be grouped under one Allowed Area item.
+        actions.setRoiBoxSelectionArmed(true)
+        setStatusMessage('Allowed Area 영역 추가 · 계속 드래그하거나 선택 완료를 누르세요.')
         return
       }
 
@@ -266,14 +264,13 @@ export function ViewerWorkspace({
     },
     [
       actions,
-      addLeakPreviewIgnoreArea,
+      addLeakPreviewIgnoreAreaRegion,
       componentNameOverrides,
       deletedComponentIds,
       hiddenComponentIds,
       ignoreAreaSelectionArmed,
       roiDraftLabel,
       scene,
-      setIgnoreAreaSelectionArmed,
     ],
   )
 

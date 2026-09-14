@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BoxSelect, Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Pencil, Play, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
+import { BoxSelect, Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Pencil, Play, Plus, ScanSearch, Square, StopCircle, Trash2, X } from 'lucide-react'
 
 import type { ScenePayload } from '@/api'
 import {
@@ -23,6 +23,7 @@ import {
   detectLeakPreviewCandidates,
   resolveLeakPreviewRoiFaces,
   type LeakPreviewCandidate,
+  type LeakPreviewDirection,
   type LeakPreviewQuality,
 } from './leak-preview-model'
 import { useLeakPreviewStore } from './leak-preview-store'
@@ -46,9 +47,9 @@ function cadFaceCount(scene: ScenePayload | undefined, faceIds: number[]): numbe
   if (!scene) return faceIds.length
   const sourceIds = scene.mesh.face_source_ids
   if (!sourceIds) return faceIds.length
-  return new Set(
-    faceIds.map((faceId) => sourceIds[faceId] ?? faceId),
-  ).size
+  const uniqueSourceIds = new Set<number>()
+  for (const faceId of faceIds) uniqueSourceIds.add(sourceIds[faceId] ?? faceId)
+  return uniqueSourceIds.size
 }
 
 const previewQualityLabel: Record<LeakPreviewQuality, string> = {
@@ -62,6 +63,15 @@ const previewQualityName: Record<LeakPreviewQuality, string> = {
   balanced: 'Balanced',
   deep: 'Deep Scan',
 }
+
+const previewDirectionOptions: Array<{ id: LeakPreviewDirection; label: string; axis: string }> = [
+  { id: 'pos_z', label: '정면', axis: '+Z' },
+  { id: 'neg_z', label: '후면', axis: '-Z' },
+  { id: 'neg_x', label: '좌측', axis: '-X' },
+  { id: 'pos_x', label: '우측', axis: '+X' },
+  { id: 'pos_y', label: '상단', axis: '+Y' },
+  { id: 'neg_y', label: '바닥', axis: '-Y' },
+]
 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
@@ -78,21 +88,25 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const sourceFaceIds = useLeakPreviewStore((state) => state.sourceFaceIds)
   const ensureScene = useLeakPreviewStore((state) => state.ensureScene)
   const quality = useLeakPreviewStore((state) => state.quality)
+  const directions = useLeakPreviewStore((state) => state.directions)
   const jobId = useLeakPreviewStore((state) => state.jobId)
   const candidates = useLeakPreviewStore((state) => state.candidates)
   const selectedCandidateId = useLeakPreviewStore((state) => state.selectedCandidateId)
   const ignoreAreaSelectionArmed = useLeakPreviewStore((state) => state.ignoreAreaSelectionArmed)
+  const activeIgnoreAreaId = useLeakPreviewStore((state) => state.activeIgnoreAreaId)
   const ignoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const blockers = useLeakPreviewStore((state) => state.blockers)
   const runSignature = useLeakPreviewStore((state) => state.runSignature)
   const setSourceFaceIds = useLeakPreviewStore((state) => state.setSourceFaceIds)
   const setQuality = useLeakPreviewStore((state) => state.setQuality)
+  const toggleDirection = useLeakPreviewStore((state) => state.toggleDirection)
   const setJobId = useLeakPreviewStore((state) => state.setJobId)
   const setRunSignature = useLeakPreviewStore((state) => state.setRunSignature)
   const setDetection = useLeakPreviewStore((state) => state.setDetection)
   const clearDetection = useLeakPreviewStore((state) => state.clearDetection)
   const selectCandidate = useLeakPreviewStore((state) => state.selectCandidate)
-  const setIgnoreAreaSelectionArmed = useLeakPreviewStore((state) => state.setIgnoreAreaSelectionArmed)
+  const beginIgnoreAreaSelection = useLeakPreviewStore((state) => state.beginIgnoreAreaSelection)
+  const finishIgnoreAreaSelection = useLeakPreviewStore((state) => state.finishIgnoreAreaSelection)
   const setIgnoreAreaEnabled = useLeakPreviewStore((state) => state.setIgnoreAreaEnabled)
   const removeIgnoreArea = useLeakPreviewStore((state) => state.removeIgnoreArea)
   const addBlocker = useLeakPreviewStore((state) => state.addBlocker)
@@ -106,6 +120,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const [message, setMessage] = useState('광원으로 사용할 CAD Face를 선택하세요.')
   const [pickingTarget, setPickingTarget] = useState<'source' | 'blocker' | null>(null)
   const [editingBlockerId, setEditingBlockerId] = useState<string | null>(null)
+  const [blockerCreationPending, setBlockerCreationPending] = useState(false)
 
   useEffect(() => {
     if (scene) ensureScene(scene.metadata.scene_token)
@@ -116,11 +131,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const existingEmitterFaces = emitters
     .filter((emitter) => emitter.enabled && emitter.emitter_type === 'face')
     .flatMap((emitter) => emitter.face_indices)
-  const sourceCadFaceCount = cadFaceCount(scene, sourceFaceIds)
+  const sourceCadFaceCount = useMemo(
+    () => cadFaceCount(scene, sourceFaceIds),
+    [scene, sourceFaceIds],
+  )
   const previewInputSignature = useMemo(() => JSON.stringify({
     sceneToken: scene?.metadata.scene_token ?? null,
     sourceFaceIds,
     quality,
+    directions,
     materialAssignments,
     transformRules,
     excludedComponentIds,
@@ -132,6 +151,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     excludedComponentIds,
     materialAssignments,
     quality,
+    directions,
     scene?.metadata.scene_token,
     sourceFaceIds,
     transformRules,
@@ -143,10 +163,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
   useEffect(() => {
     return () => {
-      setIgnoreAreaSelectionArmed(false)
+      finishIgnoreAreaSelection()
       actions.setRoiBoxSelectionArmed(false)
     }
-  }, [actions, setIgnoreAreaSelectionArmed])
+  }, [actions, finishIgnoreAreaSelection])
 
   useEffect(() => {
     if (!scene || job?.status !== 'completed' || !job.result) return
@@ -177,25 +197,33 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     setMessage(`Preview 실행 실패: ${job.error}`)
   }, [job])
 
-  const finishFaceSelection = (target: 'source' | 'blocker') => {
+  const finishFaceSelection = async (target: 'source' | 'blocker') => {
     if (selectedFaceIds.length === 0) {
       setMessage('3D Viewer에서 CAD Face를 하나 이상 선택하세요.')
       return
     }
     if (target === 'blocker') {
       if (!scene) return
-      const blocker = createLeakPreviewBlockerFromFaces(scene, selectedFaceIds, blockers.length + 1)
-      if (!blocker) {
-        setMessage('Preview Blocker는 하나의 평평한 CAD Surface를 선택해야 합니다.')
-        return
+      setBlockerCreationPending(true)
+      setMessage('선택한 CAD Surface에서 Blocker를 생성하고 있습니다.')
+      // Paint the pending state before processing a potentially dense face.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+      try {
+        const blocker = createLeakPreviewBlockerFromFaces(scene, selectedFaceIds, blockers.length + 1)
+        if (!blocker) {
+          setMessage('하나의 평평한 CAD Surface를 다시 선택하세요.')
+          return
+        }
+        addBlocker(blocker)
+        setEditingBlockerId(blocker.id)
+        setPickingTarget(null)
+        actions.setSelectedFaceIds([])
+        actions.setEmitterFaceSelectionArmed(false)
+        clearDetection()
+        setMessage(`${blocker.label} Blocker를 생성했습니다.`)
+      } finally {
+        setBlockerCreationPending(false)
       }
-      addBlocker(blocker)
-      setEditingBlockerId(blocker.id)
-      setPickingTarget(null)
-      actions.setSelectedFaceIds([])
-      actions.setEmitterFaceSelectionArmed(false)
-      clearDetection()
-      setMessage('Preview Blocker를 생성했습니다. 위치와 Depth를 조정하세요.')
       return
     }
     setSourceFaceIds(selectedFaceIds)
@@ -217,6 +245,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           scene,
           sourceFaceIds,
           quality,
+          directions,
           computeBackend: rayTraceConfig.compute_backend,
           materialAssignments,
           transformRules,
@@ -309,9 +338,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             variant={pickingTarget === 'source' ? 'default' : 'outline'}
             onClick={() => {
               if (pickingTarget === 'source') {
-                finishFaceSelection('source')
+                void finishFaceSelection('source')
                 return
               }
+              finishIgnoreAreaSelection()
+              actions.setRoiBoxSelectionArmed(false)
               actions.setSelectedFaceIds([])
               actions.setEmitterFaceSelectionArmed(true)
               setPickingTarget('source')
@@ -335,6 +366,26 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
         <div className="rounded-md bg-muted/45 px-2.5 py-2 text-xs">
           등록된 광원 CAD Face <strong>{sourceCadFaceCount}</strong>개
+        </div>
+      </section>
+
+      <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
+        <div className="text-sm font-semibold">Detection Direction</div>
+        <div className="grid grid-cols-3 gap-1.5">
+          {previewDirectionOptions.map((option) => {
+            const selected = directions.includes(option.id)
+            return (
+              <Button
+                key={option.id}
+                size="sm"
+                variant={selected ? 'default' : 'outline'}
+                disabled={isRunning}
+                onClick={() => toggleDirection(option.id)}
+              >
+                {option.label} <span className="text-[10px] opacity-70">{option.axis}</span>
+              </Button>
+            )
+          })}
         </div>
       </section>
 
@@ -383,7 +434,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <div className="text-right text-xs text-muted-foreground">
               {isPreparing
                 ? '경량 CAD · BVH 준비 중'
-                : `${Math.round((job?.progress ?? 0) * 100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays`}
+                : `${job?.geometry_cache_hit ? 'BVH 재사용 · ' : ''}${Math.round((job?.progress ?? 0) * 100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays`}
             </div>
           </div>
         ) : null}
@@ -395,24 +446,53 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <span className="flex items-center gap-1.5 text-sm font-semibold">
             <Cuboid className="size-4 text-slate-500" /> Preview Blockers
           </span>
-          <Button
-            size="sm"
-            variant={pickingTarget === 'blocker' ? 'default' : 'outline'}
-            disabled={isRunning}
-            onClick={() => {
-              if (pickingTarget === 'blocker') {
-                finishFaceSelection('blocker')
-                return
-              }
-              actions.setSelectedFaceIds([])
-              actions.setEmitterFaceSelectionArmed(true)
-              setPickingTarget('blocker')
-              setMessage('Blocker 기준으로 사용할 평평한 CAD Surface를 선택하세요.')
-            }}
-          >
-            <Cuboid /> {pickingTarget === 'blocker' ? '선택 완료' : 'Add Blocker'}
-          </Button>
+          {pickingTarget !== 'blocker' ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isRunning}
+              onClick={() => {
+                finishIgnoreAreaSelection()
+                actions.setRoiBoxSelectionArmed(false)
+                actions.setSelectedFaceIds([])
+                actions.setEmitterFaceSelectionArmed(true)
+                setPickingTarget('blocker')
+                setMessage('3D Viewer에서 Blocker 기준 CAD Surface를 선택하세요.')
+              }}
+            >
+              <Cuboid /> Add Blocker
+            </Button>
+          ) : null}
         </div>
+        {pickingTarget === 'blocker' ? (
+          <div className="rounded-md border border-sky-300 bg-sky-50/70 p-2 dark:border-sky-700 dark:bg-sky-950/25">
+            <div className="mb-2 text-xs font-medium">
+              {selectedFaceIds.length > 0 ? 'CAD Surface 선택됨' : 'CAD Surface를 선택하세요'}
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                size="sm"
+                disabled={selectedFaceIds.length === 0 || blockerCreationPending}
+                onClick={() => void finishFaceSelection('blocker')}
+              >
+                <Cuboid /> {blockerCreationPending ? '생성 중' : 'Blocker 생성'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={blockerCreationPending}
+                onClick={() => {
+                  actions.setSelectedFaceIds([])
+                  actions.setEmitterFaceSelectionArmed(false)
+                  setPickingTarget(null)
+                  setMessage('Blocker 추가를 취소했습니다.')
+                }}
+              >
+                <X /> 취소
+              </Button>
+            </div>
+          </div>
+        ) : null}
         {blockers.map((blocker) => {
           const editing = editingBlockerId === blocker.id
           const fieldClass = 'mt-1 h-8 w-full rounded-md border border-border bg-background/70 px-2 text-xs outline-none focus:border-primary/60'
@@ -480,17 +560,41 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             variant={ignoreAreaSelectionArmed ? 'default' : 'outline'}
             disabled={!scene || isRunning}
             onClick={() => {
-              const next = !ignoreAreaSelectionArmed
-              setIgnoreAreaSelectionArmed(next)
-              actions.setRoiBoxSelectionArmed(next)
+              if (ignoreAreaSelectionArmed) {
+                finishIgnoreAreaSelection()
+                actions.setRoiBoxSelectionArmed(false)
+                return
+              }
+              actions.setEmitterFaceSelectionArmed(false)
+              actions.setSelectedFaceIds([])
+              setPickingTarget(null)
+              beginIgnoreAreaSelection()
+              actions.setRoiBoxSelectionArmed(true)
             }}
           >
-            <BoxSelect /> {ignoreAreaSelectionArmed ? 'Cancel' : 'Add'}
+            <BoxSelect /> {ignoreAreaSelectionArmed ? '선택 완료' : 'Add Area'}
           </Button>
         </div>
         {ignoreAreas.map((area) => (
           <div key={area.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-xs font-medium">{area.label}</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">
+              {area.label} · {area.regions.length}개 영역
+            </span>
+            <Button
+              size="icon-xs"
+              variant={activeIgnoreAreaId === area.id ? 'default' : 'ghost'}
+              aria-label={`${area.label} 영역 추가`}
+              disabled={isRunning}
+              onClick={() => {
+                actions.setEmitterFaceSelectionArmed(false)
+                actions.setSelectedFaceIds([])
+                setPickingTarget(null)
+                beginIgnoreAreaSelection(area.id)
+                actions.setRoiBoxSelectionArmed(true)
+              }}
+            >
+              <Plus />
+            </Button>
             <Button
               size="icon-xs"
               variant="ghost"

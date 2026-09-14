@@ -22,6 +22,11 @@ import {
 export { getLeakPreviewBounds } from './leak-preview-geometry'
 
 export type LeakPreviewQuality = 'fast' | 'balanced' | 'deep'
+export type LeakPreviewDirection = 'pos_x' | 'neg_x' | 'pos_y' | 'neg_y' | 'pos_z' | 'neg_z'
+
+export const allLeakPreviewDirections: LeakPreviewDirection[] = [
+  'pos_z', 'neg_z', 'pos_x', 'neg_x', 'pos_y', 'neg_y',
+]
 
 export const leakPreviewRoiOffsetMm = 5
 export const leakPreviewReceiverDistanceMm = 5
@@ -29,7 +34,7 @@ export const leakPreviewReceiverDistanceMm = 5
 export interface LeakPreviewIgnoreArea {
   id: string
   label: string
-  clipBox: RoiClipBox
+  regions: RoiClipBox[]
   enabled: boolean
 }
 
@@ -37,7 +42,6 @@ export interface LeakPreviewBlocker {
   id: string
   label: string
   enabled: boolean
-  referenceFaceIds: number[]
   baseCenter: Vec3
   uAxis: Vec3
   vAxis: Vec3
@@ -85,6 +89,7 @@ export interface BuildLeakPreviewRequestOptions {
   excludedComponentIds: number[]
   deletedComponentIds: number[]
   blockers?: LeakPreviewBlocker[]
+  directions?: LeakPreviewDirection[]
 }
 
 const directionLabels: Record<string, string> = {
@@ -133,9 +138,9 @@ export function createLeakPreviewBlockerFromFaces(
   sequence: number,
 ): LeakPreviewBlocker | null {
   const suggestedLabels = ['Main Board', 'Power Board', 'Speaker']
-  const points: Vec3[] = []
   let normal: Vec3 = [0, 0, 0]
   let referenceNormal: Vec3 | null = null
+  let planeOrigin: Vec3 | null = null
   let longestEdge: Vec3 = [1, 0, 0]
   let longestLength = 0
   for (const faceId of faceIds) {
@@ -149,10 +154,13 @@ export function createLeakPreviewBlockerFromFaces(
     }
     const weight = Math.max(scene.mesh.face_areas_mm2[faceId] ?? 0, 1e-6)
     normal = addScaled(normal, currentNormal, weight)
-    const vertices = face.map((vertexId) => scene.mesh.vertices[vertexId]).filter(Boolean) as Vec3[]
-    points.push(...vertices)
-    for (let edgeIndex = 0; edgeIndex < vertices.length; edgeIndex += 1) {
-      const edge = subtract(vertices[(edgeIndex + 1) % vertices.length], vertices[edgeIndex])
+    const firstPoint = scene.mesh.vertices[face[0]]
+    if (!planeOrigin && firstPoint) planeOrigin = firstPoint
+    for (let edgeIndex = 0; edgeIndex < face.length; edgeIndex += 1) {
+      const start = scene.mesh.vertices[face[edgeIndex]]
+      const end = scene.mesh.vertices[face[(edgeIndex + 1) % face.length]]
+      if (!start || !end) continue
+      const edge = subtract(end, start)
       const length = dot(edge, edge)
       if (length > longestLength) {
         longestLength = length
@@ -160,14 +168,10 @@ export function createLeakPreviewBlockerFromFaces(
       }
     }
   }
-  if (points.length === 0 || !referenceNormal) return null
+  if (!planeOrigin || !referenceNormal) return null
   normal = normalized(normal)
   if (Math.hypot(...normal) < 0.5) return null
   const tolerance = Math.max(0.05, Math.sqrt(longestLength) * 0.002)
-  const planeOrigin = points[0]
-  if (points.some((point) => Math.abs(dot(subtract(point, planeOrigin), normal)) > tolerance)) {
-    return null
-  }
   let uAxis = normalized(subtract(longestEdge, addScaled([0, 0, 0], normal, dot(longestEdge, normal))))
   if (Math.hypot(...uAxis) < 0.5) {
     uAxis = normalized(cross(Math.abs(normal[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0], normal))
@@ -177,15 +181,27 @@ export function createLeakPreviewBlockerFromFaces(
   let maxU = -Infinity
   let minV = Infinity
   let maxV = -Infinity
-  for (const point of points) {
-    const relative = subtract(point, planeOrigin)
-    const u = dot(relative, uAxis)
-    const v = dot(relative, vAxis)
-    minU = Math.min(minU, u)
-    maxU = Math.max(maxU, u)
-    minV = Math.min(minV, v)
-    maxV = Math.max(maxV, v)
+  // Stream the selected tessellation instead of copying every triangle
+  // vertex into a second array. A single large CAD surface can contain
+  // hundreds of thousands of triangles, and that copy used to freeze the UI
+  // when the user pressed "선택 완료".
+  for (const faceId of faceIds) {
+    const face = scene.mesh.faces[faceId]
+    if (!face) continue
+    for (const vertexId of face) {
+      const point = scene.mesh.vertices[vertexId]
+      if (!point) continue
+      const relative = subtract(point, planeOrigin)
+      if (Math.abs(dot(relative, normal)) > tolerance) return null
+      const u = dot(relative, uAxis)
+      const v = dot(relative, vAxis)
+      minU = Math.min(minU, u)
+      maxU = Math.max(maxU, u)
+      minV = Math.min(minV, v)
+      maxV = Math.max(maxV, v)
+    }
   }
+  if (![minU, maxU, minV, maxV].every(Number.isFinite)) return null
   const baseCenter = addScaled(
     addScaled(planeOrigin, uAxis, (minU + maxU) / 2),
     vAxis,
@@ -195,7 +211,6 @@ export function createLeakPreviewBlockerFromFaces(
     id: `preview-blocker-${Date.now()}-${sequence}`,
     label: suggestedLabels[sequence - 1] ?? `Preview Blocker ${String(sequence).padStart(2, '0')}`,
     enabled: true,
-    referenceFaceIds: [...new Set(faceIds)],
     baseCenter,
     uAxis,
     vAxis,
@@ -265,12 +280,14 @@ function detectorMarginMm(size: Vec3): number {
 export function createLeakPreviewReceivers(
   scene: ScenePayload,
   transformRules: ComponentTransformRule[] = [],
+  directions: LeakPreviewDirection[] = allLeakPreviewDirections,
 ): ReceiverSpec[] {
   const bounds = getLeakPreviewBounds(scene, transformRules)
   const center = bounds.center
   const size = bounds.size
   const margin = detectorMarginMm(size)
   const span = (value: number) => value + margin * 2
+  const enabledDirections = new Set(directions)
   return [
     createPreviewReceiver('pos_x', [center[0] + size[0] / 2 + margin, center[1], center[2]], [-1, 0, 0], [0, 1, 0], [0, 0, 1], span(size[1]), span(size[2])),
     createPreviewReceiver('neg_x', [center[0] - size[0] / 2 - margin, center[1], center[2]], [1, 0, 0], [0, -1, 0], [0, 0, 1], span(size[1]), span(size[2])),
@@ -278,7 +295,9 @@ export function createLeakPreviewReceivers(
     createPreviewReceiver('neg_y', [center[0], center[1] - size[1] / 2 - margin, center[2]], [0, 1, 0], [-1, 0, 0], [0, 0, 1], span(size[0]), span(size[2])),
     createPreviewReceiver('pos_z', [center[0], center[1], center[2] + size[2] / 2 + margin], [0, 0, -1], [1, 0, 0], [0, 1, 0], span(size[0]), span(size[1])),
     createPreviewReceiver('neg_z', [center[0], center[1], center[2] - size[2] / 2 - margin], [0, 0, 1], [-1, 0, 0], [0, 1, 0], span(size[0]), span(size[1])),
-  ]
+  ].filter((receiver) =>
+    enabledDirections.has(receiver.receiver_id.replace('__leak_preview_', '') as LeakPreviewDirection),
+  )
 }
 
 function previewEmitter(
@@ -308,6 +327,7 @@ export function buildLeakPreviewRequest({
   excludedComponentIds,
   deletedComponentIds,
   blockers = [],
+  directions = allLeakPreviewDirections,
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
@@ -346,7 +366,7 @@ export function buildLeakPreviewRequest({
       previewEmitter('__leak_preview_source_a', sourceFaceIds, false, perSide),
       previewEmitter('__leak_preview_source_b', sourceFaceIds, true, totalRays - perSide),
     ],
-    receivers: createLeakPreviewReceivers(scene, transformRules),
+    receivers: createLeakPreviewReceivers(scene, transformRules, directions),
     materialAssignments,
     transformRules,
     excludedComponentIds,
@@ -488,9 +508,7 @@ function candidateClipBox(
   }
 }
 
-function pointInIgnoreArea(point: Vec3, area: LeakPreviewIgnoreArea): boolean {
-  if (!area.enabled) return false
-  const box = area.clipBox
+function pointInIgnoreRegion(point: Vec3, box: RoiClipBox): boolean {
   if (box.plane === 'yz') {
     return point[1] >= box.yMin && point[1] <= box.yMax &&
       point[2] >= (box.zMin ?? -Infinity) && point[2] <= (box.zMax ?? Infinity)
@@ -501,6 +519,10 @@ function pointInIgnoreArea(point: Vec3, area: LeakPreviewIgnoreArea): boolean {
   }
   return point[0] >= box.xMin && point[0] <= box.xMax &&
     point[1] >= box.yMin && point[1] <= box.yMax
+}
+
+function pointInIgnoreArea(point: Vec3, area: LeakPreviewIgnoreArea): boolean {
+  return area.enabled && area.regions.some((region) => pointInIgnoreRegion(point, region))
 }
 
 function candidateDistance(left: LeakPreviewCandidate, right: LeakPreviewCandidate): number {

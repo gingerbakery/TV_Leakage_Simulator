@@ -193,17 +193,6 @@ function caseFlux(
   )
 }
 
-function caseReceiverHits(
-  result: RayTraceResult,
-  receiverScope: ReceiverCompareScope,
-): number {
-  return scopedReceivers(result, receiverScope).reduce(
-    (sum, receiver) =>
-      sum + numeric(objectValue(result.metrics, receiver.receiver_id).hit_count),
-    0,
-  )
-}
-
 function caseLuminance(
   result: RayTraceResult,
   receiverScope: ReceiverCompareScope = 'all',
@@ -710,6 +699,40 @@ function formatMetric(value: unknown, digits = 3) {
     return number.toExponential(3)
   }
   return number.toFixed(digits)
+}
+
+function RelativeComparisonValue({
+  value,
+  baseline,
+  comparable,
+}: {
+  value: number
+  baseline: number
+  comparable: boolean
+}) {
+  if (!comparable || !Number.isFinite(value) || !Number.isFinite(baseline)) {
+    return <span className="text-muted-foreground">—</span>
+  }
+  if (Math.abs(baseline) <= 1e-15) {
+    return Math.abs(value) <= 1e-15 ? (
+      <span className="text-muted-foreground">0.0%</span>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    )
+  }
+  const rawChange = ((value - baseline) / baseline) * 100
+  const change = Math.abs(rawChange) < 0.05 ? 0 : rawChange
+  if (change === 0) {
+    return <span className="text-muted-foreground">0.0%</span>
+  }
+  const improved = change < 0
+  return (
+    <span
+      className={improved ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'font-semibold text-red-600 dark:text-red-400'}
+    >
+      {Math.abs(change).toFixed(1)}% {improved ? '감소' : '증가'}
+    </span>
+  )
 }
 
 function ReceiverHeatmap({
@@ -2286,7 +2309,7 @@ export function RayTraceResultWindow({
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[1020px] border-collapse text-base">
+                  <table className="w-full min-w-[920px] border-collapse text-base">
                     <thead className="bg-muted/45 text-left text-sm">
                       <tr>
                         <th className="p-2">Compare</th>
@@ -2301,28 +2324,27 @@ export function RayTraceResultWindow({
                           </span>
                         </th>
                         <th className="p-2 text-center">비교 조건</th>
-                        <th className="p-2 text-right">Hit Ratio</th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Total Flux
-                            <HelpTooltip label="Total flux 설명">
-                              모든 Receiver에 도달한 전체 광량(lm)입니다. 값이 작을수록 유입된 빛샘 에너지가 적습니다.
+                            Peak nit 변화
+                            <HelpTooltip label="Peak nit 변화율 설명">
+                              Baseline Peak nit 대비 감소·증가 비율입니다. 감소할수록 국부적으로 강한 빛샘이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Peak Nit
-                            <HelpTooltip label="Peak nit 설명">
-                              Receiver Heatmap에서 가장 밝은 지점의 추정 휘도입니다. 체감상 강하게 보이는 국부 빛샘을 나타냅니다.
+                            Total Flux 변화
+                            <HelpTooltip label="Total Flux 변화율 설명">
+                              Baseline Total Flux 대비 감소·증가 비율입니다. 감소할수록 Receiver에 도달한 전체 빛샘 광량이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            광영역(@5%)
-                            <HelpTooltip label="광영역 5% 설명">
-                              해당 Case의 최대 Peak nit 중 5% 이상인 Receiver Heatmap 셀의 실제 면적 합계(mm²)입니다.
+                            광영역(@5%) 변화
+                            <HelpTooltip label="광영역 5% 변화율 설명">
+                              Baseline 광영역(@5%) 대비 감소·증가 비율입니다. 감소할수록 빛샘이 분포된 면적이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
@@ -2331,18 +2353,20 @@ export function RayTraceResultWindow({
                     </thead>
                     <tbody>
                       {analysisCases.map((item) => {
-                        const scopedHits = caseReceiverHits(
-                          item.result,
-                          receiverCompareScope,
-                        )
-                        const itemHitRatio = item.result.total_rays > 0
-                          ? scopedHits / item.result.total_rays
-                          : 0
                         const flux = caseFlux(item.result, receiverCompareScope)
                         const luminance = caseLuminance(
                           item.result,
                           receiverCompareScope,
                         )
+                        const baselineFlux = baselineCase
+                          ? caseFlux(baselineCase.result, receiverCompareScope)
+                          : 0
+                        const baselineLuminance = baselineCase
+                          ? caseLuminance(
+                              baselineCase.result,
+                              receiverCompareScope,
+                            )
+                          : null
                         const score = baselineCase
                           ? leakageImprovementScore(
                               item.result,
@@ -2458,10 +2482,27 @@ export function RayTraceResultWindow({
                                 </HelpTooltip>
                               </span>
                             </td>
-                            <td className="p-2 text-right tabular-nums">{(itemHitRatio * 100).toFixed(3)}%</td>
-                            <td className="p-2 text-right tabular-nums">{formatMetric(flux)} lm</td>
-                            <td className="p-2 text-right tabular-nums">{formatMetric(luminance.peakNit)}</td>
-                            <td className="p-2 text-right font-semibold tabular-nums">{formatMetric(luminance.lightAreaMm2[5])} mm²</td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={luminance.peakNit}
+                                baseline={baselineLuminance?.peakNit ?? 0}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={flux}
+                                baseline={baselineFlux}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={luminance.lightAreaMm2[5]}
+                                baseline={baselineLuminance?.lightAreaMm2[5] ?? 0}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
                             <td className="p-2 text-right">
                               <Button
                                 size="icon-xs"

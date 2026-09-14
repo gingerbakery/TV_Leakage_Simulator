@@ -64,6 +64,26 @@ describe('whole-set leak preview', () => {
     expect(request.config.max_depth).toBe(8)
   })
 
+  it('creates enclosure receivers only for the selected exterior directions', () => {
+    const scene = createSceneFixture()
+    const request = buildLeakPreviewRequest({
+      scene,
+      sourceFaceIds: [0],
+      quality: 'fast',
+      directions: ['pos_z', 'neg_y'],
+      computeBackend: 'cpu',
+      materialAssignments: [],
+      transformRules: [],
+      excludedComponentIds: [],
+      deletedComponentIds: [],
+    })
+
+    expect(request.receivers.map((receiver) => receiver.receiver_id)).toEqual([
+      '__leak_preview_neg_y',
+      '__leak_preview_pos_z',
+    ])
+  })
+
   it('creates an editable planar blocker and sends it to Preview tracing', () => {
     const scene = createSceneFixture()
     const blocker = createLeakPreviewBlockerFromFaces(scene, [0], 1)
@@ -170,9 +190,9 @@ describe('whole-set leak preview', () => {
     const ignored = detectLeakPreviewCandidates(scene, result, {
       ignoreAreas: [{
         id: 'ignore-1',
-        label: 'Ignore Area 01',
+        label: 'Allowed Area 01',
         enabled: true,
-        clipBox: {
+        regions: [{
           plane: 'yz',
           xMin: -1,
           xMax: 1,
@@ -180,7 +200,7 @@ describe('whole-set leak preview', () => {
           yMax: point[1] + 100,
           zMin: point[2] - 100,
           zMax: point[2] + 100,
-        },
+        }],
       }],
     })
     expect(ignored.candidates).toHaveLength(0)

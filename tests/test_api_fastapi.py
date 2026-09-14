@@ -161,6 +161,65 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertFalse(third.geometry_cache_hit)
         self.assertIsNot(first.mesh, third.mesh)
 
+    def test_concurrent_identical_geometry_requests_share_one_bvh_build(self):
+        import leakage_simulator.api.runtime as runtime_module
+
+        runtime = ApiRuntime(Path(self.temp_dir.name))
+        scene_mesh = {
+            "vertices": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            "faces": [[0, 1, 2]],
+            "face_component_ids": [1],
+            "face_material_ids": ["default"],
+        }
+        payload = {
+            "scene_token": "concurrent-cache-test",
+            "emitters": [{
+                "emitter_id": "emitter_001",
+                "emitter_type": "datum_plane",
+                "center": [0, 0, 1],
+                "u_axis": [1, 0, 0],
+                "v_axis": [0, 1, 0],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+            "receivers": [{
+                "receiver_id": "receiver_001",
+                "center": [0, 0, 2],
+                "normal": [0, 0, -1],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+        }
+        original_builder = runtime_module.build_prepared_trace_geometry
+        build_started = threading.Event()
+        release_build = threading.Event()
+        build_count = 0
+
+        def slow_builder(mesh, request):
+            nonlocal build_count
+            build_count += 1
+            build_started.set()
+            self.assertTrue(release_build.wait(timeout=3))
+            return original_builder(mesh, request)
+
+        with patch.object(runtime_module, "build_prepared_trace_geometry", side_effect=slow_builder):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_future = executor.submit(
+                    runtime._build_trace_input_for_request, scene_mesh, payload,
+                )
+                self.assertTrue(build_started.wait(timeout=3))
+                second_future = executor.submit(
+                    runtime._build_trace_input_for_request, scene_mesh, payload,
+                )
+                release_build.set()
+                first = first_future.result(timeout=3)
+                second = second_future.result(timeout=3)
+
+        self.assertEqual(build_count, 1)
+        self.assertFalse(first.geometry_cache_hit)
+        self.assertTrue(second.geometry_cache_hit)
+        self.assertIs(first.mesh, second.mesh)
+
     def test_dual_mesh_expands_viewer_face_references_to_trace_faces(self):
         scene_mesh = {
             "face_source_ids": [10, 10, 20, 30],

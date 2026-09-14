@@ -291,6 +291,8 @@ interface RayTraceJobProgress {
   created_at: number
   stop_requested?: boolean
   stopped_early?: boolean
+  geometry_cache_hit?: boolean
+  preparation_elapsed_sec?: number
 }
 
 export interface QueuedRayTraceJob extends RayTraceJobProgress {

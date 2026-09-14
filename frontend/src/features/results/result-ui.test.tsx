@@ -314,8 +314,9 @@ describe('Step 11 result UI', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
       target: { value: 'name:right corner' },
     })
-    expect(screen.getByText('0.020 lm')).not.toBeNull()
-    expect(screen.getByText('6.000')).not.toBeNull()
+    expect(screen.getAllByText('0.0%')).toHaveLength(3)
+    expect(screen.queryByText('0.020 lm')).toBeNull()
+    expect(screen.queryByText('6.000')).toBeNull()
   })
 
   it('matches Receivers by visible name before checking their geometry', () => {
@@ -517,7 +518,9 @@ describe('Step 11 result UI', () => {
     })
     expect(compareCheckbox).toHaveProperty('checked', true)
     expect(screen.getByText('50.0')).not.toBeNull()
-    expect(screen.getByText('4.000 mm²')).not.toBeNull()
+    expect(screen.getAllByText('0.0%')).toHaveLength(3)
+    expect(screen.queryByText('4.000 mm²')).toBeNull()
+    expect(screen.queryByText('0.011 lm')).toBeNull()
     fireEvent.click(compareCheckbox)
     expect(compareCheckbox).toHaveProperty('checked', false)
     expect(
@@ -529,7 +532,47 @@ describe('Step 11 result UI', () => {
     expect(screen.getByDisplayValue('Updated baseline')).not.toBeNull()
     expect(onCaseMetadataChange).toHaveBeenCalled()
     expect(screen.getByText('빛샘 개선 점수')).not.toBeNull()
-    expect(screen.getByText('광영역(@5%)')).not.toBeNull()
+    expect(screen.getByText('광영역(@5%) 변화')).not.toBeNull()
+  })
+
+  it('shows only Baseline-relative percentages for comparison metrics', () => {
+    const baseline = createRayTraceResultFixture()
+    const improved = structuredClone(baseline)
+    improved.run_id = 'run-improved'
+    const improvedMetrics = improved.metrics.receiver_001 as Record<
+      string,
+      unknown
+    >
+    improved.metrics.receiver_001 = {
+      ...improvedMetrics,
+      peak_nit_est: 10,
+      total_flux_lumen: 0.0055,
+    }
+    improved.receiver_grids[0].flux_lumen = [
+      [0, 0],
+      [0.003, 0],
+    ]
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'Baseline', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'Improved', cadName: 'b.step', result: improved },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+
+    expect(screen.getByText('20.0% 감소')).not.toBeNull()
+    expect(screen.getByText('50.0% 감소')).not.toBeNull()
+    expect(screen.getByText('75.0% 감소')).not.toBeNull()
+    expect(screen.queryByText('0.0055 lm')).toBeNull()
+    expect(screen.queryByText('10.000')).toBeNull()
+    expect(screen.queryByText('1.000 mm²')).toBeNull()
   })
 
   it('opens a save-location picker when saving a comparison report', async () => {
