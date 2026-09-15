@@ -219,6 +219,9 @@ class EmitterSpec:
     source_face_indices: List[int] = field(default_factory=list)
     normal_mode: str = "face_normal"
     normal_flip: bool = False
+    # Optional for backward compatibility: legacy projects derive the side
+    # from normal_flip. "both" samples the two plane hemispheres equally.
+    emission_direction: Optional[str] = None
     custom_normal: Optional[Vec3] = None
     direction_distribution: str = "lambertian"
     gaussian_sigma_deg: float = 12.0
@@ -250,6 +253,14 @@ class EmitterSpec:
             raise ValueError("aim must be an Aim definition or null")
         self.emitter_type = require_choice(self.emitter_type, "emitter_type", EMITTER_TYPES)
         self.normal_mode = require_choice(self.normal_mode, "normal_mode", EMITTER_NORMAL_MODES)
+        if self.emission_direction is not None:
+            self.emission_direction = require_choice(
+                self.emission_direction,
+                "emission_direction",
+                ("forward", "reverse", "both"),
+            )
+            if self.emission_direction != "both":
+                self.normal_flip = self.emission_direction == "reverse"
         self.direction_distribution = require_choice(
             self.direction_distribution,
             "direction_distribution",

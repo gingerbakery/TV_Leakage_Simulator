@@ -38,6 +38,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
+import { cn } from '@/lib/utils'
 import {
   maxReflectionDepth,
   useWorkspaceStore,
@@ -245,7 +246,9 @@ function EmitterDialog({
   const [distribution, setDistribution] =
     useState<EmitterDistribution>('lambertian')
   const [sigma, setSigma] = useState(12)
-  const [normalFlip, setNormalFlip] = useState(false)
+  const [emissionDirection, setEmissionDirection] =
+    useState<'forward' | 'reverse' | 'both'>('forward')
+  const normalFlip = emissionDirection === 'reverse'
   const defaultAimCenter = useMemo<Vec3>(() => [defaultCenter[0], defaultCenter[1], defaultCenter[2] + 30], [defaultCenter])
   const [aim, setAim] = useState(() => createEmitterAim(defaultAimCenter))
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
@@ -284,7 +287,10 @@ function EmitterDialog({
       initialEmitter?.direction_distribution ?? 'lambertian',
     )
     setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
-    setNormalFlip(initialEmitter?.normal_flip ?? false)
+    setEmissionDirection(
+      initialEmitter?.emission_direction ??
+        (initialEmitter?.normal_flip ? 'reverse' : 'forward'),
+    )
     setAim(initialEmitter?.aim ?? createEmitterAim(defaultAimCenter))
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialEmitter),
@@ -318,7 +324,7 @@ function EmitterDialog({
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
     // Re-selecting a CAD face explicitly adopts the Receiver front-view
     // convention: look from the arrow start along the arrow, X+ right/Y+ up.
-    setNormalFlip(true)
+    setEmissionDirection('reverse')
     setDatumFaceAssigned(true)
     setSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
@@ -402,7 +408,13 @@ function EmitterDialog({
   const previewEmitter = useMemo(() => {
     if (!open) return null
     const previewId = initialEmitter?.emitter_id ?? '__placement_preview_emitter__'
-    if (mode === 'face') return { ...createFaceEmitter(previewId, emitterFaceIds), aim, normal_flip: normalFlip, enabled: initialEmitter?.enabled ?? true }
+    if (mode === 'face') return {
+      ...createFaceEmitter(previewId, emitterFaceIds),
+      aim,
+      normal_flip: normalFlip,
+      emission_direction: emissionDirection,
+      enabled: initialEmitter?.enabled ?? true,
+    }
     const emitter = createDatumEmitter(previewId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
     return {
@@ -414,6 +426,7 @@ function EmitterDialog({
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
+      emission_direction: emissionDirection,
       aim,
       enabled: initialEmitter?.enabled ?? true,
     }
@@ -425,6 +438,7 @@ function EmitterDialog({
     initialEmitter,
     mode,
     normalFlip,
+    emissionDirection,
     open,
     rotation,
     width,
@@ -471,6 +485,7 @@ function EmitterDialog({
       direction_distribution: distribution,
       gaussian_sigma_deg: Math.max(0.1, sigma),
       normal_flip: normalFlip,
+      emission_direction: emissionDirection,
       aim,
       enabled: initialEmitter?.enabled ?? true,
     })
@@ -702,20 +717,36 @@ function EmitterDialog({
             />
           ) : null}
         </div>
-        <label className="flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={normalFlip}
-            disabled={aim.enabled}
-            onChange={(event) => setNormalFlip(event.currentTarget.checked)}
-          />
-          <span className="flex items-center gap-1.5">
-            Flip normal direction
-            <HelpTooltip label="Flip normal direction 도움말">
-              발광면의 발광 방향(normal)을 반대로 뒤집습니다.
+        <fieldset className="space-y-1.5">
+          <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+            Emitter Direction
+            <HelpTooltip label="Emitter Direction 도움말">
+              Forward는 기본 화살표 방향, Reverse는 반대 방향입니다. Both Sides는 입력한 총광량과 Ray 수를 유지하면서 앞·뒤 양쪽으로 대칭 방출합니다.
             </HelpTooltip>
-          </span>
-        </label>
+          </legend>
+          <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted/25 p-1">
+            {([
+              ['forward', 'Forward'],
+              ['reverse', 'Reverse'],
+              ['both', 'Both Sides'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                disabled={aim.enabled}
+                className={cn(
+                  'rounded-md px-2 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
+                  emissionDirection === value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted',
+                )}
+                onClick={() => setEmissionDirection(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
       </div>
     </AppDialog>
   )

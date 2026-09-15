@@ -626,6 +626,7 @@ export function createFaceEmitter(
     // Receiver front into the product. With the stored right-handed U/V
     // frame this flip makes local +X screen-right and local +Y screen-up.
     normal_flip: true,
+    emission_direction: 'reverse',
     custom_normal: null,
     direction_distribution: 'lambertian',
     gaussian_sigma_deg: 12,

@@ -317,6 +317,8 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&
     isBoolean(value.normal_flip) &&
+    (value.emission_direction === undefined ||
+      isOneOf(value.emission_direction, ['forward', 'reverse', 'both'])) &&
     isEmitterAim(value.aim) &&
     (value.custom_normal === null || isVec3(value.custom_normal)) &&
     isOneOf(value.direction_distribution, [

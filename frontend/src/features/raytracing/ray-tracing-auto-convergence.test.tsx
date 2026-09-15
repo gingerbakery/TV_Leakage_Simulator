@@ -51,6 +51,28 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it('saves a two-sided Emitter while preserving one Emitter identity', () => {
+    const emitter = createDatumEmitter('emitter_001', [2, 3, 4], [0, 0, 0])
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'both.step', displayName: 'both.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Both Sides' }))
+    expect(workspaceStore.getState().placementPreviewEmitter).toMatchObject({
+      emission_direction: 'both',
+      normal_flip: false,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    expect(workspaceStore.getState().emitters).toHaveLength(1)
+    expect(workspaceStore.getState().emitters[0]).toMatchObject({
+      emitter_id: 'emitter_001',
+      emission_direction: 'both',
+      normal_flip: false,
+    })
+  })
+
   it('edits a bidirectional Sphere on an existing surface without adding a new emitter type', async () => {
     const emitter = createDatumEmitter('emitter_001', [2, 3, 4], [20, 0, 0])
     emitter.direction_distribution = 'gaussian'

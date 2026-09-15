@@ -681,6 +681,7 @@ function createPlacementPlane(
   color: number,
   directionColor: number,
   normalFlip: boolean,
+  bothSides: boolean,
   fillOpacity: number,
   alwaysVisible = false,
   showLocalAxes = false,
@@ -752,16 +753,15 @@ function createPlacementPlane(
     2,
     18,
   )
-  root.add(
-    surface,
-    edges,
-    createDirectionArrow(
-      `${name}-direction`,
-      center,
-      normal,
-      normalLength,
-      directionColor,
-    ),
+  root.add(surface, edges)
+  addEmitterDirectionArrows(
+    root,
+    name,
+    center,
+    normal,
+    normalLength,
+    directionColor,
+    bothSides,
   )
   if (showLocalAxes) {
     // Keep Receiver X/Y clearly readable while still slightly shorter than
@@ -887,6 +887,27 @@ function createDirectionArrow(
   head.renderOrder = 252
   root.add(arrow, shaft, head)
   return root
+}
+
+function addEmitterDirectionArrows(
+  root: Group,
+  name: string,
+  center: Vector3,
+  normal: Vector3,
+  length: number,
+  color: number,
+  bothSides: boolean,
+): void {
+  root.add(createDirectionArrow(`${name}-direction`, center, normal, length, color))
+  if (bothSides) {
+    root.add(createDirectionArrow(
+      `${name}-reverse-direction`,
+      center,
+      normal.clone().multiplyScalar(-1),
+      length,
+      color,
+    ))
+  }
 }
 
 function createFacePatchBoundary(
@@ -4127,6 +4148,7 @@ export function ThreeViewerCanvas({
         emitterOverlayColor,
         emitterDirectionColor,
         emitter.aim?.enabled ? false : emitter.normal_flip,
+        !emitter.aim?.enabled && emitter.emission_direction === 'both',
         emitter === placementPreviewEmitter ? 0.42 : 0.28,
         true,
       )
@@ -4157,6 +4179,7 @@ export function ThreeViewerCanvas({
         receiverOverlayColor,
         receiverOverlayColor,
         receiver.normal_flip,
+        false,
         receiver === placementPreviewReceiver ? 0.34 : 0.14,
         receiver === placementPreviewReceiver,
         true,
@@ -4254,8 +4277,9 @@ export function ThreeViewerCanvas({
             directionNormal.multiplyScalar(
               emitter.normal_flip ? -1 : 1,
             )
-            const direction = createDirectionArrow(
-              `${emitterRoot.name}-direction`,
+            addEmitterDirectionArrows(
+              emitterRoot,
+              emitterRoot.name,
               emitterBounds.getCenter(new Vector3()),
               directionNormal,
               MathUtils.clamp(
@@ -4264,11 +4288,11 @@ export function ThreeViewerCanvas({
                 22,
               ),
               emitterDirectionColor,
+              emitter.emission_direction === 'both',
             )
-            direction.traverse((child) => {
+            emitterRoot.traverse((child) => {
               child.renderOrder = Math.max(child.renderOrder, 97)
             })
-            emitterRoot.add(direction)
           }
 
           clippedEmitter.capGeometry?.dispose()
@@ -4466,9 +4490,10 @@ export function ThreeViewerCanvas({
           false,
         )
         if (boundary) reference.add(boundary)
-        if (!emitter.aim?.enabled) reference.add(
-          createDirectionArrow(
-            `${reference.name}-direction`,
+        if (!emitter.aim?.enabled) {
+          addEmitterDirectionArrows(
+            reference,
+            reference.name,
             localCenter,
             normal,
             MathUtils.clamp(
@@ -4477,8 +4502,9 @@ export function ThreeViewerCanvas({
               18,
             ),
             emitterDirectionColor,
-          ),
-        )
+            emitter.emission_direction === 'both',
+          )
+        }
         node.emitterOverlayRoot.add(reference)
       }
 

@@ -38,6 +38,8 @@ export interface EmitterSpec {
   source_face_indices?: number[]
   normal_mode: EmitterNormalMode
   normal_flip: boolean
+  /** Plane emission side. Missing means legacy normal_flip behavior. */
+  emission_direction?: 'forward' | 'reverse' | 'both'
   custom_normal: Vec3 | null
   direction_distribution: EmitterDistribution
   gaussian_sigma_deg: number

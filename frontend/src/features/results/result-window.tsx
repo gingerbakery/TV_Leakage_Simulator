@@ -360,6 +360,11 @@ function comparisonConditionMismatches(
   for (let index = 0; index < Math.min(emitters.length, baselineEmitters.length); index += 1) {
     const emitter = emitters[index]
     const baseEmitter = baselineEmitters[index]
+    const emitterDirection = emitter.emission_direction ?? (emitter.normal_flip ? 'reverse' : 'forward')
+    const baselineEmitterDirection = baseEmitter.emission_direction ?? (baseEmitter.normal_flip ? 'reverse' : 'forward')
+    if (emitterDirection !== baselineEmitterDirection) {
+      mismatches.push(`Emitter ${index + 1} · 방출 방향`)
+    }
     if (Boolean(emitter.aim?.enabled) !== Boolean(baseEmitter.aim?.enabled)) {
       mismatches.push(`Emitter ${index + 1} · Aim On/Off`)
     } else if (emitter.aim?.enabled && baseEmitter.aim?.enabled) {
