@@ -65,7 +65,7 @@ describe('whole-set leak preview', () => {
     })
 
     expect(request.emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(1_000_000)
-    expect(request.config.max_depth).toBe(8)
+    expect(request.config.max_depth).toBe(20)
   })
 
   it('creates enclosure receivers only for the selected exterior directions', () => {

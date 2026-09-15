@@ -55,7 +55,7 @@ function cadFaceCount(scene: ScenePayload | undefined, faceIds: number[]): numbe
 const previewQualityLabel: Record<LeakPreviewQuality, string> = {
   fast: '100,000 Rays · 3 Reflections',
   balanced: '500,000 Rays · 5 Reflections',
-  deep: '1,000,000 Rays · 8 Reflections',
+  deep: '1,000,000 Rays · 20 Reflections',
 }
 
 const previewQualityName: Record<LeakPreviewQuality, string> = {
@@ -97,6 +97,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const candidates = useLeakPreviewStore((state) => state.candidates)
   const previewPointCount = useLeakPreviewStore((state) => state.points.length)
   const visualizationVisible = useLeakPreviewStore((state) => state.visualizationVisible)
+  const ignoreAreasVisible = useLeakPreviewStore((state) => state.ignoreAreasVisible)
+  const blockersVisible = useLeakPreviewStore((state) => state.blockersVisible)
   const selectedCandidateId = useLeakPreviewStore((state) => state.selectedCandidateId)
   const ignoreAreaSelectionArmed = useLeakPreviewStore((state) => state.ignoreAreaSelectionArmed)
   const activeIgnoreAreaId = useLeakPreviewStore((state) => state.activeIgnoreAreaId)
@@ -114,6 +116,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const setDetection = useLeakPreviewStore((state) => state.setDetection)
   const clearDetection = useLeakPreviewStore((state) => state.clearDetection)
   const setVisualizationVisible = useLeakPreviewStore((state) => state.setVisualizationVisible)
+  const setIgnoreAreasVisible = useLeakPreviewStore((state) => state.setIgnoreAreasVisible)
+  const setBlockersVisible = useLeakPreviewStore((state) => state.setBlockersVisible)
   const selectCandidate = useLeakPreviewStore((state) => state.selectCandidate)
   const beginIgnoreAreaSelection = useLeakPreviewStore((state) => state.beginIgnoreAreaSelection)
   const finishIgnoreAreaSelection = useLeakPreviewStore((state) => state.finishIgnoreAreaSelection)
@@ -346,18 +350,26 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       clipBox: candidate.clipBox,
       point: { x: candidate.center[0], y: candidate.center[1], z: candidate.center[2] },
     })
-    if (precision) {
+    const receiverAlreadyExists = receivers.some((receiver) =>
+      receiver.reference_mode === 'leak_preview_candidate' &&
+      Math.hypot(
+        (receiver.base_center?.[0] ?? receiver.center[0]) - candidate.center[0],
+        (receiver.base_center?.[1] ?? receiver.center[1]) - candidate.center[1],
+        (receiver.base_center?.[2] ?? receiver.center[2]) - candidate.center[2],
+      ) < 0.1,
+    )
+    if (!receiverAlreadyExists) {
       const receiverId = nextSpecId(
         'receiver',
         receivers.map((receiver) => receiver.receiver_id),
       )
-      // Use the regular workspace contract so the user can immediately review
-      // and refine the automatically placed precision Receiver.
       actions.upsertReceiver({
         ...createCandidateReceiver(candidate, candidateIndex),
         receiver_id: receiverId,
         display_name: `Preview Receiver ${candidateIndex}`,
       })
+    }
+    if (precision) {
       if (!emitters.some((emitter) => emitter.enabled)) {
         const emitterId = nextSpecId('emitter', emitters.map((emitter) => emitter.emitter_id))
         actions.upsertEmitter({
@@ -369,7 +381,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       onOpenPrecision()
       return
     }
-    setMessage('선택한 후보를 ROI List에 추가했습니다.')
+    setMessage(receiverAlreadyExists
+      ? '선택한 후보를 ROI List에 추가했습니다. 기존 Receiver를 유지합니다.'
+      : '선택한 후보의 ROI와 Receiver를 생성했습니다.')
   }
 
   if (!scene) {
@@ -542,24 +556,35 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <span className="flex items-center gap-1.5 text-sm font-semibold">
             <Cuboid className="size-4 text-slate-500" /> Preview Blockers
           </span>
-          {pickingTarget !== 'blocker' ? (
+          <div className="flex items-center gap-1">
             <Button
               size="sm"
               variant="outline"
-              disabled={isRunning}
-              onClick={() => {
-                finishIgnoreAreaSelection()
-                finishBlockerAreaSelection()
-                actions.setRoiBoxSelectionArmed(false)
-                actions.setSelectedFaceIds([])
-                actions.setEmitterFaceSelectionArmed(true)
-                setPickingTarget('blocker')
-                setMessage('3D Viewer에서 Blocker 기준 CAD Surface를 선택하세요.')
-              }}
+              disabled={blockers.length === 0}
+              onClick={() => setBlockersVisible(!blockersVisible)}
             >
-              <Cuboid /> Add Blocker
+              {blockersVisible ? <Eye /> : <EyeOff />}
+              {blockersVisible ? 'Hide All' : 'Show All'}
             </Button>
-          ) : null}
+            {pickingTarget !== 'blocker' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isRunning}
+                onClick={() => {
+                  finishIgnoreAreaSelection()
+                  finishBlockerAreaSelection()
+                  actions.setRoiBoxSelectionArmed(false)
+                  actions.setSelectedFaceIds([])
+                  actions.setEmitterFaceSelectionArmed(true)
+                  setPickingTarget('blocker')
+                  setMessage('3D Viewer에서 Blocker 기준 CAD Surface를 선택하세요.')
+                }}
+              >
+                <Cuboid /> Add Blocker
+              </Button>
+            ) : null}
+          </div>
         </div>
         {pickingTarget === 'blocker' ? (
           <div className="rounded-md border border-sky-300 bg-sky-50/70 p-2 dark:border-sky-700 dark:bg-sky-950/25">
@@ -674,26 +699,37 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-semibold">Allowed Area</span>
-          <Button
-            size="sm"
-            variant={ignoreAreaSelectionArmed ? 'default' : 'outline'}
-            disabled={!scene || isRunning}
-            onClick={() => {
-              if (ignoreAreaSelectionArmed) {
-                finishIgnoreAreaSelection()
-                actions.setRoiBoxSelectionArmed(false)
-                return
-              }
-              actions.setEmitterFaceSelectionArmed(false)
-              actions.setSelectedFaceIds([])
-              setPickingTarget(null)
-              finishBlockerAreaSelection()
-              beginIgnoreAreaSelection()
-              actions.setRoiBoxSelectionArmed(true)
-            }}
-          >
-            <BoxSelect /> {ignoreAreaSelectionArmed ? '선택 완료' : 'Add Area'}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={ignoreAreas.length === 0}
+              onClick={() => setIgnoreAreasVisible(!ignoreAreasVisible)}
+            >
+              {ignoreAreasVisible ? <Eye /> : <EyeOff />}
+              {ignoreAreasVisible ? 'Hide All' : 'Show All'}
+            </Button>
+            <Button
+              size="sm"
+              variant={ignoreAreaSelectionArmed ? 'default' : 'outline'}
+              disabled={!scene || isRunning}
+              onClick={() => {
+                if (ignoreAreaSelectionArmed) {
+                  finishIgnoreAreaSelection()
+                  actions.setRoiBoxSelectionArmed(false)
+                  return
+                }
+                actions.setEmitterFaceSelectionArmed(false)
+                actions.setSelectedFaceIds([])
+                setPickingTarget(null)
+                finishBlockerAreaSelection()
+                beginIgnoreAreaSelection()
+                actions.setRoiBoxSelectionArmed(true)
+              }}
+            >
+              <BoxSelect /> {ignoreAreaSelectionArmed ? '선택 완료' : 'Add Area'}
+            </Button>
+          </div>
         </div>
         {ignoreAreas.map((area) => (
           <div key={area.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5">
@@ -763,7 +799,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-1.5">
                   <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); createRoi(candidate, false) }}>
-                    <Square /> ROI 생성
+                    <Square /> ROI·Receiver 생성
                   </Button>
                   <Button size="sm" onClick={(event) => { event.stopPropagation(); createRoi(candidate, true) }}>
                     정밀해석 준비

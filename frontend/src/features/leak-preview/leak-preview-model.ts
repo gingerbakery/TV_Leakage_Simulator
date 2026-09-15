@@ -30,6 +30,7 @@ export const allLeakPreviewDirections: LeakPreviewDirection[] = [
 
 export const leakPreviewRoiOffsetMm = 5
 export const leakPreviewReceiverDistanceMm = 5
+export const leakPreviewAllowedAreaPaddingMm = 5
 
 export interface LeakPreviewIgnoreArea {
   id: string
@@ -376,7 +377,7 @@ export function buildLeakPreviewRequest({
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
     balanced: { rayCount: 500_000, maxDepth: 5 },
-    deep: { rayCount: 1_000_000, maxDepth: 8 },
+    deep: { rayCount: 1_000_000, maxDepth: 20 },
   }[quality]
   const totalRays = qualityConfig.rayCount
   const perSide = Math.max(1, Math.floor(totalRays / 2))
@@ -557,16 +558,20 @@ function candidateClipBox(
 }
 
 function pointInIgnoreRegion(point: Vec3, box: RoiClipBox): boolean {
+  // Exit locations reconstructed from tessellated paths can land slightly
+  // outside the user-drawn opening. Suppress a small perimeter as part of the
+  // allowed opening so mesh/bin jitter does not become a false leak ring.
+  const padding = leakPreviewAllowedAreaPaddingMm
   if (box.plane === 'yz') {
-    return point[1] >= box.yMin && point[1] <= box.yMax &&
-      point[2] >= (box.zMin ?? -Infinity) && point[2] <= (box.zMax ?? Infinity)
+    return point[1] >= box.yMin - padding && point[1] <= box.yMax + padding &&
+      point[2] >= (box.zMin ?? -Infinity) - padding && point[2] <= (box.zMax ?? Infinity) + padding
   }
   if (box.plane === 'zx') {
-    return point[2] >= (box.zMin ?? -Infinity) && point[2] <= (box.zMax ?? Infinity) &&
-      point[0] >= box.xMin && point[0] <= box.xMax
+    return point[2] >= (box.zMin ?? -Infinity) - padding && point[2] <= (box.zMax ?? Infinity) + padding &&
+      point[0] >= box.xMin - padding && point[0] <= box.xMax + padding
   }
-  return point[0] >= box.xMin && point[0] <= box.xMax &&
-    point[1] >= box.yMin && point[1] <= box.yMax
+  return point[0] >= box.xMin - padding && point[0] <= box.xMax + padding &&
+    point[1] >= box.yMin - padding && point[1] <= box.yMax + padding
 }
 
 function pointInIgnoreArea(point: Vec3, area: LeakPreviewIgnoreArea): boolean {

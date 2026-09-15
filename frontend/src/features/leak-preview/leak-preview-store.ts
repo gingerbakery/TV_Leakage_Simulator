@@ -24,6 +24,8 @@ interface LeakPreviewState {
   points: LeakPreviewPoint[]
   candidates: LeakPreviewCandidate[]
   visualizationVisible: boolean
+  ignoreAreasVisible: boolean
+  blockersVisible: boolean
   selectedCandidateId: string | null
   ignoreAreaSelectionArmed: boolean
   activeIgnoreAreaId: string | null
@@ -42,6 +44,8 @@ interface LeakPreviewState {
   setDetection(result: RayTraceResult, points: LeakPreviewPoint[], candidates: LeakPreviewCandidate[]): void
   clearDetection(): void
   setVisualizationVisible(visible: boolean): void
+  setIgnoreAreasVisible(visible: boolean): void
+  setBlockersVisible(visible: boolean): void
   selectCandidate(candidateId: string | null): void
   beginIgnoreAreaSelection(areaId?: string): void
   finishIgnoreAreaSelection(): void
@@ -69,6 +73,8 @@ const store = createStore<LeakPreviewState>()((set) => ({
   points: [],
   candidates: [],
   visualizationVisible: true,
+  ignoreAreasVisible: true,
+  blockersVisible: true,
   selectedCandidateId: null,
   ignoreAreaSelectionArmed: false,
   activeIgnoreAreaId: null,
@@ -90,6 +96,8 @@ const store = createStore<LeakPreviewState>()((set) => ({
           points: [],
           candidates: [],
           visualizationVisible: true,
+          ignoreAreasVisible: true,
+          blockersVisible: true,
           selectedCandidateId: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
@@ -131,6 +139,8 @@ const store = createStore<LeakPreviewState>()((set) => ({
     runSignature: null,
   }),
   setVisualizationVisible: (visualizationVisible) => set({ visualizationVisible }),
+  setIgnoreAreasVisible: (ignoreAreasVisible) => set({ ignoreAreasVisible }),
+  setBlockersVisible: (blockersVisible) => set({ blockersVisible }),
   selectCandidate: (selectedCandidateId) => set({ selectedCandidateId }),
   beginIgnoreAreaSelection: (areaId) => set((state) => {
     if (areaId && state.ignoreAreas.some((area) => area.id === areaId)) {
@@ -207,6 +217,8 @@ const store = createStore<LeakPreviewState>()((set) => ({
     points: [],
     candidates: [],
     visualizationVisible: true,
+    ignoreAreasVisible: true,
+    blockersVisible: true,
     selectedCandidateId: null,
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,

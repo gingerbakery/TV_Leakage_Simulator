@@ -1827,6 +1827,8 @@ export function ThreeViewerCanvas({
   )
   const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
+  const leakPreviewIgnoreAreasVisible = useLeakPreviewStore((state) => state.ignoreAreasVisible)
+  const leakPreviewBlockersVisible = useLeakPreviewStore((state) => state.blockersVisible)
   const blockerAreaSelectionId = useLeakPreviewStore((state) => state.blockerAreaSelectionId)
   const surfaceOpacity = surfaceOpacityFromTransparency(
     surfaceTransparencyPercent,
@@ -3403,7 +3405,7 @@ export function ThreeViewerCanvas({
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
-    for (const blocker of leakPreviewBlockers) {
+    for (const blocker of leakPreviewBlockersVisible ? leakPreviewBlockers : []) {
       if (!blocker.enabled) continue
       const normal = new Vector3(...blocker.normal)
         .normalize()
@@ -3423,9 +3425,9 @@ export function ThreeViewerCanvas({
       const solid = new Mesh(
         geometry,
         new MeshBasicMaterial({
-          color: 0xf97316,
+          color: 0x050505,
           transparent: true,
-          opacity: 0.3,
+          opacity: 0.28,
           depthTest: false,
           depthWrite: false,
           side: DoubleSide,
@@ -3439,7 +3441,7 @@ export function ThreeViewerCanvas({
       const outline = new LineSegments(
         new EdgesGeometry(geometry),
         new LineBasicMaterial({
-          color: 0xff7a00,
+          color: 0x050505,
           transparent: true,
           opacity: 1,
           depthTest: false,
@@ -3453,7 +3455,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 215
       runtime.leakPreviewRoot.add(solid, outline)
     }
-    for (const area of leakPreviewIgnoreAreas) {
+    for (const area of leakPreviewIgnoreAreasVisible ? leakPreviewIgnoreAreas : []) {
       if (!area.enabled) continue
       for (const [regionIndex, clip] of area.regions.entries()) {
         const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
@@ -3463,7 +3465,7 @@ export function ThreeViewerCanvas({
         const outline = new LineSegments(
           new EdgesGeometry(geometry),
           new LineBasicMaterial({
-            color: 0xef4444,
+            color: 0x050505,
             transparent: true,
             opacity: 0.8,
             depthTest: false,
@@ -3571,7 +3573,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakPreviewBlockers, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+  }, [leakPreviewBlockers, leakPreviewBlockersVisible, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, leakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

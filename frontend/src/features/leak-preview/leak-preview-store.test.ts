@@ -70,4 +70,20 @@ describe('leak preview Allowed Area groups', () => {
     leakPreviewStore.getState().setVisualizationVisible(true)
     expect(leakPreviewStore.getState().visualizationVisible).toBe(true)
   })
+
+  it('hides Allowed Areas and Blockers without disabling their analysis rules', () => {
+    leakPreviewStore.getState().setIgnoreAreasVisible(false)
+    leakPreviewStore.getState().setBlockersVisible(false)
+    expect(leakPreviewStore.getState()).toMatchObject({
+      ignoreAreasVisible: false,
+      blockersVisible: false,
+    })
+
+    leakPreviewStore.getState().setIgnoreAreasVisible(true)
+    leakPreviewStore.getState().setBlockersVisible(true)
+    expect(leakPreviewStore.getState()).toMatchObject({
+      ignoreAreasVisible: true,
+      blockersVisible: true,
+    })
+  })
 })
