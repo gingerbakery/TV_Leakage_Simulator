@@ -249,6 +249,103 @@ describe('whole-set leak preview', () => {
     expect(ignored.candidates).toHaveLength(0)
   })
 
+  it('keeps a weak grazing Front path and plots it on the Front CAD envelope', () => {
+    const scene = createSceneFixture()
+    const receiver = createLeakPreviewReceivers(scene, [], ['pos_z'])[0]
+    receiver.resolution = [5, 5]
+    const hitPoint = [
+      receiver.center[0] - receiver.width_mm * 0.4,
+      receiver.center[1] - receiver.height_mm * 0.4,
+      receiver.center[2],
+    ] as [number, number, number]
+    const previousPoint = [
+      hitPoint[0],
+      hitPoint[1] + Math.sqrt(3) * 2,
+      hitPoint[2] - 2,
+    ] as [number, number, number]
+    const hit = (overrides: Partial<RayTraceResult['stored_paths'][number][number]>) => ({
+      face_index: -1,
+      component_id: null,
+      material_id: null,
+      point: [0, 0, 0] as [number, number, number],
+      normal: [0, 0, 1] as [number, number, number],
+      distance_mm: 1,
+      incoming_energy_lumen: 0.001,
+      outgoing_energy_lumen: 0.001,
+      depth: 3,
+      event_type: 'surface',
+      receiver_id: null,
+      optical_profile_id: null,
+      reflectance: null,
+      scatter_model: null,
+      optical_assignment_source: null,
+      ray_kind: null,
+      ...overrides,
+    })
+    const flux = Array.from({ length: 5 }, () => Array(5).fill(0)) as number[][]
+    flux[0][0] = 0.001
+    flux[4][4] = 1
+    const baseResult = {
+      run_id: 'preview-grazing-test',
+      config: {
+        ray_count: 100,
+        max_depth: 20,
+        seed: 42,
+        min_energy: 1e-9,
+        epsilon_mm: 0.001,
+        k_abs: 1,
+        k_brdf: 1,
+        angle_dependent_reflectance: false,
+        termination_mode: 'russian_roulette',
+        contribution_mode: 'summary',
+        intersection_backend: 'auto',
+        compute_backend: 'cpu',
+        store_ray_paths: true,
+        max_stored_paths: 4_000,
+      },
+      emitters: [],
+      receivers: [receiver],
+      receiver_grids: [{
+        receiver_id: receiver.receiver_id,
+        resolution: [5, 5] as [number, number],
+        bin_area_mm2: 1,
+        flux_lumen: flux,
+        hit_count: 2,
+      }],
+      optical_profiles: [],
+      total_rays: 100,
+      receiver_hit_count: 2,
+      surface_hit_count: 1,
+      terminated_ray_count: 98,
+      contribution_summary: {
+        schema_version: 'rt-contribution.v1' as const,
+        direct_receiver_hit_count: 1,
+        direct_receiver_flux_lumen: 1,
+        reflected_receiver_hit_count: 1,
+        reflected_receiver_flux_lumen: 0.001,
+        receivers: {}, components: {}, faces: {}, materials: {}, lobes: {}, depths: {},
+      },
+      runtime_sec: 0.1,
+      stored_paths: [[
+        hit({ point: previousPoint }),
+        hit({
+          point: hitPoint,
+          event_type: 'receiver',
+          receiver_id: receiver.receiver_id,
+          receiver_flux_lumen: 0.001,
+        }),
+      ]],
+      metrics: {},
+    } satisfies RayTraceResult
+
+    const detection = detectLeakPreviewCandidates(scene, baseResult, { quality: 'deep' })
+    const grazingCandidate = detection.candidates.find((candidate) => candidate.grazingPathCount > 0)
+    expect(grazingCandidate).toBeDefined()
+    expect(grazingCandidate?.sampledPathCount).toBe(1)
+    expect(grazingCandidate?.meanExitAngleDeg).toBeCloseTo(60)
+    expect(grazingCandidate?.center[2]).toBeCloseTo(20)
+  })
+
   it('builds the six detection planes from transformed Component bounds', () => {
     const scene = createSceneFixture()
     const transformed = createLeakPreviewReceivers(scene, [{

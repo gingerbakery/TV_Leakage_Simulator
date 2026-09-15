@@ -797,6 +797,16 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                 <div className="mt-1 text-xs text-muted-foreground">
                   Candidate Center ({candidate.center.map(coordinate).join(', ')}) mm
                 </div>
+                {candidate.sampledPathCount > 0 ? (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Sampled paths {candidate.sampledPathCount} · Reflections {' '}
+                    {candidate.minReflectionCount === candidate.maxReflectionCount
+                      ? candidate.minReflectionCount
+                      : `${candidate.minReflectionCount}–${candidate.maxReflectionCount}`}
+                    {' '}· Normal angle {candidate.meanExitAngleDeg?.toFixed(1)}°
+                    {candidate.grazingPathCount > 0 ? ` · Grazing ${candidate.grazingPathCount}` : ''}
+                  </div>
+                ) : null}
                 <div className="mt-2 grid grid-cols-2 gap-1.5">
                   <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); createRoi(candidate, false) }}>
                     <Square /> ROI·Receiver 생성

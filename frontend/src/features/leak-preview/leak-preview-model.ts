@@ -73,6 +73,11 @@ export interface LeakPreviewCandidate {
   peakFluxLumen: number
   relativeStrength: number
   cellCount: number
+  sampledPathCount: number
+  grazingPathCount: number
+  minReflectionCount: number | null
+  maxReflectionCount: number | null
+  meanExitAngleDeg: number | null
   clipBox: RoiClipBox
 }
 
@@ -483,6 +488,7 @@ interface ActiveCell {
   column: number
   flux: number
   position: Vec3
+  sample?: LeakPreviewEscapeSample
 }
 
 function connectedClusters(cells: ActiveCell[]): ActiveCell[][] {
@@ -613,6 +619,25 @@ function mergeCornerCandidates(
     target.fluxLumen = totalFlux
     target.peakFluxLumen = Math.max(target.peakFluxLumen, candidate.peakFluxLumen)
     target.cellCount += candidate.cellCount
+    const combinedSampleCount = target.sampledPathCount + candidate.sampledPathCount
+    target.meanExitAngleDeg = combinedSampleCount > 0
+      ? (
+          (target.meanExitAngleDeg ?? 0) * target.sampledPathCount +
+          (candidate.meanExitAngleDeg ?? 0) * candidate.sampledPathCount
+        ) / combinedSampleCount
+      : null
+    target.sampledPathCount = combinedSampleCount
+    target.grazingPathCount += candidate.grazingPathCount
+    target.minReflectionCount = target.minReflectionCount === null
+      ? candidate.minReflectionCount
+      : candidate.minReflectionCount === null
+        ? target.minReflectionCount
+        : Math.min(target.minReflectionCount, candidate.minReflectionCount)
+    target.maxReflectionCount = target.maxReflectionCount === null
+      ? candidate.maxReflectionCount
+      : candidate.maxReflectionCount === null
+        ? target.maxReflectionCount
+        : Math.max(target.maxReflectionCount, candidate.maxReflectionCount)
     target.label = [...new Set([...target.label.split(' / '), ...candidate.label.split(' / ')])].join(' / ')
     target.clipBox = {
       plane: 'xyz',
@@ -667,14 +692,59 @@ function segmentExitFromBounds(start: Vec3, end: Vec3, minimum: Vec3, maximum: V
   return addScaled(start, direction, exit)
 }
 
+interface LeakPreviewEscapeSample {
+  position: Vec3
+  sampleCount: number
+  grazingSampleCount: number
+  minReflectionCount: number
+  maxReflectionCount: number
+  meanExitAngleDeg: number
+}
+
+interface AccumulatedEscapeSample {
+  position: Vec3
+  weight: number
+  sampleCount: number
+  grazingSampleCount: number
+  minReflectionCount: number
+  maxReflectionCount: number
+  angleSumDeg: number
+}
+
+function receiverEnvelopeIntersection(
+  receiverId: string,
+  start: Vec3,
+  end: Vec3,
+  minimum: Vec3,
+  maximum: Vec3,
+): Vec3 | null {
+  const directionId = receiverId.replace('__leak_preview_', '') as LeakPreviewDirection
+  const boundaryByDirection: Partial<Record<LeakPreviewDirection, [number, number]>> = {
+    pos_x: [0, maximum[0]],
+    neg_x: [0, minimum[0]],
+    pos_y: [1, maximum[1]],
+    neg_y: [1, minimum[1]],
+    pos_z: [2, maximum[2]],
+    neg_z: [2, minimum[2]],
+  }
+  const boundary = boundaryByDirection[directionId]
+  if (!boundary) return null
+  const [axis, coordinate] = boundary
+  const delta = end[axis] - start[axis]
+  if (Math.abs(delta) < 1e-12) return null
+  const t = (coordinate - start[axis]) / delta
+  if (t < 0 || t > 1) return null
+  return addScaled(start, subtract(end, start), t)
+}
+
 function sampledEscapeLocations(
   result: RayTraceResult,
   receivers: Map<string, ReceiverSpec>,
   grids: Map<string, ReceiverGrid>,
   minimum: Vec3,
   maximum: Vec3,
-): Map<string, Vec3> {
-  const accumulated = new Map<string, { position: Vec3; weight: number }>()
+): Map<string, LeakPreviewEscapeSample> {
+  const accumulated = new Map<string, AccumulatedEscapeSample>()
   for (const path of result.stored_paths) {
     const receiverHit = path.at(-1)
     const previous = path.at(-2)
@@ -683,21 +753,55 @@ function sampledEscapeLocations(
     const grid = grids.get(receiverHit.receiver_id)
     if (!receiver || !grid) continue
     const cell = receiverGridCell(receiver, grid, receiverHit.point)
-    const exitPoint = segmentExitFromBounds(previous.point, receiverHit.point, minimum, maximum)
+    const exitPoint = receiverEnvelopeIntersection(
+      receiver.receiver_id,
+      previous.point,
+      receiverHit.point,
+      minimum,
+      maximum,
+    ) ?? segmentExitFromBounds(previous.point, receiverHit.point, minimum, maximum)
     if (!cell || !exitPoint) continue
     const key = `${receiver.receiver_id}:${cell[0]}:${cell[1]}`
     const weight = Math.max(receiverHit.receiver_flux_lumen ?? receiverHit.incoming_energy_lumen, 1e-30)
+    const rayDirection = normalized(subtract(receiverHit.point, previous.point))
+    const outwardNormal = receiver.normal.map((value) => -value) as Vec3
+    const exitAngleDeg = Math.acos(Math.max(-1, Math.min(1, dot(rayDirection, outwardNormal)))) * 180 / Math.PI
+    const reflectionCount = Math.max(
+      receiverHit.depth ?? 0,
+      path.filter((hit) => hit.event_type === 'surface').length,
+    )
+    const grazing = exitAngleDeg >= 59.5 && exitAngleDeg < 90
     const current = accumulated.get(key)
     if (!current) {
-      accumulated.set(key, { position: exitPoint.map((value) => value * weight) as Vec3, weight })
+      accumulated.set(key, {
+        position: exitPoint.map((value) => value * weight) as Vec3,
+        weight,
+        sampleCount: 1,
+        grazingSampleCount: grazing ? 1 : 0,
+        minReflectionCount: reflectionCount,
+        maxReflectionCount: reflectionCount,
+        angleSumDeg: exitAngleDeg,
+      })
       continue
     }
     current.position = current.position.map((value, axis) => value + exitPoint[axis] * weight) as Vec3
     current.weight += weight
+    current.sampleCount += 1
+    current.grazingSampleCount += grazing ? 1 : 0
+    current.minReflectionCount = Math.min(current.minReflectionCount, reflectionCount)
+    current.maxReflectionCount = Math.max(current.maxReflectionCount, reflectionCount)
+    current.angleSumDeg += exitAngleDeg
   }
   return new Map([...accumulated].map(([key, value]) => [
     key,
-    value.position.map((coordinate) => coordinate / value.weight) as Vec3,
+    {
+      position: value.position.map((coordinate) => coordinate / value.weight) as Vec3,
+      sampleCount: value.sampleCount,
+      grazingSampleCount: value.grazingSampleCount,
+      minReflectionCount: value.minReflectionCount,
+      maxReflectionCount: value.maxReflectionCount,
+      meanExitAngleDeg: value.angleSumDeg / value.sampleCount,
+    },
   ]))
 }
 
@@ -747,17 +851,20 @@ export function detectLeakPreviewCandidates(
     for (let row = 0; row < grid.resolution[1]; row += 1) {
       for (let column = 0; column < grid.resolution[0]; column += 1) {
         const flux = Number(grid.flux_lumen[row]?.[column]) || 0
-        if (flux < threshold) continue
+        const sample = escapeLocations.get(`${grid.receiver_id}:${row}:${column}`)
+        const preserveFrontGrazingPath = grid.receiver_id === '__leak_preview_pos_z' &&
+          (sample?.grazingSampleCount ?? 0) > 0
+        if (flux < threshold && !preserveFrontGrazingPath) continue
         // The automatic Receiver sits outside the CAD. Move its bin back near
         // the model envelope so the glow reads as a leak on the product, not
         // as a detached heatmap plane floating around it.
-        const position = escapeLocations.get(`${grid.receiver_id}:${row}:${column}`) ?? addScaled(
+        const position = sample?.position ?? addScaled(
           cellPosition(receiver, grid, row, column),
           receiver.normal,
           detectorMargin,
         )
         if (ignoreAreas.some((area) => pointInIgnoreArea(position, area))) continue
-        active.push({ row, column, flux, position })
+        active.push({ row, column, flux, position, sample })
         points.push({ position, relativeStrength: flux / globalMaximum })
       }
     }
@@ -775,6 +882,8 @@ export function detectLeakPreviewCandidates(
       const rows = cluster.map((cell) => cell.row)
       const cellWidth = receiver.width_mm / grid.resolution[0]
       const cellHeight = receiver.height_mm / grid.resolution[1]
+      const sampledCells = cluster.flatMap((cell) => cell.sample ? [cell.sample] : [])
+      const sampledPathCount = sampledCells.reduce((sum, sample) => sum + sample.sampleCount, 0)
       candidates.push({
         id: `${grid.receiver_id}:${Math.min(...rows)}:${Math.min(...columns)}`,
         label: directionLabels[grid.receiver_id.replace('__leak_preview_', '')] ?? receiver.display_name,
@@ -789,6 +898,17 @@ export function detectLeakPreviewCandidates(
         peakFluxLumen: Math.max(...cluster.map((cell) => cell.flux)),
         relativeStrength: 0,
         cellCount: cluster.length,
+        sampledPathCount,
+        grazingPathCount: sampledCells.reduce((sum, sample) => sum + sample.grazingSampleCount, 0),
+        minReflectionCount: sampledPathCount > 0
+          ? Math.min(...sampledCells.map((sample) => sample.minReflectionCount))
+          : null,
+        maxReflectionCount: sampledPathCount > 0
+          ? Math.max(...sampledCells.map((sample) => sample.maxReflectionCount))
+          : null,
+        meanExitAngleDeg: sampledPathCount > 0
+          ? sampledCells.reduce((sum, sample) => sum + sample.meanExitAngleDeg * sample.sampleCount, 0) / sampledPathCount
+          : null,
         clipBox: candidateClipBox(cluster, receiver, grid, modelDepth),
       })
     }
@@ -806,11 +926,19 @@ export function detectLeakPreviewCandidates(
         0.35 * (candidate.fluxLumen / strongestFlux),
     }))
     .sort((left, right) => right.relativeStrength - left.relativeStrength)
+  const topCandidates = rankedCandidates.slice(0, 8)
+  const strongestFrontGrazing = rankedCandidates.find((candidate) =>
+    candidate.receiverId === '__leak_preview_pos_z' && candidate.grazingPathCount > 0,
+  )
+  if (strongestFrontGrazing && !topCandidates.includes(strongestFrontGrazing)) {
+    topCandidates.splice(Math.max(0, topCandidates.length - 1), 1, strongestFrontGrazing)
+    topCandidates.sort((left, right) => right.relativeStrength - left.relativeStrength)
+  }
   return {
     points: points
       .sort((left, right) => right.relativeStrength - left.relativeStrength)
       .slice(0, 800),
-    candidates: rankedCandidates.slice(0, 8).map((candidate, index) => ({
+    candidates: topCandidates.map((candidate, index) => ({
       ...candidate,
       id: `leak-candidate-${index + 1}`,
     })),
