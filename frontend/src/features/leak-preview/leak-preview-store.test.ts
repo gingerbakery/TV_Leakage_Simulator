@@ -52,6 +52,19 @@ describe('leak preview Allowed Area groups', () => {
     })
   })
 
+  it('keeps preview setup when the same CAD is rebound to a refreshed server token', () => {
+    leakPreviewStore.getState().ensureScene('scene-old')
+    leakPreviewStore.getState().setSourceBody([3], 12)
+    leakPreviewStore.getState().rebindSceneToken('scene-new')
+
+    expect(leakPreviewStore.getState()).toMatchObject({
+      sceneToken: 'scene-new',
+      sourceMode: 'body',
+      sourceComponentIds: [3],
+      sourceBodyFaceCount: 12,
+    })
+  })
+
   it('tracks blocker drag selection and clears it when the blocker is removed', () => {
     leakPreviewStore.getState().addBlocker({
       id: 'blocker-1', label: 'Main Board', enabled: true,

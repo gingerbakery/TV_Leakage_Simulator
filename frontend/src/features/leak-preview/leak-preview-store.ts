@@ -34,6 +34,7 @@ interface LeakPreviewState {
   blockerAreaSelectionId: string | null
   runSignature: string | null
   ensureScene(sceneToken: string): void
+  rebindSceneToken(sceneToken: string): void
   setSourceFaceIds(faceIds: number[]): void
   setSourceBody(componentIds: number[], faceCount: number): void
   setSourceMode(mode: 'face' | 'body'): void
@@ -106,6 +107,7 @@ const store = createStore<LeakPreviewState>()((set) => ({
           blockerAreaSelectionId: null,
           runSignature: null,
         }),
+  rebindSceneToken: (sceneToken) => set({ sceneToken }),
   setSourceFaceIds: (sourceFaceIds) => set({
     sourceMode: 'face',
     sourceFaceIds: [...new Set(sourceFaceIds)],

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { BoxSelect, Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Pencil, Play, Plus, ScanSearch, Square, StopCircle, Trash2, X } from 'lucide-react'
 
-import type { ScenePayload } from '@/api'
 import {
+  apiClient,
+  apiQueryKeys,
+  type ScenePayload,
   useRayTraceJobQuery,
   useStartRayTraceMutation,
   useStopRayTraceMutation,
@@ -75,6 +78,8 @@ const previewDirectionOptions: Array<{ id: LeakPreviewDirection; label: string; 
 ]
 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
+  const queryClient = useQueryClient()
+  const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
   const selectedComponentIds = useWorkspaceStore(workspaceSelectors.selectedComponentIds)
   const materialAssignments = useWorkspaceStore(workspaceSelectors.materialAssignments)
@@ -92,6 +97,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const sourceComponentIds = useLeakPreviewStore((state) => state.sourceComponentIds)
   const sourceBodyFaceCount = useLeakPreviewStore((state) => state.sourceBodyFaceCount)
   const ensureScene = useLeakPreviewStore((state) => state.ensureScene)
+  const rebindSceneToken = useLeakPreviewStore((state) => state.rebindSceneToken)
   const quality = useLeakPreviewStore((state) => state.quality)
   const directions = useLeakPreviewStore((state) => state.directions)
   const jobId = useLeakPreviewStore((state) => state.jobId)
@@ -152,8 +158,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     () => cadFaceCount(scene, sourceFaceIds),
     [scene, sourceFaceIds],
   )
-  const previewInputSignature = useMemo(() => JSON.stringify({
-    sceneToken: scene?.metadata.scene_token ?? null,
+  const inputSignatureForSceneToken = (sceneToken: string | null) => JSON.stringify({
+    sceneToken,
     sourceFaceIds,
     sourceMode,
     sourceComponentIds,
@@ -165,20 +171,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     excludedComponentIds,
     deletedComponentIds,
     blockers,
-  }), [
-    blockers,
-    deletedComponentIds,
-    excludedComponentIds,
-    materialAssignments,
-    quality,
-    directions,
-    scene?.metadata.scene_token,
-    sourceFaceIds,
-    sourceMode,
-    sourceComponentIds,
-    sourceBodyFaceCount,
-    transformRules,
-  ])
+  })
+  const previewInputSignature = inputSignatureForSceneToken(
+    scene?.metadata.scene_token ?? null,
+  )
 
   useEffect(() => {
     return () => actions.setEmitterFaceSelectionArmed(false)
@@ -294,9 +290,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     handledRunRef.current = null
     setMessage('전체 세트의 외부 유출광을 탐색하고 있습니다.')
     try {
-      const started = await startMutation.mutateAsync({
+      const start = (requestScene: ScenePayload) => startMutation.mutateAsync({
         request: buildLeakPreviewRequest({
-          scene,
+          scene: requestScene,
           sourceFaceIds,
           sourceComponentIds: sourceMode === 'body' ? sourceComponentIds : [],
           quality,
@@ -309,8 +305,34 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           blockers,
         }),
       })
+      let started
+      let runSceneToken = scene.metadata.scene_token
+      try {
+        started = await start(scene)
+      } catch (error) {
+        const cacheExpired = error instanceof Error &&
+          error.message.includes('CAD scene cache expired')
+        if (!cacheExpired || !activeCad?.path) throw error
+        setMessage('CAD Scene 캐시를 자동 복구하고 있습니다.')
+        const refreshed = await apiClient.refreshScene(activeCad.path)
+        const refreshedScene: ScenePayload = {
+          ...scene,
+          metadata: {
+            ...scene.metadata,
+            scene_token: refreshed.scene_token,
+          },
+        }
+        rebindSceneToken(refreshed.scene_token)
+        queryClient.setQueryData(
+          apiQueryKeys.scene(activeCad.path),
+          refreshedScene,
+        )
+        started = await start(refreshedScene)
+        runSceneToken = refreshed.scene_token
+        setMessage('CAD Scene 캐시 복구 완료 · Preview를 시작했습니다.')
+      }
       setJobId(started.job_id)
-      setRunSignature(previewInputSignature)
+      setRunSignature(inputSignatureForSceneToken(runSceneToken))
     } catch (error) {
       setRunSignature(null)
       setMessage(`Preview 실행 실패: ${error instanceof Error ? error.message : String(error)}`)
