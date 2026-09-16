@@ -613,6 +613,48 @@ describe('Step 11 result UI', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
+  it('exports selected report cases as an Excel workbook', async () => {
+    const result = createRayTraceResultFixture()
+    const write = vi.fn().mockResolvedValue(undefined)
+    const close = vi.fn().mockResolvedValue(undefined)
+    const showSaveFilePicker = vi.fn().mockResolvedValue({
+      createWritable: vi.fn().mockResolvedValue({ write, close }),
+    })
+    vi.stubGlobal('showSaveFilePicker', showSaveFilePicker)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Export Excel' }))
+
+    await waitFor(() => expect(showSaveFilePicker).toHaveBeenCalledOnce())
+    expect(showSaveFilePicker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suggestedName: expect.stringMatching(
+          /^ray-analysis-\d{4}-\d{2}-\d{2}\.xlsx$/,
+        ),
+        types: [expect.objectContaining({
+          accept: {
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+          },
+        })],
+      }),
+    )
+    expect(write).toHaveBeenCalledWith(expect.any(Blob))
+    const workbook = write.mock.calls[0][0] as Blob
+    expect(workbook.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('downloads the report when the native save picker fails', async () => {
     const result = createRayTraceResultFixture()
     const pickerError = new DOMException('Blocked by policy', 'NotAllowedError')

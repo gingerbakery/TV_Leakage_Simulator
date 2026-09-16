@@ -34,6 +34,10 @@ import { Button } from '@/components/ui/button'
 import { getComponentDisplayName } from '@/features/components'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
+  createExcelWorkbook,
+  type ExcelSheetDefinition,
+} from '@/lib/xlsx-export'
+import {
   removeReceiverFromRayTraceResult,
   useWorkspaceStore,
   workspaceSelectors,
@@ -506,6 +510,214 @@ function leakageImprovementScore(
     0,
   )
   return Math.max(0, Math.min(100, 100 / (1 + severityRatio)))
+}
+
+function relativeChangePercent(value: number, baseline: number): number | null {
+  if (!Number.isFinite(value) || !Number.isFinite(baseline)) return null
+  if (Math.abs(baseline) <= 1e-15) return Math.abs(value) <= 1e-15 ? 0 : null
+  const change = ((value - baseline) / baseline) * 100
+  return Math.abs(change) < 0.05 ? 0 : change
+}
+
+function analysisExcelSheets(
+  cases: AnalysisCase[],
+  baselineCase: AnalysisCase | null,
+  receiverScope: ReceiverCompareScope,
+): ExcelSheetDefinition[] {
+  const baselineFlux = baselineCase ? caseFlux(baselineCase.result, receiverScope) : 0
+  const baselineLuminance = baselineCase
+    ? caseLuminance(baselineCase.result, receiverScope)
+    : null
+  const compareRows = cases.map((item) => {
+    const luminance = caseLuminance(item.result, receiverScope)
+    const flux = caseFlux(item.result, receiverScope)
+    const mismatches = baselineCase
+      ? comparisonConditionMismatches(item.result, baselineCase.result, receiverScope)
+      : []
+    const comparable = Boolean(baselineCase) && mismatches.length === 0
+    return [
+      baselineCase?.case_id === item.case_id,
+      item.name,
+      item.cad_name,
+      item.note,
+      receiverScope === 'all' ? 'All Receivers' : receiverScope.replace(/^name:/, ''),
+      comparable ? 'Match' : 'Mismatch',
+      mismatches.join(' / '),
+      comparable && baselineCase
+        ? leakageImprovementScore(item.result, baselineCase.result, receiverScope)
+        : null,
+      comparable && baselineLuminance
+        ? relativeChangePercent(luminance.peakNit, baselineLuminance.peakNit)
+        : null,
+      comparable
+        ? relativeChangePercent(flux, baselineFlux)
+        : null,
+      comparable && baselineLuminance
+        ? relativeChangePercent(luminance.lightAreaMm2[5], baselineLuminance.lightAreaMm2[5])
+        : null,
+      item.result.run_id,
+      item.result.runtime_sec,
+      item.saved_at,
+    ]
+  })
+
+  const receiverRows = cases.flatMap((item) =>
+    receiversInDisplayOrder(item.result.receivers).flatMap((receiver) => {
+      const grid = item.result.receiver_grids.find((candidate) =>
+        candidate.receiver_id === receiver.receiver_id)
+      if (!grid) return []
+      const metrics = objectValue(item.result.metrics, receiver.receiver_id)
+      const areas = receiverLightAreas(item.result, receiver.receiver_id)
+      const peak = receiverHeatmapPeakPosition(grid, receiver.width_mm, receiver.height_mm)
+      return [[
+        item.name,
+        item.cad_name,
+        rayObjectDisplayName('receiver', receiver.receiver_id, receiver.display_name),
+        receiver.enabled,
+        receiver.width_mm,
+        receiver.height_mm,
+        receiver.resolution[0],
+        receiver.resolution[1],
+        receiver.width_mm / Math.max(1, receiver.resolution[0]),
+        receiver.height_mm / Math.max(1, receiver.resolution[1]),
+        receiver.acceptance_angle_deg,
+        numeric(metrics.peak_nit_est),
+        peak?.xMm ?? null,
+        peak?.yMm ?? null,
+        numeric(metrics.mean_nit_est),
+        numeric(metrics.p95_nit_est),
+        numeric(metrics.total_flux_lumen),
+        areas[1],
+        areas[5],
+        areas[10],
+        numeric(metrics.receiver_hit_count ?? grid.hit_count),
+        typeof metrics.error_estimate_percent === 'number'
+          ? metrics.error_estimate_percent
+          : null,
+        typeof metrics.peak_area_error_estimate_percent === 'number'
+          ? metrics.peak_area_error_estimate_percent
+          : null,
+        item.result.run_id,
+      ]]
+    }),
+  )
+
+  const conditionRows: Array<Array<string | number | boolean | null>> = []
+  const addCondition = (
+    item: AnalysisCase,
+    category: string,
+    target: string,
+    field: string,
+    value: unknown,
+    unit = '',
+  ) => {
+    conditionRows.push([
+      item.name,
+      item.cad_name,
+      category,
+      target,
+      field,
+      Array.isArray(value) || (value != null && typeof value === 'object')
+        ? JSON.stringify(value)
+        : typeof value === 'number' || typeof value === 'boolean'
+          ? value
+          : value == null ? '' : String(value),
+      unit,
+    ])
+  }
+  for (const item of cases) {
+    const configUnits: Record<string, string> = {
+      min_energy: 'lm',
+      epsilon_mm: 'mm',
+      convergence_target_percent: '%',
+    }
+    for (const [field, value] of Object.entries(item.result.config)) {
+      addCondition(item, 'Ray Tracing', 'Run', field, value, configUnits[field] ?? '')
+    }
+    item.result.emitters.forEach((emitter, index) => {
+      const target = rayObjectDisplayName('emitter', emitter.emitter_id)
+      const fields: Array<[string, unknown, string?]> = [
+        ['enabled', emitter.enabled],
+        ['type', emitter.emitter_type],
+        ['direction', emitter.emission_direction ?? (emitter.normal_flip ? 'reverse' : 'forward')],
+        ['distribution', emitter.direction_distribution],
+        ['gaussian_sigma', emitter.gaussian_sigma_deg, 'deg'],
+        ['power_mode', emitter.power_mode],
+        ['total_power', emitter.power_lumen, 'lm'],
+        ['power_density', emitter.power_density_lm_per_m2, 'lm/m²'],
+        ['luminance', emitter.luminance_nit ?? null, 'nit'],
+        ['ray_count', emitter.ray_count],
+        ['seed', emitter.seed],
+        ['center', emitter.center, 'mm'],
+        ['width', emitter.width_mm, 'mm'],
+        ['height', emitter.height_mm, 'mm'],
+        ['aim', emitter.aim ?? null],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Emitter', `${index + 1}. ${target}`, field, value, unit))
+    })
+    receiversInDisplayOrder(item.result.receivers).forEach((receiver, index) => {
+      const target = rayObjectDisplayName('receiver', receiver.receiver_id, receiver.display_name)
+      const fields: Array<[string, unknown, string?]> = [
+        ['enabled', receiver.enabled],
+        ['center', receiver.center, 'mm'],
+        ['normal', receiver.normal],
+        ['u_axis', receiver.u_axis],
+        ['v_axis', receiver.v_axis],
+        ['width', receiver.width_mm, 'mm'],
+        ['height', receiver.height_mm, 'mm'],
+        ['resolution', receiver.resolution, 'pixel'],
+        ['acceptance_angle', receiver.acceptance_angle_deg, 'deg'],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Receiver', `${index + 1}. ${target}`, field, value, unit))
+    })
+    item.result.optical_profiles.forEach((profile) => {
+      const fields: Array<[string, unknown, string?]> = [
+        ['reflectance', profile.reflectance],
+        ['absorption', profile.absorption],
+        ['specular_ratio', profile.specular_ratio],
+        ['diffuse_ratio', profile.diffuse_ratio],
+        ['scatter_model', profile.scatter_model],
+        ['roughness', profile.roughness],
+        ['gaussian_sigma', profile.gaussian_sigma_deg, 'deg'],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Material', profile.profile_id, field, value, unit))
+    })
+  }
+
+  return [
+    {
+      name: 'Compare Cases',
+      rows: [[
+        'Baseline', 'Case', 'CAD', 'Note', 'Receiver Scope', 'Conditions',
+        'Mismatch Details', 'Improvement Score', 'Peak Change (%)',
+        'Total Flux Change (%)', 'Light Area @5% Change (%)', 'Run ID',
+        'Runtime (s)', 'Saved At',
+      ], ...compareRows],
+      columnWidths: [10, 18, 24, 28, 20, 12, 42, 18, 18, 22, 24, 22, 14, 24],
+    },
+    {
+      name: 'Receiver Results',
+      rows: [[
+        'Case', 'CAD', 'Receiver', 'Enabled', 'Width (mm)', 'Height (mm)',
+        'Resolution X', 'Resolution Y', 'Pixel X (mm)', 'Pixel Y (mm)',
+        'Acceptance Angle (deg)', 'Peak (nit)', 'Peak X (mm)', 'Peak Y (mm)',
+        'Mean (nit)', 'P95 (nit)', 'Total Flux (lm)', 'Light Area @1% (mm²)',
+        'Light Area @5% (mm²)', 'Light Area @10% (mm²)', 'Hits',
+        'Error Estimate (%)', 'Peak-Area Error (%)', 'Run ID',
+      ], ...receiverRows],
+      columnWidths: [18, 24, 22, 10, 13, 13, 13, 13, 13, 13, 22, 14, 14, 14, 14, 14, 18, 23, 23, 24, 12, 20, 21, 22],
+    },
+    {
+      name: 'Run Conditions',
+      rows: [[
+        'Case', 'CAD', 'Category', 'Target', 'Setting', 'Value', 'Unit',
+      ], ...conditionRows],
+      columnWidths: [18, 24, 16, 28, 28, 46, 12],
+    },
+  ]
 }
 
 interface WindowFrame {
@@ -2097,6 +2309,54 @@ export function RayTraceResultWindow({
     downloadReport()
   }
 
+  const exportExcel = async () => {
+    const cases = selectedCases.length > 0 ? selectedCases : analysisCases
+    if (cases.length === 0) return
+    const blob = createExcelWorkbook(
+      analysisExcelSheets(cases, baselineCase, receiverCompareScope),
+    )
+    const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.xlsx`
+    const downloadExcel = () => {
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    }
+    const picker = (window as AnalysisReportSaveFilePickerWindow)
+      .showSaveFilePicker
+    if (picker) {
+      try {
+        const handle = await picker.call(window, {
+          suggestedName: fileName,
+          types: [{
+            description: 'Excel Workbook',
+            accept: {
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+            },
+          }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        return
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        downloadExcel()
+        window.alert(
+          error instanceof Error
+            ? `Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${error.message}`
+            : 'Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다.',
+        )
+        return
+      }
+    }
+    downloadExcel()
+  }
+
   const importCases = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
@@ -2312,6 +2572,14 @@ export function RayTraceResultWindow({
                     onClick={exportCases}
                   >
                     <Download /> Save report
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={analysisCases.length === 0}
+                    onClick={exportExcel}
+                  >
+                    <Download /> Export Excel
                   </Button>
                 </div>
               </div>
