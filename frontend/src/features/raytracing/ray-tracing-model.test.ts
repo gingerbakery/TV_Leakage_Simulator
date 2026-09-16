@@ -297,6 +297,15 @@ describe('ray tracing model', () => {
           source: 'box',
           view: 'front_xy',
           active: true,
+          clipBox: {
+            plane: 'xyz',
+            xMin: 0.25,
+            xMax: 0.75,
+            yMin: 0.1,
+            yMax: 0.9,
+            zMin: -0.5,
+            zMax: 0.5,
+          },
           components: [
             {
               componentId: 1,
@@ -313,6 +322,14 @@ describe('ray tracing model', () => {
     })
 
     expect(request.roi_faces).toEqual([0, 1])
+    expect(request.roi_clip_boxes).toEqual([{
+      x_min: 0.25,
+      x_max: 0.75,
+      y_min: 0.1,
+      y_max: 0.9,
+      z_min: -0.5,
+      z_max: 0.5,
+    }])
     expect(request.excluded_component_ids).toEqual([1, 8, 9])
     expect(request.config.ray_count).toBe(12_000)
     expect(request.config).not.toHaveProperty('auto_convergence')

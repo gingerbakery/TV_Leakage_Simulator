@@ -527,6 +527,7 @@ class ApiRuntime:
             "transform_rules": request_payload.get("transform_rules", []),
             "excluded_component_ids": excluded,
             "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),
+            "roi_clip_boxes": request_payload.get("roi_clip_boxes", []),
             "preserved_emitter_faces": preserved_emitter_faces,
             "preserved_emitter_components": preserved_emitter_components,
             "preview_blockers": request_payload.get("preview_blockers", []),

@@ -8,7 +8,7 @@ import type {
   ScenePayload,
   Vec3,
 } from '@/api'
-import { buildRayTraceRequest, createFaceEmitter } from '@/features/raytracing'
+import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter } from '@/features/raytracing'
 import type {
   ComponentTransformRule,
   MaterialAssignment,
@@ -29,7 +29,8 @@ export const allLeakPreviewDirections: LeakPreviewDirection[] = [
 ]
 
 export const leakPreviewRoiOffsetMm = 5
-export const leakPreviewReceiverDistanceMm = 5
+export const leakPreviewReceiverDistanceMm = 3
+export const leakPreviewReceiverOffsetMm = 6
 export const leakPreviewAllowedAreaPaddingMm = 5
 
 export interface LeakPreviewIgnoreArea {
@@ -366,6 +367,97 @@ function previewEmitter(
   }
 }
 
+function bodyPlaneFrame(
+  scene: ScenePayload,
+  componentId: number,
+  transformRules: ComponentTransformRule[],
+): { center: Vec3; uAxis: Vec3; vAxis: Vec3; widthMm: number; heightMm: number } | null {
+  const component = scene.components.find((item) => item.component_id === componentId)
+  if (!component) return null
+  const minimum = component.bbox_min
+  const maximum = component.bbox_max
+  const size: Vec3 = [
+    Math.max(0, maximum[0] - minimum[0]),
+    Math.max(0, maximum[1] - minimum[1]),
+    Math.max(0, maximum[2] - minimum[2]),
+  ]
+  const localCenter: Vec3 = [
+    (minimum[0] + maximum[0]) / 2,
+    (minimum[1] + maximum[1]) / 2,
+    (minimum[2] + maximum[2]) / 2,
+  ]
+  const normalAxis = size.indexOf(Math.min(...size))
+  const planeAxes = [0, 1, 2].filter((axis) => axis !== normalAxis)
+  const transformPoint = createLeakPreviewPointTransform(scene, transformRules)
+  const center = transformPoint(componentId, localCenter)
+  const worldAxis = (axis: number): Vec3 => {
+    const endpoint = [...localCenter] as Vec3
+    endpoint[axis] += 1
+    return normalized(subtract(transformPoint(componentId, endpoint), center))
+  }
+  return {
+    center,
+    uAxis: worldAxis(planeAxes[0]),
+    vAxis: worldAxis(planeAxes[1]),
+    widthMm: Math.max(size[planeAxes[0]], 0.1),
+    heightMm: Math.max(size[planeAxes[1]], 0.1),
+  }
+}
+
+/** Use a selected Body only as the placement reference for one rectangular
+ * plane. No Body surface becomes an emitting face. */
+export function createLeakPreviewBodyPlaneEmitters(
+  scene: ScenePayload,
+  componentIds: number[],
+  transformRules: ComponentTransformRule[] = [],
+  rayCount = 100_000,
+  splitDirections = true,
+): EmitterSpec[] {
+  const planes = [...new Set(componentIds)].flatMap((componentId, index) => {
+    const frame = bodyPlaneFrame(scene, componentId, transformRules)
+    if (!frame) return []
+    return [{
+      ...createDatumEmitter(
+        `__leak_preview_body_${componentId}_${index + 1}`,
+        frame.center,
+        [0, 0, 0],
+      ),
+      u_axis: frame.uAxis,
+      v_axis: frame.vAxis,
+      custom_normal: normalized(cross(frame.uAxis, frame.vAxis)),
+      width_mm: frame.widthMm,
+      height_mm: frame.heightMm,
+      reference_mode: 'leak_preview_body_plane',
+    }]
+  })
+  if (planes.length === 0) return []
+  const directionCount = splitDirections ? 2 : 1
+  const emitterCount = planes.length * directionCount
+  const baseRays = Math.max(1, Math.floor(rayCount / emitterCount))
+  let assignedRays = 0
+  return planes.flatMap((plane, planeIndex) => {
+    const directions = splitDirections
+      ? (['forward', 'reverse'] as const)
+      : (['both'] as const)
+    return directions.map((direction, directionIndex) => {
+      const isLast = planeIndex === planes.length - 1 && directionIndex === directions.length - 1
+      const emitterRays = isLast ? Math.max(1, rayCount - assignedRays) : baseRays
+      assignedRays += emitterRays
+      return {
+        ...plane,
+        emitter_id: `${plane.emitter_id}_${direction}`,
+        emission_direction: direction,
+        normal_flip: direction === 'reverse',
+        power_mode: 'total' as const,
+        power_lumen: 1 / emitterCount,
+        luminance_nit: undefined,
+        ray_count: emitterRays,
+        seed: 42 + planeIndex * 2 + directionIndex,
+      }
+    })
+  })
+}
+
 export function buildLeakPreviewRequest({
   scene,
   sourceFaceIds,
@@ -416,10 +508,18 @@ export function buildLeakPreviewRequest({
   const request = buildRayTraceRequest({
     scene,
     projectName: 'Whole Set Leak Preview',
-    emitters: [
-      previewEmitter('__leak_preview_source_a', sourceFaceIds, sourceComponentIds, false, perSide),
-      previewEmitter('__leak_preview_source_b', sourceFaceIds, sourceComponentIds, true, totalRays - perSide),
-    ],
+    emitters: sourceComponentIds.length > 0
+      ? createLeakPreviewBodyPlaneEmitters(
+          scene,
+          sourceComponentIds,
+          transformRules,
+          totalRays,
+          true,
+        )
+      : [
+          previewEmitter('__leak_preview_source_a', sourceFaceIds, [], false, perSide),
+          previewEmitter('__leak_preview_source_b', sourceFaceIds, [], true, totalRays - perSide),
+        ],
     receivers: createLeakPreviewReceivers(scene, transformRules, directions),
     materialAssignments,
     transformRules,
@@ -959,8 +1059,10 @@ function boxesOverlap(
 }
 
 /** Candidate-local face lookup. Component boxes reject unrelated full-set
- * geometry before triangle bounds are inspected, which avoids a complete
- * multi-million-face scan for a small exterior leak candidate. */
+ * geometry before triangle bounds are inspected. The final pass uses the
+ * mesh's authoritative face_component_ids instead of component.face_indices:
+ * large binary scenes may intentionally truncate the latter for UI payload
+ * size, while the tessellation and its ownership array remain complete. */
 export function resolveLeakPreviewRoiFaces(
   scene: ScenePayload,
   clip: RoiClipBox,
@@ -971,6 +1073,7 @@ export function resolveLeakPreviewRoiFaces(
   const unavailable = new Set([...hiddenComponentIds, ...deletedComponentIds])
   const result: number[] = []
   const transformPoint = createLeakPreviewPointTransform(scene, transformRules)
+  const candidateComponentIds = new Set<number>()
   for (const component of scene.components) {
     if (unavailable.has(component.component_id)) continue
     const componentMinimum: Vec3 = [Infinity, Infinity, Infinity]
@@ -987,24 +1090,25 @@ export function resolveLeakPreviewRoiFaces(
       }
     }
     if (!boxesOverlap(componentMinimum, componentMaximum, clip)) continue
-    for (const faceId of component.face_indices) {
-      const face = scene.mesh.faces[faceId]
-      if (!face) continue
-      const minimum: Vec3 = [Infinity, Infinity, Infinity]
-      const maximum: Vec3 = [-Infinity, -Infinity, -Infinity]
-      for (const vertexId of face) {
-        const originalVertex = scene.mesh.vertices[vertexId]
-        const vertex = originalVertex
-          ? transformPoint(component.component_id, originalVertex)
-          : undefined
-        if (!vertex) continue
-        for (let axis = 0; axis < 3; axis += 1) {
-          minimum[axis] = Math.min(minimum[axis], vertex[axis])
-          maximum[axis] = Math.max(maximum[axis], vertex[axis])
-        }
+    candidateComponentIds.add(component.component_id)
+  }
+  for (const [faceId, face] of scene.mesh.faces.entries()) {
+    const componentId = scene.mesh.face_component_ids[faceId]
+    if (componentId === null || !candidateComponentIds.has(componentId)) continue
+    const minimum: Vec3 = [Infinity, Infinity, Infinity]
+    const maximum: Vec3 = [-Infinity, -Infinity, -Infinity]
+    for (const vertexId of face) {
+      const originalVertex = scene.mesh.vertices[vertexId]
+      const vertex = originalVertex
+        ? transformPoint(componentId, originalVertex)
+        : undefined
+      if (!vertex) continue
+      for (let axis = 0; axis < 3; axis += 1) {
+        minimum[axis] = Math.min(minimum[axis], vertex[axis])
+        maximum[axis] = Math.max(maximum[axis], vertex[axis])
       }
-      if (boxesOverlap(minimum, maximum, clip)) result.push(faceId)
     }
+    if (boxesOverlap(minimum, maximum, clip)) result.push(faceId)
   }
   return result
 }
@@ -1013,21 +1117,35 @@ export function createCandidateReceiver(
   candidate: LeakPreviewCandidate,
   index: number,
 ): ReceiverSpec {
-  const pixelSize = Math.max(candidate.widthMm, candidate.heightMm) / 40
+  const directionId = candidate.receiverId.replace('__leak_preview_', '') as LeakPreviewDirection
+  const outwardByDirection: Record<LeakPreviewDirection, Vec3> = {
+    pos_x: [1, 0, 0],
+    neg_x: [-1, 0, 0],
+    pos_y: [0, 1, 0],
+    neg_y: [0, -1, 0],
+    pos_z: [0, 0, 1],
+    neg_z: [0, 0, -1],
+  }
+  const outwardNormal = outwardByDirection[directionId] ??
+    (candidate.normal.map((value) => -value) as Vec3)
+  const receiverNormal = outwardNormal.map((value) => -value) as Vec3
+  const widthMm = candidate.widthMm + leakPreviewReceiverOffsetMm * 2
+  const heightMm = candidate.heightMm + leakPreviewReceiverOffsetMm * 2
+  const pixelSize = Math.max(widthMm, heightMm) / 40
   const center = addScaled(
     candidate.center,
-    candidate.normal,
-    -leakPreviewReceiverDistanceMm,
+    outwardNormal,
+    leakPreviewReceiverDistanceMm,
   )
   return {
     ...createPreviewReceiver(
       `candidate_${index}`,
       center,
-      candidate.normal,
+      receiverNormal,
       candidate.uAxis,
       candidate.vAxis,
-      candidate.widthMm,
-      candidate.heightMm,
+      widthMm,
+      heightMm,
     ),
     receiver_id: `preview_receiver_${String(index).padStart(3, '0')}`,
     display_name: `Preview Receiver ${index}`,
@@ -1036,10 +1154,10 @@ export function createCandidateReceiver(
     base_center: [...candidate.center],
     base_u_axis: [...candidate.uAxis],
     base_v_axis: [...candidate.vAxis],
-    base_normal: [...candidate.normal],
+    base_normal: [...receiverNormal],
     resolution: [
-      Math.max(8, Math.min(120, Math.round(candidate.widthMm / pixelSize))),
-      Math.max(8, Math.min(120, Math.round(candidate.heightMm / pixelSize))),
+      Math.max(8, Math.min(120, Math.round(widthMm / pixelSize))),
+      Math.max(8, Math.min(120, Math.round(heightMm / pixelSize))),
     ],
   }
 }

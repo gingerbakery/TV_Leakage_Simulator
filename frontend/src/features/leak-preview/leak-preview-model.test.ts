@@ -10,7 +10,9 @@ import {
   createLeakPreviewReceivers,
   detectLeakPreviewCandidates,
   leakPreviewReceiverDistanceMm,
+  leakPreviewReceiverOffsetMm,
   leakPreviewRoiOffsetMm,
+  resolveLeakPreviewRoiFaces,
   resizeLeakPreviewBlockerOnFace,
 } from './leak-preview-model'
 
@@ -115,7 +117,7 @@ describe('whole-set leak preview', () => {
     })
   })
 
-  it('sends a Body light source as compact Component ids', () => {
+  it('converts a Body light source into one two-sided virtual plane', () => {
     const request = buildLeakPreviewRequest({
       scene: createSceneFixture(),
       sourceFaceIds: [],
@@ -130,8 +132,24 @@ describe('whole-set leak preview', () => {
     })
 
     expect(request.emitters).toHaveLength(2)
+    expect(request.emitters.map((emitter) => emitter.emitter_type)).toEqual([
+      'datum_plane',
+      'datum_plane',
+    ])
     expect(request.emitters[0].face_indices).toEqual([])
-    expect(request.emitters[0].source_component_ids).toEqual([1])
+    expect(request.emitters[0].source_component_ids).toBeUndefined()
+    expect(request.emitters[0]).toMatchObject({
+      center: [30, 30, 5],
+      u_axis: [1, 0, 0],
+      v_axis: [0, 1, 0],
+      width_mm: 60,
+      height_mm: 60,
+      reference_mode: 'leak_preview_body_plane',
+      emission_direction: 'forward',
+    })
+    expect(request.emitters[1].emission_direction).toBe('reverse')
+    expect(request.emitters.reduce((sum, emitter) => sum + emitter.power_lumen, 0)).toBeCloseTo(1)
+    expect(request.emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(100_000)
     expect(request.receivers).toHaveLength(1)
   })
 
@@ -228,6 +246,12 @@ describe('whole-set leak preview', () => {
     )
     expect(precisionReceiver.view_distance_mm).toBe(leakPreviewReceiverDistanceMm)
     expect(precisionReceiver.base_center).toEqual(detection.candidates[0].center)
+    expect(precisionReceiver.width_mm).toBeCloseTo(
+      detection.candidates[0].widthMm + leakPreviewReceiverOffsetMm * 2,
+    )
+    expect(precisionReceiver.height_mm).toBeCloseTo(
+      detection.candidates[0].heightMm + leakPreviewReceiverOffsetMm * 2,
+    )
 
     const point = detection.points[0].position
     const ignored = detectLeakPreviewCandidates(scene, result, {
@@ -344,6 +368,66 @@ describe('whole-set leak preview', () => {
     expect(grazingCandidate?.sampledPathCount).toBe(1)
     expect(grazingCandidate?.meanExitAngleDeg).toBeCloseTo(60)
     expect(grazingCandidate?.center[2]).toBeCloseTo(20)
+  })
+
+  it('finds ROI faces from authoritative mesh ownership when Component face lists are truncated', () => {
+    const scene = createSceneFixture()
+    scene.components[1].face_indices = []
+    scene.components[1].is_truncated = true
+
+    const faceIds = resolveLeakPreviewRoiFaces(
+      scene,
+      {
+        plane: 'xyz',
+        xMin: 4,
+        xMax: 56,
+        yMin: 4,
+        yMax: 56,
+        zMin: 9,
+        zMax: 21,
+      },
+      [],
+      [],
+    )
+
+    expect(faceIds).toEqual(expect.arrayContaining([3, 4]))
+  })
+
+  it('places every generated Receiver 3 mm outside its selected enclosure side', () => {
+    const receivers = createLeakPreviewReceivers(createSceneFixture())
+    for (const [index, receiver] of receivers.entries()) {
+      const candidate = {
+        id: `candidate-${index}`,
+        label: receiver.display_name,
+        receiverId: receiver.receiver_id,
+        center: [10, 20, 30] as [number, number, number],
+        normal: receiver.normal,
+        uAxis: receiver.u_axis!,
+        vAxis: receiver.v_axis!,
+        widthMm: 10,
+        heightMm: 8,
+        fluxLumen: 1,
+        peakFluxLumen: 1,
+        relativeStrength: 1,
+        cellCount: 1,
+        sampledPathCount: 0,
+        grazingPathCount: 0,
+        minReflectionCount: null,
+        maxReflectionCount: null,
+        meanExitAngleDeg: null,
+        clipBox: { plane: 'xyz' as const, xMin: 0, xMax: 1, yMin: 0, yMax: 1, zMin: 0, zMax: 1 },
+      }
+      const generated = createCandidateReceiver(candidate, index + 1)
+      const displacement = generated.center.map((value, axis) =>
+        value - candidate.center[axis],
+      ) as [number, number, number]
+      const outward = receiver.normal.map((value) => -value)
+      const outwardDistance = displacement.reduce((sum, value, axis) =>
+        sum + value * outward[axis], 0)
+      expect(outwardDistance).toBeCloseTo(3)
+      expect(generated.normal.reduce((sum, value, axis) =>
+        sum + value * outward[axis], 0)).toBeCloseTo(-1)
+    }
   })
 
   it('builds the six detection planes from transformed Component bounds', () => {

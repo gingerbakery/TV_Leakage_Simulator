@@ -448,6 +448,23 @@ class FastApiLayerTests(unittest.TestCase):
             payload["metadata"]["scene_token"].startswith("scene_")
         )
 
+    def test_scene_refresh_returns_a_new_server_token_without_scene_payload(self):
+        original = self.client.get(
+            "/api/scene",
+            params={"cad": "fixture.step"},
+        ).json()["metadata"]["scene_token"]
+
+        response = self.client.post(
+            "/api/scene/refresh",
+            json={"cad": "fixture.step"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.json()), {"scene_token"})
+        refreshed = response.json()["scene_token"]
+        self.assertNotEqual(refreshed, original)
+        self.assertIn(refreshed, self.runtime._scene_mesh_cache)
+
     def test_scene_endpoint_streams_binary_manifest_and_arrays(self):
         response = self.client.get(
             "/api/scene",

@@ -344,6 +344,28 @@ class RoiFilteringTests(unittest.TestCase):
         self.assertEqual(trace_input.emitters[0].face_indices, [0])
         self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 0)
 
+    def test_roi_clip_box_splits_boundary_triangle_and_remaps_emitter(self) -> None:
+        payload = self._payload(roi_faces=[0])
+        payload["roi_clip_boxes"] = [{
+            "x_min": 0.0, "x_max": 1.0,
+            "y_min": 0.0, "y_max": 1.0,
+            "z_min": -0.5, "z_max": 0.5,
+        }]
+
+        trace_input = build_direct_trace_input(self.scene_mesh, payload)
+
+        self.assertEqual(len(trace_input.mesh.faces), 2)
+        self.assertEqual(trace_input.emitters[0].face_indices, [0, 1])
+        self.assertAlmostEqual(
+            sum(trace_input.mesh.area(index) for index in range(2)),
+            1.0,
+        )
+        for vertex in trace_input.mesh.vertices:
+            self.assertGreaterEqual(vertex[0], -1e-9)
+            self.assertLessEqual(vertex[0], 1.0 + 1e-9)
+            self.assertGreaterEqual(vertex[1], -1e-9)
+            self.assertLessEqual(vertex[1], 1.0 + 1e-9)
+
     def test_roi_transform_material_emitter_receiver_pipeline_stays_aligned(self) -> None:
         payload = self._payload(
             roi_faces=[0],

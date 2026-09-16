@@ -58,7 +58,10 @@ import type { ViewerCameraFrame } from '@/features/raytracing'
 import {
   getLeakPreviewBounds,
 } from '@/features/leak-preview/leak-preview-geometry'
-import { resizeLeakPreviewBlockerOnFace } from '@/features/leak-preview/leak-preview-model'
+import {
+  createLeakPreviewBodyPlaneEmitters,
+  resizeLeakPreviewBlockerOnFace,
+} from '@/features/leak-preview/leak-preview-model'
 import {
   leakPreviewStore,
   useLeakPreviewStore,
@@ -1840,6 +1843,10 @@ export function ThreeViewerCanvas({
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
   const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
+  const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
+  const leakPreviewSourceComponentIds = useLeakPreviewStore(
+    (state) => state.sourceComponentIds,
+  )
   const leakPreviewVisualizationVisible = useLeakPreviewStore(
     (state) => state.visualizationVisible,
   )
@@ -4065,7 +4072,7 @@ export function ThreeViewerCanvas({
     }
 
     clearGroup(runtime.placementRoot)
-    const placementEmitters = placementPreviewEmitter
+    const basePlacementEmitters = placementPreviewEmitter
       ? [
           ...emitters.filter(
             (emitter) =>
@@ -4075,6 +4082,22 @@ export function ThreeViewerCanvas({
           placementPreviewEmitter,
         ]
       : emitters
+    const hasSavedLeakPreviewBodyPlane = emitters.some(
+      (emitter) => emitter.reference_mode === 'leak_preview_body_plane',
+    )
+    const leakPreviewBodyPlanes = leakPreviewSourceMode === 'body' && !hasSavedLeakPreviewBodyPlane
+      ? createLeakPreviewBodyPlaneEmitters(
+          scene,
+          leakPreviewSourceComponentIds,
+          transformRules,
+          Math.max(1, leakPreviewSourceComponentIds.length),
+          false,
+        )
+      : []
+    const placementEmitters = [
+      ...basePlacementEmitters,
+      ...leakPreviewBodyPlanes,
+    ]
     const placementReceivers = placementPreviewReceiver
       ? [
           ...receivers.filter(
@@ -4757,6 +4780,8 @@ export function ThreeViewerCanvas({
     materialAssignments,
     componentColorOverrides,
     faceDisplayColors,
+    leakPreviewSourceComponentIds,
+    leakPreviewSourceMode,
     placementPreviewEmitter,
     placementPreviewReceiver,
     renderMode,

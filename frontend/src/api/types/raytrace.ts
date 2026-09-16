@@ -213,6 +213,16 @@ export interface RayTraceRequest {
   transform_rules: TransformRule[]
   excluded_component_ids: number[]
   roi_faces?: number[]
+  /** Exact axis-aligned ROI volumes. The backend clips boundary triangles to
+   * these boxes so viewer highlighting and emitted ray origins agree. */
+  roi_clip_boxes?: Array<{
+    x_min: number
+    x_max: number
+    y_min: number
+    y_max: number
+    z_min: number
+    z_max: number
+  }>
   config: Omit<
     RayTraceConfigRequest,
     | 'auto_convergence'

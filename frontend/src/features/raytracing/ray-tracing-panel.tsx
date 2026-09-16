@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
   EmitterSpec,
   RayTraceConfigRequest,
+  RayTraceJob,
   RayTraceResult,
   ReceiverSpec,
   ScenePayload,
@@ -25,6 +27,8 @@ import {
 } from 'lucide-react'
 
 import {
+  apiClient,
+  apiQueryKeys,
   useRayTraceJobQuery,
   useGpuCudaStatusQuery,
   useStartRayTraceMutation,
@@ -172,6 +176,7 @@ function VectorFields({
   labels,
   ariaLabels,
   value,
+  decimals = 1,
   onChange,
 }: {
   label: string
@@ -181,6 +186,7 @@ function VectorFields({
    * another field group in the same dialog (e.g. multiple "X" fields). */
   ariaLabels?: [string, string, string]
   value: Vec3
+  decimals?: number
   onChange(value: Vec3): void
 }) {
   return (
@@ -198,7 +204,7 @@ function VectorFields({
             label={axisLabel}
             ariaLabel={ariaLabels?.[axis]}
             value={value[axis]}
-            decimals={1}
+            decimals={decimals}
             onChange={(nextValue) => {
               const next: Vec3 = [...value]
               next[axis] = Number.isFinite(nextValue) ? nextValue : 0
@@ -1134,6 +1140,7 @@ function ReceiverDialog({
             'Receiver center Z',
           ]}
           value={center}
+          decimals={2}
           onChange={setCenter}
         />
         {isLeakPreviewReceiver ? (
@@ -1141,6 +1148,8 @@ function ReceiverDialog({
             label="Receiver Distance (mm)"
             value={viewDistance}
             min={0.001}
+            step={0.01}
+            decimals={2}
             onChange={setViewDistance}
           />
         ) : null}
@@ -1154,6 +1163,7 @@ function ReceiverDialog({
             'Receiver offset Z',
           ]}
           value={positionOffset}
+          decimals={2}
           onChange={setPositionOffset}
         />
         <VectorFields
@@ -1180,6 +1190,8 @@ function ReceiverDialog({
                   label="View distance (mm)"
                   value={viewDistance}
                   min={0.001}
+                  step={0.01}
+                  decimals={2}
                   onChange={setViewDistance}
                   description="현재 Viewer의 시점 중심에서 카메라 방향으로 떨어진 Receiver 위치를 지정합니다."
                 />
@@ -1206,6 +1218,7 @@ function ReceiverDialog({
                     'Receiver center Z',
                   ]}
                   value={previewReceiver.center}
+                  decimals={2}
                   onChange={(nextCenter) =>
                     setPositionOffset([
                       nextCenter[0] - previewReceiver.base_center![0],
@@ -1243,6 +1256,8 @@ function ReceiverDialog({
               ariaLabel="Receiver width (mm)"
               value={width}
               min={0.001}
+              step={0.01}
+              decimals={2}
               onChange={setWidth}
             />
             <NumberField
@@ -1250,6 +1265,8 @@ function ReceiverDialog({
               ariaLabel="Receiver height (mm)"
               value={height}
               min={0.001}
+              step={0.01}
+              decimals={2}
               onChange={setHeight}
             />
           </div>
@@ -1405,6 +1422,7 @@ export function RayTracingPanel({
   )
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const queryClient = useQueryClient()
   const editingEmitter =
     emitters.find(
       (emitter) => emitter.emitter_id === editingEmitterId,
@@ -1542,29 +1560,32 @@ export function RayTracingPanel({
       !emitters.some((emitter) => emitter.enabled) ||
       !receivers.some((receiver) => receiver.enabled)
     ) return false
-    const request = buildRayTraceRequest({
-      scene,
-      projectName: activeCad?.displayName || 'TV-Leakage-Direct',
-      emitters: emitters.map((emitter) => ({
-        ...emitter,
-        ray_count: Math.max(1, Math.trunc(emitter.ray_count * rayMultiplier)),
-      })),
-      receivers,
-      materialAssignments,
-      transformRules,
-      excludedComponentIds,
-      deletedComponentIds,
-      roiScopes,
-      config,
-    })
-    if (config.auto_convergence) {
-      request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
-      request.emitters = request.emitters.map((emitter) => ({
-        ...emitter,
-        seed: emitter.seed === null
-          ? null
-          : convergenceSegmentSeed(emitter.seed, segmentIndex),
-      }))
+    const requestForScene = (requestScene: ScenePayload) => {
+      const request = buildRayTraceRequest({
+        scene: requestScene,
+        projectName: activeCad?.displayName || 'TV-Leakage-Direct',
+        emitters: emitters.map((emitter) => ({
+          ...emitter,
+          ray_count: Math.max(1, Math.trunc(emitter.ray_count * rayMultiplier)),
+        })),
+        receivers,
+        materialAssignments,
+        transformRules,
+        excludedComponentIds,
+        deletedComponentIds,
+        roiScopes,
+        config,
+      })
+      if (config.auto_convergence) {
+        request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
+        request.emitters = request.emitters.map((emitter) => ({
+          ...emitter,
+          seed: emitter.seed === null
+            ? null
+            : convergenceSegmentSeed(emitter.seed, segmentIndex),
+        }))
+      }
+      return request
     }
     const cancelTokenAtStart = autoConvergenceCancelTokenRef.current
     const abortController = autoRetry ? new AbortController() : null
@@ -1573,10 +1594,35 @@ export function RayTracingPanel({
       autoRetryAbortControllerRef.current = abortController
     }
     try {
-      const startedJob = await startMutation.mutateAsync({
-        request,
+      const start = (requestScene: ScenePayload) => startMutation.mutateAsync({
+        request: requestForScene(requestScene),
         signal: abortController?.signal,
       })
+      let startedJob: RayTraceJob
+      try {
+        startedJob = await start(scene)
+      } catch (error) {
+        const cacheExpired = error instanceof Error &&
+          error.message.includes('CAD scene cache expired')
+        if (!cacheExpired || !activeCad?.path || abortController?.signal.aborted) throw error
+        setAutoConvergenceStatus('CAD Scene 캐시를 자동 복구하고 있습니다.')
+        const refreshed = await apiClient.refreshScene(activeCad.path, {
+          signal: abortController?.signal,
+        })
+        const refreshedScene: ScenePayload = {
+          ...scene,
+          metadata: {
+            ...scene.metadata,
+            scene_token: refreshed.scene_token,
+          },
+        }
+        queryClient.setQueryData(
+          apiQueryKeys.scene(activeCad.path),
+          refreshedScene,
+        )
+        startedJob = await start(refreshedScene)
+        setAutoConvergenceStatus('CAD Scene 캐시 복구 완료 · Ray Tracing을 시작했습니다.')
+      }
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
@@ -1591,16 +1637,18 @@ export function RayTracingPanel({
       autoRetryJobIdRef.current = autoRetry ? startedJob.job_id : null
       actions.setActiveRayTraceJobId(startedJob.job_id)
       return true
-    } catch {
+    } catch (error) {
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
       if (autoRetry && abortController?.signal.aborted) return false
       autoConvergenceActiveRef.current = false
-      setAutoConvergenceStatus('자동 수렴의 다음 Ray 실행을 시작하지 못했습니다.')
+      setAutoConvergenceStatus(
+        `Ray Tracing 실행을 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return false
     }
-  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false

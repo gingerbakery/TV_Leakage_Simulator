@@ -192,6 +192,23 @@ def create_app(
         except Exception as exc:
             return _error(500, str(exc))
 
+    @application.post("/api/scene/refresh", response_class=JSONResponse)
+    def refresh_scene(payload: dict[str, Any] = Body(...)) -> Any:
+        cad_path = str(payload.get("cad") or "").strip()
+        if not cad_path:
+            return _error(400, "CAD file is required")
+        try:
+            refreshed = api_runtime.load_scene(cad_path)
+            metadata = refreshed.get("metadata") or {}
+            scene_token = str(metadata.get("scene_token") or "")
+            if not scene_token:
+                raise ValueError("CAD scene refresh returned no scene token")
+            return {"scene_token": scene_token}
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
     @application.post("/api/upload", response_class=JSONResponse)
     async def upload(request: Request, filename: str = "") -> Any:
         try:

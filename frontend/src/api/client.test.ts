@@ -46,6 +46,24 @@ describe('createApiClient', () => {
     )
   })
 
+  it('refreshes only the server-side CAD token without downloading the scene again', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ scene_token: 'scene-refreshed' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const client = createApiClient({ fetch: fetchMock })
+
+    await expect(client.refreshScene('C:\\CAD files\\TV.step')).resolves.toEqual({
+      scene_token: 'scene-refreshed',
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe('/api/scene/refresh')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ cad: 'C:\\CAD files\\TV.step' })
+  })
+
   it('requests a geometry section cap from the cached CAD scene', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

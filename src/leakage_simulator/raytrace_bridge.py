@@ -12,7 +12,7 @@ from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayTraceConfi
 @dataclass(frozen=True)
 class PreparedTraceGeometry:
     mesh: TriangleMesh
-    source_to_trace_face: Dict[int, int]
+    source_to_trace_face: Dict[int, List[int]]
     roi_is_active: bool
 
 
@@ -85,12 +85,15 @@ def build_prepared_trace_geometry(
             mesh,
             [int(value) for value in roi_faces],
             preserved_source_face_indices=emitter_only_source_faces,
+            clip_boxes=request_payload.get("roi_clip_boxes"),
         )
     else:
-        source_to_trace_face = {
-            int(mesh.metadata(face_index).get("source_face_index", face_index)): face_index
-            for face_index in range(len(mesh.faces))
-        }
+        source_to_trace_face: Dict[int, List[int]] = {}
+        for face_index in range(len(mesh.faces)):
+            source_face_index = int(
+                mesh.metadata(face_index).get("source_face_index", face_index)
+            )
+            source_to_trace_face.setdefault(source_face_index, []).append(face_index)
     # Prepared geometry caches a BVH acceleration structure for both CPU and
     # CUDA consumers.  Compute-device selection remains request-local in
     # RayTraceConfig and is deliberately not encoded in this geometry cache.
@@ -119,9 +122,10 @@ def build_direct_trace_input(
         if str(normalized.get("emitter_type") or "face") == "face":
             source_faces = _emitter_source_faces(scene_mesh, normalized, component_cache)
             normalized["face_indices"] = [
-                source_to_trace_face[face_index]
+                trace_face_index
                 for face_index in source_faces
                 if face_index in source_to_trace_face
+                for trace_face_index in source_to_trace_face[face_index]
             ]
             if not normalized["face_indices"]:
                 if roi_is_active:
@@ -156,11 +160,103 @@ def build_direct_trace_input(
     )
 
 
+def _normalize_roi_clip_boxes(
+    raw_boxes: List[Dict[str, Any]],
+) -> List[Tuple[float, float, float, float, float, float]]:
+    boxes: List[Tuple[float, float, float, float, float, float]] = []
+    for raw in raw_boxes:
+        try:
+            x0, x1 = sorted((float(raw["x_min"]), float(raw["x_max"])))
+            y0, y1 = sorted((float(raw["y_min"]), float(raw["y_max"])))
+            z0, z1 = sorted((float(raw["z_min"]), float(raw["z_max"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (x0, x1, y0, y1, z0, z1)):
+            continue
+        if x1 - x0 <= 1e-9 or y1 - y0 <= 1e-9 or z1 - z0 <= 1e-9:
+            continue
+        boxes.append((x0, x1, y0, y1, z0, z1))
+    return boxes
+
+
+def _clip_polygon_axis(
+    polygon: List[Vec3],
+    axis: int,
+    boundary: float,
+    keep_greater: bool,
+) -> List[Vec3]:
+    if not polygon:
+        return []
+
+    def inside(point: Vec3) -> bool:
+        return point[axis] >= boundary - 1e-9 if keep_greater else point[axis] <= boundary + 1e-9
+
+    result: List[Vec3] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            denominator = current[axis] - previous[axis]
+            if abs(denominator) > 1e-15:
+                ratio = (boundary - previous[axis]) / denominator
+                intersection = tuple(
+                    previous[index] + ratio * (current[index] - previous[index])
+                    for index in range(3)
+                )
+                result.append(intersection)  # type: ignore[arg-type]
+        if current_inside:
+            result.append(current)
+        previous = current
+        previous_inside = current_inside
+    return result
+
+
+def _clip_triangle_to_box_union(
+    triangle: Tuple[Vec3, Vec3, Vec3],
+    boxes: List[Tuple[float, float, float, float, float, float]],
+) -> List[Tuple[Vec3, Vec3, Vec3]]:
+    """Clip one tessellated triangle to the union of ROI AABBs.
+
+    The viewer already clips the visible ROI surface. Applying the same
+    volume on the trace mesh prevents a boundary triangle from emitting rays
+    outside the yellow ROI highlight. Rounded triangle keys suppress overlap
+    duplicates when two active ROI boxes touch or overlap.
+    """
+    result: List[Tuple[Vec3, Vec3, Vec3]] = []
+    seen: Set[Tuple[Tuple[float, float, float], ...]] = set()
+    for x0, x1, y0, y1, z0, z1 in boxes:
+        polygon: List[Vec3] = list(triangle)
+        for axis, boundary, keep_greater in (
+            (0, x0, True), (0, x1, False),
+            (1, y0, True), (1, y1, False),
+            (2, z0, True), (2, z1, False),
+        ):
+            polygon = _clip_polygon_axis(polygon, axis, boundary, keep_greater)
+            if len(polygon) < 3:
+                break
+        if len(polygon) < 3:
+            continue
+        origin = polygon[0]
+        for index in range(1, len(polygon) - 1):
+            clipped = (origin, polygon[index], polygon[index + 1])
+            key = tuple(sorted(
+                tuple(round(value, 9) for value in point)
+                for point in clipped
+            ))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(clipped)
+    return result
+
+
 def filter_mesh_to_roi(
     mesh: TriangleMesh,
     roi_face_indices: List[int],
     preserved_source_face_indices: Optional[Set[int]] = None,
-) -> Tuple[TriangleMesh, Dict[int, int]]:
+    clip_boxes: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[TriangleMesh, Dict[int, List[int]]]:
     """Trims an already-transformed direct-trace mesh down to just the ROI
     faces, agreed with the ray-trace owner as "ROI를 선택하면 그 영역만 분석한다"
     (only the selected ROI region gets analyzed, not the full model).
@@ -176,7 +272,8 @@ def filter_mesh_to_roi(
     roi_set = set(roi_face_indices)
     preserved_set = preserved_source_face_indices or set()
     trimmed = TriangleMesh()
-    remap: Dict[int, int] = {}
+    remap: Dict[int, List[int]] = {}
+    normalized_boxes = _normalize_roi_clip_boxes(clip_boxes or [])
     for face_index in range(len(mesh.faces)):
         raw_source_face_index = mesh.metadata(face_index).get("source_face_index")
         source_face_index = (
@@ -186,14 +283,17 @@ def filter_mesh_to_roi(
             source_face_index not in roi_set and source_face_index not in preserved_set
         ):
             continue
-        v0, v1, v2 = mesh.face_vertices(face_index)
-        new_v0 = trimmed.add_vertex(v0)
-        new_v1 = trimmed.add_vertex(v1)
-        new_v2 = trimmed.add_vertex(v2)
-        new_face_index = trimmed.add_face(
-            new_v0, new_v1, new_v2, mesh.material_id(face_index), dict(mesh.metadata(face_index))
-        )
-        remap[source_face_index] = new_face_index
+        triangles = [mesh.face_vertices(face_index)]
+        if normalized_boxes and source_face_index in roi_set:
+            triangles = _clip_triangle_to_box_union(triangles[0], normalized_boxes)
+        for v0, v1, v2 in triangles:
+            new_v0 = trimmed.add_vertex(v0)
+            new_v1 = trimmed.add_vertex(v1)
+            new_v2 = trimmed.add_vertex(v2)
+            new_face_index = trimmed.add_face(
+                new_v0, new_v1, new_v2, mesh.material_id(face_index), dict(mesh.metadata(face_index))
+            )
+            remap.setdefault(source_face_index, []).append(new_face_index)
     if not trimmed.faces:
         raise ValueError("ROI selection produced an empty mesh - nothing to trace")
     return trimmed, remap
@@ -201,7 +301,7 @@ def filter_mesh_to_roi(
 
 def _remap_face_optical_assignments(
     optical_assignments: List[OpticalAssignment],
-    face_remap: Dict[int, int],
+    face_remap: Dict[int, List[int]],
 ) -> None:
     for assignment in optical_assignments:
         if assignment.target_type != "faces":
@@ -211,7 +311,10 @@ def _remap_face_optical_assignments(
         # leaving the rest (even if that means an empty override) is the
         # expected behavior here, not an error.
         assignment.face_indices = [
-            face_remap[index] for index in assignment.face_indices if index in face_remap
+            mapped
+            for index in assignment.face_indices
+            if index in face_remap
+            for mapped in face_remap[index]
         ]
 
 

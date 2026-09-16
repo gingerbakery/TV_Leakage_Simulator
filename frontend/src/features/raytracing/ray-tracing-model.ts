@@ -911,6 +911,24 @@ function activeRoiFaces(
   ].sort((left, right) => left - right)
 }
 
+function activeRoiClipBoxes(scopes: RoiScope[]) {
+  return scopes.flatMap((scope) => {
+    if (!scope.active || !scope.clipBox) return []
+    const box = scope.clipBox
+    const zMin = box.zMin
+    const zMax = box.zMax
+    if (zMin == null || zMax == null) return []
+    return [{
+      x_min: Math.min(box.xMin, box.xMax),
+      x_max: Math.max(box.xMin, box.xMax),
+      y_min: Math.min(box.yMin, box.yMax),
+      y_max: Math.max(box.yMin, box.yMax),
+      z_min: Math.min(zMin, zMax),
+      z_max: Math.max(zMin, zMax),
+    }]
+  })
+}
+
 export function buildRayTraceRequest({
   scene,
   projectName,
@@ -932,6 +950,7 @@ export function buildRayTraceRequest({
   const optical = buildOpticalPayload(materialAssignments)
   const deleted = new Set(deletedComponentIds)
   const roiFaces = activeRoiFaces(roiScopes, deleted)
+  const roiClipBoxes = activeRoiClipBoxes(roiScopes)
   const {
     auto_convergence: _autoConvergence,
     convergence_target_percent: _convergenceTarget,
@@ -970,6 +989,9 @@ export function buildRayTraceRequest({
       ]),
     ].sort((left, right) => left - right),
     ...(roiFaces.length > 0 ? { roi_faces: roiFaces } : {}),
+    ...(roiFaces.length > 0 && roiClipBoxes.length > 0
+      ? { roi_clip_boxes: roiClipBoxes }
+      : {}),
     config: {
       ...backendConfig,
       ray_count: Math.max(1, totalRayCount),

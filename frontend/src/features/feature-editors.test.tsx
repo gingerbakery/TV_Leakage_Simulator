@@ -1020,10 +1020,10 @@ describe('Step 07·08 feature editors', () => {
     ).toBe(true)
     expect(
       screen.getByRole('spinbutton', { name: 'Receiver width (mm)' }),
-    ).toHaveProperty('value', '30')
+    ).toHaveProperty('value', '30.00')
     expect(
       screen.getByRole('spinbutton', { name: 'Receiver height (mm)' }),
-    ).toHaveProperty('value', '30')
+    ).toHaveProperty('value', '30.00')
     fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), {
       target: { value: 'Camera RX' },
     })
@@ -1090,12 +1090,12 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', {
         name: 'Receiver width (mm)',
       }),
-    ).toHaveProperty('value', '30')
+    ).toHaveProperty('value', '30.00')
     expect(
       screen.getByRole('spinbutton', {
         name: 'Receiver center X',
       }),
-    ).toHaveProperty('value', '30.0')
+    ).toHaveProperty('value', '30.00')
     expect(
       screen.getByRole('spinbutton', {
         name: 'Receiver tilt Z',

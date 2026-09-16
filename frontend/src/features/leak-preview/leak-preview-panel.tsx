@@ -19,6 +19,7 @@ import { useWorkspaceStore, workspaceSelectors } from '@/stores'
 import {
   buildLeakPreviewRequest,
   createLeakPreviewBlockerFromFaces,
+  createLeakPreviewBodyPlaneEmitters,
   createCandidateReceiver,
   detectLeakPreviewCandidates,
   resolveLeakPreviewRoiFaces,
@@ -266,13 +267,13 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       const selectedIds = new Set(selectedComponentIds)
       const bodyFaceCount = scene?.components
         .filter((component) => selectedIds.has(component.component_id))
-        .reduce((sum, component) => sum + component.face_indices.length, 0) ?? 0
-      if (bodyFaceCount === 0) {
-        setMessage('선택한 Body에서 광원 Face를 찾지 못했습니다.')
+        .reduce((sum, component) => sum + Math.max(component.face_count, component.face_indices.length), 0) ?? 0
+      if (bodyFaceCount === 0 || !scene?.components.some((component) => selectedIds.has(component.component_id))) {
+        setMessage('선택한 Body에서 가상 Plane 기준을 찾지 못했습니다.')
         return
       }
       setSourceBody(selectedComponentIds, bodyFaceCount)
-      setMessage(`광원 Body ${selectedComponentIds.length}개가 등록되었습니다.`)
+      setMessage(`광원 Body ${selectedComponentIds.length}개 기준 가상 Plane이 등록되었습니다.`)
     } else {
       if (selectedFaceIds.length === 0) {
         setMessage('3D Viewer에서 광원 CAD Face를 하나 이상 선택하세요.')
@@ -371,11 +372,33 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     }
     if (precision) {
       if (!emitters.some((emitter) => emitter.enabled)) {
-        const emitterId = nextSpecId('emitter', emitters.map((emitter) => emitter.emitter_id))
-        actions.upsertEmitter({
-          ...createFaceEmitter(emitterId, sourceFaceIds),
-          ray_count: Math.max(100_000, rayTraceConfig.ray_count),
-        })
+        if (sourceMode === 'body') {
+          const generated = createLeakPreviewBodyPlaneEmitters(
+            scene,
+            sourceComponentIds,
+            transformRules,
+            Math.max(100_000, rayTraceConfig.ray_count),
+            false,
+          )
+          const usedIds = emitters.map((emitter) => emitter.emitter_id)
+          for (const plane of generated) {
+            const emitterId = nextSpecId('emitter', usedIds)
+            usedIds.push(emitterId)
+            actions.upsertEmitter({
+              ...plane,
+              emitter_id: emitterId,
+              power_mode: 'set_luminance',
+              luminance_nit: 500,
+              power_lumen: 1,
+            })
+          }
+        } else {
+          const emitterId = nextSpecId('emitter', emitters.map((emitter) => emitter.emitter_id))
+          actions.upsertEmitter({
+            ...createFaceEmitter(emitterId, sourceFaceIds),
+            ray_count: Math.max(100_000, rayTraceConfig.ray_count),
+          })
+        }
       }
       setMessage('ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
       onOpenPrecision()
@@ -459,7 +482,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
         <div className="rounded-md bg-muted/45 px-2.5 py-2 text-xs">
           등록된 광원 {sourceMode === 'body'
-            ? <><strong>Body {sourceComponentIds.length}</strong>개 · CAD Face <strong>{sourceBodyFaceCount}</strong>개</>
+            ? <><strong>Body {sourceComponentIds.length}</strong>개 · 가상 Plane <strong>{sourceComponentIds.length}</strong>개</>
             : <>CAD Face <strong>{sourceCadFaceCount}</strong>개</>}
         </div>
       </section>

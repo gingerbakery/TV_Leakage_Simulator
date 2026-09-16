@@ -6,6 +6,7 @@ export {
   detectLeakPreviewCandidates,
   getLeakPreviewBounds,
   leakPreviewReceiverDistanceMm,
+  leakPreviewReceiverOffsetMm,
   leakPreviewRoiOffsetMm,
   resolveLeakPreviewRoiFaces,
 } from './leak-preview-model'
