@@ -4,6 +4,7 @@ export interface ExcelSheetDefinition {
   name: string
   rows: ExcelCellValue[][]
   columnWidths?: number[]
+  images?: Array<{ png: Uint8Array; width: number; height: number; row?: number; column?: number }>
 }
 
 const encoder = new TextEncoder()
@@ -56,7 +57,7 @@ function cellXml(value: ExcelCellValue, address: string, header: boolean): strin
 }
 
 function worksheetXml(sheet: ExcelSheetDefinition): string {
-  const columnCount = Math.max(1, ...sheet.rows.map((row) => row.length))
+  const columnCount = sheet.rows.reduce((maximum, row) => Math.max(maximum, row.length), 1)
   const widths = Array.from({ length: columnCount }, (_, column) => {
     const requested = sheet.columnWidths?.[column]
     if (requested != null) return Math.max(6, Math.min(60, requested))
@@ -77,12 +78,12 @@ function worksheetXml(sheet: ExcelSheetDefinition): string {
   }).join('')
   const lastCell = `${columnName(columnCount - 1)}${Math.max(1, sheet.rows.length)}`
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
     `<dimension ref="A1:${lastCell}"/>` +
     `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>` +
     `<cols>${columns}</cols><sheetData>${rows}</sheetData>` +
     (sheet.rows.length > 0 ? `<autoFilter ref="A1:${columnName(columnCount - 1)}${sheet.rows.length}"/>` : '') +
-    `</worksheet>`
+    (sheet.images?.length ? '<drawing r:id="rIdDrawing"/>' : '') + `</worksheet>`
 }
 
 function crc32(bytes: Uint8Array): number {
@@ -106,13 +107,13 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return output
 }
 
-function zipStore(files: Array<{ path: string; content: string }>): Uint8Array {
+function zipStore(files: Array<{ path: string; content: string | Uint8Array }>): Uint8Array {
   const localParts: Uint8Array[] = []
   const centralParts: Uint8Array[] = []
   let offset = 0
   for (const file of files) {
     const name = encoder.encode(file.path)
-    const data = encoder.encode(file.content)
+    const data = typeof file.content === 'string' ? encoder.encode(file.content) : file.content
     const checksum = crc32(data)
     const local = new Uint8Array(30 + name.length)
     const localView = new DataView(local.buffer)
@@ -166,10 +167,12 @@ export function createExcelWorkbook(sheets: ExcelSheetDefinition[]): Blob {
   const contentOverrides = sheets.map((_, index) =>
     `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`,
   ).join('')
-  const files = [
+  const drawingOverrides = sheets.flatMap((sheet, index) => sheet.images?.length
+    ? [`<Override PartName="/xl/drawings/drawing${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`] : []).join('')
+  const files: Array<{ path: string; content: string | Uint8Array }> = [
     {
       path: '[Content_Types].xml',
-      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${contentOverrides}</Types>`,
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${contentOverrides}${drawingOverrides}</Types>`,
     },
     {
       path: '_rels/.rels',
@@ -192,6 +195,25 @@ export function createExcelWorkbook(sheets: ExcelSheetDefinition[]): Blob {
       content: worksheetXml(sheet),
     })),
   ]
+  const relationships = (body: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${body}</Relationships>`
+  sheets.forEach((sheet, sheetIndex) => {
+    if (!sheet.images?.length) return
+    const number = sheetIndex + 1
+    files.push({ path: `xl/worksheets/_rels/sheet${number}.xml.rels`, content: relationships(
+      `<Relationship Id="rIdDrawing" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${number}.xml"/>`,
+    ) })
+    const anchors = sheet.images.map((image, imageIndex) => {
+      const id = imageIndex + 1
+      files.push({ path: `xl/media/image${number}-${id}.png`, content: image.png })
+      const cx = Math.round(image.width * 9525)
+      const cy = Math.round(image.height * 9525)
+      return `<xdr:oneCellAnchor><xdr:from><xdr:col>${image.column ?? 0}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${image.row ?? 4}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${cx}" cy="${cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Heatmap ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId${id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`
+    }).join('')
+    files.push({ path: `xl/drawings/drawing${number}.xml`, content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors}</xdr:wsDr>` })
+    files.push({ path: `xl/drawings/_rels/drawing${number}.xml.rels`, content: relationships(sheet.images.map((_, index) =>
+      `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${number}-${index + 1}.png"/>`,
+    ).join('')) })
+  })
   const archive = zipStore(files)
   const blobBytes = new Uint8Array(archive.length)
   blobBytes.set(archive)

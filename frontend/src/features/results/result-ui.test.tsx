@@ -614,6 +614,10 @@ describe('Step 11 result UI', () => {
   })
 
   it('exports selected report cases as an Excel workbook', async () => {
+    const canvasContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      new Proxy({}, { get: () => vi.fn(), set: () => true }) as CanvasRenderingContext2D,
+    )
+    const canvasImage = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgo=')
     const result = createRayTraceResultFixture()
     const write = vi.fn().mockResolvedValue(undefined)
     const close = vi.fn().mockResolvedValue(undefined)
@@ -653,6 +657,8 @@ describe('Step 11 result UI', () => {
     const workbook = write.mock.calls[0][0] as Blob
     expect(workbook.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     expect(close).toHaveBeenCalledOnce()
+    canvasContext.mockRestore()
+    canvasImage.mockRestore()
   })
 
   it('downloads the report when the native save picker fails', async () => {

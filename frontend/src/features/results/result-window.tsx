@@ -58,6 +58,8 @@ import {
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
 import { ComputeExecutionStatus } from './compute-execution-status'
+import { resultExcelDetailSheets } from './result-excel-details'
+import { resultExcelImageSheets } from './result-excel-images'
 
 // Kill switch for the Ray Section View images in the Ray summary tab.
 // This feature has a known limitation (the true filled-cap cross-section
@@ -2312,9 +2314,22 @@ export function RayTraceResultWindow({
   const exportExcel = async () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
     if (cases.length === 0) return
-    const blob = createExcelWorkbook(
-      analysisExcelSheets(cases, baselineCase, receiverCompareScope),
-    )
+    let blob: Blob
+    try {
+      blob = createExcelWorkbook([
+        ...analysisExcelSheets(cases, baselineCase, receiverCompareScope),
+        ...resultExcelDetailSheets(cases),
+        ...resultExcelImageSheets(cases, {
+          mode: luminanceScaleMode,
+          minNit: customScaleMinNit,
+          maxNit: customScaleMaxNit,
+          correspondingPeak: correspondingReceiverPeakNit,
+        }),
+      ])
+    } catch (error) {
+      window.alert(`Excel 보고서 생성 실패: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
     const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.xlsx`
     const downloadExcel = () => {
       const url = URL.createObjectURL(blob)
