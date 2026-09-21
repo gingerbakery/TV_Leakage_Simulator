@@ -86,6 +86,10 @@ export interface CadUploadResponse {
   path: string
 }
 
+export interface SceneRefreshResponse {
+  scene_token: string
+}
+
 export interface SectionCapContour {
   component_id: number | null
   points: Vec3[]

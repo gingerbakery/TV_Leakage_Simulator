@@ -47,6 +47,21 @@ def override_payload(ray_count=64):
     }
 
 
+def clipped_override_case(ray_count=64):
+    scene = override_scene()
+    scene["faces"] = [scene["faces"][0]] * 5 + [scene["faces"][1]]
+    scene["face_component_ids"] = [7] * 5 + [8]
+    scene["face_material_ids"] = ["default"] * 6
+    payload = override_payload(ray_count)
+    payload["roi_faces"] = [5]
+    payload["optical_assignments"][0]["face_indices"] = [5]
+    payload["roi_clip_boxes"] = [{
+        "x_min": -2, "x_max": 2, "y_min": -1, "y_max": 1,
+        "z_min": 9, "z_max": 11,
+    }]
+    return scene, payload
+
+
 def capture_payload(reflectance, scatter_model, ray_count=128):
     payload = override_payload(ray_count)
     payload["roi_faces"] = [1]
@@ -126,6 +141,30 @@ class OpticalTransportAuditTests(unittest.TestCase):
                                            trace_input.optical_assignments)
         self.assertEqual(resolver.resolve(0).profile.profile_id, "face_mirror")
         self.assertEqual(resolver.resolve(1).profile.profile_id, "neighbor")
+
+    def test_roi_clip_children_keep_optical_source_ids_and_emitter_geometry_ids(self):
+        scene, payload = clipped_override_case()
+        prepared = build_prepared_trace_geometry(scene, payload)
+        self.assertEqual(len(prepared.mesh.faces), 2)
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                trace_input = build_direct_trace_input(
+                    scene, payload, prepared if reuse else None, reuse,
+                )
+                self.assertEqual(trace_input.optical_assignments[0].face_indices, [5])
+                resolver = OpticalPropertyResolver(
+                    trace_input.mesh, trace_input.optical_profiles, trace_input.optical_assignments,
+                )
+                for face_index in range(len(trace_input.mesh.faces)):
+                    self.assertEqual(trace_input.mesh.metadata(face_index)["source_face_index"], 5)
+                    self.assertEqual(resolver.resolve(face_index).profile.reflectance, 0.9)
+                result = run_direct_ray_trace(trace_input, intersection_provider="python_cpu")
+                self.assertAlmostEqual(result.metrics["receiver"]["total_flux_lumen"], 0.9, places=12)
+        emitter_payload = copy.deepcopy(payload)
+        emitter_payload["emitters"] = [{"emitter_id": "face", "emitter_type": "face", "face_indices": [5]}]
+        face_input = build_direct_trace_input(scene, emitter_payload, prepared, True)
+        self.assertEqual(face_input.emitters[0].face_indices, list(range(len(prepared.mesh.faces))))
+        self.assertEqual(face_input.optical_assignments[0].face_indices, [5])
 
     def test_reediting_profile_does_not_reuse_stale_optical_values(self):
         payload = override_payload()

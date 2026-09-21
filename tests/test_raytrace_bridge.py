@@ -138,6 +138,28 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(trace_input.optical_profiles[0].profile_id, "part_profile")
         self.assertEqual(trace_input.optical_assignments[0].component_id, 7)
 
+    def test_preview_body_emitter_expands_component_faces_server_side(self) -> None:
+        trace_input = build_direct_trace_input(
+            self.scene_mesh,
+            {
+                "emitters": [{
+                    "emitter_id": "body-source",
+                    "emitter_type": "face",
+                    "face_indices": [],
+                    "source_component_ids": [7],
+                }],
+                "receivers": [{
+                    "receiver_id": "receiver",
+                    "center": [0, 0, 10],
+                    "normal": [0, 0, -1],
+                    "width_mm": 10,
+                    "height_mm": 10,
+                }],
+            },
+        )
+
+        self.assertEqual(trace_input.emitters[0].face_indices, [0])
+
     def test_excluded_component_is_removed_from_direct_mesh(self) -> None:
         scene_mesh = {
             "vertices": [
@@ -156,6 +178,48 @@ class RayTraceBridgeTests(unittest.TestCase):
         self.assertEqual(mesh.metadata(0)["source_face_index"], 1)
         self.assertEqual(mesh.metadata(0)["component_id"], 8)
         self.assertEqual(mesh.material_id(0), "kept")
+
+    def test_preview_blocker_is_appended_as_a_closed_box(self) -> None:
+        mesh = build_transformed_mesh(
+            self.scene_mesh,
+            [],
+            preview_blockers=[{
+                "blocker_id": "main-board",
+                "center": [5.0, 6.0, 7.0],
+                "u_axis": [1.0, 0.0, 0.0],
+                "v_axis": [0.0, 1.0, 0.0],
+                "normal": [0.0, 0.0, 1.0],
+                "width_mm": 10.0,
+                "height_mm": 8.0,
+                "depth_mm": 2.0,
+                "enabled": True,
+            }],
+        )
+
+        self.assertEqual(len(mesh.faces), 13)
+        blocker_faces = [
+            index for index in range(len(mesh.faces))
+            if mesh.metadata(index).get("preview_blocker_id") == "main-board"
+        ]
+        self.assertEqual(len(blocker_faces), 12)
+        blocker_points = {
+            point
+            for face_index in blocker_faces
+            for point in mesh.face_vertices(face_index)
+        }
+        self.assertEqual(len(blocker_points), 8)
+        self.assertEqual(
+            {point[2] for point in blocker_points},
+            {6.0, 8.0},
+        )
+        hit = mesh.intersect_ray((5.0, 6.0, 0.0), (0.0, 0.0, 1.0))
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(
+            mesh.metadata(hit.face_index).get("preview_blocker_id"),
+            "main-board",
+        )
+        self.assertAlmostEqual(hit.point[2], 6.0)
 
     def test_face_emitter_is_remapped_after_component_deletion(self) -> None:
         scene_mesh = {
@@ -279,6 +343,28 @@ class RoiFilteringTests(unittest.TestCase):
         # trimmed mesh's face 0 regardless of the remap's internal detail.
         self.assertEqual(trace_input.emitters[0].face_indices, [0])
         self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 0)
+
+    def test_roi_clip_box_splits_boundary_triangle_and_remaps_emitter(self) -> None:
+        payload = self._payload(roi_faces=[0])
+        payload["roi_clip_boxes"] = [{
+            "x_min": 0.0, "x_max": 1.0,
+            "y_min": 0.0, "y_max": 1.0,
+            "z_min": -0.5, "z_max": 0.5,
+        }]
+
+        trace_input = build_direct_trace_input(self.scene_mesh, payload)
+
+        self.assertEqual(len(trace_input.mesh.faces), 2)
+        self.assertEqual(trace_input.emitters[0].face_indices, [0, 1])
+        self.assertAlmostEqual(
+            sum(trace_input.mesh.area(index) for index in range(2)),
+            1.0,
+        )
+        for vertex in trace_input.mesh.vertices:
+            self.assertGreaterEqual(vertex[0], -1e-9)
+            self.assertLessEqual(vertex[0], 1.0 + 1e-9)
+            self.assertGreaterEqual(vertex[1], -1e-9)
+            self.assertLessEqual(vertex[1], 1.0 + 1e-9)
 
     def test_roi_transform_material_emitter_receiver_pipeline_stays_aligned(self) -> None:
         payload = self._payload(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import math
 
 from .geometry import TriangleMesh
@@ -12,19 +12,51 @@ from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayTraceConfi
 @dataclass(frozen=True)
 class PreparedTraceGeometry:
     mesh: TriangleMesh
-    source_to_trace_face: Dict[int, int]
+    source_to_trace_face: Dict[int, List[int]]
     roi_is_active: bool
+
+
+def _emitter_source_faces(
+    scene_mesh: Dict[str, Any],
+    emitter: Dict[str, Any],
+    component_cache: Optional[Dict[Tuple[int, ...], List[int]]] = None,
+) -> List[int]:
+    """Expand compact Preview Body sources against the server-side CAD cache."""
+    explicit = [int(face_index) for face_index in emitter.get("face_indices", [])]
+    component_key = tuple(sorted({
+        int(component_id)
+        for component_id in emitter.get("source_component_ids", [])
+    }))
+    if not component_key:
+        return explicit
+    cache = component_cache if component_cache is not None else {}
+    expanded = cache.get(component_key)
+    if expanded is None:
+        selected = set(component_key)
+        expanded = [
+            face_index
+            for face_index, component_id in enumerate(
+                scene_mesh.get("face_component_ids") or []
+            )
+            if component_id is not None and int(component_id) in selected
+        ]
+        cache[component_key] = expanded
+    return list(dict.fromkeys([*explicit, *expanded]))
 
 
 def build_prepared_trace_geometry(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> PreparedTraceGeometry:
+    if should_stop is not None and should_stop():
+        raise InterruptedError("Ray trace preparation stopped")
+    component_cache: Dict[Tuple[int, ...], List[int]] = {}
     emitter_source_faces = {
-        int(face_index)
+        face_index
         for item in request_payload.get("emitters", [])
         if str(item.get("emitter_type") or "face") == "face"
-        for face_index in item.get("face_indices", [])
+        for face_index in _emitter_source_faces(scene_mesh, item, component_cache)
     }
     excluded_components = {
         int(component_id)
@@ -43,6 +75,8 @@ def build_prepared_trace_geometry(
         request_payload.get("transform_rules", []),
         request_payload.get("excluded_component_ids", []),
         emitter_source_face_indices=emitter_source_faces,
+        preview_blockers=request_payload.get("preview_blockers", []),
+        should_stop=should_stop,
     )
     roi_faces = request_payload.get("roi_faces")
     roi_is_active = bool(roi_faces)
@@ -51,17 +85,20 @@ def build_prepared_trace_geometry(
             mesh,
             [int(value) for value in roi_faces],
             preserved_source_face_indices=emitter_only_source_faces,
+            clip_boxes=request_payload.get("roi_clip_boxes"),
         )
     else:
-        source_to_trace_face = {
-            int(mesh.metadata(face_index).get("source_face_index", face_index)): face_index
-            for face_index in range(len(mesh.faces))
-        }
+        source_to_trace_face: Dict[int, List[int]] = {}
+        for face_index in range(len(mesh.faces)):
+            source_face_index = int(
+                mesh.metadata(face_index).get("source_face_index", face_index)
+            )
+            source_to_trace_face.setdefault(source_face_index, []).append(face_index)
     # Prepared geometry caches a BVH acceleration structure for both CPU and
     # CUDA consumers.  Compute-device selection remains request-local in
     # RayTraceConfig and is deliberately not encoded in this geometry cache.
     mesh.set_acceleration_structure("bvh")
-    mesh.prepare_acceleration()
+    mesh.prepare_acceleration(should_stop)
     return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active)
 
 
@@ -79,19 +116,22 @@ def build_direct_trace_input(
     source_to_trace_face = geometry.source_to_trace_face
     roi_is_active = geometry.roi_is_active
     emitter_payloads = []
+    component_cache: Dict[Tuple[int, ...], List[int]] = {}
     for item in request_payload.get("emitters", []):
         normalized = dict(item)
         if str(normalized.get("emitter_type") or "face") == "face":
-            source_faces = [int(face_index) for face_index in normalized.get("face_indices", [])]
+            source_faces = _emitter_source_faces(scene_mesh, normalized, component_cache)
             normalized["face_indices"] = [
-                source_to_trace_face[face_index]
+                trace_face_index
                 for face_index in source_faces
                 if face_index in source_to_trace_face
+                for trace_face_index in source_to_trace_face[face_index]
             ]
             if not normalized["face_indices"]:
                 if roi_is_active:
                     raise ValueError("Face emitter has no faces left inside the selected ROI")
                 raise ValueError("Face emitter has no traceable faces after component exclusion")
+        normalized.pop("source_component_ids", None)
         emitter_payloads.append(normalized)
     emitters = [EmitterSpec.from_dict(item) for item in emitter_payloads]
     receivers = [ReceiverSpec.from_dict(dict(item)) for item in request_payload.get("receivers", [])]
@@ -120,11 +160,103 @@ def build_direct_trace_input(
     )
 
 
+def _normalize_roi_clip_boxes(
+    raw_boxes: List[Dict[str, Any]],
+) -> List[Tuple[float, float, float, float, float, float]]:
+    boxes: List[Tuple[float, float, float, float, float, float]] = []
+    for raw in raw_boxes:
+        try:
+            x0, x1 = sorted((float(raw["x_min"]), float(raw["x_max"])))
+            y0, y1 = sorted((float(raw["y_min"]), float(raw["y_max"])))
+            z0, z1 = sorted((float(raw["z_min"]), float(raw["z_max"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (x0, x1, y0, y1, z0, z1)):
+            continue
+        if x1 - x0 <= 1e-9 or y1 - y0 <= 1e-9 or z1 - z0 <= 1e-9:
+            continue
+        boxes.append((x0, x1, y0, y1, z0, z1))
+    return boxes
+
+
+def _clip_polygon_axis(
+    polygon: List[Vec3],
+    axis: int,
+    boundary: float,
+    keep_greater: bool,
+) -> List[Vec3]:
+    if not polygon:
+        return []
+
+    def inside(point: Vec3) -> bool:
+        return point[axis] >= boundary - 1e-9 if keep_greater else point[axis] <= boundary + 1e-9
+
+    result: List[Vec3] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            denominator = current[axis] - previous[axis]
+            if abs(denominator) > 1e-15:
+                ratio = (boundary - previous[axis]) / denominator
+                intersection = tuple(
+                    previous[index] + ratio * (current[index] - previous[index])
+                    for index in range(3)
+                )
+                result.append(intersection)  # type: ignore[arg-type]
+        if current_inside:
+            result.append(current)
+        previous = current
+        previous_inside = current_inside
+    return result
+
+
+def _clip_triangle_to_box_union(
+    triangle: Tuple[Vec3, Vec3, Vec3],
+    boxes: List[Tuple[float, float, float, float, float, float]],
+) -> List[Tuple[Vec3, Vec3, Vec3]]:
+    """Clip one tessellated triangle to the union of ROI AABBs.
+
+    The viewer already clips the visible ROI surface. Applying the same
+    volume on the trace mesh prevents a boundary triangle from emitting rays
+    outside the yellow ROI highlight. Rounded triangle keys suppress overlap
+    duplicates when two active ROI boxes touch or overlap.
+    """
+    result: List[Tuple[Vec3, Vec3, Vec3]] = []
+    seen: Set[Tuple[Tuple[float, float, float], ...]] = set()
+    for x0, x1, y0, y1, z0, z1 in boxes:
+        polygon: List[Vec3] = list(triangle)
+        for axis, boundary, keep_greater in (
+            (0, x0, True), (0, x1, False),
+            (1, y0, True), (1, y1, False),
+            (2, z0, True), (2, z1, False),
+        ):
+            polygon = _clip_polygon_axis(polygon, axis, boundary, keep_greater)
+            if len(polygon) < 3:
+                break
+        if len(polygon) < 3:
+            continue
+        origin = polygon[0]
+        for index in range(1, len(polygon) - 1):
+            clipped = (origin, polygon[index], polygon[index + 1])
+            key = tuple(sorted(
+                tuple(round(value, 9) for value in point)
+                for point in clipped
+            ))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(clipped)
+    return result
+
+
 def filter_mesh_to_roi(
     mesh: TriangleMesh,
     roi_face_indices: List[int],
     preserved_source_face_indices: Optional[Set[int]] = None,
-) -> Tuple[TriangleMesh, Dict[int, int]]:
+    clip_boxes: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[TriangleMesh, Dict[int, List[int]]]:
     """Trims an already-transformed direct-trace mesh down to just the ROI
     faces, agreed with the ray-trace owner as "ROI를 선택하면 그 영역만 분석한다"
     (only the selected ROI region gets analyzed, not the full model).
@@ -132,14 +264,15 @@ def filter_mesh_to_roi(
     Returns the trimmed mesh plus a map from original scene face index (the
     same indices ROI selection in the web UI works with, and that
     build_transformed_mesh stores as each face's "source_face_index"
-    metadata) to the new, trimmed mesh's face index. Face emitters use the
+    metadata) to the new, trimmed mesh's face indices. Face emitters use the
     remapped geometry indices. Optical assignments retain original scene
     indices because OpticalPropertyResolver resolves source_face_index.
     """
     roi_set = set(roi_face_indices)
     preserved_set = preserved_source_face_indices or set()
     trimmed = TriangleMesh()
-    remap: Dict[int, int] = {}
+    remap: Dict[int, List[int]] = {}
+    normalized_boxes = _normalize_roi_clip_boxes(clip_boxes or [])
     for face_index in range(len(mesh.faces)):
         raw_source_face_index = mesh.metadata(face_index).get("source_face_index")
         source_face_index = (
@@ -149,14 +282,17 @@ def filter_mesh_to_roi(
             source_face_index not in roi_set and source_face_index not in preserved_set
         ):
             continue
-        v0, v1, v2 = mesh.face_vertices(face_index)
-        new_v0 = trimmed.add_vertex(v0)
-        new_v1 = trimmed.add_vertex(v1)
-        new_v2 = trimmed.add_vertex(v2)
-        new_face_index = trimmed.add_face(
-            new_v0, new_v1, new_v2, mesh.material_id(face_index), dict(mesh.metadata(face_index))
-        )
-        remap[source_face_index] = new_face_index
+        triangles = [mesh.face_vertices(face_index)]
+        if normalized_boxes and source_face_index in roi_set:
+            triangles = _clip_triangle_to_box_union(triangles[0], normalized_boxes)
+        for v0, v1, v2 in triangles:
+            new_v0 = trimmed.add_vertex(v0)
+            new_v1 = trimmed.add_vertex(v1)
+            new_v2 = trimmed.add_vertex(v2)
+            new_face_index = trimmed.add_face(
+                new_v0, new_v1, new_v2, mesh.material_id(face_index), dict(mesh.metadata(face_index))
+            )
+            remap.setdefault(source_face_index, []).append(new_face_index)
     if not trimmed.faces:
         raise ValueError("ROI selection produced an empty mesh - nothing to trace")
     return trimmed, remap
@@ -164,7 +300,7 @@ def filter_mesh_to_roi(
 
 def _filter_face_optical_assignments(
     optical_assignments: List[OpticalAssignment],
-    face_remap: Dict[int, int],
+    face_remap: Dict[int, List[int]],
 ) -> None:
     for assignment in optical_assignments:
         if assignment.target_type != "faces":
@@ -179,6 +315,8 @@ def build_transformed_mesh(
     transform_rules: List[Dict[str, Any]],
     excluded_component_ids: Optional[List[int]] = None,
     emitter_source_face_indices: Optional[Set[int]] = None,
+    preview_blockers: Optional[List[Dict[str, Any]]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> TriangleMesh:
     vertices = scene_mesh.get("vertices") or []
     faces = scene_mesh.get("faces") or []
@@ -200,6 +338,8 @@ def build_transformed_mesh(
     }
     component_bounds: Dict[int, List[List[float]]] = {}
     for face_index, component_id in enumerate(component_ids):
+        if face_index % 4096 == 0 and should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         if component_id is None:
             continue
         normalized_component_id = int(component_id)
@@ -238,6 +378,8 @@ def build_transformed_mesh(
 
     mesh = TriangleMesh()
     for face_index, face in enumerate(faces):
+        if face_index % 4096 == 0 and should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         if len(face) != 3:
             raise ValueError("Direct ray tracing requires triangle faces")
         component_id = component_ids[face_index]
@@ -265,7 +407,57 @@ def build_transformed_mesh(
                 "trace_excluded": component_is_excluded,
             },
         )
+    _append_preview_blockers(mesh, preview_blockers or [])
     return mesh
+
+
+def _append_preview_blockers(
+    mesh: TriangleMesh,
+    blockers: List[Dict[str, Any]],
+) -> None:
+    """Append lightweight rectangular solids used only by leak Preview."""
+    triangles = (
+        (0, 2, 1), (0, 3, 2),
+        (4, 5, 6), (4, 6, 7),
+        (0, 1, 5), (0, 5, 4),
+        (3, 7, 6), (3, 6, 2),
+        (0, 4, 7), (0, 7, 3),
+        (1, 2, 6), (1, 6, 5),
+    )
+    for blocker_index, blocker in enumerate(blockers):
+        if not blocker.get("enabled", True):
+            continue
+        center = tuple(float(value) for value in blocker.get("center", (0, 0, 0)))
+        u_axis = tuple(float(value) for value in blocker.get("u_axis", (1, 0, 0)))
+        v_axis = tuple(float(value) for value in blocker.get("v_axis", (0, 1, 0)))
+        normal = tuple(float(value) for value in blocker.get("normal", (0, 0, 1)))
+        half_width = max(float(blocker.get("width_mm", 0.0)), 1e-6) / 2.0
+        half_height = max(float(blocker.get("height_mm", 0.0)), 1e-6) / 2.0
+        half_depth = max(float(blocker.get("depth_mm", 0.0)), 1e-6) / 2.0
+        corners: List[Vec3] = []
+        for depth_sign in (-1.0, 1.0):
+            for u_sign, v_sign in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+                corners.append((
+                    center[0] + u_axis[0] * half_width * u_sign + v_axis[0] * half_height * v_sign + normal[0] * half_depth * depth_sign,
+                    center[1] + u_axis[1] * half_width * u_sign + v_axis[1] * half_height * v_sign + normal[1] * half_depth * depth_sign,
+                    center[2] + u_axis[2] * half_width * u_sign + v_axis[2] * half_height * v_sign + normal[2] * half_depth * depth_sign,
+                ))
+        vertex_indices = [mesh.add_vertex(point) for point in corners]
+        component_id = -1_000_000 - blocker_index
+        blocker_id = str(blocker.get("blocker_id") or "preview-blocker")
+        for triangle in triangles:
+            mesh.add_face(
+                vertex_indices[triangle[0]],
+                vertex_indices[triangle[1]],
+                vertex_indices[triangle[2]],
+                "default",
+                {
+                    "source_face_index": -1,
+                    "component_id": component_id,
+                    "preview_blocker_id": blocker_id,
+                    "trace_excluded": False,
+                },
+            )
 
 
 def _transform_point(point: Vec3, pivot: Vec3, rule: Dict[str, Any]) -> Vec3:

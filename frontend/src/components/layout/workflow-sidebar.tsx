@@ -5,6 +5,7 @@ import {
   ChevronDown,
   FileBox,
   Layers3,
+  Lightbulb,
   Move3D,
   Palette,
   PanelLeftClose,
@@ -24,6 +25,7 @@ import {
   type ComponentEditorRequest,
 } from '@/features/components'
 import { MaterialAssignmentPanel } from '@/features/materials'
+import { LeakPreviewPanel } from '@/features/leak-preview'
 import {
   RayTracingPanel,
   type RayObjectEditRequest,
@@ -57,6 +59,7 @@ function ActiveCadCaseLabel() {
 
 export type WorkflowSectionId =
   | 'model-import'
+  | 'leak-preview'
   | 'roi'
   | 'components'
   | 'ray-tracing'
@@ -100,6 +103,13 @@ const workflowSections: WorkflowSection[] = [
     guide:
       'STEP/STP, X_T/X_B, STL, OBJ 등 CAD 파일을 face 단위 mesh로 변환합니다. 가져온 뒤에는 원본 CAD 파일 없이도 현재 작업 상태를 .bitsam 프로젝트 파일로 저장해 나중에 다시 불러올 수 있습니다 (단, 같은 CAD를 다시 Import해야 기하가 맞물려 복원됩니다).',
     icon: FileBox,
+  },
+  {
+    id: 'leak-preview',
+    label: 'Whole Set Lighting',
+    guide:
+      '광원 CAD Face만 선택하고 저정밀 Ray Tracing으로 전체 세트 외부의 빛 유출 위치를 탐색합니다. 3D 발광 표시에서 후보를 선택해 ROI와 정밀해석 Receiver를 자동으로 준비할 수 있습니다.',
+    icon: Lightbulb,
   },
   {
     id: 'roi',
@@ -296,7 +306,16 @@ export function WorkflowSidebar({
       return (
         <ModelImportCard
           sceneStatus={sceneStatus}
-          onImported={() => onActiveSectionChange('roi')}
+          onImported={() => onActiveSectionChange('leak-preview')}
+        />
+      )
+    }
+
+    if (sectionId === 'leak-preview') {
+      return (
+        <LeakPreviewPanel
+          scene={scene}
+          onOpenPrecision={() => onActiveSectionChange('ray-tracing')}
         />
       )
     }

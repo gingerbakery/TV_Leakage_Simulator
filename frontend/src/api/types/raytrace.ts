@@ -32,10 +32,14 @@ export interface EmitterSpec {
   emitter_id: string
   emitter_type: EmitterType
   face_indices: number[]
+  /** Preview-only compact Body source reference; expanded by the API cache. */
+  source_component_ids?: number[]
   /** CAD faces used to place a datum plane; display/edit reference only. */
   source_face_indices?: number[]
   normal_mode: EmitterNormalMode
   normal_flip: boolean
+  /** Plane emission side. Missing means legacy normal_flip behavior. */
+  emission_direction?: 'forward' | 'reverse' | 'both'
   custom_normal: Vec3 | null
   direction_distribution: EmitterDistribution
   gaussian_sigma_deg: number
@@ -190,6 +194,19 @@ export type RayTraceConfigRequest = Omit<
 export interface RayTraceRequest {
   scene_token: string
   project_name: string
+  /** Preview runs may use the already-loaded display tessellation. */
+  geometry_mode?: 'precision' | 'preview'
+  preview_blockers?: Array<{
+    blocker_id: string
+    center: Vec3
+    u_axis: Vec3
+    v_axis: Vec3
+    normal: Vec3
+    width_mm: number
+    height_mm: number
+    depth_mm: number
+    enabled: boolean
+  }>
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
   optical_profiles: OpticalProfile[]
@@ -197,6 +214,16 @@ export interface RayTraceRequest {
   transform_rules: TransformRule[]
   excluded_component_ids: number[]
   roi_faces?: number[]
+  /** Exact axis-aligned ROI volumes. The backend clips boundary triangles to
+   * these boxes so viewer highlighting and emitted ray origins agree. */
+  roi_clip_boxes?: Array<{
+    x_min: number
+    x_max: number
+    y_min: number
+    y_max: number
+    z_min: number
+    z_max: number
+  }>
   config: Omit<
     RayTraceConfigRequest,
     | 'auto_convergence'
@@ -279,6 +306,8 @@ interface RayTraceJobProgress {
   created_at: number
   stop_requested?: boolean
   stopped_early?: boolean
+  geometry_cache_hit?: boolean
+  preparation_elapsed_sec?: number
 }
 
 export interface QueuedRayTraceJob extends RayTraceJobProgress {
@@ -298,6 +327,12 @@ export interface CompletedRayTraceJob extends RayTraceJobProgress {
   completed_at: number
 }
 
+export interface CancelledRayTraceJob extends RayTraceJobProgress {
+  status: 'cancelled'
+  phase: 'stopped'
+  completed_at: number
+}
+
 export interface FailedRayTraceJob extends RayTraceJobProgress {
   status: 'failed'
   phase: 'failed'
@@ -309,4 +344,5 @@ export type RayTraceJob =
   | QueuedRayTraceJob
   | RunningRayTraceJob
   | CompletedRayTraceJob
+  | CancelledRayTraceJob
   | FailedRayTraceJob

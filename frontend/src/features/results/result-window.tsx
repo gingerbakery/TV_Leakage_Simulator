@@ -34,6 +34,10 @@ import { Button } from '@/components/ui/button'
 import { getComponentDisplayName } from '@/features/components'
 import { metricErrorPercent, rayObjectDisplayName, receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
 import {
+  createExcelWorkbook,
+  type ExcelSheetDefinition,
+} from '@/lib/xlsx-export'
+import {
   removeReceiverFromRayTraceResult,
   useWorkspaceStore,
   workspaceSelectors,
@@ -46,7 +50,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
-  receiverHeatmapPhysicalScale,
+  receiverHeatmapPeakPosition,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -54,6 +58,8 @@ import {
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
 import { ComputeExecutionStatus } from './compute-execution-status'
+import { resultExcelDetailSheets } from './result-excel-details'
+import { resultExcelImageSheets } from './result-excel-images'
 
 // Kill switch for the Ray Section View images in the Ray summary tab.
 // This feature has a known limitation (the true filled-cap cross-section
@@ -190,17 +196,6 @@ function caseFlux(
   return scopedReceivers(result, receiverScope).reduce(
     (sum, receiver) =>
       sum + numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen),
-    0,
-  )
-}
-
-function caseReceiverHits(
-  result: RayTraceResult,
-  receiverScope: ReceiverCompareScope,
-): number {
-  return scopedReceivers(result, receiverScope).reduce(
-    (sum, receiver) =>
-      sum + numeric(objectValue(result.metrics, receiver.receiver_id).hit_count),
     0,
   )
 }
@@ -375,6 +370,11 @@ function comparisonConditionMismatches(
   for (let index = 0; index < Math.min(emitters.length, baselineEmitters.length); index += 1) {
     const emitter = emitters[index]
     const baseEmitter = baselineEmitters[index]
+    const emitterDirection = emitter.emission_direction ?? (emitter.normal_flip ? 'reverse' : 'forward')
+    const baselineEmitterDirection = baseEmitter.emission_direction ?? (baseEmitter.normal_flip ? 'reverse' : 'forward')
+    if (emitterDirection !== baselineEmitterDirection) {
+      mismatches.push(`Emitter ${index + 1} · 방출 방향`)
+    }
     if (Boolean(emitter.aim?.enabled) !== Boolean(baseEmitter.aim?.enabled)) {
       mismatches.push(`Emitter ${index + 1} · Aim On/Off`)
     } else if (emitter.aim?.enabled && baseEmitter.aim?.enabled) {
@@ -516,6 +516,215 @@ function leakageImprovementScore(
     0,
   )
   return Math.max(0, Math.min(100, 100 / (1 + severityRatio)))
+}
+
+function relativeChangePercent(value: number, baseline: number): number | null {
+  if (!Number.isFinite(value) || !Number.isFinite(baseline)) return null
+  if (Math.abs(baseline) <= 1e-15) return Math.abs(value) <= 1e-15 ? 0 : null
+  const change = ((value - baseline) / baseline) * 100
+  return Math.abs(change) < 0.05 ? 0 : change
+}
+
+function analysisExcelSheets(
+  cases: AnalysisCase[],
+  baselineCase: AnalysisCase | null,
+  receiverScope: ReceiverCompareScope,
+): ExcelSheetDefinition[] {
+  const baselineFlux = baselineCase ? caseFlux(baselineCase.result, receiverScope) : 0
+  const baselineLuminance = baselineCase
+    ? caseLuminance(baselineCase.result, receiverScope)
+    : null
+  const compareRows = cases.map((item) => {
+    const luminance = caseLuminance(item.result, receiverScope)
+    const flux = caseFlux(item.result, receiverScope)
+    const mismatches = baselineCase
+      ? comparisonConditionMismatches(item.result, baselineCase.result, receiverScope)
+      : []
+    const comparable = Boolean(baselineCase) && mismatches.length === 0
+    return [
+      baselineCase?.case_id === item.case_id,
+      item.name,
+      item.cad_name,
+      item.note,
+      receiverScope === 'all' ? 'All Receivers' : receiverScope.replace(/^name:/, ''),
+      comparable ? 'Match' : 'Mismatch',
+      mismatches.join(' / '),
+      comparable && baselineCase
+        ? leakageImprovementScore(item.result, baselineCase.result, receiverScope)
+        : null,
+      comparable && baselineLuminance
+        ? relativeChangePercent(luminance.peakNit, baselineLuminance.peakNit)
+        : null,
+      comparable
+        ? relativeChangePercent(flux, baselineFlux)
+        : null,
+      comparable && baselineLuminance
+        ? relativeChangePercent(luminance.lightAreaMm2[5], baselineLuminance.lightAreaMm2[5])
+        : null,
+      item.result.run_id,
+      item.result.runtime_sec,
+      item.saved_at,
+    ]
+  })
+
+  const receiverRows = cases.flatMap((item) =>
+    receiversInDisplayOrder(item.result.receivers).flatMap((receiver) => {
+      const grid = item.result.receiver_grids.find((candidate) =>
+        candidate.receiver_id === receiver.receiver_id)
+      if (!grid) return []
+      const metrics = objectValue(item.result.metrics, receiver.receiver_id)
+      const areas = receiverLightAreas(item.result, receiver.receiver_id)
+      const peak = receiverHeatmapPeakPosition(grid, receiver.width_mm, receiver.height_mm)
+      return [[
+        item.name,
+        item.cad_name,
+        rayObjectDisplayName('receiver', receiver.receiver_id, receiver.display_name),
+        receiver.enabled,
+        receiver.width_mm,
+        receiver.height_mm,
+        receiver.resolution[0],
+        receiver.resolution[1],
+        receiver.width_mm / Math.max(1, receiver.resolution[0]),
+        receiver.height_mm / Math.max(1, receiver.resolution[1]),
+        receiver.acceptance_angle_deg,
+        numeric(metrics.peak_nit_est),
+        peak?.xMm ?? null,
+        peak?.yMm ?? null,
+        numeric(metrics.mean_nit_est),
+        numeric(metrics.p95_nit_est),
+        numeric(metrics.total_flux_lumen),
+        areas[1],
+        areas[5],
+        areas[10],
+        numeric(metrics.receiver_hit_count ?? grid.hit_count),
+        typeof metrics.error_estimate_percent === 'number'
+          ? metrics.error_estimate_percent
+          : null,
+        typeof metrics.peak_area_error_estimate_percent === 'number'
+          ? metrics.peak_area_error_estimate_percent
+          : null,
+        item.result.run_id,
+      ]]
+    }),
+  )
+
+  const conditionRows: Array<Array<string | number | boolean | null>> = []
+  const addCondition = (
+    item: AnalysisCase,
+    category: string,
+    target: string,
+    field: string,
+    value: unknown,
+    unit = '',
+  ) => {
+    conditionRows.push([
+      item.name,
+      item.cad_name,
+      category,
+      target,
+      field,
+      Array.isArray(value) || (value != null && typeof value === 'object')
+        ? JSON.stringify(value)
+        : typeof value === 'number' || typeof value === 'boolean'
+          ? value
+          : value == null ? '' : String(value),
+      unit,
+    ])
+  }
+  for (const item of cases) {
+    const configUnits: Record<string, string> = {
+      min_energy: item.result.config.min_energy_basis === 'initial_ray_fraction'
+        ? 'ratio' : 'lm/Ray',
+      epsilon_mm: 'mm',
+      convergence_target_percent: '%',
+    }
+    for (const [field, value] of Object.entries(item.result.config)) {
+      addCondition(item, 'Ray Tracing', 'Run', field, value, configUnits[field] ?? '')
+    }
+    item.result.emitters.forEach((emitter, index) => {
+      const target = rayObjectDisplayName('emitter', emitter.emitter_id)
+      const fields: Array<[string, unknown, string?]> = [
+        ['enabled', emitter.enabled],
+        ['type', emitter.emitter_type],
+        ['direction', emitter.emission_direction ?? (emitter.normal_flip ? 'reverse' : 'forward')],
+        ['distribution', emitter.direction_distribution],
+        ['gaussian_sigma', emitter.gaussian_sigma_deg, 'deg'],
+        ['power_mode', emitter.power_mode],
+        ['total_power', emitter.power_lumen, 'lm'],
+        ['power_density', emitter.power_density_lm_per_m2, 'lm/m²'],
+        ['luminance', emitter.luminance_nit ?? null, 'nit'],
+        ['ray_count', emitter.ray_count],
+        ['seed', emitter.seed],
+        ['center', emitter.center, 'mm'],
+        ['width', emitter.width_mm, 'mm'],
+        ['height', emitter.height_mm, 'mm'],
+        ['aim', emitter.aim ?? null],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Emitter', `${index + 1}. ${target}`, field, value, unit))
+    })
+    receiversInDisplayOrder(item.result.receivers).forEach((receiver, index) => {
+      const target = rayObjectDisplayName('receiver', receiver.receiver_id, receiver.display_name)
+      const fields: Array<[string, unknown, string?]> = [
+        ['enabled', receiver.enabled],
+        ['center', receiver.center, 'mm'],
+        ['normal', receiver.normal],
+        ['u_axis', receiver.u_axis],
+        ['v_axis', receiver.v_axis],
+        ['width', receiver.width_mm, 'mm'],
+        ['height', receiver.height_mm, 'mm'],
+        ['resolution', receiver.resolution, 'pixel'],
+        ['acceptance_angle', receiver.acceptance_angle_deg, 'deg'],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Receiver', `${index + 1}. ${target}`, field, value, unit))
+    })
+    item.result.optical_profiles.forEach((profile) => {
+      const fields: Array<[string, unknown, string?]> = [
+        ['reflectance', profile.reflectance],
+        ['absorption', profile.absorption],
+        ['specular_ratio', profile.specular_ratio],
+        ['diffuse_ratio', profile.diffuse_ratio],
+        ['scatter_model', profile.scatter_model],
+        ['roughness', profile.roughness],
+        ['gaussian_sigma', profile.gaussian_sigma_deg, 'deg'],
+      ]
+      fields.forEach(([field, value, unit]) =>
+        addCondition(item, 'Material', profile.profile_id, field, value, unit))
+    })
+  }
+
+  return [
+    {
+      name: 'Compare Cases',
+      rows: [[
+        'Baseline', 'Case', 'CAD', 'Note', 'Receiver Scope', 'Conditions',
+        'Mismatch Details', 'Improvement Score', 'Peak Change (%)',
+        'Total Flux Change (%)', 'Light Area @5% Change (%)', 'Run ID',
+        'Runtime (s)', 'Saved At',
+      ], ...compareRows],
+      columnWidths: [10, 18, 24, 28, 20, 12, 42, 18, 18, 22, 24, 22, 14, 24],
+    },
+    {
+      name: 'Receiver Results',
+      rows: [[
+        'Case', 'CAD', 'Receiver', 'Enabled', 'Width (mm)', 'Height (mm)',
+        'Resolution X', 'Resolution Y', 'Pixel X (mm)', 'Pixel Y (mm)',
+        'Acceptance Angle (deg)', 'Peak (nit)', 'Peak X (mm)', 'Peak Y (mm)',
+        'Mean (nit)', 'P95 (nit)', 'Total Flux (lm)', 'Light Area @1% (mm²)',
+        'Light Area @5% (mm²)', 'Light Area @10% (mm²)', 'Hits',
+        'Error Estimate (%)', 'Peak-Area Error (%)', 'Run ID',
+      ], ...receiverRows],
+      columnWidths: [18, 24, 22, 10, 13, 13, 13, 13, 13, 13, 22, 14, 14, 14, 14, 14, 18, 23, 23, 24, 12, 20, 21, 22],
+    },
+    {
+      name: 'Run Conditions',
+      rows: [[
+        'Case', 'CAD', 'Category', 'Target', 'Setting', 'Value', 'Unit',
+      ], ...conditionRows],
+      columnWidths: [18, 24, 16, 28, 28, 46, 12],
+    },
+  ]
 }
 
 interface WindowFrame {
@@ -717,6 +926,40 @@ function formatMetric(value: unknown, digits = 3) {
   return number.toFixed(digits)
 }
 
+function RelativeComparisonValue({
+  value,
+  baseline,
+  comparable,
+}: {
+  value: number
+  baseline: number
+  comparable: boolean
+}) {
+  if (!comparable || !Number.isFinite(value) || !Number.isFinite(baseline)) {
+    return <span className="text-muted-foreground">—</span>
+  }
+  if (Math.abs(baseline) <= 1e-15) {
+    return Math.abs(value) <= 1e-15 ? (
+      <span className="text-muted-foreground">0.0%</span>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    )
+  }
+  const rawChange = ((value - baseline) / baseline) * 100
+  const change = Math.abs(rawChange) < 0.05 ? 0 : rawChange
+  if (change === 0) {
+    return <span className="text-muted-foreground">0.0%</span>
+  }
+  const improved = change < 0
+  return (
+    <span
+      className={improved ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'font-semibold text-red-600 dark:text-red-400'}
+    >
+      {Math.abs(change).toFixed(1)}% {improved ? '감소' : '증가'}
+    </span>
+  )
+}
+
 function ReceiverHeatmap({
   grid,
   receiver,
@@ -734,7 +977,6 @@ function ReceiverHeatmap({
   errorTargetPercent,
   sampleCount,
   faceSourceIds,
-  physicalScalePxPerMm,
 }: {
   grid: ReceiverGrid
   receiver: ReceiverSpec
@@ -752,7 +994,6 @@ function ReceiverHeatmap({
   errorTargetPercent: number
   sampleCount: number
   faceSourceIds?: number[]
-  physicalScalePxPerMm?: number
 }) {
   const receiverLabel = rayObjectDisplayName(
     'receiver',
@@ -784,7 +1025,6 @@ function ReceiverHeatmap({
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
-    physicalScalePxPerMm,
   )
   const columns = Math.max(1, grid.resolution[0])
   const rows = Math.max(1, grid.resolution[1])
@@ -1726,11 +1966,13 @@ function ReceiverProfileChart({
 function Stat({
   label,
   value,
+  detail,
   help,
   className = '',
 }: {
   label: string
   value: string
+  detail?: string
   help?: string
   className?: string
 }) {
@@ -1743,6 +1985,11 @@ function Stat({
         ) : null}
       </div>
       <div className="mt-1 text-base font-semibold">{value}</div>
+      {detail ? (
+        <div className="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+          {detail}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1917,10 +2164,6 @@ export function RayTraceResultWindow({
     ]),
   )
   const orderedResultReceivers = receiversInDisplayOrder(result.receivers)
-  const heatmapPhysicalScalePxPerMm = receiverHeatmapPhysicalScale(
-    orderedResultReceivers,
-  )
-
   const begin = (
     event: ReactPointerEvent,
     kind: PointerOperation['kind'],
@@ -2072,6 +2315,67 @@ export function RayTraceResultWindow({
     }
 
     downloadReport()
+  }
+
+  const exportExcel = async () => {
+    const cases = selectedCases.length > 0 ? selectedCases : analysisCases
+    if (cases.length === 0) return
+    let blob: Blob
+    try {
+      blob = createExcelWorkbook([
+        ...analysisExcelSheets(cases, baselineCase, receiverCompareScope),
+        ...resultExcelDetailSheets(cases),
+        ...resultExcelImageSheets(cases, {
+          mode: luminanceScaleMode,
+          minNit: customScaleMinNit,
+          maxNit: customScaleMaxNit,
+          correspondingPeak: correspondingReceiverPeakNit,
+        }),
+      ])
+    } catch (error) {
+      window.alert(`Excel 보고서 생성 실패: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.xlsx`
+    const downloadExcel = () => {
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    }
+    const picker = (window as AnalysisReportSaveFilePickerWindow)
+      .showSaveFilePicker
+    if (picker) {
+      try {
+        const handle = await picker.call(window, {
+          suggestedName: fileName,
+          types: [{
+            description: 'Excel Workbook',
+            accept: {
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+            },
+          }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        return
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        downloadExcel()
+        window.alert(
+          error instanceof Error
+            ? `Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${error.message}`
+            : 'Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다.',
+        )
+        return
+      }
+    }
+    downloadExcel()
   }
 
   const importCases = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -2290,6 +2594,14 @@ export function RayTraceResultWindow({
                   >
                     <Download /> Save report
                   </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={analysisCases.length === 0}
+                    onClick={exportExcel}
+                  >
+                    <Download /> Export Excel
+                  </Button>
                 </div>
               </div>
 
@@ -2299,7 +2611,7 @@ export function RayTraceResultWindow({
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[1020px] border-collapse text-base">
+                  <table className="w-full min-w-[920px] border-collapse text-base">
                     <thead className="bg-muted/45 text-left text-sm">
                       <tr>
                         <th className="p-2">Compare</th>
@@ -2314,28 +2626,27 @@ export function RayTraceResultWindow({
                           </span>
                         </th>
                         <th className="p-2 text-center">비교 조건</th>
-                        <th className="p-2 text-right">Hit Ratio</th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Total Flux
-                            <HelpTooltip label="Total flux 설명">
-                              모든 Receiver에 도달한 전체 광량(lm)입니다. 값이 작을수록 유입된 빛샘 에너지가 적습니다.
+                            Peak nit 변화
+                            <HelpTooltip label="Peak nit 변화율 설명">
+                              Baseline Peak nit 대비 감소·증가 비율입니다. 감소할수록 국부적으로 강한 빛샘이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            Peak Nit
-                            <HelpTooltip label="Peak nit 설명">
-                              Receiver Heatmap에서 가장 밝은 지점의 추정 휘도입니다. 체감상 강하게 보이는 국부 빛샘을 나타냅니다.
+                            Total Flux 변화
+                            <HelpTooltip label="Total Flux 변화율 설명">
+                              Baseline Total Flux 대비 감소·증가 비율입니다. 감소할수록 Receiver에 도달한 전체 빛샘 광량이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
                         <th className="p-2">
                           <span className="flex items-center justify-end gap-1">
-                            광영역(@5%)
-                            <HelpTooltip label="광영역 5% 설명">
-                              해당 Case의 최대 Peak nit 중 5% 이상인 Receiver Heatmap 셀의 실제 면적 합계(mm²)입니다.
+                            광영역(@5%) 변화
+                            <HelpTooltip label="광영역 5% 변화율 설명">
+                              Baseline 광영역(@5%) 대비 감소·증가 비율입니다. 감소할수록 빛샘이 분포된 면적이 개선된 것입니다.
                             </HelpTooltip>
                           </span>
                         </th>
@@ -2344,18 +2655,20 @@ export function RayTraceResultWindow({
                     </thead>
                     <tbody>
                       {analysisCases.map((item) => {
-                        const scopedHits = caseReceiverHits(
-                          item.result,
-                          receiverCompareScope,
-                        )
-                        const itemHitRatio = item.result.total_rays > 0
-                          ? scopedHits / item.result.total_rays
-                          : 0
                         const flux = caseFlux(item.result, receiverCompareScope)
                         const luminance = caseLuminance(
                           item.result,
                           receiverCompareScope,
                         )
+                        const baselineFlux = baselineCase
+                          ? caseFlux(baselineCase.result, receiverCompareScope)
+                          : 0
+                        const baselineLuminance = baselineCase
+                          ? caseLuminance(
+                              baselineCase.result,
+                              receiverCompareScope,
+                            )
+                          : null
                         const score = baselineCase
                           ? leakageImprovementScore(
                               item.result,
@@ -2471,10 +2784,27 @@ export function RayTraceResultWindow({
                                 </HelpTooltip>
                               </span>
                             </td>
-                            <td className="p-2 text-right tabular-nums">{(itemHitRatio * 100).toFixed(3)}%</td>
-                            <td className="p-2 text-right tabular-nums">{formatMetric(flux)} lm</td>
-                            <td className="p-2 text-right tabular-nums">{formatMetric(luminance.peakNit)}</td>
-                            <td className="p-2 text-right font-semibold tabular-nums">{formatMetric(luminance.lightAreaMm2[5])} mm²</td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={luminance.peakNit}
+                                baseline={baselineLuminance?.peakNit ?? 0}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={flux}
+                                baseline={baselineFlux}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
+                            <td className="p-2 text-right tabular-nums">
+                              <RelativeComparisonValue
+                                value={luminance.lightAreaMm2[5]}
+                                baseline={baselineLuminance?.lightAreaMm2[5] ?? 0}
+                                comparable={conditionsMatch}
+                              />
+                            </td>
                             <td className="p-2 text-right">
                               <Button
                                 size="icon-xs"
@@ -2824,6 +3154,13 @@ export function RayTraceResultWindow({
                   receiver.receiver_id,
                 )
                 const currentPeakNit = numeric(values.peak_nit_est)
+                const peakPosition = grid
+                  ? receiverHeatmapPeakPosition(
+                      grid,
+                      receiver.width_mm,
+                      receiver.height_mm,
+                    )
+                  : null
                 const comparePeakNit = Math.max(
                   currentPeakNit,
                   ...selectedCases.map((item) =>
@@ -2945,7 +3282,10 @@ export function RayTraceResultWindow({
                         className="order-4 col-span-2"
                         label="Peak Nit"
                         value={formatMetric(values.peak_nit_est)}
-                        help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
+                        detail={peakPosition
+                          ? `X ${formatReceiverCoordinate(peakPosition.xMm)} mm · Y ${formatReceiverCoordinate(peakPosition.yMm)} mm`
+                          : 'X — · Y —'}
+                        help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 아래 X/Y는 같은 Peak 셀 중심의 Receiver Local 좌표이며 3D Viewer의 Receiver 축과 일치합니다."
                       />
                       <Stat
                         className="order-5 col-span-2"
@@ -3052,7 +3392,6 @@ export function RayTraceResultWindow({
                               result.total_rays,
                           )}
                           faceSourceIds={scene?.mesh.face_source_ids}
-                          physicalScalePxPerMm={heatmapPhysicalScalePxPerMm}
                         />
                       </div>
                     ) : null}

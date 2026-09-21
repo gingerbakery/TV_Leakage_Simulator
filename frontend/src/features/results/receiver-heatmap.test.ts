@@ -10,7 +10,7 @@ import {
   receiverHeatmapColor,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
-  receiverHeatmapPhysicalScale,
+  receiverHeatmapPeakPosition,
   receiverHeatmapSample,
   receiverHeatmapViewportBounds,
   zoomReceiverHeatmapViewport,
@@ -32,15 +32,9 @@ describe('receiver heatmap geometry', () => {
     })
   })
 
-  it('uses one physical scale across differently sized receivers', () => {
-    const scale = receiverHeatmapPhysicalScale([
-      { width_mm: 5, height_mm: 3 },
-      { width_mm: 10, height_mm: 10 },
-    ])
-
-    expect(scale).toBeCloseTo(57.6)
-    expect(receiverHeatmapLayout(5, 3, scale).preferredWidthPx).toBeCloseTo(288)
-    expect(receiverHeatmapLayout(10, 10, scale).preferredWidthPx).toBeCloseTo(576)
+  it('fits each differently sized receiver independently for readability', () => {
+    expect(receiverHeatmapLayout(5, 3).preferredWidthPx).toBeCloseTo(684)
+    expect(receiverHeatmapLayout(10, 10).preferredWidthPx).toBeCloseTo(576)
   })
 
   it('maps backend local positive Y to the top of the display', () => {
@@ -157,6 +151,38 @@ describe('receiver heatmap geometry', () => {
       xMm: 10,
       yMm: 5,
     })
+  })
+
+  it('reports the brightest cell center in Receiver Local X/Y coordinates', () => {
+    const grid: ReceiverGrid = {
+      receiver_id: 'receiver-test',
+      resolution: [4, 2],
+      bin_area_mm2: 1,
+      flux_lumen: [
+        [1, 2, 9, 4],
+        [5, 6, 7, 8],
+      ],
+      hit_count: 8,
+    }
+
+    expect(receiverHeatmapPeakPosition(grid, 40, 20)).toEqual({
+      column: 2,
+      displayRow: 1,
+      sourceRow: 0,
+      xMm: 5,
+      yMm: -5,
+    })
+  })
+
+  it('does not report a peak coordinate for an empty Heatmap', () => {
+    const grid: ReceiverGrid = {
+      receiver_id: 'receiver-test',
+      resolution: [1, 1],
+      bin_area_mm2: 1,
+      flux_lumen: [[0]],
+      hit_count: 0,
+    }
+    expect(receiverHeatmapPeakPosition(grid, 10, 10)).toBeNull()
   })
 
   it('uses a blue-to-red scientific heatmap palette', () => {

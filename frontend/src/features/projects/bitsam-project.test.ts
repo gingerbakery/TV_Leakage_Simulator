@@ -23,7 +23,12 @@ function createProjectFixture() {
     displayName: 'tv-corner.step',
   }
   const actions = store.getState().actions
-  actions.setActiveCad(activeCad)
+  actions.addCadCase(activeCad)
+  actions.updateCadCaseMetadata(
+    store.getState().activeCadCaseId!,
+    'CASE 01 개선 구조',
+    'Front gap 0.3 mm',
+  )
   actions.renameComponent(1, 'Chassis Rear')
   actions.setHiddenComponentIds([2])
   actions.setRayTraceConfig({
@@ -103,6 +108,10 @@ describe('BITSAM project format', () => {
     expect(restored).toEqual(project)
     expect(restored.schema_version).toBe('bitsam-project.v1')
     expect(restored.cad.display_name).toBe('tv-corner.step')
+    expect(restored.case_metadata).toEqual({
+      name: 'CASE 01 개선 구조',
+      note: 'Front gap 0.3 mm',
+    })
     expect(restored.workspace).toMatchObject({
       hiddenComponentIds: [2],
       componentNameOverrides: { 1: 'Chassis Rear' },
@@ -238,6 +247,15 @@ describe('BITSAM project format', () => {
     store.getState().actions.restoreProjectState(restored.workspace)
 
     expect(store.getState().customOpticalProfiles).toEqual([])
+  })
+
+  it('loads legacy projects without Case metadata', () => {
+    const { project } = createProjectFixture()
+    delete project.case_metadata
+
+    const restored = parseBitsamProject(JSON.stringify(project))
+
+    expect(restored.case_metadata).toBeUndefined()
   })
 
   it('uses the custom .bitsam extension', () => {

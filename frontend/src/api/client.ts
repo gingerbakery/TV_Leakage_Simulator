@@ -7,6 +7,7 @@ import type {
   RayTraceRequest,
   RayTraceResult,
   ScenePayload,
+  SceneRefreshResponse,
   SectionCapRequest,
   SectionCapResponse,
 } from './types'
@@ -22,6 +23,7 @@ export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
 
 export interface LeakageApiClient {
   getScene(cadPath: string, options?: ApiRequestOptions): Promise<ScenePayload>
+  refreshScene(cadPath: string, options?: ApiRequestOptions): Promise<SceneRefreshResponse>
   getSectionCap(
     request: SectionCapRequest,
     options?: ApiRequestOptions,
@@ -79,6 +81,14 @@ export function createApiClient(
           signal: requestOptions?.signal,
         })
       }
+    },
+
+    refreshScene(cadPath, requestOptions) {
+      return http.requestJson<SceneRefreshResponse>('/api/scene/refresh', {
+        method: 'POST',
+        json: { cad: cadPath },
+        signal: requestOptions?.signal,
+      })
     },
 
     getSectionCap(request, requestOptions) {

@@ -372,6 +372,14 @@ export function SimulatorShell() {
   useEffect(() => {
     if (!pendingProject || !activeCad || !scene) return
 
+    if (activeCadCaseId && pendingProject.case_metadata) {
+      actions.updateCadCaseMetadata(
+        activeCadCaseId,
+        pendingProject.case_metadata.name ?? '',
+        pendingProject.case_metadata.note ?? '',
+      )
+    }
+
     const restoredLegacyCpu =
       pendingProject.workspace.rayTraceConfig.compute_backend === undefined
 
@@ -453,7 +461,7 @@ export function SimulatorShell() {
       ].join('\n'),
       restoredLegacyCpu ? 'select-gpu' : undefined,
     )
-  }, [actions, activeCad, pendingProject, scene])
+  }, [actions, activeCad, activeCadCaseId, pendingProject, scene])
 
   const handleSaveProject = async () => {
     if (document.activeElement instanceof HTMLElement) {

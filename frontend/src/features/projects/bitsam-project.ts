@@ -50,8 +50,8 @@ export interface BitsamProject {
   saved_at: string
   project_name: string
   cad: BitsamCadReference
-  workspace: WorkspaceProjectState
   case_metadata?: { name?: string; note?: string }
+  workspace: WorkspaceProjectState
   /** Last completed analysis, including receiver grids and stored ray paths. */
   analysis_result?: RayTraceResult | null
 }
@@ -317,6 +317,8 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&
     isBoolean(value.normal_flip) &&
+    (value.emission_direction === undefined ||
+      isOneOf(value.emission_direction, ['forward', 'reverse', 'both'])) &&
     isEmitterAim(value.aim) &&
     (value.custom_normal === null || isVec3(value.custom_normal)) &&
     isOneOf(value.direction_distribution, [
@@ -624,7 +626,9 @@ export function createBitsamProject(
   }
 
   const displayName = workspace.activeCad.displayName
-  const activeCase = workspace.cadCases.find((item) => item.caseId === workspace.activeCadCaseId)
+  const activeCase = workspace.cadCases.find(
+    (item) => item.caseId === workspace.activeCadCaseId,
+  )
   return {
     format: bitsamFormat,
     schema_version: bitsamSchemaVersion,
@@ -637,8 +641,8 @@ export function createBitsamProject(
       file_extension: extensionFromFileName(displayName),
       fingerprint: createSceneFingerprint(scene),
     },
-    workspace: createWorkspaceProjectState(workspace),
     case_metadata: activeCase ? { name: activeCase.name, note: activeCase.note } : undefined,
+    workspace: createWorkspaceProjectState(workspace),
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
@@ -654,6 +658,9 @@ export function createBitsamProjectFromLoadedProject(
   savedAt = new Date(),
   analysisResult?: RayTraceResult | null,
 ): BitsamProject {
+  const activeCase = workspace.cadCases.find(
+    (item) => item.caseId === workspace.activeCadCaseId,
+  )
   return {
     format: bitsamFormat,
     schema_version: bitsamSchemaVersion,
@@ -661,7 +668,9 @@ export function createBitsamProjectFromLoadedProject(
     saved_at: savedAt.toISOString(),
     project_name: loadedProject.project_name,
     cad: structuredClone(loadedProject.cad),
-    case_metadata: loadedProject.case_metadata ? structuredClone(loadedProject.case_metadata) : undefined,
+    case_metadata: activeCase
+      ? { name: activeCase.name, note: activeCase.note }
+      : structuredClone(loadedProject.case_metadata),
     workspace: createWorkspaceProjectState(workspace),
     analysis_result: analysisResult
       ? structuredClone(analysisResult)

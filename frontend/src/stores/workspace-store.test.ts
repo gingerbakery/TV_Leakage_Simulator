@@ -26,6 +26,24 @@ describe('workspace store', () => {
     expect(store.getState().rayTraceConfig.min_energy).toBe(1e-9)
   })
 
+  it('keeps editable Case names and captions exactly as entered', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+
+    actions.updateCadCaseMetadata(
+      caseId,
+      'CASE 01 개선 구조',
+      'Front gap 0.3 mm / 보강 Rib 적용',
+    )
+
+    expect(store.getState().cadCases[0]).toMatchObject({
+      name: 'CASE 01 개선 구조',
+      note: 'Front gap 0.3 mm / 보강 Rib 적용',
+    })
+  })
+
   it('creates independent Cases when the same CAD path is imported again', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions
@@ -160,6 +178,26 @@ describe('workspace store', () => {
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-a')
     actions.setActiveCadCase(caseB)
     expect(store.getState().activeRayTraceJobId).toBe('ray-job-b')
+  })
+
+  it('preserves Ray results when an unchanged Emitter is applied again', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const emitter = createFaceEmitter('emitter-001', [11, 10, 11])
+    actions.upsertEmitter(emitter)
+    actions.setActiveRayTraceJobId('ray-job-a')
+    const result = createRayTraceResultFixture()
+    actions.setActiveCadCaseResult(result)
+
+    actions.upsertEmitter(structuredClone(emitter))
+
+    const state = store.getState()
+    expect(state.activeRayTraceJobId).toBe('ray-job-a')
+    expect(
+      state.cadCases.find((item) => item.caseId === caseId)?.latestResult?.run_id,
+    ).toBe(result.run_id)
   })
 
   it('preserves unchecked Receiver results and replaces only the recalculated Receiver', () => {

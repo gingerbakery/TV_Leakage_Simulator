@@ -43,6 +43,7 @@ import type {
 } from '@/features/raytracing'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import { RayTraceResultWindow } from '@/features/results'
+import { useLeakPreviewStore } from '@/features/leak-preview/leak-preview-store'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -187,6 +188,12 @@ export function ViewerWorkspace({
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
   )
+  const ignoreAreaSelectionArmed = useLeakPreviewStore(
+    (state) => state.ignoreAreaSelectionArmed,
+  )
+  const addLeakPreviewIgnoreAreaRegion = useLeakPreviewStore(
+    (state) => state.addIgnoreAreaRegion,
+  )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
   )
@@ -218,6 +225,15 @@ export function ViewerWorkspace({
     ({ clipBox, view }: RoiBoxSelectionResult) => {
       if (!scene) return
 
+      if (ignoreAreaSelectionArmed) {
+        addLeakPreviewIgnoreAreaRegion(clipBox)
+        // Keep selection armed so multiple PEM-Nut holes or similar regions
+        // can be grouped under one Allowed Area item.
+        actions.setRoiBoxSelectionArmed(true)
+        setStatusMessage('Allowed Area 영역 추가 · 계속 드래그하거나 선택 완료를 누르세요.')
+        return
+      }
+
       const faceIds = resolveFacesInRoiBox(
         scene,
         clipBox,
@@ -248,9 +264,11 @@ export function ViewerWorkspace({
     },
     [
       actions,
+      addLeakPreviewIgnoreAreaRegion,
       componentNameOverrides,
       deletedComponentIds,
       hiddenComponentIds,
+      ignoreAreaSelectionArmed,
       roiDraftLabel,
       scene,
     ],

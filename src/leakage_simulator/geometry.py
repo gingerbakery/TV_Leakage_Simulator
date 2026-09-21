@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 import math
 import threading
 import time
@@ -1029,8 +1029,11 @@ class TriangleMesh:
 
         self.set_acceleration_structure(backend)
 
-    def prepare_acceleration(self) -> Dict[str, float | int | str]:
-        self._ensure_prepared_triangles()
+    def prepare_acceleration(
+        self,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, float | int | str]:
+        self._ensure_prepared_triangles(should_stop)
         if not self.faces:
             return self.acceleration_info()
         if self._bvh_nodes is None or self._bvh_face_indices is None:
@@ -1038,10 +1041,20 @@ class TriangleMesh:
             self._bvh_nodes = []
             self._bvh_face_indices = []
             self._bvh_leaf_count = 0
-            traceable_faces = self._traceable_face_indices()
-            if traceable_faces:
-                self._build_flat_bvh(traceable_faces)
-            self._bvh_build_sec = time.perf_counter() - started
+            try:
+                traceable_faces = self._traceable_face_indices(should_stop)
+                if traceable_faces:
+                    self._build_flat_bvh(
+                        traceable_faces,
+                        should_stop=should_stop,
+                    )
+                self._bvh_build_sec = time.perf_counter() - started
+            except InterruptedError:
+                self._bvh_nodes = None
+                self._bvh_face_indices = None
+                self._bvh_leaf_count = 0
+                self._bvh_build_sec = 0.0
+                raise
         return self.acceleration_info()
 
     def acceleration_info(
@@ -1226,17 +1239,22 @@ class TriangleMesh:
             direction,
         )
 
-    def _traceable_face_indices(self) -> List[int]:
+    def _traceable_face_indices(
+        self,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> List[int]:
         """Faces eligible for ray collision.
 
         Emitter-only CAD faces remain in the mesh for origin/normal sampling,
         but TRACE OFF components must be transparent to every traced ray.
         """
-        return [
-            index
-            for index in range(len(self.faces))
-            if not bool(self.metadata(index).get("trace_excluded", False))
-        ]
+        traceable: List[int] = []
+        for index in range(len(self.faces)):
+            if index % 4096 == 0 and should_stop is not None and should_stop():
+                raise InterruptedError("Ray trace preparation stopped")
+            if not bool(self.metadata(index).get("trace_excluded", False)):
+                traceable.append(index)
+        return traceable
 
     def _intersect_prepared_range(
         self,
@@ -1306,7 +1324,14 @@ class TriangleMesh:
             best_face_index = face_index
         return best_distance, best_face_index
 
-    def _build_flat_bvh(self, face_indices: List[int], leaf_size: int = 8) -> int:
+    def _build_flat_bvh(
+        self,
+        face_indices: List[int],
+        leaf_size: int = 8,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> int:
+        if should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         prepared = self._prepared_triangles or []
         nodes = self._bvh_nodes
         ordered_faces = self._bvh_face_indices
@@ -1343,18 +1368,25 @@ class TriangleMesh:
         nodes[node_index].left = self._build_flat_bvh(
             ordered[:midpoint_index],
             leaf_size,
+            should_stop,
         )
         nodes[node_index].right = self._build_flat_bvh(
             ordered[midpoint_index:],
             leaf_size,
+            should_stop,
         )
         return node_index
 
-    def _ensure_prepared_triangles(self) -> None:
+    def _ensure_prepared_triangles(
+        self,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> None:
         if self._prepared_triangles is not None:
             return
         prepared: List[_PreparedTriangle] = []
-        for face in self.faces:
+        for index, face in enumerate(self.faces):
+            if index % 4096 == 0 and should_stop is not None and should_stop():
+                raise InterruptedError("Ray trace preparation stopped")
             v0 = self.vertices[face.v0]
             v1 = self.vertices[face.v1]
             v2 = self.vertices[face.v2]

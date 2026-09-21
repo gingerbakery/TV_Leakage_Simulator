@@ -42,6 +42,13 @@ class _SceneLoadState:
         self.error: Optional[Exception] = None
 
 
+class _TraceGeometryBuildState:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.prepared: Optional[PreparedTraceGeometry] = None
+        self.error: Optional[Exception] = None
+
+
 class ApiRuntime:
     """Owns the short-lived state required by the local simulation API."""
 
@@ -70,6 +77,7 @@ class ApiRuntime:
         self._portable_sources: dict[str, Path] = {}
         self._project_exports: dict[str, tuple[Path, str, float]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
+        self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
         self._output_file_index: dict[str, Path] = {}
@@ -474,7 +482,10 @@ class ApiRuntime:
     ) -> dict[str, Any]:
         scene_token = str(request_payload.get("scene_token") or "")
         with self._state_lock:
-            scene_mesh = self._scene_mesh_cache.get(scene_token)
+            if request_payload.get("geometry_mode") == "preview":
+                scene_mesh = self._scene_viewer_mesh_cache.get(scene_token)
+            else:
+                scene_mesh = self._scene_mesh_cache.get(scene_token)
         if scene_mesh is None:
             raise ValueError(
                 "CAD scene cache expired. Reload the CAD model and run again"
@@ -501,12 +512,25 @@ class ApiRuntime:
             and component_ids[int(face_index)] is not None
             and int(component_ids[int(face_index)]) in excluded_set
         })
+        preserved_emitter_components = sorted({
+            int(component_id)
+            for emitter in request_payload.get("emitters", [])
+            if str(emitter.get("emitter_type") or "face") == "face"
+            for component_id in emitter.get("source_component_ids", [])
+            if int(component_id) in excluded_set
+        })
         geometry_state = {
             "scene_token": str(request_payload.get("scene_token") or ""),
+            "geometry_mode": str(
+                request_payload.get("geometry_mode") or "precision"
+            ),
             "transform_rules": request_payload.get("transform_rules", []),
             "excluded_component_ids": excluded,
             "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),
+            "roi_clip_boxes": request_payload.get("roi_clip_boxes", []),
             "preserved_emitter_faces": preserved_emitter_faces,
+            "preserved_emitter_components": preserved_emitter_components,
+            "preview_blockers": request_payload.get("preview_blockers", []),
         }
         encoded = json.dumps(
             geometry_state,
@@ -519,25 +543,81 @@ class ApiRuntime:
         self,
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> Any:
+        if should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         scene_mesh = self._resolve_deferred_trace_mesh(scene_mesh)
+        if should_stop is not None and should_stop():
+            raise InterruptedError("Ray trace preparation stopped")
         request_payload = self._map_viewer_faces_to_trace(
             scene_mesh,
             request_payload,
+            should_stop,
         )
         if self._trace_input_builder is not build_direct_trace_input:
-            return self._trace_input_builder(scene_mesh, request_payload)
+            trace_input = self._trace_input_builder(scene_mesh, request_payload)
+            if should_stop is not None and should_stop():
+                raise InterruptedError("Ray trace preparation stopped")
+            return trace_input
         cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
         with self._state_lock:
-            prepared = self._trace_geometry_cache.get(cache_key)
+            # Refresh cache insertion order on a hit so the repeatedly used
+            # Preview geometry survives experiments with several alternatives.
+            prepared = self._trace_geometry_cache.pop(cache_key, None)
+            if prepared is not None:
+                self._trace_geometry_cache[cache_key] = prepared
+            build_state = self._trace_geometry_builds.get(cache_key)
+            is_builder = prepared is None and build_state is None
+            if is_builder:
+                build_state = _TraceGeometryBuildState()
+                self._trace_geometry_builds[cache_key] = build_state
         cache_hit = prepared is not None
         if prepared is None:
-            prepared = build_prepared_trace_geometry(scene_mesh, request_payload)
-            with self._state_lock:
-                self._trace_geometry_cache[cache_key] = prepared
-                while len(self._trace_geometry_cache) > self._max_jobs:
-                    oldest_key = next(iter(self._trace_geometry_cache))
-                    self._trace_geometry_cache.pop(oldest_key, None)
+            assert build_state is not None
+            if not is_builder:
+                # A superseded/restarted Preview may request the same geometry
+                # while the first worker is still preparing it. Reuse that
+                # build instead of creating a second multi-million-face BVH.
+                while not build_state.event.wait(timeout=0.05):
+                    if should_stop is not None and should_stop():
+                        raise InterruptedError("Ray trace preparation stopped")
+                if build_state.error is not None:
+                    if (
+                        isinstance(build_state.error, InterruptedError)
+                        and not (should_stop is not None and should_stop())
+                    ):
+                        return self._build_trace_input_for_request(
+                            scene_mesh,
+                            request_payload,
+                            should_stop,
+                        )
+                    raise build_state.error
+                prepared = build_state.prepared
+                if prepared is None:
+                    raise RuntimeError("Prepared geometry build completed without a result")
+                cache_hit = True
+            else:
+                try:
+                    prepared = build_prepared_trace_geometry(
+                        scene_mesh,
+                        request_payload,
+                        should_stop=should_stop,
+                    )
+                except Exception as exc:
+                    with self._state_lock:
+                        build_state.error = exc
+                        self._trace_geometry_builds.pop(cache_key, None)
+                        build_state.event.set()
+                    raise
+                with self._state_lock:
+                    self._trace_geometry_cache[cache_key] = prepared
+                    while len(self._trace_geometry_cache) > self._max_jobs:
+                        oldest_key = next(iter(self._trace_geometry_cache))
+                        self._trace_geometry_cache.pop(oldest_key, None)
+                    build_state.prepared = prepared
+                    self._trace_geometry_builds.pop(cache_key, None)
+                    build_state.event.set()
         return build_direct_trace_input(
             scene_mesh,
             request_payload,
@@ -581,6 +661,7 @@ class ApiRuntime:
     def _map_viewer_faces_to_trace(
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> dict[str, Any]:
         """Expand display-face references to precision trace triangles.
 
@@ -635,6 +716,12 @@ class ApiRuntime:
             source_id: [] for source_id in requested_sources
         }
         for trace_face_index, source_id in enumerate(trace_sources):
+            if (
+                trace_face_index % 4096 == 0
+                and should_stop is not None
+                and should_stop()
+            ):
+                raise InterruptedError("Ray trace preparation stopped")
             target = source_to_trace.get(int(source_id))
             if target is not None:
                 target.append(trace_face_index)
@@ -703,6 +790,12 @@ class ApiRuntime:
         request_payload: dict[str, Any],
     ) -> None:
         try:
+            def should_stop() -> bool:
+                with self._state_lock:
+                    job = self._raytrace_jobs.get(job_id)
+                    return bool(job and job.get("stop_requested"))
+
+            preparation_started_at = time.time()
             self._update_raytrace_job(
                 job_id,
                 status="running",
@@ -711,6 +804,19 @@ class ApiRuntime:
             trace_input = self._build_trace_input_for_request(
                 scene_mesh,
                 request_payload,
+                should_stop,
+            )
+            preparation_elapsed_sec = max(0.0, time.time() - preparation_started_at)
+            geometry_cache_hit = bool(
+                getattr(trace_input, "geometry_cache_hit", False)
+            )
+            print(
+                "[RAY] geometry ready | {} | cache={} | {:.3f}s".format(
+                    job_id[:8],
+                    "hit" if geometry_cache_hit else "rebuilt",
+                    preparation_elapsed_sec,
+                ),
+                flush=True,
             )
             total_ray_count = sum(
                 emitter.ray_count
@@ -726,6 +832,8 @@ class ApiRuntime:
                 progress=0.0,
                 elapsed_sec=0.0,
                 estimated_remaining_sec=None,
+                geometry_cache_hit=geometry_cache_hit,
+                preparation_elapsed_sec=preparation_elapsed_sec,
             )
 
             def report_progress(
@@ -758,7 +866,7 @@ class ApiRuntime:
                 )
                 self._update_raytrace_job(
                     job_id,
-                    phase="tracing",
+                    phase="stopping" if should_stop() else "tracing",
                     processed_rays=safe_processed,
                     total_rays=safe_total,
                     progress=progress,
@@ -766,11 +874,6 @@ class ApiRuntime:
                     estimated_remaining_sec=estimated_remaining_sec,
                     rays_per_sec=ray_rate,
                 )
-
-            def should_stop() -> bool:
-                with self._state_lock:
-                    job = self._raytrace_jobs.get(job_id)
-                    return bool(job and job.get("stop_requested"))
 
             result = self._trace_runner(
                 trace_input,
@@ -803,6 +906,15 @@ class ApiRuntime:
                 stopped_early=stopped_early,
                 completed_at=time.time(),
             )
+        except InterruptedError:
+            self._update_raytrace_job(
+                job_id,
+                status="cancelled",
+                phase="stopped",
+                stopped_early=True,
+                estimated_remaining_sec=0.0,
+                completed_at=time.time(),
+            )
         except Exception as exc:
             self._update_raytrace_job(
                 job_id,
@@ -820,7 +932,7 @@ class ApiRuntime:
             (
                 (job_id, float(job.get("created_at", 0.0)))
                 for job_id, job in self._raytrace_jobs.items()
-                if job.get("status") in {"completed", "failed"}
+                if job.get("status") in {"completed", "cancelled", "failed"}
             ),
             key=lambda item: item[1],
         )

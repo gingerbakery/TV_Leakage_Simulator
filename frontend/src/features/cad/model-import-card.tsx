@@ -67,11 +67,42 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     onChange={(event) => actions.setCadCaseVisible(item.caseId, event.currentTarget.checked)}
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 text-sm font-semibold">
-                      <span>CASE {String(item.order).padStart(2, '0')}</span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        aria-label={`Case name ${item.caseId}`}
+                        className="h-6 min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-sm font-semibold outline-none hover:border-border focus:border-primary focus:bg-background"
+                        value={item.name ?? ''}
+                        placeholder={`CASE ${String(item.order).padStart(2, '0')}`}
+                        maxLength={80}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          actions.updateCadCaseMetadata(
+                            item.caseId,
+                            event.currentTarget.value,
+                            item.note ?? '',
+                          )
+                        }
+                      />
                       {active ? <Check className="size-3 text-primary" /> : null}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">{item.cad.displayName}</div>
+                    <input
+                      aria-label={`Case caption ${item.caseId}`}
+                      className="mt-1 h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-1 text-xs text-muted-foreground outline-none hover:border-border focus:border-primary focus:bg-background"
+                      value={item.note ?? ''}
+                      placeholder="Caption 입력"
+                      maxLength={160}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        actions.updateCadCaseMetadata(
+                          item.caseId,
+                          item.name ?? '',
+                          event.currentTarget.value,
+                        )
+                      }
+                    />
                   </div>
                   {item.visible ? <Eye className="size-3.5 text-primary" /> : <EyeOff className="size-3.5 text-muted-foreground" />}
                   <Button

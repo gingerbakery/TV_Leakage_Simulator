@@ -85,6 +85,37 @@ class FastApiLayerTests(unittest.TestCase):
         )
         self.client = TestClient(create_app(self.runtime))
 
+    def test_preview_geometry_uses_viewer_mesh_without_precision_materialization(self):
+        viewer_mesh = _scene_loader("preview.step")["mesh"]
+        precision_mesh = dict(viewer_mesh)
+        precision_mesh["precision_marker"] = True
+
+        def dual_mesh_loader(cad_path: str):
+            payload = _scene_loader(cad_path)
+            payload["mesh"] = viewer_mesh
+            payload["_trace_mesh"] = precision_mesh
+            return payload
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name) / "preview-geometry",
+            scene_loader=dual_mesh_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=_trace_runner,
+        )
+        scene = runtime.load_scene("preview.step")
+        scene_token = scene["metadata"]["scene_token"]
+
+        preview_mesh = runtime._scene_mesh_for_request({
+            "scene_token": scene_token,
+            "geometry_mode": "preview",
+        })
+        precision = runtime._scene_mesh_for_request({
+            "scene_token": scene_token,
+        })
+
+        self.assertIs(preview_mesh, viewer_mesh)
+        self.assertTrue(precision["precision_marker"])
+
     def test_default_runtime_reuses_prepared_bvh_for_non_geometry_changes(self):
         runtime = ApiRuntime(Path(self.temp_dir.name))
         scene_mesh = {
@@ -129,6 +160,65 @@ class FastApiLayerTests(unittest.TestCase):
         third = runtime._build_trace_input_for_request(scene_mesh, changed_geometry)
         self.assertFalse(third.geometry_cache_hit)
         self.assertIsNot(first.mesh, third.mesh)
+
+    def test_concurrent_identical_geometry_requests_share_one_bvh_build(self):
+        import leakage_simulator.api.runtime as runtime_module
+
+        runtime = ApiRuntime(Path(self.temp_dir.name))
+        scene_mesh = {
+            "vertices": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            "faces": [[0, 1, 2]],
+            "face_component_ids": [1],
+            "face_material_ids": ["default"],
+        }
+        payload = {
+            "scene_token": "concurrent-cache-test",
+            "emitters": [{
+                "emitter_id": "emitter_001",
+                "emitter_type": "datum_plane",
+                "center": [0, 0, 1],
+                "u_axis": [1, 0, 0],
+                "v_axis": [0, 1, 0],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+            "receivers": [{
+                "receiver_id": "receiver_001",
+                "center": [0, 0, 2],
+                "normal": [0, 0, -1],
+                "width_mm": 1,
+                "height_mm": 1,
+            }],
+        }
+        original_builder = runtime_module.build_prepared_trace_geometry
+        build_started = threading.Event()
+        release_build = threading.Event()
+        build_count = 0
+
+        def slow_builder(mesh, request, should_stop=None):
+            nonlocal build_count
+            build_count += 1
+            build_started.set()
+            self.assertTrue(release_build.wait(timeout=3))
+            return original_builder(mesh, request, should_stop=should_stop)
+
+        with patch.object(runtime_module, "build_prepared_trace_geometry", side_effect=slow_builder):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_future = executor.submit(
+                    runtime._build_trace_input_for_request, scene_mesh, payload,
+                )
+                self.assertTrue(build_started.wait(timeout=3))
+                second_future = executor.submit(
+                    runtime._build_trace_input_for_request, scene_mesh, payload,
+                )
+                release_build.set()
+                first = first_future.result(timeout=3)
+                second = second_future.result(timeout=3)
+
+        self.assertEqual(build_count, 1)
+        self.assertFalse(first.geometry_cache_hit)
+        self.assertTrue(second.geometry_cache_hit)
+        self.assertIs(first.mesh, second.mesh)
 
     def test_dual_mesh_expands_viewer_face_references_to_trace_faces(self):
         scene_mesh = {
@@ -357,6 +447,23 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertTrue(
             payload["metadata"]["scene_token"].startswith("scene_")
         )
+
+    def test_scene_refresh_returns_a_new_server_token_without_scene_payload(self):
+        original = self.client.get(
+            "/api/scene",
+            params={"cad": "fixture.step"},
+        ).json()["metadata"]["scene_token"]
+
+        response = self.client.post(
+            "/api/scene/refresh",
+            json={"cad": "fixture.step"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.json()), {"scene_token"})
+        refreshed = response.json()["scene_token"]
+        self.assertNotEqual(refreshed, original)
+        self.assertIn(refreshed, self.runtime._scene_mesh_cache)
 
     def test_scene_endpoint_streams_binary_manifest_and_arrays(self):
         response = self.client.get(
@@ -597,6 +704,50 @@ class FastApiLayerTests(unittest.TestCase):
             )
         finally:
             client.close()
+
+    def test_stop_cancels_geometry_preparation_before_tracing(self):
+        import leakage_simulator.api.runtime as runtime_module
+
+        runtime = ApiRuntime(Path(self.temp_dir.name) / "prepare-stop")
+        scene_token = "prepare-stop-scene"
+        runtime._scene_mesh_cache[scene_token] = {
+            "vertices": [],
+            "faces": [],
+            "face_component_ids": [],
+            "face_material_ids": [],
+        }
+        preparation_started = threading.Event()
+
+        def cancellable_builder(mesh, request, should_stop=None):
+            preparation_started.set()
+            while should_stop is None or not should_stop():
+                time.sleep(0.002)
+            raise InterruptedError("Ray trace preparation stopped")
+
+        with patch.object(
+            runtime_module,
+            "build_prepared_trace_geometry",
+            side_effect=cancellable_builder,
+        ):
+            job = runtime.start_raytrace_job({
+                "scene_token": scene_token,
+                "emitters": [{"enabled": True, "ray_count": 100_000}],
+            })
+            self.assertTrue(preparation_started.wait(timeout=3))
+            stopped = runtime.stop_raytrace_job(job["job_id"])
+            self.assertIsNotNone(stopped)
+
+            snapshot = None
+            for _ in range(100):
+                snapshot = runtime.raytrace_job_snapshot(job["job_id"])
+                if snapshot and snapshot["status"] == "cancelled":
+                    break
+                time.sleep(0.005)
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["status"], "cancelled")
+        self.assertEqual(snapshot["phase"], "stopped")
+        self.assertTrue(snapshot["stopped_early"])
 
     def test_starting_a_new_job_stops_the_previous_active_job(self):
         class PartialResult:

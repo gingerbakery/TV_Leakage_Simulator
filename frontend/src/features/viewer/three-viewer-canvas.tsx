@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
+  AdditiveBlending,
   Box3,
+  BoxGeometry,
   BufferGeometry,
   CanvasTexture,
   Color,
@@ -34,6 +36,8 @@ import {
   SRGBColorSpace,
   Sprite,
   SpriteMaterial,
+  Points,
+  PointsMaterial,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -51,6 +55,17 @@ import type {
 } from '@/api'
 import { apiClient } from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
+import {
+  getLeakPreviewBounds,
+} from '@/features/leak-preview/leak-preview-geometry'
+import {
+  createLeakPreviewBodyPlaneEmitters,
+  resizeLeakPreviewBlockerOnFace,
+} from '@/features/leak-preview/leak-preview-model'
+import {
+  leakPreviewStore,
+  useLeakPreviewStore,
+} from '@/features/leak-preview/leak-preview-store'
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
   buildRayPathVisualization,
@@ -182,6 +197,7 @@ interface ViewerRuntime {
   axisScalePercent: number
   camera: PerspectiveCamera
   controls: ViewerTrackballControls
+  leakPreviewRoot: Group
   globalOriginAxes: Group
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
@@ -251,6 +267,8 @@ interface FacePlacementFrame {
 
 const wireframeSurfaceOpacity = 0.75
 const selectedWireframeSurfaceOpacity = 0.82
+const surfaceEdgeColor = 0x000000
+const wireframeEdgeColor = 0xb9d5e8
 const emitterOverlayColor = 0xfacc15
 const emitterDirectionColor = 0xffb000
 // The "this part is selected / being edited" tint is amber/gold
@@ -334,9 +352,12 @@ function disposeMaterial(material: Material | Material[]): void {
 
 function disposeObject(object: Object3D): void {
   object.traverse((child) => {
-    if (child instanceof Mesh || child instanceof LineSegments) {
+    if (child instanceof Mesh || child instanceof LineSegments || child instanceof Points) {
       if (child.userData.sharedGeometry !== true) {
         child.geometry.dispose()
+      }
+      if (child instanceof Points && child.material instanceof PointsMaterial) {
+        child.material.map?.dispose()
       }
       disposeMaterial(child.material)
     } else if (child instanceof Sprite) {
@@ -344,6 +365,32 @@ function disposeObject(object: Object3D): void {
       child.material.dispose()
     }
   })
+}
+
+function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const context = canvas.getContext('2d')
+  if (context) {
+    context.clearRect(0, 0, 64, 64)
+    const gradient = context.createRadialGradient(32, 32, halo ? 5 : 2, 32, 32, 30)
+    if (halo) {
+      gradient.addColorStop(0, 'rgba(255, 245, 120, 1)')
+      gradient.addColorStop(0.38, 'rgba(250, 204, 21, 0.9)')
+      gradient.addColorStop(1, 'rgba(250, 204, 21, 0)')
+    } else {
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(0.7, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(0.82, 'rgba(255, 255, 255, 0.8)')
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+    }
+    context.fillStyle = gradient
+    context.fillRect(0, 0, 64, 64)
+  }
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  return texture
 }
 
 function setObjectClippingPlane(root: Object3D, plane: Plane | null): void {
@@ -637,6 +684,7 @@ function createPlacementPlane(
   color: number,
   directionColor: number,
   normalFlip: boolean,
+  bothSides: boolean,
   fillOpacity: number,
   alwaysVisible = false,
   showLocalAxes = false,
@@ -708,16 +756,15 @@ function createPlacementPlane(
     2,
     18,
   )
-  root.add(
-    surface,
-    edges,
-    createDirectionArrow(
-      `${name}-direction`,
-      center,
-      normal,
-      normalLength,
-      directionColor,
-    ),
+  root.add(surface, edges)
+  addEmitterDirectionArrows(
+    root,
+    name,
+    center,
+    normal,
+    normalLength,
+    directionColor,
+    bothSides,
   )
   if (showLocalAxes) {
     // Keep Receiver X/Y clearly readable while still slightly shorter than
@@ -843,6 +890,27 @@ function createDirectionArrow(
   head.renderOrder = 252
   root.add(arrow, shaft, head)
   return root
+}
+
+function addEmitterDirectionArrows(
+  root: Group,
+  name: string,
+  center: Vector3,
+  normal: Vector3,
+  length: number,
+  color: number,
+  bothSides: boolean,
+): void {
+  root.add(createDirectionArrow(`${name}-direction`, center, normal, length, color))
+  if (bothSides) {
+    root.add(createDirectionArrow(
+      `${name}-reverse-direction`,
+      center,
+      normal.clone().multiplyScalar(-1),
+      length,
+      color,
+    ))
+  }
 }
 
 function createFacePatchBoundary(
@@ -1582,7 +1650,7 @@ function createComponentNode(
   const edges = new LineSegments(
     edgeGeometry,
     new LineBasicMaterial({
-      color: 0xb9d5e8,
+      color: surfaceEdgeColor,
       transparent: true,
       opacity: 0.72,
       depthTest: true,
@@ -1681,6 +1749,7 @@ export function ThreeViewerCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
+  const blockerAreaSelectionIdRef = useRef<string | null>(null)
   const emitterFaceSelectionArmedRef = useRef(false)
   const materialFacePickArmedRef = useRef(false)
   const pivotPickArmedRef = useRef(false)
@@ -1772,9 +1841,30 @@ export function ThreeViewerCanvas({
     workspaceSelectors.placementPreviewReceiver,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
+  const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
+  const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
+  const leakPreviewSourceComponentIds = useLeakPreviewStore(
+    (state) => state.sourceComponentIds,
+  )
+  const leakPreviewVisualizationVisible = useLeakPreviewStore(
+    (state) => state.visualizationVisible,
+  )
+  const selectedLeakCandidateId = useLeakPreviewStore(
+    (state) => state.selectedCandidateId,
+  )
+  const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
+  const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
+  const leakPreviewIgnoreAreasVisible = useLeakPreviewStore((state) => state.ignoreAreasVisible)
+  const leakPreviewBlockersVisible = useLeakPreviewStore((state) => state.blockersVisible)
+  const blockerAreaSelectionId = useLeakPreviewStore((state) => state.blockerAreaSelectionId)
   const surfaceOpacity = surfaceOpacityFromTransparency(
     surfaceTransparencyPercent,
   )
+
+  useEffect(() => {
+    leakPreviewStore.getState().ensureScene(scene.metadata.scene_token)
+  }, [scene.metadata.scene_token])
 
   toggleSectionViewRef.current = () => {
     const runtime = runtimeRef.current
@@ -1829,6 +1919,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     roiBoxSelectionArmedRef.current = roiBoxSelectionArmed
   }, [roiBoxSelectionArmed])
+
+  useEffect(() => {
+    blockerAreaSelectionIdRef.current = blockerAreaSelectionId
+  }, [blockerAreaSelectionId])
 
   useEffect(() => {
     onRoiBoxSelectionRef.current = onRoiBoxSelection
@@ -1928,7 +2022,9 @@ export function ThreeViewerCanvas({
     const controls = new ViewerTrackballControls(camera, canvas)
     controls.staticMoving = true
     controls.rotateSpeed = 2.3
-    controls.zoomSpeed = 1.2
+    // Reverse Three.js' default wheel direction to match the requested CAD
+    // navigation convention (front-to-back = zoom in).
+    controls.zoomSpeed = -1.2
     controls.mouseButtons = {
       LEFT: MOUSE.ROTATE,
       MIDDLE: MOUSE.DOLLY,
@@ -1936,6 +2032,8 @@ export function ThreeViewerCanvas({
     }
 
     const modelRoot = new Group()
+    const leakPreviewRoot = new Group()
+    leakPreviewRoot.name = 'whole-set-leak-preview-root'
     const placementRoot = new Group()
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
@@ -1956,6 +2054,7 @@ export function ThreeViewerCanvas({
     pivotMarkerRoot.visible = false
     threeScene.add(
       modelRoot,
+      leakPreviewRoot,
       roiPreviewRoot,
       roiSelectionRoot,
       roiBoundsMarker,
@@ -1996,6 +2095,7 @@ export function ThreeViewerCanvas({
       axisScalePercent: 50,
       camera,
       controls,
+      leakPreviewRoot,
       globalOriginAxes,
       modelRoot,
       nodes,
@@ -2379,6 +2479,43 @@ export function ThreeViewerCanvas({
       }
     }
 
+    const resolveBlockerAreaSelection = (
+      selection: ViewerBoxDrag,
+      blockerId: string,
+    ) => {
+      const blocker = leakPreviewStore.getState().blockers.find(
+        (item) => item.id === blockerId,
+      )
+      if (!blocker) return null
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return null
+      const minX = Math.min(selection.startX, selection.currentX)
+      const maxX = Math.max(selection.startX, selection.currentX)
+      const minY = Math.min(selection.startY, selection.currentY)
+      const maxY = Math.max(selection.startY, selection.currentY)
+      const normal = new Vector3(...blocker.normal).normalize()
+      const projectionPlane = new Plane().setFromNormalAndCoplanarPoint(
+        normal,
+        new Vector3(...blocker.baseCenter),
+      )
+      const boxRaycaster = new Raycaster()
+      const points: [number, number, number][] = []
+      for (const [x, y] of [
+        [minX, minY],
+        [maxX, minY],
+        [maxX, maxY],
+        [minX, maxY],
+      ]) {
+        boxRaycaster.setFromCamera(
+          new Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1),
+          camera,
+        )
+        const point = boxRaycaster.ray.intersectPlane(projectionPlane, new Vector3())
+        if (point) points.push([point.x, point.y, point.z])
+      }
+      return resizeLeakPreviewBlockerOnFace(blocker, points)
+    }
+
     const resolveSurfaceHit = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect()
       const pointer = new Vector2(
@@ -2739,8 +2876,24 @@ export function ThreeViewerCanvas({
           Math.abs(completedSelection.currentX - completedSelection.startX) +
           Math.abs(completedSelection.currentY - completedSelection.startY)
         if (movement <= 8) {
+          leakPreviewStore.getState().finishBlockerAreaSelection()
           actions.setRoiBoxSelectionArmed(false)
-          onStatusMessage('ROI 박스 선택을 취소했습니다.')
+          onStatusMessage('영역 선택을 취소했습니다.')
+          return
+        }
+
+        const blockerId = blockerAreaSelectionIdRef.current
+        if (blockerId) {
+          const patch = resolveBlockerAreaSelection(completedSelection, blockerId)
+          if (patch) {
+            leakPreviewStore.getState().updateBlocker(blockerId, patch)
+            leakPreviewStore.getState().clearDetection()
+            onStatusMessage('Blocker 영역을 적용했습니다.')
+          } else {
+            onStatusMessage('기준 CAD Face가 보이는 상태에서 영역을 다시 드래그하세요.')
+          }
+          leakPreviewStore.getState().finishBlockerAreaSelection()
+          actions.setRoiBoxSelectionArmed(false)
           return
         }
 
@@ -3084,7 +3237,8 @@ export function ThreeViewerCanvas({
       // main camera instead.
       event.preventDefault()
       event.stopImmediatePropagation()
-      zoomPipCamera(runtime, event.deltaY)
+      // Keep the ROI Full View navigation consistent with the main Viewer.
+      zoomPipCamera(runtime, -event.deltaY)
       runtime.pipUserAdjusted = true
       runtime.pipLastRenderTime = 0
     }
@@ -3275,6 +3429,183 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
+    clearGroup(runtime.leakPreviewRoot)
+
+    const bounds = getLeakPreviewBounds(scene, transformRules)
+    const markerSize = Math.max(...bounds.size, 1) * 0.012
+    for (const blocker of leakPreviewBlockersVisible ? leakPreviewBlockers : []) {
+      if (!blocker.enabled) continue
+      const normal = new Vector3(...blocker.normal)
+        .normalize()
+        .multiplyScalar(blocker.reverse ? -1 : 1)
+      const center = new Vector3(...blocker.baseCenter)
+        .addScaledVector(normal, blocker.offsetMm + blocker.depthMm / 2)
+      const geometry = new BoxGeometry(
+        Math.max(blocker.widthMm, 0.1),
+        Math.max(blocker.heightMm, 0.1),
+        Math.max(blocker.depthMm, 0.1),
+      )
+      const orientation = new Matrix4().makeBasis(
+        new Vector3(...blocker.uAxis).normalize(),
+        new Vector3(...blocker.vAxis).normalize(),
+        normal,
+      )
+      const solid = new Mesh(
+        geometry,
+        new MeshBasicMaterial({
+          color: 0x050505,
+          transparent: true,
+          opacity: 0.28,
+          depthTest: false,
+          depthWrite: false,
+          side: DoubleSide,
+          toneMapped: false,
+        }),
+      )
+      solid.position.copy(center)
+      solid.setRotationFromMatrix(orientation)
+      solid.name = `${blocker.id}-solid`
+      solid.renderOrder = 214
+      const outline = new LineSegments(
+        new EdgesGeometry(geometry),
+        new LineBasicMaterial({
+          color: 0x050505,
+          transparent: true,
+          opacity: 1,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      outline.position.copy(center)
+      outline.setRotationFromMatrix(orientation)
+      outline.name = `${blocker.id}-outline`
+      outline.renderOrder = 215
+      runtime.leakPreviewRoot.add(solid, outline)
+    }
+    for (const area of leakPreviewIgnoreAreasVisible ? leakPreviewIgnoreAreas : []) {
+      if (!area.enabled) continue
+      for (const [regionIndex, clip] of area.regions.entries()) {
+        const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
+        const sizeY = Math.max(clip.yMax - clip.yMin, markerSize * 0.25)
+        const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize * 0.25)
+        const geometry = new BoxGeometry(sizeX, sizeY, sizeZ)
+        const outline = new LineSegments(
+          new EdgesGeometry(geometry),
+          new LineBasicMaterial({
+            color: 0x050505,
+            transparent: true,
+            opacity: 0.8,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        geometry.dispose()
+        outline.position.set(
+          (clip.xMin + clip.xMax) / 2,
+          (clip.yMin + clip.yMax) / 2,
+          ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
+        )
+        outline.name = `${area.id}-${regionIndex}`
+        outline.renderOrder = 218
+        runtime.leakPreviewRoot.add(outline)
+      }
+    }
+
+    if (!leakPreviewVisualizationVisible || leakPreviewPoints.length === 0) return
+    const positions = new Float32Array(leakPreviewPoints.length * 3)
+    const haloColors = new Float32Array(leakPreviewPoints.length * 3)
+    const coreColors = new Float32Array(leakPreviewPoints.length * 3)
+    const haloLow = new Color(0xfbbf24)
+    const haloHigh = new Color(0xfef08a)
+    const coreLow = new Color(0xdc2626)
+    const coreHigh = new Color(0xff1f0f)
+    leakPreviewPoints.forEach((point, index) => {
+      positions.set(point.position, index * 3)
+      const strength = Math.max(0, Math.min(1, point.relativeStrength))
+      haloColors.set(haloLow.clone().lerp(haloHigh, strength).toArray(), index * 3)
+      coreColors.set(coreLow.clone().lerp(coreHigh, strength).toArray(), index * 3)
+    })
+    const haloGeometry = new BufferGeometry()
+    haloGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    haloGeometry.setAttribute('color', new Float32BufferAttribute(haloColors, 3))
+    const glowHalo = new Points(
+      haloGeometry,
+      new PointsMaterial({
+        map: createLeakPreviewDotTexture(true),
+        alphaTest: 0.015,
+        size: 26,
+        sizeAttenuation: false,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.72,
+        depthTest: false,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        toneMapped: false,
+      }),
+    )
+    glowHalo.name = 'leak-preview-glow-halo'
+    glowHalo.renderOrder = 219
+    const coreGeometry = new BufferGeometry()
+    coreGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    coreGeometry.setAttribute('color', new Float32BufferAttribute(coreColors, 3))
+    const glowPoints = new Points(
+      coreGeometry,
+      new PointsMaterial({
+        map: createLeakPreviewDotTexture(false),
+        alphaTest: 0.08,
+        size: 8,
+        sizeAttenuation: false,
+        vertexColors: true,
+        transparent: true,
+        opacity: 1,
+        depthTest: false,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        toneMapped: false,
+      }),
+    )
+    glowPoints.name = 'leak-preview-glow-points'
+    glowPoints.renderOrder = 220
+    runtime.leakPreviewRoot.add(glowHalo, glowPoints)
+
+    const selected = leakPreviewCandidates.find(
+      (candidate) => candidate.id === selectedLeakCandidateId,
+    )
+    if (selected) {
+      const clip = selected.clipBox
+      const sizeX = Math.max(clip.xMax - clip.xMin, markerSize)
+      const sizeY = Math.max(clip.yMax - clip.yMin, markerSize)
+      const sizeZ = Math.max((clip.zMax ?? 0) - (clip.zMin ?? 0), markerSize)
+      const boxGeometry = new BoxGeometry(sizeX, sizeY, sizeZ)
+      const outline = new LineSegments(
+        new EdgesGeometry(boxGeometry),
+        new LineBasicMaterial({
+          color: 0xff7a00,
+          transparent: true,
+          opacity: 0.95,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      )
+      boxGeometry.dispose()
+      outline.position.set(
+        (clip.xMin + clip.xMax) / 2,
+        (clip.yMin + clip.yMax) / 2,
+        ((clip.zMin ?? 0) + (clip.zMax ?? 0)) / 2,
+      )
+      outline.name = 'leak-preview-selected-roi'
+      outline.renderOrder = 225
+      runtime.leakPreviewRoot.add(outline)
+    }
+  }, [leakPreviewBlockers, leakPreviewBlockersVisible, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, leakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
     fitCamera(runtime, cameraPreset)
     if (cameraPreset === 'Fit' && runtime.roiPreviewRoot.visible) {
       // The toolbar Fit command applies to both visible viewports. Without
@@ -3286,6 +3617,7 @@ export function ThreeViewerCanvas({
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
     if (
       roiBoxSelectionArmed &&
+      !blockerAreaSelectionId &&
       Object.prototype.hasOwnProperty.call(
         roiCameraPresetConfig,
         cameraPreset,
@@ -3301,7 +3633,7 @@ export function ThreeViewerCanvas({
         `ROI 박스 선택 · ${preset} view · 왼쪽 드래그로 범위를 지정하세요.`,
       )
     }
-  }, [cameraPreset, cameraRequestId, onStatusMessage, roiBoxSelectionArmed, scene])
+  }, [blockerAreaSelectionId, cameraPreset, cameraRequestId, onStatusMessage, roiBoxSelectionArmed, scene])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -3350,10 +3682,14 @@ export function ThreeViewerCanvas({
         // camera angle - for thin/elongated models (e.g. a flat panel),
         // "nearest" can land on a near-degenerate edge-on view that's
         // useless for drawing a box, and users have no way to predict it.
-        runtime.roiSelectionPreset = 'XY'
+        runtime.roiSelectionPreset = blockerAreaSelectionId ? null : 'XY'
       }
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
+      if (blockerAreaSelectionId) {
+        onStatusMessage('Blocker 영역 선택 · 기준 CAD Face 위를 왼쪽 드래그하세요.')
+        return
+      }
       const preset = runtime.roiSelectionPreset ?? 'XY'
       fitCamera(runtime, preset)
       // The auto-snap-to-nearest-axis above moves the camera directly on
@@ -3367,7 +3703,7 @@ export function ThreeViewerCanvas({
         `ROI 박스 선택 · ${preset} view · 왼쪽 드래그로 범위를 지정하세요.`,
       )
     }
-  }, [onStatusMessage, roiBoxSelectionArmed, scene])
+  }, [blockerAreaSelectionId, onStatusMessage, roiBoxSelectionArmed, scene])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -3553,9 +3889,9 @@ export function ThreeViewerCanvas({
           const featureEdges = new LineSegments(
             clipped.featureEdgeGeometry,
             new LineBasicMaterial({
-              color: 0xd7edf8,
+              color: isWireframe ? wireframeEdgeColor : surfaceEdgeColor,
               transparent: true,
-              opacity: isWireframe ? 0.82 : 0.74,
+              opacity: isWireframe ? 0.82 : 0.88,
               depthTest: true,
               depthWrite: false,
             }),
@@ -3568,7 +3904,7 @@ export function ThreeViewerCanvas({
           const capEdges = new LineSegments(
             clipped.capEdgeGeometry,
             new LineBasicMaterial({
-              color: 0xe0f2fe,
+              color: isWireframe ? 0xe0f2fe : surfaceEdgeColor,
               transparent: true,
               opacity: isWireframe ? 0.72 : 0.9,
               depthTest: true,
@@ -3736,7 +4072,7 @@ export function ThreeViewerCanvas({
     }
 
     clearGroup(runtime.placementRoot)
-    const placementEmitters = placementPreviewEmitter
+    const basePlacementEmitters = placementPreviewEmitter
       ? [
           ...emitters.filter(
             (emitter) =>
@@ -3746,6 +4082,22 @@ export function ThreeViewerCanvas({
           placementPreviewEmitter,
         ]
       : emitters
+    const hasSavedLeakPreviewBodyPlane = emitters.some(
+      (emitter) => emitter.reference_mode === 'leak_preview_body_plane',
+    )
+    const leakPreviewBodyPlanes = leakPreviewSourceMode === 'body' && !hasSavedLeakPreviewBodyPlane
+      ? createLeakPreviewBodyPlaneEmitters(
+          scene,
+          leakPreviewSourceComponentIds,
+          transformRules,
+          Math.max(1, leakPreviewSourceComponentIds.length),
+          false,
+        )
+      : []
+    const placementEmitters = [
+      ...basePlacementEmitters,
+      ...leakPreviewBodyPlanes,
+    ]
     const placementReceivers = placementPreviewReceiver
       ? [
           ...receivers.filter(
@@ -3756,10 +4108,18 @@ export function ThreeViewerCanvas({
           placementPreviewReceiver,
         ]
       : receivers
+    const activePlacementClipBoxes = showRoiPreview && runtime.roiPreviewRoot.visible
+      ? activeBoxScopes.flatMap((scope) => scope.clipBox ? [scope.clipBox] : [])
+      : []
     for (const emitter of placementEmitters) {
       if (emitter.aim?.enabled) {
         let sourceCenter = emitter.center
         if (emitter.emitter_type === 'face') {
+          const clippedCenter = roiClippedSurfaceCentroid(
+            scene,
+            emitter.face_indices,
+            activePlacementClipBoxes,
+          )
           const weightedCenter = new Vector3()
           let totalArea = 0
           for (const faceId of emitter.face_indices) {
@@ -3773,7 +4133,8 @@ export function ThreeViewerCanvas({
             weightedCenter.addScaledVector(new Vector3(...transformed), area)
             totalArea += area
           }
-          sourceCenter = totalArea > 0 ? weightedCenter.multiplyScalar(1 / totalArea).toArray() : null
+          sourceCenter = clippedCenter ??
+            (totalArea > 0 ? weightedCenter.multiplyScalar(1 / totalArea).toArray() : null)
         }
         if (sourceCenter) {
           const aimOverlay = createEmitterAimOverlay(emitter, sourceCenter)
@@ -3810,6 +4171,7 @@ export function ThreeViewerCanvas({
         emitterOverlayColor,
         emitterDirectionColor,
         emitter.aim?.enabled ? false : emitter.normal_flip,
+        !emitter.aim?.enabled && emitter.emission_direction === 'both',
         emitter === placementPreviewEmitter ? 0.42 : 0.28,
         true,
       )
@@ -3840,6 +4202,7 @@ export function ThreeViewerCanvas({
         receiverOverlayColor,
         receiverOverlayColor,
         receiver.normal_flip,
+        false,
         receiver === placementPreviewReceiver ? 0.34 : 0.14,
         receiver === placementPreviewReceiver,
         true,
@@ -3937,8 +4300,9 @@ export function ThreeViewerCanvas({
             directionNormal.multiplyScalar(
               emitter.normal_flip ? -1 : 1,
             )
-            const direction = createDirectionArrow(
-              `${emitterRoot.name}-direction`,
+            addEmitterDirectionArrows(
+              emitterRoot,
+              emitterRoot.name,
               emitterBounds.getCenter(new Vector3()),
               directionNormal,
               MathUtils.clamp(
@@ -3947,11 +4311,11 @@ export function ThreeViewerCanvas({
                 22,
               ),
               emitterDirectionColor,
+              emitter.emission_direction === 'both',
             )
-            direction.traverse((child) => {
+            emitterRoot.traverse((child) => {
               child.renderOrder = Math.max(child.renderOrder, 97)
             })
-            emitterRoot.add(direction)
           }
 
           clippedEmitter.capGeometry?.dispose()
@@ -4073,15 +4437,19 @@ export function ThreeViewerCanvas({
       node.hiddenEdges.material.opacity = 0.16
       node.edges.visible = renderMode !== 'Surface'
       node.edges.material.color.set(
-        showHighlightedEdges ? highlightColor : 0xb9d5e8,
+        showHighlightedEdges
+          ? highlightColor
+          : isWireframe
+            ? wireframeEdgeColor
+            : surfaceEdgeColor,
       )
       node.edges.material.opacity = showHighlightedEdges
         ? 1
         : isWireframe
           ? 0.82
           : denseScene
-            ? 0.32
-            : 0.62
+            ? 0.52
+            : 0.82
 
       clearGroup(node.emitterOverlayRoot)
       clearGroup(node.materialOverlayRoot)
@@ -4145,9 +4513,10 @@ export function ThreeViewerCanvas({
           false,
         )
         if (boundary) reference.add(boundary)
-        if (!emitter.aim?.enabled) reference.add(
-          createDirectionArrow(
-            `${reference.name}-direction`,
+        if (!emitter.aim?.enabled) {
+          addEmitterDirectionArrows(
+            reference,
+            reference.name,
             localCenter,
             normal,
             MathUtils.clamp(
@@ -4156,8 +4525,9 @@ export function ThreeViewerCanvas({
               18,
             ),
             emitterDirectionColor,
-          ),
-        )
+            emitter.emission_direction === 'both',
+          )
+        }
         node.emitterOverlayRoot.add(reference)
       }
 
@@ -4410,6 +4780,8 @@ export function ThreeViewerCanvas({
     materialAssignments,
     componentColorOverrides,
     faceDisplayColors,
+    leakPreviewSourceComponentIds,
+    leakPreviewSourceMode,
     placementPreviewEmitter,
     placementPreviewReceiver,
     renderMode,
@@ -4734,7 +5106,11 @@ export function ThreeViewerCanvas({
       {boxDrag ? (
         <div
           data-testid="roi-box-selection"
-          className="pointer-events-none absolute z-20 border border-warning bg-warning/15 shadow-[0_0_0_1px_rgba(250,204,21,0.2)]"
+          className={`pointer-events-none absolute z-20 border shadow-[0_0_0_1px_rgba(249,115,22,0.25)] ${
+            blockerAreaSelectionId
+              ? 'border-orange-500 bg-orange-400/20'
+              : 'border-warning bg-warning/15'
+          }`}
           style={{
             left: Math.min(boxDrag.startX, boxDrag.currentX),
             top: Math.min(boxDrag.startY, boxDrag.currentY),

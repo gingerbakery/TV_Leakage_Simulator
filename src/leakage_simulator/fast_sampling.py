@@ -106,6 +106,21 @@ class PolygonEmitterBatchGeometry:
     cumulative_weights: np.ndarray
 
 
+def _is_two_sided(emitter: EmitterSpec) -> bool:
+    return emitter.emission_direction == "both"
+
+
+def _two_sided_normal_rows(
+    generator: np.random.Generator,
+    emitter: EmitterSpec,
+    normals: np.ndarray,
+) -> np.ndarray:
+    if not _is_two_sided(emitter):
+        return normals
+    signs = np.where(generator.random(len(normals)) < 0.5, 1.0, -1.0)
+    return np.ascontiguousarray(normals * signs[:, None], dtype=np.float64)
+
+
 def supports_fast_virtual_plane_sampling(emitter: EmitterSpec) -> bool:
     return (
         emitter.emitter_type != "face"
@@ -145,12 +160,25 @@ def iter_virtual_plane_ray_batches(
             u_axis,
             v_axis,
             normal,
-            0.0 if emitter.aim is not None and emitter.aim.enabled else epsilon_mm,
+            0.0
+            if (
+                (emitter.aim is not None and emitter.aim.enabled)
+                or _is_two_sided(emitter)
+            )
+            else epsilon_mm,
             count,
             polygon_geometry,
         )
         if emitter.aim is not None and emitter.aim.enabled:
             origins, directions = sample_aim_ray_batch(generator, origins, emitter.aim, epsilon_mm)
+        elif _is_two_sided(emitter):
+            normal_rows = _two_sided_normal_rows(
+                generator,
+                emitter,
+                np.repeat(normal[None, :], count, axis=0),
+            )
+            origins = origins + epsilon_mm * normal_rows
+            directions = _sample_direction_rows(generator, emitter, normal_rows)
         else:
             directions = _sample_direction_batch(
                 generator,
@@ -259,6 +287,11 @@ def iter_face_emitter_ray_batches(
         if emitter.aim is not None and emitter.aim.enabled:
             origins, directions = sample_aim_ray_batch(generator, points, emitter.aim, epsilon_mm)
         else:
+            selected_normals = _two_sided_normal_rows(
+                generator,
+                emitter,
+                selected_normals,
+            )
             origins = points + epsilon_mm * selected_normals
             directions = _sample_direction_rows(
                 generator,
@@ -281,6 +314,8 @@ def iter_virtual_plane_receiver_mis_batches(
     receiver_fraction: float,
     batch_size: int = 65536,
 ) -> Iterator[WeightedRayBatch]:
+    if _is_two_sided(emitter):
+        raise ValueError("receiver MIS requires a one-sided emitter")
     if emitter.direction_distribution not in {"lambertian", "isotropic"}:
         raise ValueError(
             "receiver MIS supports lambertian and isotropic emitters"
@@ -422,6 +457,8 @@ def iter_face_emitter_receiver_mis_batches(
     receiver_fraction: float,
     batch_size: int = 65536,
 ) -> Iterator[WeightedFaceRayBatch]:
+    if _is_two_sided(emitter):
+        raise ValueError("receiver MIS requires a one-sided emitter")
     if emitter.emitter_type != "face":
         raise ValueError("Face receiver MIS requires a face emitter")
     if emitter.direction_distribution not in {"lambertian", "isotropic"}:
@@ -559,6 +596,8 @@ def source_direction_pdf(
         return np.full(count, 1.0 / (4.0 * math.pi), dtype=np.float64)
     if emitter.direction_distribution == "lambertian":
         cosine = np.sum(directions * normals, axis=1)
+        if _is_two_sided(emitter):
+            return np.abs(cosine) / (2.0 * math.pi)
         return np.maximum(0.0, cosine) / math.pi
     raise ValueError(
         "receiver MIS source PDF supports lambertian and isotropic emitters"

@@ -17,6 +17,7 @@ import {
 } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createEmitterAim } from '@/features/raytracing/emitter-aim'
+import * as excelExport from '@/lib/xlsx-export'
 
 import { ResultPanel } from './result-panel'
 import { RayTraceResultWindow } from './result-window'
@@ -349,8 +350,9 @@ describe('Step 11 result UI', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Compare Receiver' }), {
       target: { value: 'name:right corner' },
     })
-    expect(screen.getByText('0.020 lm')).not.toBeNull()
-    expect(screen.getByText('6.000')).not.toBeNull()
+    expect(screen.getAllByText('0.0%')).toHaveLength(3)
+    expect(screen.queryByText('0.020 lm')).toBeNull()
+    expect(screen.queryByText('6.000')).toBeNull()
   })
 
   it('matches Receivers by visible name before checking their geometry', () => {
@@ -552,7 +554,9 @@ describe('Step 11 result UI', () => {
     })
     expect(compareCheckbox).toHaveProperty('checked', true)
     expect(screen.getByText('50.0')).not.toBeNull()
-    expect(screen.getByText('4.000 mm²')).not.toBeNull()
+    expect(screen.getAllByText('0.0%')).toHaveLength(3)
+    expect(screen.queryByText('4.000 mm²')).toBeNull()
+    expect(screen.queryByText('0.011 lm')).toBeNull()
     fireEvent.click(compareCheckbox)
     expect(compareCheckbox).toHaveProperty('checked', false)
     expect(
@@ -564,7 +568,47 @@ describe('Step 11 result UI', () => {
     expect(screen.getByDisplayValue('Updated baseline')).not.toBeNull()
     expect(onCaseMetadataChange).toHaveBeenCalled()
     expect(screen.getByText('빛샘 개선 점수')).not.toBeNull()
-    expect(screen.getByText('광영역(@5%)')).not.toBeNull()
+    expect(screen.getByText('광영역(@5%) 변화')).not.toBeNull()
+  })
+
+  it('shows only Baseline-relative percentages for comparison metrics', () => {
+    const baseline = createRayTraceResultFixture()
+    const improved = structuredClone(baseline)
+    improved.run_id = 'run-improved'
+    const improvedMetrics = improved.metrics.receiver_001 as Record<
+      string,
+      unknown
+    >
+    improved.metrics.receiver_001 = {
+      ...improvedMetrics,
+      peak_nit_est: 10,
+      total_flux_lumen: 0.0055,
+    }
+    improved.receiver_grids[0].flux_lumen = [
+      [0, 0],
+      [0.003, 0],
+    ]
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'Baseline', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'Improved', cadName: 'b.step', result: improved },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+
+    expect(screen.getByText('20.0% 감소')).not.toBeNull()
+    expect(screen.getByText('50.0% 감소')).not.toBeNull()
+    expect(screen.getByText('75.0% 감소')).not.toBeNull()
+    expect(screen.queryByText('0.0055 lm')).toBeNull()
+    expect(screen.queryByText('10.000')).toBeNull()
+    expect(screen.queryByText('1.000 mm²')).toBeNull()
   })
 
   it('opens a save-location picker when saving a comparison report', async () => {
@@ -603,6 +647,65 @@ describe('Step 11 result UI', () => {
     )
     expect(write).toHaveBeenCalledWith(expect.any(Blob))
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['initial_ray_fraction', 'ratio'],
+    ['absolute_lumen', 'lm/Ray'],
+    [undefined, 'lm/Ray'],
+  ] as const)('exports Excel with correct termination units for %s', async (basis, unit) => {
+    const workbookExport = vi.spyOn(excelExport, 'createExcelWorkbook')
+    const canvasContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      new Proxy({}, { get: () => vi.fn(), set: () => true }) as CanvasRenderingContext2D,
+    )
+    const canvasImage = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgo=')
+    const result = createRayTraceResultFixture()
+    result.config.min_energy_basis = basis
+    const write = vi.fn().mockResolvedValue(undefined)
+    const close = vi.fn().mockResolvedValue(undefined)
+    const showSaveFilePicker = vi.fn().mockResolvedValue({
+      createWritable: vi.fn().mockResolvedValue({ write, close }),
+    })
+    vi.stubGlobal('showSaveFilePicker', showSaveFilePicker)
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={result}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Export Excel' }))
+
+    await waitFor(() => expect(showSaveFilePicker).toHaveBeenCalledOnce())
+    expect(showSaveFilePicker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suggestedName: expect.stringMatching(
+          /^ray-analysis-\d{4}-\d{2}-\d{2}\.xlsx$/,
+        ),
+        types: [expect.objectContaining({
+          accept: {
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+          },
+        })],
+      }),
+    )
+    expect(write).toHaveBeenCalledWith(expect.any(Blob))
+    const workbook = write.mock.calls[0][0] as Blob
+    expect(workbook.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    const condition = workbookExport.mock.calls[0][0]
+      .flatMap((sheet) => sheet.rows)
+      .find((row) => row[2] === 'Ray Tracing' && row[4] === 'min_energy')
+    expect(condition?.slice(4)).toEqual(['min_energy', result.config.min_energy, unit])
+    expect(close).toHaveBeenCalledOnce()
+    workbookExport.mockRestore()
+    canvasContext.mockRestore()
+    canvasImage.mockRestore()
   })
 
   it('downloads the report when the native save picker fails', async () => {

@@ -2433,6 +2433,7 @@ def run_direct_ray_trace(
             and receiver_importance_geometry is not None
             and use_batch_dispatch
             and emitter.direction_distribution in {"lambertian", "isotropic"}
+            and emitter.emission_direction != "both"
         )
         if trace_input.config.primary_sampling_strategy == "receiver_mis":
             if receiver_mis_enabled:
@@ -2444,6 +2445,10 @@ def run_direct_ray_trace(
             elif emitter.direction_distribution not in {"lambertian", "isotropic"}:
                 primary_sampling_stats.record_fallback(
                     "unsupported_emitter_distribution"
+                )
+            elif emitter.emission_direction == "both":
+                primary_sampling_stats.record_fallback(
+                    "two_sided_emitter_uses_source_sampling"
                 )
             else:
                 primary_sampling_stats.record_fallback(
@@ -9151,6 +9156,8 @@ def _sample_face_emitter_ray(
     normal = vec_norm(normal)
     if emitter.normal_flip:
         normal = vec_mul(normal, -1.0)
+    if emitter.emission_direction == "both" and rng.random() < 0.5:
+        normal = vec_mul(normal, -1.0)
     direction = _sample_emitter_direction(rng, emitter, normal)
     origin = vec_add(point, vec_mul(normal, epsilon_mm))
     return origin, direction, face_index
@@ -9176,6 +9183,8 @@ def _sample_virtual_plane_emitter_ray(
     v_axis = vec_norm(raw_v)
     normal = vec_norm(vec_cross(u_axis, v_axis))
     if emitter.normal_flip:
+        normal = vec_mul(normal, -1.0)
+    if emitter.emission_direction == "both" and rng.random() < 0.5:
         normal = vec_mul(normal, -1.0)
     if emitter.surface_construction == "polygon_auto" and len(emitter.polygon_vertices) >= 3:
         point = _sample_polygon_point(emitter.polygon_vertices, rng)

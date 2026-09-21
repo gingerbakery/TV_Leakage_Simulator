@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type {
   EmitterDistribution,
   EmitterPowerMode,
   EmitterSpec,
   RayTraceConfigRequest,
+  RayTraceJob,
   RayTraceResult,
   ReceiverSpec,
   ScenePayload,
@@ -25,6 +27,8 @@ import {
 } from 'lucide-react'
 
 import {
+  apiClient,
+  apiQueryKeys,
   useRayTraceJobQuery,
   useGpuCudaStatusQuery,
   useStartRayTraceMutation,
@@ -38,11 +42,14 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
+import { cn } from '@/lib/utils'
 import {
   maxReflectionDepth,
   useWorkspaceStore,
   workspaceSelectors,
+  type RoiScope,
 } from '@/stores'
+import { roiClippedSurfaceCentroid } from '@/features/roi/roi-clipped-geometry'
 
 import {
   axesFromNormal,
@@ -171,6 +178,7 @@ function VectorFields({
   labels,
   ariaLabels,
   value,
+  decimals = 1,
   onChange,
 }: {
   label: string
@@ -180,6 +188,7 @@ function VectorFields({
    * another field group in the same dialog (e.g. multiple "X" fields). */
   ariaLabels?: [string, string, string]
   value: Vec3
+  decimals?: number
   onChange(value: Vec3): void
 }) {
   return (
@@ -197,7 +206,7 @@ function VectorFields({
             label={axisLabel}
             ariaLabel={ariaLabels?.[axis]}
             value={value[axis]}
-            decimals={1}
+            decimals={decimals}
             onChange={(nextValue) => {
               const next: Vec3 = [...value]
               next[axis] = Number.isFinite(nextValue) ? nextValue : 0
@@ -214,6 +223,7 @@ function EmitterDialog({
   open,
   mode,
   scene,
+  roiScopes,
   selectedFaceIds,
   existingIds,
   initialEmitter,
@@ -223,6 +233,7 @@ function EmitterDialog({
   open: boolean
   mode: EmitterCreationMode
   scene?: ScenePayload
+  roiScopes: RoiScope[]
   selectedFaceIds: number[]
   existingIds: string[]
   initialEmitter?: EmitterSpec | null
@@ -243,7 +254,9 @@ function EmitterDialog({
   const [distribution, setDistribution] =
     useState<EmitterDistribution>('lambertian')
   const [sigma, setSigma] = useState(12)
-  const [normalFlip, setNormalFlip] = useState(false)
+  const [emissionDirection, setEmissionDirection] =
+    useState<'forward' | 'reverse' | 'both'>('forward')
+  const normalFlip = emissionDirection === 'reverse'
   const defaultAimCenter = useMemo<Vec3>(() => [defaultCenter[0], defaultCenter[1], defaultCenter[2] + 30], [defaultCenter])
   const [aim, setAim] = useState(() => createEmitterAim(defaultAimCenter))
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
@@ -282,7 +295,10 @@ function EmitterDialog({
       initialEmitter?.direction_distribution ?? 'lambertian',
     )
     setSigma(initialEmitter?.gaussian_sigma_deg ?? 12)
-    setNormalFlip(initialEmitter?.normal_flip ?? false)
+    setEmissionDirection(
+      initialEmitter?.emission_direction ??
+        (initialEmitter?.normal_flip ? 'reverse' : 'forward'),
+    )
     setAim(initialEmitter?.aim ?? createEmitterAim(defaultAimCenter))
     setDatumFaceAssigned(
       mode === 'datum_plane' && Boolean(initialEmitter),
@@ -316,7 +332,7 @@ function EmitterDialog({
     setRotation(rotationFromPlaneAxes(uAxis, vAxis, normalVector))
     // Re-selecting a CAD face explicitly adopts the Receiver front-view
     // convention: look from the arrow start along the arrow, X+ right/Y+ up.
-    setNormalFlip(true)
+    setEmissionDirection('reverse')
     setDatumFaceAssigned(true)
     setSourceFaceIds(datumFacePickResult.faceIds)
     actions.setDatumFacePickResult(null)
@@ -328,6 +344,60 @@ function EmitterDialog({
   }, [actions, open])
 
   const emitterFaceIds = selectedFaceIds
+  const activeRoiClipBoxes = useMemo(
+    () => roiScopes.flatMap((scope) =>
+      scope.active && scope.clipBox ? [scope.clipBox] : [],
+    ),
+    [roiScopes],
+  )
+  const roiClippedEmitterCenter = useMemo(
+    () => scene && mode === 'face' && emitterFaceIds.length > 0
+      ? roiClippedSurfaceCentroid(scene, emitterFaceIds, activeRoiClipBoxes)
+      : null,
+    [activeRoiClipBoxes, emitterFaceIds, mode, scene],
+  )
+  useEffect(() => {
+    if (
+      !open ||
+      mode !== 'face' ||
+      initialEmitter ||
+      !scene ||
+      !roiClippedEmitterCenter ||
+      emitterFaceIds.length === 0
+    ) return
+    const normalSum = emitterFaceIds.reduce((sum, faceId) => {
+      const normal = scene.mesh.face_normals[faceId]
+      const area = scene.mesh.face_areas_mm2[faceId] ?? 0
+      if (!normal || area <= 0) return sum
+      return [
+        sum[0] + normal[0] * area,
+        sum[1] + normal[1] * area,
+        sum[2] + normal[2] * area,
+      ] as Vec3
+    }, [0, 0, 0] as Vec3)
+    const normalLength = Math.hypot(...normalSum)
+    const direction: Vec3 = normalLength > 1e-9
+      ? normalSum.map((value) =>
+          value / normalLength * (normalFlip ? -1 : 1),
+        ) as Vec3
+      : [0, 0, normalFlip ? -1 : 1]
+    setAim((current) => ({
+      ...current,
+      center: [
+        roiClippedEmitterCenter[0] + direction[0] * 30,
+        roiClippedEmitterCenter[1] + direction[1] * 30,
+        roiClippedEmitterCenter[2] + direction[2] * 30,
+      ],
+    }))
+  }, [
+    emitterFaceIds,
+    initialEmitter,
+    mode,
+    normalFlip,
+    open,
+    roiClippedEmitterCenter,
+    scene,
+  ])
   const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
   const emitterAreaMm2 =
     mode === 'datum_plane'
@@ -346,7 +416,13 @@ function EmitterDialog({
   const previewEmitter = useMemo(() => {
     if (!open) return null
     const previewId = initialEmitter?.emitter_id ?? '__placement_preview_emitter__'
-    if (mode === 'face') return { ...createFaceEmitter(previewId, emitterFaceIds), aim, normal_flip: normalFlip, enabled: initialEmitter?.enabled ?? true }
+    if (mode === 'face') return {
+      ...createFaceEmitter(previewId, emitterFaceIds),
+      aim,
+      normal_flip: normalFlip,
+      emission_direction: emissionDirection,
+      enabled: initialEmitter?.enabled ?? true,
+    }
     const emitter = createDatumEmitter(previewId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
     return {
@@ -358,6 +434,7 @@ function EmitterDialog({
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
       normal_flip: normalFlip,
+      emission_direction: emissionDirection,
       aim,
       enabled: initialEmitter?.enabled ?? true,
     }
@@ -369,6 +446,7 @@ function EmitterDialog({
     initialEmitter,
     mode,
     normalFlip,
+    emissionDirection,
     open,
     rotation,
     width,
@@ -415,6 +493,7 @@ function EmitterDialog({
       direction_distribution: distribution,
       gaussian_sigma_deg: Math.max(0.1, sigma),
       normal_flip: normalFlip,
+      emission_direction: emissionDirection,
       aim,
       enabled: initialEmitter?.enabled ?? true,
     })
@@ -646,20 +725,36 @@ function EmitterDialog({
             />
           ) : null}
         </div>
-        <label className="flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={normalFlip}
-            disabled={aim.enabled}
-            onChange={(event) => setNormalFlip(event.currentTarget.checked)}
-          />
-          <span className="flex items-center gap-1.5">
-            Flip normal direction
-            <HelpTooltip label="Flip normal direction 도움말">
-              발광면의 발광 방향(normal)을 반대로 뒤집습니다.
+        <fieldset className="space-y-1.5">
+          <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+            Emitter Direction
+            <HelpTooltip label="Emitter Direction 도움말">
+              Forward는 기본 화살표 방향, Reverse는 반대 방향입니다. Both Sides는 입력한 총광량과 Ray 수를 유지하면서 앞·뒤 양쪽으로 대칭 방출합니다.
             </HelpTooltip>
-          </span>
-        </label>
+          </legend>
+          <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted/25 p-1">
+            {([
+              ['forward', 'Forward'],
+              ['reverse', 'Reverse'],
+              ['both', 'Both Sides'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                disabled={aim.enabled}
+                className={cn(
+                  'rounded-md px-2 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
+                  emissionDirection === value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted',
+                )}
+                onClick={() => setEmissionDirection(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
       </div>
     </AppDialog>
   )
@@ -827,6 +922,8 @@ function ReceiverDialog({
   }, [actions, open])
 
   const canApply = mode === 'datum_plane' || capturedFrame !== null
+  const isLeakPreviewReceiver =
+    initialReceiver?.reference_mode === 'leak_preview_candidate'
   const updatePixelSizeFromResolution = (
     nextResolutionX: number,
     nextResolutionY: number,
@@ -848,6 +945,14 @@ function ReceiverDialog({
   }
   const previewReceiver = useMemo(() => {
     if (!open) return null
+    const datumAxes = planeAxesFromRotation(rotation)
+    const datumCenter: Vec3 = isLeakPreviewReceiver
+      ? [
+          center[0] - datumAxes.normal[0] * Math.max(0.001, viewDistance),
+          center[1] - datumAxes.normal[1] * Math.max(0.001, viewDistance),
+          center[2] - datumAxes.normal[2] * Math.max(0.001, viewDistance),
+        ]
+      : center
     const receiver =
       mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
@@ -861,7 +966,7 @@ function ReceiverDialog({
         : createDatumReceiver(
             initialReceiver?.receiver_id ??
               '__placement_preview_receiver__',
-            center,
+            datumCenter,
             rotation,
             positionOffset,
           )
@@ -877,6 +982,7 @@ function ReceiverDialog({
     center,
     height,
     initialReceiver,
+    isLeakPreviewReceiver,
     mode,
     normalFlip,
     open,
@@ -901,6 +1007,14 @@ function ReceiverDialog({
     const receiverId =
       initialReceiver?.receiver_id ??
       nextSpecId('receiver', existingIds)
+    const datumAxes = planeAxesFromRotation(rotation)
+    const datumCenter: Vec3 = isLeakPreviewReceiver
+      ? [
+          center[0] - datumAxes.normal[0] * Math.max(0.001, viewDistance),
+          center[1] - datumAxes.normal[1] * Math.max(0.001, viewDistance),
+          center[2] - datumAxes.normal[2] * Math.max(0.001, viewDistance),
+        ]
+      : center
     const receiver =
       mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
@@ -912,7 +1026,7 @@ function ReceiverDialog({
           )
         : createDatumReceiver(
             receiverId,
-            center,
+            datumCenter,
             rotation,
             positionOffset,
           )
@@ -933,6 +1047,16 @@ function ReceiverDialog({
       acceptance_angle_deg: Math.max(0.1, Math.min(180, acceptance)),
       normal_flip: normalFlip,
       enabled: initialReceiver?.enabled ?? true,
+      ...(isLeakPreviewReceiver
+        ? {
+            reference_mode: 'leak_preview_candidate',
+            view_distance_mm: Math.max(0.001, viewDistance),
+            base_center: [...center] as Vec3,
+            base_u_axis: [...datumAxes.uAxis] as Vec3,
+            base_v_axis: [...datumAxes.vAxis] as Vec3,
+            base_normal: [...datumAxes.normal] as Vec3,
+          }
+        : {}),
     })
     onOpenChange(false)
   }
@@ -1018,8 +1142,19 @@ function ReceiverDialog({
             'Receiver center Z',
           ]}
           value={center}
+          decimals={2}
           onChange={setCenter}
         />
+        {isLeakPreviewReceiver ? (
+          <NumberField
+            label="Receiver Distance (mm)"
+            value={viewDistance}
+            min={0.001}
+            step={0.01}
+            decimals={2}
+            onChange={setViewDistance}
+          />
+        ) : null}
         <VectorFields
           label="Receiver Offset (mm)"
           help="Center 좌표에 추가하는 이동값입니다 (mm)."
@@ -1030,6 +1165,7 @@ function ReceiverDialog({
             'Receiver offset Z',
           ]}
           value={positionOffset}
+          decimals={2}
           onChange={setPositionOffset}
         />
         <VectorFields
@@ -1056,6 +1192,8 @@ function ReceiverDialog({
                   label="View distance (mm)"
                   value={viewDistance}
                   min={0.001}
+                  step={0.01}
+                  decimals={2}
                   onChange={setViewDistance}
                   description="현재 Viewer의 시점 중심에서 카메라 방향으로 떨어진 Receiver 위치를 지정합니다."
                 />
@@ -1082,6 +1220,7 @@ function ReceiverDialog({
                     'Receiver center Z',
                   ]}
                   value={previewReceiver.center}
+                  decimals={2}
                   onChange={(nextCenter) =>
                     setPositionOffset([
                       nextCenter[0] - previewReceiver.base_center![0],
@@ -1119,6 +1258,8 @@ function ReceiverDialog({
               ariaLabel="Receiver width (mm)"
               value={width}
               min={0.001}
+              step={0.01}
+              decimals={2}
               onChange={setWidth}
             />
             <NumberField
@@ -1126,6 +1267,8 @@ function ReceiverDialog({
               ariaLabel="Receiver height (mm)"
               value={height}
               min={0.001}
+              step={0.01}
+              decimals={2}
               onChange={setHeight}
             />
           </div>
@@ -1281,6 +1424,7 @@ export function RayTracingPanel({
   )
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const queryClient = useQueryClient()
   const editingEmitter =
     emitters.find(
       (emitter) => emitter.emitter_id === editingEmitterId,
@@ -1418,29 +1562,32 @@ export function RayTracingPanel({
       !emitters.some((emitter) => emitter.enabled) ||
       !receivers.some((receiver) => receiver.enabled)
     ) return false
-    const request = buildRayTraceRequest({
-      scene,
-      projectName: activeCad?.displayName || 'TV-Leakage-Direct',
-      emitters: emitters.map((emitter) => ({
-        ...emitter,
-        ray_count: Math.max(1, Math.trunc(emitter.ray_count * rayMultiplier)),
-      })),
-      receivers,
-      materialAssignments,
-      transformRules,
-      excludedComponentIds,
-      deletedComponentIds,
-      roiScopes,
-      config,
-    })
-    if (config.auto_convergence) {
-      request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
-      request.emitters = request.emitters.map((emitter) => ({
-        ...emitter,
-        seed: emitter.seed === null
-          ? null
-          : convergenceSegmentSeed(emitter.seed, segmentIndex),
-      }))
+    const requestForScene = (requestScene: ScenePayload) => {
+      const request = buildRayTraceRequest({
+        scene: requestScene,
+        projectName: activeCad?.displayName || 'TV-Leakage-Direct',
+        emitters: emitters.map((emitter) => ({
+          ...emitter,
+          ray_count: Math.max(1, Math.trunc(emitter.ray_count * rayMultiplier)),
+        })),
+        receivers,
+        materialAssignments,
+        transformRules,
+        excludedComponentIds,
+        deletedComponentIds,
+        roiScopes,
+        config,
+      })
+      if (config.auto_convergence) {
+        request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
+        request.emitters = request.emitters.map((emitter) => ({
+          ...emitter,
+          seed: emitter.seed === null
+            ? null
+            : convergenceSegmentSeed(emitter.seed, segmentIndex),
+        }))
+      }
+      return request
     }
     const cancelTokenAtStart = autoConvergenceCancelTokenRef.current
     const abortController = autoRetry ? new AbortController() : null
@@ -1449,10 +1596,35 @@ export function RayTracingPanel({
       autoRetryAbortControllerRef.current = abortController
     }
     try {
-      const startedJob = await startMutation.mutateAsync({
-        request,
+      const start = (requestScene: ScenePayload) => startMutation.mutateAsync({
+        request: requestForScene(requestScene),
         signal: abortController?.signal,
       })
+      let startedJob: RayTraceJob
+      try {
+        startedJob = await start(scene)
+      } catch (error) {
+        const cacheExpired = error instanceof Error &&
+          error.message.includes('CAD scene cache expired')
+        if (!cacheExpired || !activeCad?.path || abortController?.signal.aborted) throw error
+        setAutoConvergenceStatus('CAD Scene 캐시를 자동 복구하고 있습니다.')
+        const refreshed = await apiClient.refreshScene(activeCad.path, {
+          signal: abortController?.signal,
+        })
+        const refreshedScene: ScenePayload = {
+          ...scene,
+          metadata: {
+            ...scene.metadata,
+            scene_token: refreshed.scene_token,
+          },
+        }
+        queryClient.setQueryData(
+          apiQueryKeys.scene(activeCad.path),
+          refreshedScene,
+        )
+        startedJob = await start(refreshedScene)
+        setAutoConvergenceStatus('CAD Scene 캐시 복구 완료 · Ray Tracing을 시작했습니다.')
+      }
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
@@ -1467,16 +1639,18 @@ export function RayTracingPanel({
       autoRetryJobIdRef.current = autoRetry ? startedJob.job_id : null
       actions.setActiveRayTraceJobId(startedJob.job_id)
       return true
-    } catch {
+    } catch (error) {
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
       if (autoRetry && abortController?.signal.aborted) return false
       autoConvergenceActiveRef.current = false
-      setAutoConvergenceStatus('자동 수렴의 다음 Ray 실행을 시작하지 못했습니다.')
+      setAutoConvergenceStatus(
+        `Ray Tracing 실행을 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return false
     }
-  }, [activeCad?.displayName, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
@@ -2375,6 +2549,7 @@ export function RayTracingPanel({
             : emitterMode ?? 'face'
         }
         scene={scene}
+        roiScopes={roiScopes}
         selectedFaceIds={selectedFaceIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
         initialEmitter={editingEmitter}
