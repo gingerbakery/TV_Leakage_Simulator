@@ -22,8 +22,8 @@ export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
 }
 
 export interface LeakageApiClient {
-  getScene(cadPath: string, options?: ApiRequestOptions): Promise<ScenePayload>
-  refreshScene(cadPath: string, options?: ApiRequestOptions): Promise<SceneRefreshResponse>
+  getScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<ScenePayload>
+  refreshScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<SceneRefreshResponse>
   getSectionCap(
     request: SectionCapRequest,
     options?: ApiRequestOptions,
@@ -58,8 +58,9 @@ export function createApiClient(
   const http = createHttpClient(options)
 
   return {
-    async getScene(cadPath, requestOptions) {
+    async getScene(cadPath, requestOptions, accessoryPaths = []) {
       const binaryQuery = new URLSearchParams({ cad: cadPath, format: 'binary' })
+      accessoryPaths.forEach((path) => binaryQuery.append('aux', path))
       try {
         const buffer = await http.requestArrayBuffer(
           `/api/scene?${binaryQuery}`,
@@ -77,16 +78,20 @@ export function createApiClient(
         if (requestOptions?.signal?.aborted) throw error
         console.warn('CAD Binary scene load failed; retrying JSON.', error)
         const jsonQuery = new URLSearchParams({ cad: cadPath })
+        accessoryPaths.forEach((path) => jsonQuery.append('aux', path))
         return http.requestJson<ScenePayload>(`/api/scene?${jsonQuery}`, {
           signal: requestOptions?.signal,
         })
       }
     },
 
-    refreshScene(cadPath, requestOptions) {
+    refreshScene(cadPath, requestOptions, accessoryPaths = []) {
       return http.requestJson<SceneRefreshResponse>('/api/scene/refresh', {
         method: 'POST',
-        json: { cad: cadPath },
+        json: {
+          cad: cadPath,
+          ...(accessoryPaths.length > 0 ? { aux: accessoryPaths } : {}),
+        },
         signal: requestOptions?.signal,
       })
     },

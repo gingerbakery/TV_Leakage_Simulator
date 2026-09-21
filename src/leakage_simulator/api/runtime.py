@@ -18,6 +18,7 @@ from leakage_simulator.raytrace_bridge import (
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.section_cap import build_section_cap_contours
+from leakage_simulator.composite_scene import merge_scene_meshes, merge_scene_payloads
 from leakage_simulator.bitsam_package import (
     extract_package, mesh_identity, read_json, read_scene_cache, write_package,
 )
@@ -147,6 +148,39 @@ class ApiRuntime:
 
         return self._register_scene(payload, Path(cad_path))
 
+    def load_composite_scene(self, cad_paths: list[str]) -> dict[str, Any]:
+        paths = [str(value).strip() for value in cad_paths if str(value).strip()]
+        if not paths:
+            raise ValueError("CAD file is required")
+        if len(paths) == 1:
+            return self.load_scene(paths[0])
+        payloads: list[dict[str, Any]] = []
+        trace_meshes: list[dict[str, Any]] = []
+        for path in paths:
+            registered = self.load_scene(path)
+            token = str((registered.get("metadata") or {}).get("scene_token") or "")
+            with self._state_lock:
+                record = self._scene_records.get(token)
+                trace = self._scene_mesh_cache.get(token)
+            if record is None or trace is None:
+                raise ValueError("CAD scene cache expired while composing Accessory CAD")
+            payloads.append(record[0])
+            trace_meshes.append(trace)
+        merged, component_maps, source_offsets = merge_scene_payloads(payloads, paths)
+
+        def load_trace_mesh() -> dict[str, Any]:
+            resolved: list[dict[str, Any]] = []
+            for trace in trace_meshes:
+                loader = trace.get("_deferred_trace_loader")
+                value = loader() if callable(loader) else trace
+                if not isinstance(value, dict):
+                    raise ValueError("Accessory CAD trace mesh is unavailable")
+                resolved.append(value)
+            return merge_scene_meshes(resolved, component_maps, source_offsets)
+
+        merged["_trace_mesh_loader"] = load_trace_mesh
+        return self._register_scene(merged, Path(paths[0]))
+
     def _register_scene(self, payload: dict[str, Any], source: Path) -> dict[str, Any]:
         viewer_mesh = payload.get("mesh")
         if not isinstance(viewer_mesh, dict):
@@ -220,7 +254,16 @@ class ApiRuntime:
             lock = trace.get("_deferred_trace_lock")
             if lock is not None:
                 with lock:
-                    cached_trace = None if callable(trace.get("_deferred_trace_loader")) else trace
+                    deferred_loader = trace.get("_deferred_trace_loader")
+                    cached_trace = None if callable(deferred_loader) else trace
+                    # A composite project cannot rebuild its trace geometry
+                    # from the main CAD file alone after being moved to another
+                    # PC. Resolve and embed the combined trace mesh on save.
+                    if cached_trace is None and len((payload.get("metadata") or {}).get("source_files") or []) > 1:
+                        cached_trace = deferred_loader()
+                        if not isinstance(cached_trace, dict):
+                            raise ValueError("Accessory CAD trace mesh is unavailable")
+                        self._scene_mesh_cache[token] = cached_trace
             else:
                 cached_trace = trace
             manifest = write_package(temporary, project, source, payload, cached_trace)

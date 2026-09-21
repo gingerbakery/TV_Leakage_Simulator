@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, FastAPI, Query, Request
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -127,12 +127,12 @@ def create_app(
         }
 
     @application.get("/api/scene")
-    def scene(cad: str = "", format: str = "json") -> Any:
+    def scene(cad: str = "", format: str = "json", aux: list[str] = Query(default=[])) -> Any:
         if not cad.strip():
             return _error(400, "CAD file is required")
         try:
             scene_started_at = time.perf_counter()
-            payload = api_runtime.load_scene(cad)
+            payload = api_runtime.load_composite_scene([cad, *aux])
             if format.strip().lower() == "binary":
                 binary_started_at = time.perf_counter()
                 manifest, blocks = prepare_scene_binary(payload)
@@ -195,10 +195,11 @@ def create_app(
     @application.post("/api/scene/refresh", response_class=JSONResponse)
     def refresh_scene(payload: dict[str, Any] = Body(...)) -> Any:
         cad_path = str(payload.get("cad") or "").strip()
+        auxiliary_paths = [str(value).strip() for value in payload.get("aux", []) if str(value).strip()]
         if not cad_path:
             return _error(400, "CAD file is required")
         try:
-            refreshed = api_runtime.load_scene(cad_path)
+            refreshed = api_runtime.load_composite_scene([cad_path, *auxiliary_paths])
             metadata = refreshed.get("metadata") or {}
             scene_token = str(metadata.get("scene_token") or "")
             if not scene_token:

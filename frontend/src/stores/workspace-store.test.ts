@@ -16,6 +16,19 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('adds, hides and removes Accessory CAD inside the active Case', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'main.step', displayName: 'main.step' })
+    const caseId = store.getState().activeCadCaseId!
+    actions.addAccessoryCad(caseId, { path: 'board.step', displayName: 'board.step' })
+    let accessory = store.getState().cadCases[0].accessoryCads[0]
+    expect(accessory).toMatchObject({ visible: true, cad: { path: 'board.step' } })
+    actions.setAccessoryCadVisible(caseId, accessory.accessoryId, false)
+    expect(store.getState().cadCases[0].accessoryCads[0].visible).toBe(false)
+    actions.removeAccessoryCad(caseId, accessory.accessoryId)
+    expect(store.getState().cadCases[0].accessoryCads).toEqual([])
+  })
   it('keeps editable Case names and captions exactly as entered', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

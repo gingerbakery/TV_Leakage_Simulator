@@ -20,6 +20,27 @@ describe('createApiClient', () => {
     )
   })
 
+  it('adds every visible Accessory CAD path to the scene query', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ schema_version: 'mesh-scene.v1' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    const client = createApiClient({ fetch: fetchMock })
+
+    await client.getScene(
+      'C:\\CAD\\main.step',
+      undefined,
+      ['C:\\CAD\\board.step', 'C:\\CAD\\speaker.step'],
+    )
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/scene?cad=C%3A%5CCAD%5Cmain.step&format=binary&aux=C%3A%5CCAD%5Cboard.step&aux=C%3A%5CCAD%5Cspeaker.step',
+    )
+  })
+
   it('uploads raw CAD bytes without multipart conversion', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

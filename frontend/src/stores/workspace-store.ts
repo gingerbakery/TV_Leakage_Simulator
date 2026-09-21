@@ -15,6 +15,12 @@ export interface ActiveCad {
   displayName: string
 }
 
+export interface AccessoryCad {
+  accessoryId: string
+  cad: ActiveCad
+  visible: boolean
+}
+
 export interface CadCase {
   caseId: string
   order: number
@@ -26,6 +32,7 @@ export interface CadCase {
   latestJobId?: string | null
   latestResult?: RayTraceResult | null
   componentMatchMetadata?: SceneComponentMatchMetadata[]
+  accessoryCads: AccessoryCad[]
 }
 
 export interface CopySetupTarget {
@@ -242,6 +249,9 @@ export type WorkspaceProjectState = Pick<
 export interface WorkspaceActions {
   setActiveCad(cad: ActiveCad | null): void
   addCadCase(cad: ActiveCad): void
+  addAccessoryCad(caseId: string, cad: ActiveCad): void
+  setAccessoryCadVisible(caseId: string, accessoryId: string, visible: boolean): void
+  removeAccessoryCad(caseId: string, accessoryId: string): void
   setActiveCadCase(caseId: string): void
   setCadCaseVisible(caseId: string, visible: boolean): void
   removeCadCase(caseId: string): void
@@ -1005,6 +1015,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             visible: true,
             workspaceState: blankProjectState(),
             latestResult: null,
+            accessoryCads: [],
           }
           const savedCases = state.cadCases.map((item) =>
             item.caseId === state.activeCadCaseId
@@ -1025,6 +1036,51 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...restoredSceneState(nextCase.workspaceState ?? blankProjectState()),
           }
         })
+      },
+      addAccessoryCad: (caseId, cad) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null, accessoryCads: [
+                ...(item.accessoryCads ?? []),
+                { accessoryId: `accessory-cad-${Date.now()}-${(item.accessoryCads ?? []).length + 1}`, cad, visible: true },
+              ] }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
+      },
+      setAccessoryCadVisible: (caseId, accessoryId, visible) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null,
+                accessoryCads: (item.accessoryCads ?? []).map((accessory) =>
+                  accessory.accessoryId === accessoryId ? { ...accessory, visible } : accessory) }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
+      },
+      removeAccessoryCad: (caseId, accessoryId) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null,
+                accessoryCads: (item.accessoryCads ?? []).filter((accessory) => accessory.accessoryId !== accessoryId) }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
       },
       setActiveCadCase: (caseId) => {
         set((state) => {

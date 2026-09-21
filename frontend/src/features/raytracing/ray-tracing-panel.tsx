@@ -1606,9 +1606,10 @@ export function RayTracingPanel({
           error.message.includes('CAD scene cache expired')
         if (!cacheExpired || !activeCad?.path || abortController?.signal.aborted) throw error
         setAutoConvergenceStatus('CAD Scene 캐시를 자동 복구하고 있습니다.')
+        const accessoryPaths = scene.metadata.source_files?.slice(1) ?? []
         const refreshed = await apiClient.refreshScene(activeCad.path, {
           signal: abortController?.signal,
-        })
+        }, accessoryPaths)
         const refreshedScene: ScenePayload = {
           ...scene,
           metadata: {
@@ -1617,7 +1618,7 @@ export function RayTracingPanel({
           },
         }
         queryClient.setQueryData(
-          apiQueryKeys.scene(activeCad.path),
+          apiQueryKeys.scene(activeCad.path, accessoryPaths),
           refreshedScene,
         )
         startedJob = await start(refreshedScene)

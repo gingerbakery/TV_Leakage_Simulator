@@ -194,6 +194,8 @@ export function SimulatorShell() {
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const activeAccessoryPaths = cadCases.find((item) => item.caseId === activeCadCaseId)
+    ?.accessoryCads?.filter((item) => item.visible).map((item) => item.cad.path) ?? []
   const activeCadCaseVisible =
     cadCases.find((item) => item.caseId === activeCadCaseId)?.visible ?? true
   const nameOverrides = useWorkspaceStore(
@@ -210,7 +212,7 @@ export function SimulatorShell() {
   const restoredRayTraceResult = useWorkspaceStore(
     workspaceSelectors.restoredRayTraceResult,
   )
-  const sceneQuery = useSceneQuery(activeCad?.path ?? '')
+  const sceneQuery = useSceneQuery(activeCad?.path ?? '', activeAccessoryPaths)
   const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
   const rayTraceJob = rayTraceJobQuery.data
   const rawRayTraceResult =

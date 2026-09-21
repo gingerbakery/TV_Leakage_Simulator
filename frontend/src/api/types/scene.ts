@@ -72,6 +72,7 @@ export interface ScenePayload {
     vertex_count: number
     component_count: number
     source_file: string
+    source_files?: string[]
     synthetic: boolean
     import_note: string
     import_timings_sec?: Record<string, number>

@@ -16,8 +16,8 @@ export const apiQueryKeys = {
   devStatus: () => [...apiQueryKeys.system(), 'dev-status'] as const,
   gpuCudaStatus: () => [...apiQueryKeys.system(), 'gpu-cuda-status'] as const,
   scenes: () => [...apiQueryKeys.all, 'scenes'] as const,
-  scene: (cadPath: string) =>
-    [...apiQueryKeys.scenes(), cadPath] as const,
+  scene: (cadPath: string, accessoryPaths: string[] = []) =>
+    [...apiQueryKeys.scenes(), cadPath, ...accessoryPaths] as const,
   rayTrace: () => [...apiQueryKeys.all, 'ray-trace'] as const,
   rayTraceJobs: () => [...apiQueryKeys.rayTrace(), 'jobs'] as const,
   rayTraceJob: (jobId: string) =>
@@ -57,11 +57,14 @@ export function gpuCudaStatusQueryOptions(
 
 export function sceneQueryOptions(
   cadPath: string,
-  client: SceneApi = apiClient,
+  accessoryPathsOrClient: string[] | SceneApi = [],
+  suppliedClient: SceneApi = apiClient,
 ) {
+  const accessoryPaths = Array.isArray(accessoryPathsOrClient) ? accessoryPathsOrClient : []
+  const client = Array.isArray(accessoryPathsOrClient) ? suppliedClient : accessoryPathsOrClient
   return queryOptions({
-    queryKey: apiQueryKeys.scene(cadPath),
-    queryFn: ({ signal }) => client.getScene(cadPath, { signal }),
+    queryKey: apiQueryKeys.scene(cadPath, accessoryPaths),
+    queryFn: ({ signal }) => client.getScene(cadPath, { signal }, accessoryPaths),
     enabled: cadPath.trim().length > 0,
     staleTime: Number.POSITIVE_INFINITY,
     // A scene token is server-memory scoped. Discard it when no screen uses it
