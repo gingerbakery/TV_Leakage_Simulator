@@ -13,13 +13,108 @@ import {
   createDatumReceiver,
   createFaceEmitter,
   mergeConvergenceRayTraceResults,
+  metricErrorPercent,
   nextSpecId,
   planeAxesFromRotation,
   rayObjectDisplayName,
+  receiverMeetsStatisticalTarget,
   rotationFromPlaneAxes,
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
+  it('weights termination losses across unequal segments and preserves unavailable diagnostics', () => {
+    const first = createRayTraceResultFixture()
+    const second = createRayTraceResultFixture()
+    first.total_rays = 100
+    second.total_rays = 300
+    first.metrics._termination_summary = {
+      unpropagated_surface_flux_lumen: 0.4, energy_cutoff_upper_bound_lumen: 0.5, depth_limit_count: 2,
+    }
+    second.metrics._termination_summary = {
+      unpropagated_surface_flux_lumen: 0.2, energy_cutoff_upper_bound_lumen: 0.3, depth_limit_count: 5,
+    }
+    expect(mergeConvergenceRayTraceResults(first, second).metrics._termination_summary).toMatchObject({
+      unpropagated_surface_flux_lumen: 0.25, energy_cutoff_upper_bound_lumen: 0.35, depth_limit_count: 7,
+    })
+    first.metrics._termination_summary = { unpropagated_surface_flux_lumen: null }
+    expect(mergeConvergenceRayTraceResults(first, second).metrics._termination_summary).toMatchObject({
+      unpropagated_surface_flux_lumen: null,
+    })
+    delete first.metrics._termination_summary
+    expect(mergeConvergenceRayTraceResults(first, second).metrics._termination_summary).toBeUndefined()
+    first.config.min_energy_basis = 'initial_ray_fraction'
+    expect(() => mergeConvergenceRayTraceResults(first, second)).toThrow(/Termination policy/)
+  })
+
+  it.each([0, -0.001, NaN, Infinity])('rejects an invalid bright-area moment (%s) even when the Peak cell is valid', (missingMoment) => {
+    const first = createRayTraceResultFixture()
+    first.total_rays = 10_000
+    first.receiver_grids[0] = {
+      receiver_id: 'receiver_001', resolution: [2, 1], bin_area_mm2: 1,
+      flux_lumen: [[1, 0.5]], hit_count: 1500,
+      flux_squared_lumen2: 0.0015, flux_squared_lumen2_grid: [[0.001, missingMoment]],
+    }
+    const second = structuredClone(first)
+    second.receiver_grids[0].flux_squared_lumen2_grid = [[0.001, 0.0005]]
+    const merged = mergeConvergenceRayTraceResults(first, second)
+    const metric = merged.metrics.receiver_001 as Record<string, unknown>
+    expect(metric.total_flux_lumen).toBe(1.5)
+    expect(metric.peak_error_estimate_percent).toBeLessThan(5)
+    expect(metric.peak_area_error_estimate_percent).toBeNull()
+    expect(receiverMeetsStatisticalTarget(metric, 5)).toBe(false)
+    expect(receiverMeetsStatisticalTarget(metric, 100)).toBe(false)
+  })
+
+  it('rejects a noisy Peak even when total and bright-area errors are small', () => {
+    const metric = {
+      hit_count: 1000, peak_effective_sample_count: 100,
+      error_estimate_percent: 0.5, peak_area_error_estimate_percent: 0.8,
+      peak_error_estimate_percent: 10,
+    }
+    expect(receiverMeetsStatisticalTarget(metric, 5)).toBe(false)
+    expect(receiverMeetsStatisticalTarget({ ...metric, peak_error_estimate_percent: 4 }, 5)).toBe(true)
+    for (const value of [undefined, null, '', NaN, Infinity, -1]) {
+      expect(metricErrorPercent(value)).toBe(Infinity)
+      expect(receiverMeetsStatisticalTarget({ ...metric, peak_error_estimate_percent: value }, 5)).toBe(false)
+    }
+  })
+
+  it('requires two stable cumulative Peak changes for automatic convergence', () => {
+    const metric = {
+      hit_count: 1000, peak_effective_sample_count: 100,
+      error_estimate_percent: 1, peak_area_error_estimate_percent: 1,
+      peak_error_estimate_percent: 4,
+    }
+    for (const changes of [[], [1], [8, 1], [null, 1]]) {
+      expect(receiverMeetsStatisticalTarget({ ...metric, peak_recent_change_percent: changes }, 5, true)).toBe(false)
+    }
+    expect(receiverMeetsStatisticalTarget({ ...metric, peak_recent_change_percent: [2, 1] }, 5, true)).toBe(true)
+    expect(receiverMeetsStatisticalTarget({ ...metric, peak_effective_sample_count: 2 }, 5)).toBe(false)
+  })
+
+  it('preserves unavailable legacy moments through convergence merging', () => {
+    const first = createRayTraceResultFixture()
+    first.receiver_grids[0].flux_squared_lumen2_grid = undefined
+    first.receiver_grids[0].flux_squared_lumen2 = undefined
+    const merged = mergeConvergenceRayTraceResults(first, createRayTraceResultFixture())
+    const metric = merged.metrics.receiver_001 as Record<string, unknown>
+    expect(metric.peak_error_estimate_percent).toBeNull()
+    expect(receiverMeetsStatisticalTarget(metric, 5)).toBe(false)
+  })
+
+  it('keeps the raw Peak and tracks its changes without smoothing', () => {
+    const first = createRayTraceResultFixture()
+    const second = structuredClone(first)
+    const merged = mergeConvergenceRayTraceResults(first, second)
+    const next = mergeConvergenceRayTraceResults(merged, structuredClone(first))
+    const metric = next.metrics.receiver_001 as Record<string, unknown>
+    const grid = next.receiver_grids[0]
+    const rawPeak = Math.max(...grid.flux_lumen.flat()) * next.config.k_abs * next.config.k_brdf /
+      (grid.bin_area_mm2 * 1e-6) / Math.PI
+    expect(metric.peak_nit_est).toBeCloseTo(rawPeak)
+    expect(metric.peak_recent_change_percent).toHaveLength(2)
+  })
+
   it.each([[20, 30, -15], [-45, 10, 90], [0, 90, 30], [0, -90, -30]])(
     'recovers Target rotation from its two persisted axes: %s, %s, %s',
     (rotationX, rotationY, rotationZ) => {

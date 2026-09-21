@@ -6,6 +6,58 @@ from leakage_simulator.types import RayTraceConfig, ReceiverGrid
 
 
 class ReceiverErrorEstimateTests(unittest.TestCase):
+    def test_missing_nonpeak_moment_cannot_understate_bright_area_error(self) -> None:
+        for missing_moment in (0.0, -0.001, math.nan, math.inf):
+            with self.subTest(moment=missing_moment):
+                grid = ReceiverGrid(
+                    receiver_id="receiver", resolution=(2, 1), bin_area_mm2=1.0,
+                    flux_lumen=[[1.0, 0.5]], hit_count=1500,
+                    flux_squared_lumen2=0.0015,
+                    flux_squared_lumen2_grid=[[0.001, missing_moment]],
+                )
+                metrics = _build_direct_metrics([grid], RayTraceConfig(), 10_000)["receiver"]
+                self.assertEqual(metrics["total_flux_lumen"], 1.5)
+                self.assertLess(metrics["peak_error_estimate_percent"], 5.0)
+                self.assertIsNone(metrics["peak_area_error_estimate_percent"])
+
+    def test_tied_peaks_use_the_larger_uncertainty(self) -> None:
+        grid = ReceiverGrid(
+            receiver_id="receiver", resolution=(2, 1), bin_area_mm2=1.0,
+            flux_lumen=[[1.0, 1.0]], hit_count=102,
+            flux_squared_lumen2=0.51, flux_squared_lumen2_grid=[[0.01, 0.5]],
+        )
+        metrics = _build_direct_metrics([grid], RayTraceConfig(), 1000)["receiver"]
+        self.assertAlmostEqual(metrics["peak_effective_sample_count"], 2.0)
+        self.assertGreater(metrics["peak_error_estimate_percent"], 70.0)
+        self.assertEqual(metrics["peak_statistical_quality"], "insufficient_samples")
+
+    def test_peak_cell_uncertainty_is_not_the_bright_area_uncertainty(self) -> None:
+        grid = ReceiverGrid(
+            receiver_id="receiver",
+            resolution=(100, 1),
+            bin_area_mm2=1.0,
+            flux_lumen=[[0.01] * 100],
+            hit_count=10_000,
+            flux_squared_lumen2=0.0001,
+            flux_squared_lumen2_grid=[[0.000001] * 100],
+        )
+        metrics = _build_direct_metrics([grid], RayTraceConfig(), 10_000)["receiver"]
+        self.assertLess(metrics["peak_area_error_estimate_percent"], 0.0001)
+        self.assertGreater(metrics["peak_error_estimate_percent"], 9.0)
+        self.assertAlmostEqual(metrics["peak_effective_sample_count"], 100.0)
+
+    def test_legacy_missing_cell_moments_do_not_claim_a_precise_peak(self) -> None:
+        grid = ReceiverGrid(
+            receiver_id="receiver",
+            resolution=(1, 1),
+            bin_area_mm2=1.0,
+            flux_lumen=[[1.0]],
+            hit_count=100,
+        )
+        metrics = _build_direct_metrics([grid], RayTraceConfig(), 100)["receiver"]
+        self.assertIsNone(metrics["peak_error_estimate_percent"])
+        self.assertEqual(metrics["peak_statistical_quality"], "unavailable")
+
     def test_reports_total_and_peak_area_monte_carlo_error(self) -> None:
         grid = ReceiverGrid(
             receiver_id="receiver",
@@ -47,6 +99,9 @@ class ReceiverErrorEstimateTests(unittest.TestCase):
 
         self.assertEqual(metrics["error_estimate_percent"], 100.0)
         self.assertEqual(metrics["peak_area_error_estimate_percent"], 100.0)
+        self.assertIsNone(metrics["peak_error_estimate_percent"])
+        self.assertEqual(metrics["peak_effective_sample_count"], 0.0)
+        self.assertEqual(metrics["peak_statistical_quality"], "no_hits")
         self.assertEqual(metrics["statistical_quality"], "no_hits")
         self.assertEqual(metrics["receiver_hit_rate"], 0.0)
         self.assertIsNone(metrics["estimated_rays_for_minimum_hits"])

@@ -16,6 +16,16 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('uses relative termination for new cases without reinterpreting legacy units', () => {
+    const store = createWorkspaceStore()
+    expect(store.getState().rayTraceConfig.min_energy_basis).toBe('initial_ray_fraction')
+    const legacy = { ...defaultRayTraceConfig, min_energy: 1e-9 }
+    delete legacy.min_energy_basis
+    store.getState().actions.setRayTraceConfig(legacy)
+    expect(store.getState().rayTraceConfig.min_energy_basis).toBe('absolute_lumen')
+    expect(store.getState().rayTraceConfig.min_energy).toBe(1e-9)
+  })
+
   it('creates independent Cases when the same CAD path is imported again', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

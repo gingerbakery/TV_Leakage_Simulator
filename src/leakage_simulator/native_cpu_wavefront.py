@@ -530,6 +530,8 @@ def _make_kernel() -> Callable[..., None]:
         roughness: float,
         angle_dependent: bool,
     ) -> float:
+        if base_reflectance <= 0.0:
+            return 0.0
         if not angle_dependent:
             return base_reflectance
         direction_x, direction_y, direction_z = normalize_components(

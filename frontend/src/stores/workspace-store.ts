@@ -438,6 +438,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   max_depth: 1,
   seed: 42,
   min_energy: 1e-9,
+  min_energy_basis: 'initial_ray_fraction',
   epsilon_mm: 1e-4,
   k_abs: 0.12,
   k_brdf: 1,
@@ -476,7 +477,12 @@ function normalizeRayTraceConfig(
       Math.min(maxReflectionDepth, Math.trunc(config.max_depth || 0)),
     ),
     seed: Math.trunc(config.seed || 0),
-    min_energy: Math.max(0, Number(config.min_energy) || 0),
+    min_energy: Math.min(
+      config.min_energy_basis === 'initial_ray_fraction' ? 1 : Infinity,
+      Math.max(0, Number(config.min_energy) || 0),
+    ),
+    min_energy_basis: config.min_energy_basis === 'initial_ray_fraction'
+      ? 'initial_ray_fraction' : 'absolute_lumen',
     epsilon_mm: Math.max(1e-9, Number(config.epsilon_mm) || 1e-4),
     k_abs: Math.max(0, Number(config.k_abs) || 0),
     k_brdf: Math.max(0, Number(config.k_brdf) || 0),

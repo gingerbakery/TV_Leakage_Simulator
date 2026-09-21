@@ -869,6 +869,8 @@ def _make_kernel() -> Callable[..., None]:
         roughness,
         angle_dependent,
     ):
+        if base_reflectance <= 0.0:
+            return 0.0
         if not angle_dependent:
             return base_reflectance
         cosine_incidence = -(
@@ -1818,7 +1820,7 @@ def _make_kernel() -> Callable[..., None]:
                     )
                     if importance_weight <= 0.0:
                         cuda.atomic.add(bounce_importance_counts, 2, 1)
-                        event_status[ray_index, depth] = status
+                        event_status[ray_index, depth] = status | STATUS_DISABLED
                         terminal_kind[ray_index] = TERMINAL_BLOCKED
                         terminal_depth[ray_index] = depth
                         terminal_power[ray_index] = current_power

@@ -28,6 +28,41 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('keeps termination diagnostics collapsed and distinguishes loss from receiver error', () => {
+    const result = createRayTraceResultFixture()
+    result.config.min_energy_basis = 'initial_ray_fraction'
+    result.metrics._termination_summary = {
+      energy_cutoff_upper_bound_lumen: 4e-6, unpropagated_surface_flux_lumen: 3.6e-6,
+    }
+    render(<RayTraceResultWindow open result={result} onOpenChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-bounce' }))
+    expect(screen.getByText('종료 정책 · 절단 광량').closest('details')?.open).toBe(false)
+    expect(screen.getByText(/에너지 종료 광량 상한:/).textContent).toContain('4.0000e-6 lm')
+    expect(screen.getByText(/반사 후 미전파 광량:/).textContent).toContain('3.6000e-6 lm')
+    expect(screen.getByText(/Receiver 손실량이나 오차율과 같지 않습니다/)).not.toBeNull()
+  })
+
+  it('does not label a noisy peak as converged and warns about depth truncation', () => {
+    const result = createRayTraceResultFixture()
+    result.metrics.receiver_001 = {
+      ...(result.metrics.receiver_001 as Record<string, unknown>),
+      peak_error_estimate_percent: 20,
+    }
+    result.metrics._reflection_summary = { depth_limit_count: 12 }
+    const view = render(<RayTraceResultWindow open result={result} onOpenChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+    expect(screen.queryByText('MC target met')).toBeNull()
+    expect(screen.getByText('Not converged')).not.toBeNull()
+    expect(screen.getByText(/반사 상한으로 종료된 경로가/)).not.toBeNull()
+    result.metrics.receiver_001 = {
+      ...(result.metrics.receiver_001 as Record<string, unknown>),
+      peak_error_estimate_percent: null,
+    }
+    view.rerender(<RayTraceResultWindow open result={{ ...result, run_id: 'legacy-result' }} onOpenChange={vi.fn()} />)
+    expect(screen.getByText('Insufficient samples')).not.toBeNull()
+    expect(screen.queryByText('MC target met')).toBeNull()
+  })
+
   it('shows reflection truncation separately from energy termination', () => {
     const result = createRayTraceResultFixture()
     result.config.max_depth = 1000
@@ -959,7 +994,8 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('Y (mm)')).not.toBeNull()
     expect(screen.getByText('Error Estimate')).not.toBeNull()
     expect(screen.getByText('2.75%')).not.toBeNull()
-    expect(screen.getByText('Converged')).not.toBeNull()
+    expect(screen.getByText('Peak Error (1σ)')).not.toBeNull()
+    expect(screen.getByText('MC target met')).not.toBeNull()
     expect(
       screen.getByRole('img', { name: 'X-axis luminance profile' }),
     ).not.toBeNull()

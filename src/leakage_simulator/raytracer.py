@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 from . import native_cpu_ordered_reducer as native_ordered_reducer
+from .termination import emitter_termination_config, termination_summary
 from .geometry import (
     HitRecord,
     RayBatch as IntersectionRayBatch,
@@ -2238,6 +2239,8 @@ def run_direct_ray_trace(
         "profile_hits": {},
     }
     reflection_summary = _empty_reflection_summary(trace_input.config)
+    termination_thresholds = []
+    source_power_lumen = 0.0
     contribution_summary = _empty_contribution_summary(trace_input.receivers)
     detailed_contributions = trace_input.config.contribution_mode == "detailed"
     face_contribution_cache: List[Optional[Dict]] = (
@@ -2414,6 +2417,9 @@ def run_direct_ray_trace(
         else:
             emitter_area_mm2 = emitter.virtual_area_mm2()
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
+        emitter_config = emitter_termination_config(trace_input.config, ray_power)
+        termination_thresholds.append(emitter_config.min_energy)
+        source_power_lumen += ray_power * emitter.ray_count
         use_batch_dispatch = (
             intersection_dispatch == "batch"
             and (
@@ -2550,7 +2556,7 @@ def run_direct_ray_trace(
                             source_face_batch[start:end],
                             receiver_frames,
                             receiver_grids,
-                            trace_input.config,
+                            emitter_config,
                             resolved_optical_by_face,
                             emitter_rng,
                             optical_summary,
@@ -2608,7 +2614,7 @@ def run_direct_ray_trace(
                             emitter_ray_offset + start,
                             receiver_frames,
                             receiver_grids,
-                            trace_input.config,
+                            emitter_config,
                             resolved_optical_by_face,
                             optical_summary,
                             reflection_summary,
@@ -2764,7 +2770,7 @@ def run_direct_ray_trace(
                     source_face,
                     receiver_frames,
                     receiver_grids,
-                    trace_input.config,
+                    emitter_config,
                     resolved_optical_by_face,
                     emitter_rng,
                     optical_summary,
@@ -2924,7 +2930,7 @@ def run_direct_ray_trace(
                     surface_hit.normal,
                     reflected_power,
                     resolved_optical.profile,
-                    trace_input.config,
+                    emitter_config,
                     reflection_summary,
                     current_depth,
                 )
@@ -3065,6 +3071,11 @@ def run_direct_ray_trace(
     metrics = _build_direct_metrics(grids, trace_input.config, total_rays)
     metrics["_optical_summary"] = optical_summary
     metrics["_reflection_summary"] = reflection_summary
+    metrics["_termination_summary"] = termination_summary(
+        trace_input.config, optical_summary, reflection_summary,
+        termination_thresholds, source_power_lumen, stopped_early,
+        primary_sampling_stats.applied_emitter_count > 0 or bounce_sampling_stats.eligible_surface_count > 0,
+    )
     metrics["_contribution_summary"] = contribution_summary.to_dict()
     runtime_sec = time.time() - start_time
     acceleration_info = trace_input.mesh.acceleration_info(
@@ -8265,7 +8276,8 @@ def _empty_reflection_summary(config: RayTraceConfig) -> Dict:
         "enabled": config.max_depth >= 1,
         "implemented_max_depth": config.max_depth,
         "termination_mode": config.termination_mode,
-        "min_energy_lumen": config.min_energy,
+        "min_energy_lumen": config.min_energy if config.min_energy_basis == "absolute_lumen" else None,
+        "min_energy_basis": config.min_energy_basis,
         "max_observed_depth": 0,
         "surface_hit_count": 0,
         "primary_surface_hit_count": 0,
@@ -9411,7 +9423,8 @@ def _build_direct_metrics(
         area_above_zero = sum(1 for value in values if value > 0.0) * grid.bin_area_mm2
         total_flux = sum(values)
         def relative_error_percent(flux_sum: float, squared_sum: float) -> float:
-            if sample_count <= 1 or flux_sum <= 0.0:
+            if (sample_count <= 1 or not math.isfinite(flux_sum)
+                    or not math.isfinite(squared_sum) or flux_sum <= 0.0 or squared_sum <= 0.0):
                 return 100.0
             relative_variance = max(
                 0.0,
@@ -9426,13 +9439,43 @@ def _build_direct_metrics(
         peak_threshold = max(values, default=0.0) * 0.05
         peak_area_flux = 0.0
         peak_area_squared_flux = 0.0
+        peak_area_moments_available = True
         for row_index, row in enumerate(grid.flux_lumen):
             for column_index, flux in enumerate(row):
                 if flux >= peak_threshold and flux > 0.0:
                     peak_area_flux += flux
-                    peak_area_squared_flux += grid.flux_squared_lumen2_grid[row_index][column_index]
-        peak_area_error_estimate_percent = relative_error_percent(
-            peak_area_flux, peak_area_squared_flux
+                    squared_flux = grid.flux_squared_lumen2_grid[row_index][column_index]
+                    if math.isfinite(squared_flux) and squared_flux > 0.0:
+                        peak_area_squared_flux += squared_flux
+                    else:
+                        peak_area_moments_available = False
+        peak_area_error_estimate_percent = (
+            relative_error_percent(peak_area_flux, peak_area_squared_flux)
+            if peak_area_moments_available else None
+        )
+        peak_flux = max(values, default=0.0)
+        peak_cells = [
+            (row_index, column_index)
+            for row_index, row in enumerate(grid.flux_lumen)
+            for column_index, flux in enumerate(row)
+            if flux == peak_flux and flux > 0.0
+        ]
+        peak_squared_values = [
+            grid.flux_squared_lumen2_grid[row_index][column_index]
+            for row_index, column_index in peak_cells
+        ]
+        peak_moments_available = (
+            sample_count > 1
+            and bool(peak_squared_values)
+            and all(math.isfinite(value) and value > 0.0 for value in peak_squared_values)
+        )
+        peak_error_estimate_percent = (
+            max(relative_error_percent(peak_flux, value) for value in peak_squared_values)
+            if peak_moments_available else None
+        )
+        peak_effective_sample_count = (
+            min(peak_flux * peak_flux / value for value in peak_squared_values)
+            if peak_moments_available else 0.0
         )
         minimum_convergence_hits = 30
         receiver_hit_rate = (
@@ -9489,6 +9532,14 @@ def _build_direct_metrics(
             "area_above_zero_mm2": area_above_zero,
             "error_estimate_percent": error_estimate_percent,
             "peak_area_error_estimate_percent": peak_area_error_estimate_percent,
+            "peak_error_estimate_percent": peak_error_estimate_percent,
+            "peak_effective_sample_count": peak_effective_sample_count,
+            "peak_statistical_quality": (
+                "no_hits" if not peak_cells else
+                "unavailable" if not peak_moments_available else
+                "insufficient_samples" if peak_effective_sample_count < 30.0 else
+                "estimated"
+            ),
             "error_estimate_sample_count": float(sample_count),
             "receiver_hit_rate": receiver_hit_rate,
             "minimum_convergence_hits": float(minimum_convergence_hits),

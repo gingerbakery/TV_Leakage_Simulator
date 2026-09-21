@@ -398,6 +398,9 @@ function isRayTraceConfig(
     isFiniteNumber(value.max_depth) &&
     isFiniteNumber(value.seed) &&
     isFiniteNumber(value.min_energy) &&
+    (value.min_energy_basis === undefined || isOneOf(value.min_energy_basis, [
+      'absolute_lumen', 'initial_ray_fraction',
+    ])) &&
     isFiniteNumber(value.epsilon_mm) &&
     isFiniteNumber(value.k_abs) &&
     isFiniteNumber(value.k_brdf) &&

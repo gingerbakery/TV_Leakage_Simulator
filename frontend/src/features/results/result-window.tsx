@@ -32,7 +32,7 @@ import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { getComponentDisplayName } from '@/features/components'
-import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
+import { metricErrorPercent, rayObjectDisplayName, receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
 import {
   removeReceiverFromRayTraceResult,
   useWorkspaceStore,
@@ -344,6 +344,10 @@ function comparisonConditionMismatches(
     ['Angle-dependent reflectance', 'angle_dependent_reflectance'],
     ['Termination mode', 'termination_mode'],
   ] as const
+  if ((result.config.min_energy_basis ?? 'absolute_lumen') !==
+      (baseline.config.min_energy_basis ?? 'absolute_lumen')) {
+    mismatches.push('Ray 설정 · Energy threshold basis')
+  }
   for (const [label, key] of traceFields) {
     if (different(result.config[key], baseline.config[key])) {
       mismatches.push(`Ray 설정 · ${label}`)
@@ -1958,6 +1962,7 @@ export function RayTraceResultWindow({
   const contribution = result.contribution_summary
   const performance = metricGroup(result, '_performance_summary')
   const reflection = metricGroup(result, '_reflection_summary')
+  const termination = metricGroup(result, '_termination_summary')
   const optical = metricGroup(result, '_optical_summary')
   const convergenceHistory = Array.isArray(result.metrics._convergence_history)
     ? result.metrics._convergence_history as Record<string, unknown>[]
@@ -2668,6 +2673,17 @@ export function RayTraceResultWindow({
 
           {tab === 'bounce' ? (
             <div className="space-y-3">
+              <details className="rounded-lg border border-border p-3 text-xs">
+                <summary className="cursor-pointer font-semibold">종료 정책 · 절단 광량</summary>
+                <div className="mt-2 space-y-1 text-muted-foreground">
+                  <p>기준: {result.config.min_energy_basis === 'initial_ray_fraction' ? '초기 Ray 대비 비율' : '절대 광속 lm/Ray'} · {result.config.min_energy}</p>
+                  <p>에너지 종료 광량 상한: {typeof termination.energy_cutoff_upper_bound_lumen === 'number'
+                    ? `${termination.energy_cutoff_upper_bound_lumen.toExponential(4)} lm` : '산정 불가 (이전 결과 또는 Roulette)'}</p>
+                  <p>반사 후 미전파 광량: {typeof termination.unpropagated_surface_flux_lumen === 'number'
+                    ? `${termination.unpropagated_surface_flux_lumen.toExponential(4)} lm` : '산정 불가 (이전 결과 또는 가중 샘플링)'}</p>
+                  <p>미전파 광량은 반사 가능 광량과 실제 전파 광량의 집계 차 추정치입니다. 에너지·반사 상한·반사 불가 종료가 포함되며 Receiver 손실량이나 오차율과 같지 않습니다. Roulette/MIS의 전체 손실 집계는 별도 검증 대상입니다.</p>
+                </div>
+              </details>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Stat
                   label="Reflection limit"
@@ -2844,6 +2860,8 @@ export function RayTraceResultWindow({
                   ? numeric(values.error_estimate_percent) : null
                 const peakAreaError = typeof values.peak_area_error_estimate_percent === 'number'
                   ? numeric(values.peak_area_error_estimate_percent) : null
+                const peakCellError = Number.isFinite(metricErrorPercent(values.peak_error_estimate_percent))
+                  ? Number(values.peak_error_estimate_percent) : null
                 const receiverHits = numeric(values.hit_count)
                 const heatmapHitsPerBin = numeric(values.heatmap_hits_per_bin)
                 const heatmapQuality = typeof values.heatmap_quality === 'string'
@@ -2861,12 +2879,13 @@ export function RayTraceResultWindow({
                       : heatmapQuality === 'sparse' || heatmapQuality === 'no_hits'
                         ? { label: 'Heatmap · Sparse', tone: 'border-rose-400/45 bg-rose-100/10 text-rose-700 dark:text-rose-300' }
                         : null
-                const convergence = receiverHits < 30 || totalError === null || peakAreaError === null
+                const requirePeakStability = Boolean(result.config.auto_convergence || result.metrics._convergence_accumulation)
+                const convergence = receiverHits < 30 || totalError === null || peakAreaError === null || peakCellError === null
                   ? { label: 'Insufficient samples', tone: 'border-amber-300/50 bg-amber-100/10 text-amber-700 dark:text-amber-300' }
-                  : totalError <= errorTargetPercent && peakAreaError <= errorTargetPercent
-                    ? { label: 'Converged', tone: 'border-emerald-400/45 bg-emerald-100/10 text-emerald-700 dark:text-emerald-300' }
-                    : totalError <= errorTargetPercent * 2 && peakAreaError <= errorTargetPercent * 2
-                      ? { label: 'Nearly converged', tone: 'border-sky-400/45 bg-sky-100/10 text-sky-700 dark:text-sky-300' }
+                  : receiverMeetsStatisticalTarget(values, errorTargetPercent, requirePeakStability)
+                    ? { label: 'MC target met', tone: 'border-emerald-400/45 bg-emerald-100/10 text-emerald-700 dark:text-emerald-300' }
+                    : receiverMeetsStatisticalTarget(values, errorTargetPercent)
+                      ? { label: 'Peak stability pending', tone: 'border-sky-400/45 bg-sky-100/10 text-sky-700 dark:text-sky-300' }
                       : { label: 'Not converged', tone: 'border-rose-400/45 bg-rose-100/10 text-rose-700 dark:text-rose-300' }
                 return (
                   <section
@@ -2911,25 +2930,31 @@ export function RayTraceResultWindow({
                     </div>
                     <div className="mt-2 grid grid-cols-6 gap-1.5">
                       <Stat
-                        className="order-1 col-span-3"
+                        className="order-2 col-span-2"
                         label="Peak-area Error"
                         value={peakAreaError === null || receiverHits <= 0 ? '—' : `${formatMetric(peakAreaError, 2)}%`}
-                        help="Receiver Peak의 5% 이상인 셀 영역에 대한 Monte Carlo 상대 오차입니다. Total Flux Error와 Peak-area Error가 모두 목표 오차 이하일 때 Converged로 판단합니다."
+                        help="현재 Peak의 5% 이상인 영역의 합계 Flux에 대한 1σ 표준오차입니다. 최고 밝기 셀의 오차가 아니며, 이 값만으로 Peak 수렴을 판단하지 않습니다."
                       />
                       <Stat
-                        className="order-3 col-span-2"
+                        className="order-1 col-span-2"
+                        label="Peak Error (1σ)"
+                        value={peakCellError === null ? '—' : `${formatMetric(peakCellError, 2)}%`}
+                        help="현재 가장 밝은 셀의 1σ 상대 표준오차입니다. 셀 크기를 고정해 비교하세요. 자동 수렴은 유효 표본 30개 이상, 오차 목표 및 연속 2회 누적 Peak 변화율을 확인합니다. 최대값 선택 편향·반사 상한·LT 정합 오차는 포함하지 않습니다."
+                      />
+                      <Stat
+                        className="order-4 col-span-2"
                         label="Peak Nit"
                         value={formatMetric(values.peak_nit_est)}
                         help="이 Receiver Heatmap에서 가장 밝은 셀의 추정 휘도입니다. 국부적으로 가장 강한 빛샘 세기를 나타냅니다."
                       />
                       <Stat
-                        className="order-4 col-span-2"
+                        className="order-5 col-span-2"
                         label="Mean Nit"
                         value={formatMetric(values.mean_nit_est)}
                         help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
                       <Stat
-                        className="order-5 col-span-2"
+                        className="order-6 col-span-2"
                         label="Flux"
                         value={`${formatMetric(
                           values.total_flux_lumen,
@@ -2937,7 +2962,7 @@ export function RayTraceResultWindow({
                         help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
                       />
                       <Stat
-                        className="order-2 col-span-3"
+                        className="order-3 col-span-2"
                         label="Error Estimate"
                         value={
                           typeof values.error_estimate_percent === 'number' &&
@@ -2948,6 +2973,12 @@ export function RayTraceResultWindow({
                         help="Receiver 전체 Flux 추정값에 대한 Monte Carlo 1σ 상대 표준오차입니다. 값이 낮을수록 통계적으로 잘 수렴한 결과입니다. CAD 형상, 재질 물성 및 물리 모델 자체의 오차는 포함하지 않습니다."
                       />
                     </div>
+                    {numeric(reflection.depth_limit_count) > 0 ? (
+                      <p className="mt-2 rounded-lg border border-amber-300/40 bg-amber-100/10 p-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                        반사 상한으로 종료된 경로가 {numeric(reflection.depth_limit_count).toLocaleString()}개 있습니다.
+                        {' '}통계 목표 충족은 반사 상한 수렴이나 LT 정합을 보장하지 않습니다. Multi-bounce와 상한별 결과를 함께 확인하세요.
+                      </p>
+                    ) : null}
                     {heatmapQuality === 'no_hits' || heatmapQuality === 'sparse' || heatmapQuality === 'noisy' ? (
                       <p className="mt-2 rounded-lg border border-amber-300/40 bg-amber-100/10 p-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
                         Receiver Heatmap 표본이 부족합니다. 평균 {formatMetric(heatmapHitsPerBin, 2)} hit/cell이며,

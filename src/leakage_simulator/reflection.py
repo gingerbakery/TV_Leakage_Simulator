@@ -37,6 +37,8 @@ def effective_surface_reflectance(
     incidence that a constant coefficient misses. Rough finishes retain a
     smaller sheen term; glossy finishes retain nearly the full Fresnel rise.
     """
+    if profile.reflectance <= 0.0:
+        return 0.0
     if not angle_dependent:
         return max(0.0, min(1.0, profile.reflectance))
 

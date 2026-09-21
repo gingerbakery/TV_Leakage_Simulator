@@ -188,6 +188,33 @@ describe('RayTracingPanel Aim editing', () => {
 })
 
 describe('RayTracingPanel Auto convergence', () => {
+  it('adds an independent segment when Flux converges but the pixel Peak is noisy', async () => {
+    const result = createRayTraceResultFixture()
+    act(() => {
+      const actions = workspaceStore.getState().actions
+      actions.addCadCase({ path: 'peak.step', displayName: 'peak.step' })
+      actions.upsertEmitter({ ...result.emitters[0], ray_count: 100 })
+      actions.upsertReceiver(result.receivers[0])
+      actions.setRayTraceConfig({ ...result.config, auto_convergence: true, convergence_target_percent: 5, max_convergence_multiplier: 8 })
+    })
+    apiHookState.start.mockResolvedValueOnce({ job_id: 'peak-first' }).mockResolvedValueOnce({ job_id: 'peak-second' })
+    const view = render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(1))
+    const completed = createCompletedRayTraceJobFixture()
+    completed.job_id = 'peak-first'
+    completed.result.metrics.receiver_001 = {
+      ...(completed.result.metrics.receiver_001 as Record<string, unknown>),
+      error_estimate_percent: 0.5, peak_area_error_estimate_percent: 0.8,
+      peak_error_estimate_percent: 12, peak_effective_sample_count: 100,
+    }
+    apiHookState.job = completed
+    view.rerender(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(2))
+    expect(apiHookState.start.mock.calls[1][0].request.config.seed).not.toBe(apiHookState.start.mock.calls[0][0].request.config.seed)
+    expect(screen.queryByText(/연속 2회 Peak 안정성 기준을 충족/)).toBeNull()
+  })
+
   it('stops a closed-window retry without reusing its cancel token on a later run', async () => {
     const result = createRayTraceResultFixture()
     const emitter = { ...result.emitters[0], ray_count: 100, seed: 7 }

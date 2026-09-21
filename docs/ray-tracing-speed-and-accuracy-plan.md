@@ -107,7 +107,7 @@ Ray 수를 늘려 Error Estimate가 낮아져도 Material이나 광원 조건이
 
 1. Preview 모드로 Emitter 방향, Receiver 방향, ROI, Trace 조건과 주요 반사 경로를 확인한다.
 2. 선택 Receiver만 Standard 모드로 계산한다.
-3. Error Estimate와 Peak-area Error를 확인한다.
+3. Error Estimate, Peak-area Error, Peak Error (1σ)를 각각 확인한다. Peak-area는 밝은 영역의 합계 오차이지 최고 밝기 셀의 오차가 아니다. 자동 수렴은 Peak 유효 표본 30개 이상과 연속 2회 누적 Peak 변화율도 확인하며, 일부 밝은 셀의 통계가 없으면 미검증으로 처리한다. 반사 상한 수렴 및 LT 정합은 별도 검증한다. 99.9% 공동의 1,000회 상한 한계와 고표본 대조는 `docs/changes/2026-09-21_internal-rt-validation-followup.md`를 참고한다.
 4. 수렴하지 않은 경우 전체 Resolution을 즉시 높이기보다 Ray 수 또는 문제 영역의 해상도를 단계적으로 높인다.
 5. 구조 후보를 비교한 뒤 최종 후보만 Final 모드로 계산한다.
 6. 실제 측정값이 있다면 Peak nit뿐 아니라 위치, 광영역, Total Flux와 경로를 함께 비교한다.

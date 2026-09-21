@@ -40,6 +40,7 @@ def _semantic_payload(result) -> dict:
     payload.pop("run_id", None)
     payload.pop("runtime_sec", None)
     payload["metrics"].pop("_performance_summary", None)
+    payload["config"]["compute_backend"] = "normalized"
     return payload
 
 
@@ -111,8 +112,12 @@ class Perf4CGpuSummaryAccumulatorTests(unittest.TestCase):
                 cpu = run_direct_ray_trace(cpu_input)
                 resident = _run(build_case, 8192, "gpu")
 
+                self.assertEqual(cpu.config.compute_backend, "cpu")
+                self.assertEqual(resident.config.compute_backend, "gpu_cuda")
                 self.assertAccumulatorParity(cpu, resident)
                 performance = resident.metrics["_performance_summary"]
+                self.assertIn(performance["compute_execution_state"], ("gpu_active", "gpu_mixed"))
+                self.assertGreater(performance["gpu_cuda_gpu_success_count"], 0)
                 self.assertEqual(
                     performance["execution_path"],
                     "single_bounce_wavefront",

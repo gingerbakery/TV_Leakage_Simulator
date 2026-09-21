@@ -46,6 +46,19 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('preserves termination units through save/load and keeps legacy lm units', () => {
+    const { project } = createProjectFixture()
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.workspace.rayTraceConfig.min_energy_basis).toBe('initial_ray_fraction')
+    const legacy = JSON.parse(serializeBitsamProject(project))
+    delete legacy.workspace.rayTraceConfig.min_energy_basis
+    const store = createWorkspaceStore()
+    store.getState().actions.restoreProjectState(parseBitsamProject(JSON.stringify(legacy)).workspace)
+    expect(store.getState().rayTraceConfig.min_energy_basis).toBe('absolute_lumen')
+    legacy.workspace.rayTraceConfig.min_energy_basis = 'unknown'
+    expect(() => parseBitsamProject(JSON.stringify(legacy))).toThrow(BitsamProjectError)
+  })
+
   it('round-trips face colors, rejects invalid entries and drops CAD-bound colors for a different model', () => {
     const { project } = createProjectFixture()
     project.workspace.faceColorOverrides = [{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }]

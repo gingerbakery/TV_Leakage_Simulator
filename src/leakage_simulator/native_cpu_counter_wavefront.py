@@ -742,7 +742,7 @@ def _plan_reference_row(
             draws[row_index] += 4 if directed else 1
             if weight <= 0.0:
                 importance_zero_weight[row_index] = True
-                statuses[row_index] = status
+                statuses[row_index] = status | STATUS_DISABLED
                 return
             emitted_power *= weight
     elif scatter == SCATTER_GAUSSIAN:
@@ -999,6 +999,8 @@ def _make_kernel() -> Callable[..., None]:
         roughness: float,
         angle_dependent: bool,
     ) -> float:
+        if base_reflectance <= 0.0:
+            return 0.0
         if not angle_dependent:
             return base_reflectance
         cosine_incidence = -(
@@ -1433,7 +1435,7 @@ def _make_kernel() -> Callable[..., None]:
                     rng_draw_counts[row_index] += 4 if importance_directed else 1
                     if importance_weight <= 0.0:
                         importance_zero_weight_mask[row_index] = True
-                        status_flags[row_index] = status
+                        status_flags[row_index] = status | STATUS_DISABLED
                         continue
                     emitted_power *= importance_weight
             elif scatter == SCATTER_GAUSSIAN:
@@ -1694,6 +1696,8 @@ def _effective_reflectance(
     roughness: float,
     angle_dependent: bool = True,
 ) -> float:
+    if base <= 0.0:
+        return 0.0
     if not angle_dependent:
         return max(0.0, min(1.0, base))
     cosine = max(0.0, min(1.0, -sum(incoming[index] * normal[index] for index in range(3))))

@@ -61,6 +61,7 @@ import type {
   ViewerCameraFrame,
 } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
+import { receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
 import {
   groupRoiFacesByComponent,
   resolveFacesInRoiBox,
@@ -335,15 +336,10 @@ export function SimulatorShell() {
             ? (value as Record<string, unknown>)
             : {}
         })
-      const metricNumber = (value: unknown) =>
-        Number.isFinite(Number(value)) ? Number(value) : Number.POSITIVE_INFINITY
       const converged =
         enabledReceiverMetrics.length > 0 &&
         enabledReceiverMetrics.every(
-          (metric) =>
-            (Number(metric.hit_count) || 0) >= 30 &&
-            metricNumber(metric.error_estimate_percent) <= target &&
-            metricNumber(metric.peak_area_error_estimate_percent) <= target,
+          (metric) => receiverMeetsStatisticalTarget(metric, target, true),
         )
       const baseRayCount = emitters
         .filter((emitter) => emitter.enabled)

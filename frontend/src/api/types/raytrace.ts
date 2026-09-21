@@ -156,6 +156,7 @@ export interface RayTraceConfig {
   max_depth: number
   seed: number
   min_energy: number
+  min_energy_basis?: 'absolute_lumen' | 'initial_ray_fraction'
   epsilon_mm: number
   k_abs: number
   k_brdf: number

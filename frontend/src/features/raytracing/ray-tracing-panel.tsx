@@ -53,9 +53,11 @@ import {
   createDatumReceiver,
   createFaceEmitter,
   mergeConvergenceRayTraceResults,
+  metricErrorPercent,
   nextSpecId,
   planeAxesFromRotation,
   rayObjectDisplayName,
+  receiverMeetsStatisticalTarget,
   rotationFromPlaneAxes,
   type ViewerCameraFrame,
 } from './ray-tracing-model'
@@ -1521,12 +1523,10 @@ export function RayTracingPanel({
       const value = accumulatedResult.metrics[id]
       return value && typeof value === 'object' ? value as Record<string, unknown> : {}
     })
-    const metricError = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : Infinity
-    const totalError = Math.max(...receiverMetrics.map((value) => metricError(value.error_estimate_percent)))
-    const peakError = Math.max(...receiverMetrics.map((value) => metricError(value.peak_area_error_estimate_percent)))
+    const totalError = Math.max(...receiverMetrics.map((value) => metricErrorPercent(value.error_estimate_percent)))
+    const peakError = Math.max(...receiverMetrics.map((value) => metricErrorPercent(value.peak_error_estimate_percent)))
     const peakNit = Math.max(...receiverMetrics.map((value) => Number(value.peak_nit_est) || 0), 0)
     const flux = receiverMetrics.reduce((sum, value) => sum + (Number(value.total_flux_lumen) || 0), 0)
-    const enoughSamples = receiverMetrics.every((value) => (Number(value.hit_count) || 0) >= 30)
     const historyEntry = {
       rays: accumulatedResult.total_rays,
       totalError,
@@ -1540,15 +1540,15 @@ export function RayTracingPanel({
     accumulatedResult.metrics._convergence_history = nextHistory
     actions.setActiveCadCaseResult(accumulatedResult)
     const convergenceTarget = config.convergence_target_percent ?? 5
-    const converged = enoughSamples &&
-      totalError <= convergenceTarget &&
-      peakError <= convergenceTarget
+    const converged = receiverMetrics.length > 0 && receiverMetrics.every(
+      (metric) => receiverMeetsStatisticalTarget(metric, convergenceTarget, true),
+    )
     if (!autoConvergenceActiveRef.current || converged) {
       autoConvergenceActiveRef.current = false
       if (config.auto_convergence) {
         setAutoConvergenceStatus(
           converged
-            ? `목표 오차 ${convergenceTarget}% 이하로 수렴했습니다.`
+            ? `통계 목표 ${convergenceTarget}% 및 연속 2회 Peak 안정성 기준을 충족했습니다.`
             : '자동 수렴이 비활성화되어 현재 결과에서 종료했습니다.',
         )
       }
@@ -1569,7 +1569,7 @@ export function RayTracingPanel({
     const incrementalRays = enabledEmitterRayCount * incrementalMultiplier
     const nextTotalRays = enabledEmitterRayCount * nextMultiplier
     setAutoConvergenceStatus(
-      `오차가 목표보다 높아 ${incrementalRays.toLocaleString()} Ray를 추가합니다. 누적 ${nextTotalRays.toLocaleString()} Ray`,
+      `통계 오차·Peak 안정성을 확인하기 위해 ${incrementalRays.toLocaleString()} Ray를 추가합니다. 누적 ${nextTotalRays.toLocaleString()} Ray`,
     )
     void launchRun(
       incrementalMultiplier,
@@ -1892,11 +1892,11 @@ export function RayTracingPanel({
               />
               Auto convergence
               <HelpTooltip label="Auto convergence help">
-                Total Flux Error와 Peak-area Error가 모두 목표 오차 이하가 될 때까지
+                Flux·Peak-area·Peak 셀의 표준오차와 연속 2회 누적 Peak 변화율이 목표 이하가 될 때까지
                 독립 Ray 구간을 추가해 누적 표본을 2배씩 늘립니다. 이전 표본은
                 버리지 않고 광량과 제곱합을 표본 수로 가중 결합합니다.
-                1→2→4→8배 설정은 실제로 8배 Ray만 처리하며, Flux 수렴이 셀별
-                Heatmap 노이즈 감소까지 보장하지는 않습니다.
+                1→2→4→8배 설정은 실제로 8배 Ray만 처리합니다. 안정성 확인에는 최소 3회 결과가 필요하며,
+                이 판정은 LT 정합이나 반사 상한 수렴을 보장하지 않습니다.
               </HelpTooltip>
             </label>
             {config.auto_convergence ? (
@@ -1909,7 +1909,7 @@ export function RayTracingPanel({
                   step={0.5}
                   disabled={isRunning}
                   onChange={(value) => updateConfig({ convergence_target_percent: value })}
-                  description="자동 수렴의 목표 오차입니다. Receiver의 Total Flux Error와 Peak-area Error가 모두 이 값 이하가 되면 Converged로 판단하고 자동 해석을 종료합니다. 값이 낮을수록 더 많은 Ray와 계산 시간이 필요합니다."
+                  description="Flux·Peak-area·Peak 셀의 1σ 표준오차와 연속 2회 누적 Peak 변화율의 목표입니다. Peak 유효 표본도 30개 이상이어야 합니다. 값이 낮을수록 더 많은 Ray가 필요하며, LT 대비 오차를 뜻하지 않습니다."
                 />
                 <NumberField
                   label="Max ray multiplier"
@@ -1919,7 +1919,7 @@ export function RayTracingPanel({
                   step={1}
                   disabled={isRunning}
                   onChange={(value) => updateConfig({ max_convergence_multiplier: Math.trunc(value) })}
-                  description="최초 설정한 Emitter Ray 수를 자동 수렴 과정에서 최대 몇 배까지 늘릴지 정하는 상한입니다. 예를 들어 10,000 Ray에 8배를 설정하면 10,000 → 20,000 → 40,000 → 80,000 Ray를 각각 새로 실행하여 누적 150,000 Ray를 처리합니다."
+                  description="최초 Ray 수 대비 누적 표본 상한입니다. 10,000 Ray에 8배이면 독립 구간 10,000 + 10,000 + 20,000 + 40,000개로 총 80,000 Ray를 처리합니다. 상한 도달은 수렴 성공을 뜻하지 않습니다."
                 />
               </div>
             ) : null}
@@ -1973,13 +1973,31 @@ export function RayTracingPanel({
             onChange={(value) => updateConfig({ seed: Math.trunc(value) })}
             description="Monte Carlo 샘플링에 쓰는 난수 시드 - 같은 값이면 항상 동일한 ray 시퀀스로 재현 가능한 결과를 얻습니다."
           />
+          <label className={fieldLabelClassName}>
+            <span>Energy threshold basis</span>
+            <select
+              className={inputClassName}
+              aria-label="Energy threshold basis"
+              disabled={isRunning}
+              value={config.min_energy_basis ?? 'absolute_lumen'}
+              onChange={(event) => updateConfig({ min_energy_basis:
+                event.currentTarget.value === 'initial_ray_fraction'
+                  ? 'initial_ray_fraction' : 'absolute_lumen' })}
+            >
+              <option value="initial_ray_fraction">초기 Ray 대비 비율 (권장)</option>
+              <option value="absolute_lumen">절대 광속 lm/Ray (기존 방식)</option>
+            </select>
+          </label>
           <NumberField
-            label="Minimum energy"
+            label={config.min_energy_basis === 'initial_ray_fraction' ? 'Minimum energy ratio' : 'Minimum energy (lm/Ray)'}
             value={config.min_energy}
             min={0}
+            max={config.min_energy_basis === 'initial_ray_fraction' ? 1 : undefined}
             disabled={isRunning}
             onChange={(value) => updateConfig({ min_energy: value })}
-            description="반사광 세기(lm)가 이 값 아래로 떨어지면 종료 대상이 됩니다 - 실제 종료 방식은 아래 Termination 설정을 따릅니다."
+            description={config.min_energy_basis === 'initial_ray_fraction'
+              ? '광원별 총광속 / Ray 수를 기준으로 한 비율입니다. 0은 에너지 종료 해제이며 반사 상한은 유지됩니다. 비율 종료도 약한 빛을 잘라내므로 정밀 비교 시 더 낮은 값과 비교하세요.'
+              : '기존 lm/Ray 기준을 유지합니다. Ray 수를 늘리거나 광원을 어둡게 하면 절단 손실이 커질 수 있습니다. 0은 에너지 종료 해제입니다.'}
           />
           <NumberField
             label="Max stored paths"

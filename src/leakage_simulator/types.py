@@ -582,6 +582,7 @@ class RayTraceConfig:
     receiver_importance_fraction: float = 0.5
     bounce_sampling_strategy: str = "source"
     bounce_receiver_importance_fraction: float = 0.5
+    min_energy_basis: str = "absolute_lumen"
 
     def __post_init__(self) -> None:
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
@@ -594,6 +595,11 @@ class RayTraceConfig:
             )
         self.seed = int(self.seed)
         self.min_energy = require_non_negative(self.min_energy, "min_energy")
+        self.min_energy_basis = require_choice(
+            self.min_energy_basis, "min_energy_basis", ("absolute_lumen", "initial_ray_fraction")
+        )
+        if self.min_energy_basis == "initial_ray_fraction" and self.min_energy > 1.0:
+            raise ValueError("relative min_energy must not exceed 1")
         self.epsilon_mm = require_positive(self.epsilon_mm, "epsilon_mm")
         self.k_abs = require_non_negative(self.k_abs, "k_abs")
         self.k_brdf = require_non_negative(self.k_brdf, "k_brdf")

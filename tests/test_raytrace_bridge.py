@@ -344,12 +344,9 @@ class RoiFilteringTests(unittest.TestCase):
         trace_input = build_direct_trace_input(
             self.scene_mesh, self._payload(roi_faces=[0], extra_assignments=assignments)
         )
-        # Face 1 is outside the ROI and silently dropped (material overrides
-        # commonly span faces outside any one ROI - see raytrace_bridge.py's
-        # _remap_face_optical_assignments), leaving just remapped face 0.
         self.assertEqual(trace_input.optical_assignments[0].face_indices, [0])
 
-    def test_component_exclusion_and_roi_share_one_face_remap(self) -> None:
+    def test_component_exclusion_and_roi_preserve_optical_source_indices(self) -> None:
         payload = self._payload(
             roi_faces=[1],
             extra_assignments=[{
@@ -368,9 +365,9 @@ class RoiFilteringTests(unittest.TestCase):
         self.assertEqual(len(trace_input.mesh.faces), 1)
         self.assertEqual(trace_input.mesh.metadata(0)["source_face_index"], 1)
         self.assertEqual(trace_input.emitters[0].face_indices, [0])
-        self.assertEqual(trace_input.optical_assignments[0].face_indices, [0])
+        self.assertEqual(trace_input.optical_assignments[0].face_indices, [1])
 
-    def test_face_optical_assignment_is_remapped_without_roi(self) -> None:
+    def test_face_optical_assignment_keeps_source_index_without_roi(self) -> None:
         payload = self._payload(
             extra_assignments=[{
                 "assignment_id": "faces_override",
@@ -385,7 +382,7 @@ class RoiFilteringTests(unittest.TestCase):
 
         trace_input = build_direct_trace_input(self.scene_mesh, payload)
 
-        self.assertEqual(trace_input.optical_assignments[0].face_indices, [0])
+        self.assertEqual(trace_input.optical_assignments[0].face_indices, [1])
 
     def test_empty_roi_faces_list_is_treated_as_no_filter(self) -> None:
         trace_input = build_direct_trace_input(self.scene_mesh, self._payload(roi_faces=[]))

@@ -107,7 +107,7 @@ def build_direct_trace_input(
         OpticalAssignment.from_dict(dict(item))
         for item in request_payload.get("optical_assignments", [])
     ]
-    _remap_face_optical_assignments(optical_assignments, source_to_trace_face)
+    _filter_face_optical_assignments(optical_assignments, source_to_trace_face)
     return DirectRayTraceInput(
         mesh=mesh,
         emitters=emitters,
@@ -132,10 +132,9 @@ def filter_mesh_to_roi(
     Returns the trimmed mesh plus a map from original scene face index (the
     same indices ROI selection in the web UI works with, and that
     build_transformed_mesh stores as each face's "source_face_index"
-    metadata) to the new, trimmed mesh's face index - callers must remap any
-    face-index references (face-type emitters, face-level optical
-    assignment overrides) through this before using them against the
-    trimmed mesh.
+    metadata) to the new, trimmed mesh's face index. Face emitters use the
+    remapped geometry indices. Optical assignments retain original scene
+    indices because OpticalPropertyResolver resolves source_face_index.
     """
     roi_set = set(roi_face_indices)
     preserved_set = preserved_source_face_indices or set()
@@ -163,19 +162,15 @@ def filter_mesh_to_roi(
     return trimmed, remap
 
 
-def _remap_face_optical_assignments(
+def _filter_face_optical_assignments(
     optical_assignments: List[OpticalAssignment],
     face_remap: Dict[int, int],
 ) -> None:
     for assignment in optical_assignments:
         if assignment.target_type != "faces":
             continue
-        # Unlike emitters, a face-level material override commonly spans
-        # faces well outside any one ROI - dropping the out-of-ROI faces and
-        # leaving the rest (even if that means an empty override) is the
-        # expected behavior here, not an error.
         assignment.face_indices = [
-            face_remap[index] for index in assignment.face_indices if index in face_remap
+            index for index in assignment.face_indices if index in face_remap
         ]
 
 

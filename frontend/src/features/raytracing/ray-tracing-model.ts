@@ -62,6 +62,29 @@ function finiteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(numeric) ? numeric : fallback
 }
 
+export function metricErrorPercent(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value : Infinity
+}
+
+export function receiverMeetsStatisticalTarget(
+  metric: Record<string, unknown>,
+  target: number,
+  requirePeakStability = false,
+): boolean {
+  const changes = metric.peak_recent_change_percent
+  return Number.isFinite(target) && target > 0 &&
+    finiteNumber(metric.hit_count) >= 30 &&
+    finiteNumber(metric.peak_effective_sample_count) >= 30 &&
+    metricErrorPercent(metric.error_estimate_percent) <= target &&
+    metricErrorPercent(metric.peak_area_error_estimate_percent) <= target &&
+    metricErrorPercent(metric.peak_error_estimate_percent) <= target &&
+    (!requirePeakStability || (
+      Array.isArray(changes) && changes.length >= 2 &&
+      changes.slice(-2).every((value) => metricErrorPercent(value) <= target)
+    ))
+}
+
 function convergenceEvidence(result: RayTraceResult): ConvergenceAccumulationEvidence {
   const stored = result.metrics._convergence_accumulation
   if (isRecord(stored) && stored.contract === convergenceAccumulationContract) {
@@ -212,6 +235,11 @@ function mergeReceiverGrid(
   const columns = current.resolution[0]
   const previousSquared = previous.flux_squared_lumen2_grid ?? []
   const currentSquared = current.flux_squared_lumen2_grid ?? []
+  const validMoment = (flux: number, squared: unknown) =>
+    flux <= 0 || (typeof squared === 'number' && Number.isFinite(squared) && squared > 0)
+  const totalMomentsAvailable = [previous, current].every((grid) =>
+    validMoment(grid.flux_lumen.flat().reduce((sum, value) => sum + value, 0), grid.flux_squared_lumen2),
+  )
   return {
     ...structuredClone(current),
     flux_lumen: Array.from({ length: rows }, (_, row) =>
@@ -221,14 +249,16 @@ function mergeReceiverGrid(
       ),
     ),
     hit_count: previous.hit_count + current.hit_count,
-    flux_squared_lumen2:
+    flux_squared_lumen2: totalMomentsAvailable ?
       finiteNumber(previous.flux_squared_lumen2) * previousScale ** 2 +
-      finiteNumber(current.flux_squared_lumen2) * currentScale ** 2,
+      finiteNumber(current.flux_squared_lumen2) * currentScale ** 2 : 0,
     flux_squared_lumen2_grid: Array.from({ length: rows }, (_, row) =>
-      Array.from({ length: columns }, (_, column) =>
-        finiteNumber(previousSquared[row]?.[column]) * previousScale ** 2 +
-        finiteNumber(currentSquared[row]?.[column]) * currentScale ** 2,
-      ),
+      Array.from({ length: columns }, (_, column) => {
+        if (!validMoment(finiteNumber(previous.flux_lumen[row]?.[column]), previousSquared[row]?.[column]) ||
+            !validMoment(finiteNumber(current.flux_lumen[row]?.[column]), currentSquared[row]?.[column])) return 0
+        return finiteNumber(previousSquared[row]?.[column]) * previousScale ** 2 +
+          finiteNumber(currentSquared[row]?.[column]) * currentScale ** 2
+      }),
     ),
   }
 }
@@ -245,7 +275,7 @@ function receiverMetrics(
   const sortedNits = [...nits].sort((left, right) => left - right)
   const totalFlux = values.reduce((sum, value) => sum + value, 0)
   const relativeErrorPercent = (flux: number, squared: number) => {
-    if (totalRays <= 1 || flux <= 0) return 100
+    if (totalRays <= 1 || !Number.isFinite(flux) || !Number.isFinite(squared) || flux <= 0 || squared <= 0) return 100
     const relativeVariance = Math.max(
       0,
       (totalRays * squared / (flux * flux) - 1) / (totalRays - 1),
@@ -255,18 +285,35 @@ function receiverMetrics(
   const peakThreshold = Math.max(...values, 0) * 0.05
   let peakAreaFlux = 0
   let peakAreaSquaredFlux = 0
+  let peakAreaMomentsAvailable = true
   for (let row = 0; row < grid.resolution[1]; row += 1) {
     for (let column = 0; column < grid.resolution[0]; column += 1) {
       const flux = finiteNumber(grid.flux_lumen[row]?.[column])
       if (flux >= peakThreshold && flux > 0) {
         peakAreaFlux += flux
-        peakAreaSquaredFlux += finiteNumber(
-          grid.flux_squared_lumen2_grid?.[row]?.[column],
-        )
+        const squaredFlux = grid.flux_squared_lumen2_grid?.[row]?.[column]
+        if (typeof squaredFlux === 'number' && Number.isFinite(squaredFlux) && squaredFlux > 0) {
+          peakAreaSquaredFlux += squaredFlux
+        } else {
+          peakAreaMomentsAvailable = false
+        }
       }
     }
   }
   const minimumConvergenceHits = 30
+  const peakFlux = Math.max(...values, 0)
+  const peakSquares: number[] = []
+  for (let row = 0; row < grid.resolution[1]; row += 1) {
+    for (let column = 0; column < grid.resolution[0]; column += 1) {
+      if (peakFlux > 0 && grid.flux_lumen[row]?.[column] === peakFlux) {
+        peakSquares.push(finiteNumber(grid.flux_squared_lumen2_grid?.[row]?.[column]))
+      }
+    }
+  }
+  const peakMomentsAvailable = totalRays > 1 && peakSquares.length > 0 &&
+    peakSquares.every((value) => value > 0)
+  const peakEffectiveSamples = peakMomentsAvailable
+    ? Math.min(...peakSquares.map((value) => peakFlux ** 2 / value)) : 0
   const heatmapBinCount = values.length
   const hitsPerBin = heatmapBinCount > 0 ? grid.hit_count / heatmapBinCount : 0
   const recommendedHitCount = Math.ceil(heatmapBinCount * 5)
@@ -302,10 +349,16 @@ function receiverMetrics(
       totalFlux,
       finiteNumber(grid.flux_squared_lumen2),
     ),
-    peak_area_error_estimate_percent: relativeErrorPercent(
+    peak_area_error_estimate_percent: peakAreaMomentsAvailable ? relativeErrorPercent(
       peakAreaFlux,
       peakAreaSquaredFlux,
-    ),
+    ) : null,
+    peak_error_estimate_percent: peakMomentsAvailable
+      ? Math.max(...peakSquares.map((value) => relativeErrorPercent(peakFlux, value))) : null,
+    peak_effective_sample_count: peakEffectiveSamples,
+    peak_statistical_quality: peakSquares.length === 0 ? 'no_hits'
+      : !peakMomentsAvailable ? 'unavailable'
+        : peakEffectiveSamples < 30 ? 'insufficient_samples' : 'estimated',
     error_estimate_sample_count: totalRays,
     receiver_hit_rate: totalRays > 0 ? grid.hit_count / totalRays : 0,
     minimum_convergence_hits: minimumConvergenceHits,
@@ -338,6 +391,13 @@ export function mergeConvergenceRayTraceResults(
   current: RayTraceResult,
 ): RayTraceResult {
   if (!previous) return withAccumulationEvidence(current)
+  if ((previous.config.min_energy_basis ?? 'absolute_lumen') !==
+      (current.config.min_energy_basis ?? 'absolute_lumen') ||
+      previous.config.min_energy !== current.config.min_energy ||
+      previous.config.termination_mode !== current.config.termination_mode ||
+      previous.config.max_depth !== current.config.max_depth) {
+    throw new Error('Termination policy changed during convergence')
+  }
   const previousRays = previous.total_rays
   const currentRays = current.total_rays
   if (previousRays <= 0 || currentRays <= 0) {
@@ -398,6 +458,20 @@ export function mergeConvergenceRayTraceResults(
     currentRays,
   ) as unknown as RayTraceResult['contribution_summary']
   const metrics = structuredClone(current.metrics)
+  const previousTermination = previous.metrics._termination_summary
+  const currentTermination = current.metrics._termination_summary
+  if (isRecord(previousTermination) && isRecord(currentTermination)) {
+    const termination = mergeContributionRecord(previousTermination, currentTermination, previousRays, currentRays)
+    for (const key of ['energy_cutoff_upper_bound_lumen', 'unpropagated_surface_flux_lumen']) {
+      if (typeof previousTermination[key] !== 'number' || typeof currentTermination[key] !== 'number') {
+        termination[key] = null
+      }
+    }
+    termination.stopped_early = Boolean(previousTermination.stopped_early || currentTermination.stopped_early)
+    metrics._termination_summary = termination
+  } else {
+    delete metrics._termination_summary
+  }
   for (const summaryKey of ['_reflection_summary', '_optical_summary']) {
     const previousSummary = previous.metrics[summaryKey]
     const currentSummary = current.metrics[summaryKey]
@@ -412,7 +486,7 @@ export function mergeConvergenceRayTraceResults(
   }
   for (const grid of receiverGrids) {
     const currentMetric = metrics[grid.receiver_id]
-    metrics[grid.receiver_id] = {
+    const updatedMetric = {
       ...(isRecord(currentMetric) ? currentMetric : {}),
       ...receiverMetrics(
         grid,
@@ -420,6 +494,16 @@ export function mergeConvergenceRayTraceResults(
         current.config.k_abs,
         current.config.k_brdf,
       ),
+    }
+    const previousMetric = previous.metrics[grid.receiver_id]
+    const previousPeak = isRecord(previousMetric) ? finiteNumber(previousMetric.peak_nit_est) : 0
+    const currentPeak = finiteNumber(updatedMetric.peak_nit_est)
+    const previousChanges = isRecord(previousMetric) && Array.isArray(previousMetric.peak_recent_change_percent)
+      ? previousMetric.peak_recent_change_percent : []
+    metrics[grid.receiver_id] = {
+      ...updatedMetric,
+      peak_recent_change_percent: [...previousChanges, previousPeak > 0 && currentPeak > 0
+        ? Math.abs(currentPeak - previousPeak) / previousPeak * 100 : null].slice(-2),
     }
   }
   metrics._contribution_summary = structuredClone(contributionSummary)
