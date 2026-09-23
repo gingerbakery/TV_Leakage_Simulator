@@ -174,6 +174,10 @@ export interface RayTraceConfig {
   auto_convergence?: boolean
   convergence_target_percent?: number
   max_convergence_multiplier?: number
+  /** Frontend-only switch: include enabled Preview Blockers in precision runs. */
+  apply_preview_blockers?: boolean
+  /** Frontend-only switch: exclude enabled Allowed Areas from precision results. */
+  apply_allowed_areas?: boolean
   primary_sampling_strategy?: PrimarySamplingStrategy
   receiver_importance_fraction?: number
   bounce_sampling_strategy?: BounceSamplingStrategy

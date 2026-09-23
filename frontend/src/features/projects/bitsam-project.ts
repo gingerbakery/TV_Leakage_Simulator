@@ -417,7 +417,11 @@ function isRayTraceConfig(
     (value.compute_backend === undefined ||
       isOneOf(value.compute_backend, ['cpu', 'gpu_cuda'])) &&
     isBoolean(value.store_ray_paths) &&
-    isFiniteNumber(value.max_stored_paths)
+    isFiniteNumber(value.max_stored_paths) &&
+    (value.apply_preview_blockers === undefined ||
+      isBoolean(value.apply_preview_blockers)) &&
+    (value.apply_allowed_areas === undefined ||
+      isBoolean(value.apply_allowed_areas))
   )
 }
 

@@ -239,6 +239,7 @@ export function roiClippedSurfaceCentroid(
   scene: ScenePayload,
   faceIds: Iterable<number>,
   boxes: RoiClipBox[],
+  transformPoint?: RoiComponentPointTransform,
 ): [number, number, number] | null {
   const clipBoxes = normalizeRoiClipBoxes(boxes)
   if (clipBoxes.length === 0) return null
@@ -248,11 +249,15 @@ export function roiClippedSurfaceCentroid(
   for (const faceId of faceIds) {
     const face = scene.mesh.faces[faceId]
     if (!face) continue
-    const triangle = face.map((vertexIndex) =>
-      scene.mesh.vertices[vertexIndex]
-        ? ([...scene.mesh.vertices[vertexIndex]] as Point3)
-        : null,
-    )
+    const componentId = scene.mesh.face_component_ids?.[faceId]
+    const triangle = face.map((vertexIndex) => {
+      const source = scene.mesh.vertices[vertexIndex]
+      if (!source) return null
+      const point = [...source] as Point3
+      return transformPoint && componentId != null
+        ? transformPoint(componentId, point)
+        : point
+    })
     if (triangle.some((point) => point === null)) continue
     const trianglePoints = triangle as Point3[]
     for (const box of clipBoxes) {
@@ -590,19 +595,27 @@ function buildFeatureEdgeGeometry(
   scene: ScenePayload,
   boxes: RoiClipBox[],
   unavailableComponentIds: Set<number>,
+  includedComponentIds: Set<number>,
   transformPoint?: RoiComponentPointTransform,
 ): BufferGeometry | null {
   const positions: number[] = []
   for (const segment of scene.mesh.feature_edge_segments) {
     if (
       segment.component_id === null ||
-      unavailableComponentIds.has(segment.component_id)
+      unavailableComponentIds.has(segment.component_id) ||
+      !includedComponentIds.has(segment.component_id)
     ) {
       continue
     }
     const componentId = segment.component_id
-    const start = [...segment.start] as Point3
-    const end = [...segment.end] as Point3
+    const sourceStart = [...segment.start] as Point3
+    const sourceEnd = [...segment.end] as Point3
+    const start = transformPoint
+      ? transformPoint(componentId, sourceStart)
+      : sourceStart
+    const end = transformPoint
+      ? transformPoint(componentId, sourceEnd)
+      : sourceEnd
     for (const box of boxes) {
       const clipped = clipFeatureSegment(
         start,
@@ -610,13 +623,7 @@ function buildFeatureEdgeGeometry(
         box,
       )
       if (!clipped) continue
-      const outputStart = transformPoint
-        ? transformPoint(componentId, clipped[0])
-        : clipped[0]
-      const outputEnd = transformPoint
-        ? transformPoint(componentId, clipped[1])
-        : clipped[1]
-      positions.push(...outputStart, ...outputEnd)
+      positions.push(...clipped[0], ...clipped[1])
     }
   }
   if (positions.length === 0) return null
@@ -646,7 +653,6 @@ export function buildRoiClippedGeometries(
   const sourceFaceIds: number[] = []
   const triangleRecords: TriangleRecord[] = []
   const vertexMaps = clipBoxes.map(() => new Map<string, number>())
-  const vertexComponentIds: number[] = []
 
   const addVertex = (
     boxIndex: number,
@@ -659,7 +665,6 @@ export function buildRoiClippedGeometries(
     if (existing !== undefined) return existing
     const vertexIndex = positions.length / 3
     positions.push(...point)
-    vertexComponentIds.push(componentId)
     vertexMap.set(key, vertexIndex)
     return vertexIndex
   }
@@ -675,10 +680,12 @@ export function buildRoiClippedGeometries(
     ) {
       continue
     }
-    const trianglePoints = triangle.map(
-      (vertexIndex) =>
-        [...scene.mesh.vertices[vertexIndex]] as Point3,
-    )
+    const trianglePoints = triangle.map((vertexIndex) => {
+      const point = [...scene.mesh.vertices[vertexIndex]] as Point3
+      return transformPoint
+        ? transformPoint(componentId, point)
+        : point
+    })
     for (
       let boxIndex = 0;
       boxIndex < clipBoxes.length;
@@ -726,28 +733,10 @@ export function buildRoiClippedGeometries(
   }
   if (indices.length === 0) return null
 
-  const outputPositions: number[] = []
-  for (
-    let coordinateIndex = 0;
-    coordinateIndex < positions.length;
-    coordinateIndex += 3
-  ) {
-    const vertexIndex = coordinateIndex / 3
-    const point = [
-      positions[coordinateIndex],
-      positions[coordinateIndex + 1],
-      positions[coordinateIndex + 2],
-    ] as Point3
-    outputPositions.push(
-      ...(transformPoint
-        ? transformPoint(vertexComponentIds[vertexIndex], point)
-        : point),
-    )
-  }
   const indexedSurfaceGeometry = new BufferGeometry()
   indexedSurfaceGeometry.setAttribute(
     'position',
-    new Float32BufferAttribute(outputPositions, 3),
+    new Float32BufferAttribute(positions, 3),
   )
   indexedSurfaceGeometry.setIndex(indices)
   // Clipping shares position vertices to build watertight section caps.
@@ -763,6 +752,9 @@ export function buildRoiClippedGeometries(
   surfaceGeometry.userData.componentIds = triangleRecords.map(
     (triangle) => triangle.componentId,
   )
+  const includedComponentIds = new Set(
+    triangleRecords.map((triangle) => triangle.componentId),
+  )
 
   if (!includeCaps) {
     return {
@@ -774,6 +766,7 @@ export function buildRoiClippedGeometries(
             scene,
             clipBoxes,
             unavailable,
+            includedComponentIds,
             transformPoint,
           )
         : null,
@@ -919,15 +912,7 @@ export function buildRoiClippedGeometries(
           capIndices,
           capEdgePositions,
           group.planeName,
-          transformPoint
-            ? (point) => {
-                const transformed = transformPoint(
-                  group.componentId,
-                  [point.x, point.y, point.z],
-                )
-                return new Vector3(...transformed)
-              }
-            : undefined,
+          undefined,
         )
       ) {
         const capTriangleCountAfter = capIndices.length / 3
@@ -979,6 +964,7 @@ export function buildRoiClippedGeometries(
           scene,
           clipBoxes,
           unavailable,
+          includedComponentIds,
           transformPoint,
         )
       : null,

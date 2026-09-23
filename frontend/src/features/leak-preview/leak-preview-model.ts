@@ -29,8 +29,11 @@ export const allLeakPreviewDirections: LeakPreviewDirection[] = [
 ]
 
 export const leakPreviewRoiOffsetMm = 5
+export const leakPreviewRoiMinimumSizeMm = 30
 export const leakPreviewReceiverDistanceMm = 3
-export const leakPreviewReceiverOffsetMm = 6
+// Keep the generated Receiver inside the ROI footprint, with 2 mm clearance
+// from each edge instead of placing its bins on the clipping boundary.
+export const leakPreviewReceiverOffsetMm = 2
 export const leakPreviewAllowedAreaPaddingMm = 5
 
 export interface LeakPreviewIgnoreArea {
@@ -632,7 +635,9 @@ function candidateClipBox(
   const uPadding = cellWidth / 2 + leakPreviewRoiOffsetMm
   const vPadding = cellHeight / 2 + leakPreviewRoiOffsetMm
   for (const cell of cluster) {
-    for (const depth of [0, modelDepth]) {
+    // The Receiver remains 3 mm outside the product envelope. Include that
+    // measurement plane in the ROI volume without moving it into the CAD.
+    for (const depth of [-leakPreviewReceiverDistanceMm - 1, modelDepth]) {
       for (const u of [-uPadding, uPadding]) {
         for (const v of [-vPadding, vPadding]) {
           points.push(addScaled(
@@ -651,6 +656,20 @@ function candidateClipBox(
       minimum[axis] = Math.min(minimum[axis], point[axis])
       maximum[axis] = Math.max(maximum[axis], point[axis])
     }
+  }
+  // A single coarse detector cell can be much smaller than a usable
+  // inspection window. Keep at least 30 × 30 mm in the receiver plane;
+  // larger detected clusters retain their measured extent.
+  for (const axis of [receiver.u_axis ?? [1, 0, 0], receiver.v_axis ?? [0, 1, 0]]) {
+    const dimension = axis.findIndex((value) => Math.abs(value) > 0.5)
+    if (dimension < 0) continue
+    const center = (minimum[dimension] + maximum[dimension]) / 2
+    const halfSize = Math.max(
+      leakPreviewRoiMinimumSizeMm,
+      maximum[dimension] - minimum[dimension],
+    ) / 2
+    minimum[dimension] = center - halfSize
+    maximum[dimension] = center + halfSize
   }
   return {
     plane: 'xyz',
@@ -992,8 +1011,8 @@ export function detectLeakPreviewCandidates(
         normal: receiver.normal,
         uAxis: receiver.u_axis ?? [1, 0, 0],
         vAxis: receiver.v_axis ?? [0, 1, 0],
-        widthMm: (Math.max(...columns) - Math.min(...columns) + 1) * cellWidth + leakPreviewRoiOffsetMm * 2,
-        heightMm: (Math.max(...rows) - Math.min(...rows) + 1) * cellHeight + leakPreviewRoiOffsetMm * 2,
+        widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * cellWidth + leakPreviewRoiOffsetMm * 2),
+        heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * cellHeight + leakPreviewRoiOffsetMm * 2),
         fluxLumen,
         peakFluxLumen: Math.max(...cluster.map((cell) => cell.flux)),
         relativeStrength: 0,
@@ -1129,11 +1148,24 @@ export function createCandidateReceiver(
   const outwardNormal = outwardByDirection[directionId] ??
     (candidate.normal.map((value) => -value) as Vec3)
   const receiverNormal = outwardNormal.map((value) => -value) as Vec3
-  const widthMm = candidate.widthMm + leakPreviewReceiverOffsetMm * 2
-  const heightMm = candidate.heightMm + leakPreviewReceiverOffsetMm * 2
+  const uDimension = candidate.uAxis.findIndex((value) => Math.abs(value) > 0.5)
+  const vDimension = candidate.vAxis.findIndex((value) => Math.abs(value) > 0.5)
+  const bounds = candidate.clipBox
+  const axisBounds = [
+    [bounds.xMin, bounds.xMax],
+    [bounds.yMin, bounds.yMax],
+    [bounds.zMin ?? 0, bounds.zMax ?? 0],
+  ]
+  const uBounds = axisBounds[uDimension] ?? [candidate.center[0] - candidate.widthMm / 2, candidate.center[0] + candidate.widthMm / 2]
+  const vBounds = axisBounds[vDimension] ?? [candidate.center[1] - candidate.heightMm / 2, candidate.center[1] + candidate.heightMm / 2]
+  const widthMm = Math.max(1, uBounds[1] - uBounds[0] - leakPreviewReceiverOffsetMm * 2)
+  const heightMm = Math.max(1, vBounds[1] - vBounds[0] - leakPreviewReceiverOffsetMm * 2)
   const pixelSize = Math.max(widthMm, heightMm) / 40
+  const centeredOnRoi = [...candidate.center] as Vec3
+  if (uDimension >= 0) centeredOnRoi[uDimension] = (uBounds[0] + uBounds[1]) / 2
+  if (vDimension >= 0) centeredOnRoi[vDimension] = (vBounds[0] + vBounds[1]) / 2
   const center = addScaled(
-    candidate.center,
+    centeredOnRoi,
     outwardNormal,
     leakPreviewReceiverDistanceMm,
   )
@@ -1152,6 +1184,7 @@ export function createCandidateReceiver(
     reference_mode: 'leak_preview_candidate',
     view_distance_mm: leakPreviewReceiverDistanceMm,
     base_center: [...candidate.center],
+    position_offset_mm: centeredOnRoi.map((value, axis) => value - candidate.center[axis]) as Vec3,
     base_u_axis: [...candidate.uAxis],
     base_v_axis: [...candidate.vAxis],
     base_normal: [...receiverNormal],

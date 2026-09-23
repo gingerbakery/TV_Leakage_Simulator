@@ -275,13 +275,15 @@ def filter_mesh_to_roi(
     remap: Dict[int, List[int]] = {}
     normalized_boxes = _normalize_roi_clip_boxes(clip_boxes or [])
     for face_index in range(len(mesh.faces)):
-        raw_source_face_index = mesh.metadata(face_index).get("source_face_index")
+        metadata = mesh.metadata(face_index)
+        raw_source_face_index = metadata.get("source_face_index")
         source_face_index = (
             int(raw_source_face_index) if raw_source_face_index is not None else None
         )
-        if source_face_index is None or (
+        is_auxiliary_absorber = metadata.get("preview_blocker_id") is not None
+        if not is_auxiliary_absorber and (source_face_index is None or (
             source_face_index not in roi_set and source_face_index not in preserved_set
-        ):
+        )):
             continue
         triangles = [mesh.face_vertices(face_index)]
         if normalized_boxes and source_face_index in roi_set:
@@ -423,7 +425,14 @@ def _append_preview_blockers(
     mesh: TriangleMesh,
     blockers: List[Dict[str, Any]],
 ) -> None:
-    """Append lightweight rectangular solids used only by leak Preview."""
+    """Append lightweight, unassigned rectangular absorber solids.
+
+    Preview uses these as approximate assembly blockers. Precision tracing may
+    also opt into the same geometry for Preview Blockers and Allowed-Area
+    evaluation masks. Unassigned faces resolve to the safe zero-reflectance
+    profile, so these volumes remove intercepted light without adding a
+    synthetic reflection.
+    """
     triangles = (
         (0, 2, 1), (0, 3, 2),
         (4, 5, 6), (4, 6, 7),
@@ -458,7 +467,7 @@ def _append_preview_blockers(
                 vertex_indices[triangle[0]],
                 vertex_indices[triangle[1]],
                 vertex_indices[triangle[2]],
-                "default",
+                "__auxiliary_absorber__",
                 {
                     "source_face_index": -1,
                     "component_id": component_id,

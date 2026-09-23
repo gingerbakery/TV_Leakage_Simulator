@@ -1378,13 +1378,16 @@ function createRoiPointTransform(
 
   return (componentId, point) => {
     const matrix = matrices.get(componentId)
-    if (!matrix) return [point[0], point[1], point[2]]
-    const transformed = new Vector3(
-      point[0],
-      point[1],
-      point[2],
-    ).applyMatrix4(matrix)
-    return [transformed.x, transformed.y, transformed.z]
+    if (!matrix) return point as [number, number, number]
+    const elements = matrix.elements
+    const x = point[0]
+    const y = point[1]
+    const z = point[2]
+    return [
+      elements[0] * x + elements[4] * y + elements[8] * z + elements[12],
+      elements[1] * x + elements[5] * y + elements[9] * z + elements[13],
+      elements[2] * x + elements[6] * y + elements[10] * z + elements[14],
+    ]
   }
 }
 
@@ -1832,6 +1835,8 @@ export function ThreeViewerCanvas({
   const transformRules = useWorkspaceStore(
     workspaceSelectors.transformRules,
   )
+  const transformRulesRef = useRef(transformRules)
+  transformRulesRef.current = transformRules
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const placementPreviewEmitter = useWorkspaceStore(
@@ -2214,6 +2219,12 @@ export function ThreeViewerCanvas({
     runtime.restoreRenderQuality = restoreRenderQuality
     const handleControlsEnd = () => {
       restoreRenderQuality()
+      if (
+        runtime.roiPreviewRoot.visible &&
+        fullViewCameraSyncRef.current
+      ) {
+        runtime.pipLastRenderTime = 0
+      }
       emitCameraFrame()
     }
     controls.addEventListener('start', handleControlsStart)
@@ -2225,7 +2236,9 @@ export function ThreeViewerCanvas({
       const frameInterval = controlsInteracting
         ? interactiveFrameInterval
         : runtime.roiPreviewRoot.visible
-          ? Math.min(largeSceneFrameInterval || 33, 33)
+          ? largeScene
+            ? 66
+            : 33
           : largeSceneFrameInterval
       if (
         frameInterval > 0 &&
@@ -2339,11 +2352,9 @@ export function ThreeViewerCanvas({
           pipCamera.far = Math.max(runtime.pipDistance * 20, 1000)
           pipCamera.updateProjectionMatrix()
 
-          const pipRefreshInterval = fullViewCameraSyncRef.current ? 200 : 1000
           if (
             !controlsInteracting &&
-            (runtime.pipLastRenderTime === 0 ||
-              frameTime - runtime.pipLastRenderTime >= pipRefreshInterval)
+            runtime.pipLastRenderTime === 0
           ) {
             if (
               runtime.pipRenderTarget.width !== pipWidth ||
@@ -3062,6 +3073,7 @@ export function ThreeViewerCanvas({
           scene,
           patchFaceIds,
           activeClipBoxes,
+          createRoiPointTransform(runtime, transformRulesRef.current),
         )
         let weightedX = 0
         let weightedY = 0
@@ -3799,7 +3811,7 @@ export function ThreeViewerCanvas({
       )
       if (clipped) {
         const fullViewRoi = new Mesh(
-          clipped.surfaceGeometry.clone(),
+          clipped.surfaceGeometry,
           new MeshBasicMaterial({
             color: 0xffa21a,
             transparent: true,
@@ -3814,10 +3826,13 @@ export function ThreeViewerCanvas({
           }),
         )
         fullViewRoi.name = 'full-view-roi-clipped-highlight'
+        // The ROI preview owns this geometry. Full View only shares it so a
+        // multi-million-triangle CAD does not allocate a second ROI copy.
+        fullViewRoi.userData.sharedGeometry = true
         fullViewRoi.renderOrder = 84
         runtime.roiBoundsMarker.add(fullViewRoi)
       }
-      if (clipped && clipped.openChainCount === 0) {
+      if (clipped) {
         const isWireframe = renderMode === 'Wireframe'
         if (!isWireframe) {
           applyRoiComponentVertexColors(
@@ -3932,21 +3947,19 @@ export function ThreeViewerCanvas({
         ) {
           fitCamera(runtime, 'Fit')
         }
-        onStatusMessage('ROI isolated solid 생성됨')
+        onStatusMessage(
+          clipped.openChainCount > 0
+            ? `ROI isolated surface 생성됨 · 열린 Cap 경계 ${clipped.openChainCount}개`
+            : 'ROI isolated solid 생성됨',
+        )
       } else {
-        clipped?.surfaceGeometry.dispose()
-        clipped?.capGeometry?.dispose()
-        clipped?.capEdgeGeometry?.dispose()
-        clipped?.featureEdgeGeometry?.dispose()
         clearGroup(runtime.roiPreviewRoot)
         runtime.roiPreviewRoot.visible = false
         runtime.modelRoot.visible = true
         runtime.roiPreviewKey = previewKey
         restoreRoiSelectionCameraPose(runtime)
         onStatusMessage(
-          clipped
-            ? `ROI section cap 무결성 오류 · 열린 경계 ${clipped.openChainCount}개`
-            : 'ROI clipping geometry를 생성하지 못했습니다.',
+          'ROI clipping geometry를 생성하지 못했습니다.',
         )
       }
     } else if (
@@ -4119,6 +4132,7 @@ export function ThreeViewerCanvas({
             scene,
             emitter.face_indices,
             activePlacementClipBoxes,
+            roiPointTransform,
           )
           const weightedCenter = new Vector3()
           let totalArea = 0
@@ -4767,6 +4781,9 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot.visible = false
       runtime.roiBoundsMarker.visible = false
     }
+    if (runtime.roiPreviewRoot.visible) {
+      runtime.pipLastRenderTime = 0
+    }
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
@@ -4807,6 +4824,7 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot,
       runtime.roiSelectionRoot,
       runtime.roiBoundsMarker,
+      runtime.rayPathRoot,
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
     if (!sectionView.enabled) {
@@ -5035,6 +5053,9 @@ export function ThreeViewerCanvas({
           depthTest: false,
           depthWrite: false,
           toneMapped: false,
+          clippingPlanes: sectionView.enabled
+            ? [sectionClippingPlaneRef.current]
+            : null,
         }),
       )
       lines.name = `ray-path-${filter}`
@@ -5068,6 +5089,9 @@ export function ThreeViewerCanvas({
             depthTest: false,
             depthWrite: false,
             toneMapped: false,
+            clippingPlanes: sectionView.enabled
+              ? [sectionClippingPlaneRef.current]
+              : null,
           }),
         )
         lines.name = 'ray-path-highlighted-sequence'
@@ -5078,7 +5102,7 @@ export function ThreeViewerCanvas({
     onStatusMessage(
       `Ray paths · ${visualization.visiblePathCount}/${visualization.totalPathCount} visible`,
     )
-  }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayTraceResult])
+  }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayTraceResult, sectionView.enabled])
 
   const showFullViewPip =
     !roiBoxSelectionArmed &&

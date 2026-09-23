@@ -7,7 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from leakage_simulator.raytrace_bridge import build_direct_trace_input, build_transformed_mesh
+from leakage_simulator.raytrace_bridge import (
+    build_direct_trace_input,
+    build_transformed_mesh,
+    filter_mesh_to_roi,
+)
 
 
 class RayTraceBridgeTests(unittest.TestCase):
@@ -220,6 +224,36 @@ class RayTraceBridgeTests(unittest.TestCase):
             "main-board",
         )
         self.assertAlmostEqual(hit.point[2], 6.0)
+
+    def test_auxiliary_blocker_survives_precision_roi_filter(self) -> None:
+        mesh = build_transformed_mesh(
+            self.scene_mesh,
+            [],
+            preview_blockers=[{
+                "blocker_id": "precision-blocker:board",
+                "center": [5.0, 6.0, 7.0],
+                "u_axis": [1.0, 0.0, 0.0],
+                "v_axis": [0.0, 1.0, 0.0],
+                "normal": [0.0, 0.0, 1.0],
+                "width_mm": 10.0,
+                "height_mm": 8.0,
+                "depth_mm": 2.0,
+                "enabled": True,
+            }],
+        )
+
+        trimmed, _ = filter_mesh_to_roi(mesh, [0])
+
+        self.assertEqual(len(trimmed.faces), 13)
+        absorber_faces = [
+            index for index in range(len(trimmed.faces))
+            if trimmed.metadata(index).get("preview_blocker_id")
+        ]
+        self.assertEqual(len(absorber_faces), 12)
+        self.assertEqual(
+            {trimmed.material_id(index) for index in absorber_faces},
+            {"__auxiliary_absorber__"},
+        )
 
     def test_face_emitter_is_remapped_after_component_deletion(self) -> None:
         scene_mesh = {

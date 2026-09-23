@@ -50,6 +50,7 @@ import {
   type RoiScope,
 } from '@/stores'
 import { roiClippedSurfaceCentroid } from '@/features/roi/roi-clipped-geometry'
+import { leakPreviewStore, useLeakPreviewStore } from '@/features/leak-preview'
 
 import {
   axesFromNormal,
@@ -70,6 +71,7 @@ import { ComputeDeviceSelector } from './compute-device-selector'
 import { isGpuCudaStatusReady } from './gpu-cuda-status'
 import { createEmitterAim, isEmitterAimValid } from './emitter-aim'
 import { EmitterAimEditor } from './emitter-aim-editor'
+import { buildPrecisionPreviewConstraints } from './precision-preview-constraints'
 
 export interface RayObjectEditRequest {
   id: string
@@ -1416,6 +1418,8 @@ export function RayTracingPanel({
     workspaceSelectors.deletedComponentIds,
   )
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const previewBlockers = useLeakPreviewStore((state) => state.blockers)
+  const previewAllowedAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const config = useWorkspaceStore(workspaceSelectors.rayTraceConfig)
   const activeJobId = useWorkspaceStore(
     workspaceSelectors.activeRayTraceJobId,
@@ -1468,6 +1472,26 @@ export function RayTracingPanel({
   const gpuCudaReady =
     config.compute_backend !== 'gpu_cuda' ||
     gpuCudaProbeReady
+  const enabledPreviewBlockerCount = previewBlockers.filter(
+    (blocker) => blocker.enabled,
+  ).length
+  const enabledAllowedAreaCount = previewAllowedAreas
+    .filter((area) => area.enabled)
+    .reduce((sum, area) => sum + area.regions.length, 0)
+  const precisionPreviewConstraints = useMemo(
+    () => buildPrecisionPreviewConstraints(
+      previewBlockers,
+      previewAllowedAreas,
+      Boolean(config.apply_preview_blockers),
+      Boolean(config.apply_allowed_areas),
+    ),
+    [
+      config.apply_allowed_areas,
+      config.apply_preview_blockers,
+      previewAllowedAreas,
+      previewBlockers,
+    ],
+  )
   const canRun =
     scene !== undefined &&
     enabledEmitterCount > 0 &&
@@ -1575,6 +1599,7 @@ export function RayTracingPanel({
         deletedComponentIds,
         roiScopes,
         config,
+        auxiliaryBlockers: precisionPreviewConstraints,
       })
       if (config.auto_convergence) {
         request.config.seed = convergenceSegmentSeed(config.seed, segmentIndex)
@@ -1621,6 +1646,7 @@ export function RayTracingPanel({
           apiQueryKeys.scene(activeCad.path, accessoryPaths),
           refreshedScene,
         )
+        leakPreviewStore.getState().rebindSceneToken(refreshed.scene_token)
         startedJob = await start(refreshedScene)
         setAutoConvergenceStatus('CAD Scene 캐시 복구 완료 · Ray Tracing을 시작했습니다.')
       }
@@ -1649,7 +1675,7 @@ export function RayTracingPanel({
       )
       return false
     }
-  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
@@ -2038,6 +2064,48 @@ export function RayTracingPanel({
           </summary>
           <div className="space-y-3 border-t border-border p-3">
             <div className="grid grid-cols-1 gap-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="rounded-lg border border-border bg-background/45 p-2.5 text-sm">
+              <span className="flex items-center gap-2 font-semibold">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.apply_preview_blockers)}
+                  disabled={isRunning}
+                  onChange={(event) => updateConfig({
+                    apply_preview_blockers: event.currentTarget.checked,
+                  })}
+                />
+                Blocker
+                <HelpTooltip label="정밀해석 Blocker 도움말">
+                  Preview에서 활성화한 Blocker를 정밀해석의 완전 흡수형
+                  차폐 형상으로 적용합니다.
+                </HelpTooltip>
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {config.apply_preview_blockers ? 'ON' : 'OFF'} · {enabledPreviewBlockerCount}개
+              </span>
+            </label>
+            <label className="rounded-lg border border-border bg-background/45 p-2.5 text-sm">
+              <span className="flex items-center gap-2 font-semibold">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.apply_allowed_areas)}
+                  disabled={isRunning}
+                  onChange={(event) => updateConfig({
+                    apply_allowed_areas: event.currentTarget.checked,
+                  })}
+                />
+                Allowed Area
+                <HelpTooltip label="정밀해석 Allowed Area 도움말">
+                  Preview에서 활성화한 Allowed Area를 평가 제외 영역으로
+                  적용하여, 해당 영역을 통과한 빛을 Receiver 결과에 포함하지 않습니다.
+                </HelpTooltip>
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {config.apply_allowed_areas ? 'ON' : 'OFF'} · {enabledAllowedAreaCount}개 영역
+              </span>
+            </label>
+          </div>
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
             <NumberField
               label="Emitter rays"

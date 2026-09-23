@@ -472,6 +472,8 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   auto_convergence: false,
   convergence_target_percent: 5,
   max_convergence_multiplier: 8,
+  apply_preview_blockers: false,
+  apply_allowed_areas: false,
   primary_sampling_strategy: 'source',
   receiver_importance_fraction: 0.5,
   bounce_sampling_strategy: 'source',
@@ -529,6 +531,8 @@ function normalizeRayTraceConfig(
       1,
       Math.min(64, Math.trunc(config.max_convergence_multiplier || 8)),
     ),
+    apply_preview_blockers: Boolean(config.apply_preview_blockers),
+    apply_allowed_areas: Boolean(config.apply_allowed_areas),
     primary_sampling_strategy:
       config.primary_sampling_strategy === 'receiver_mis'
         ? 'receiver_mis'

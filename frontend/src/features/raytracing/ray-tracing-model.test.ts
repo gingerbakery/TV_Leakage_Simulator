@@ -318,7 +318,22 @@ describe('ray tracing model', () => {
           ],
         },
       ],
-      config: defaultRayTraceConfig,
+      config: {
+        ...defaultRayTraceConfig,
+        apply_preview_blockers: true,
+        apply_allowed_areas: true,
+      },
+      auxiliaryBlockers: [{
+        blocker_id: 'precision-blocker:test',
+        center: [0, 0, 1],
+        u_axis: [1, 0, 0],
+        v_axis: [0, 1, 0],
+        normal: [0, 0, 1],
+        width_mm: 2,
+        height_mm: 2,
+        depth_mm: 1,
+        enabled: true,
+      }],
     })
 
     expect(request.roi_faces).toEqual([0, 1])
@@ -335,6 +350,9 @@ describe('ray tracing model', () => {
     expect(request.config).not.toHaveProperty('auto_convergence')
     expect(request.config).not.toHaveProperty('convergence_target_percent')
     expect(request.config).not.toHaveProperty('max_convergence_multiplier')
+    expect(request.config).not.toHaveProperty('apply_preview_blockers')
+    expect(request.config).not.toHaveProperty('apply_allowed_areas')
+    expect(request.preview_blockers).toHaveLength(1)
     expect(request.config.primary_sampling_strategy).toBe('source')
     expect(request.config.receiver_importance_fraction).toBe(0.5)
     expect(request.optical_profiles).toHaveLength(1)

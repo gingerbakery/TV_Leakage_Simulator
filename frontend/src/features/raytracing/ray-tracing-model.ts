@@ -37,6 +37,7 @@ export interface RayTraceRequestSource {
   deletedComponentIds: number[]
   roiScopes: RoiScope[]
   config: RayTraceConfigRequest
+  auxiliaryBlockers?: RayTraceRequest['preview_blockers']
 }
 
 const convergenceAccumulationContract =
@@ -940,6 +941,7 @@ export function buildRayTraceRequest({
   deletedComponentIds,
   roiScopes,
   config,
+  auxiliaryBlockers = [],
 }: RayTraceRequestSource): RayTraceRequest {
   const enabledEmitters = emitters.filter((emitter) => emitter.enabled)
   const enabledReceivers = receivers.filter((receiver) => receiver.enabled)
@@ -955,6 +957,8 @@ export function buildRayTraceRequest({
     auto_convergence: _autoConvergence,
     convergence_target_percent: _convergenceTarget,
     max_convergence_multiplier: _maxConvergenceMultiplier,
+    apply_preview_blockers: _applyPreviewBlockers,
+    apply_allowed_areas: _applyAllowedAreas,
     ...backendConfig
   } = config
 
@@ -991,6 +995,9 @@ export function buildRayTraceRequest({
     ...(roiFaces.length > 0 ? { roi_faces: roiFaces } : {}),
     ...(roiFaces.length > 0 && roiClipBoxes.length > 0
       ? { roi_clip_boxes: roiClipBoxes }
+      : {}),
+    ...(auxiliaryBlockers.length > 0
+      ? { preview_blockers: auxiliaryBlockers }
       : {}),
     config: {
       ...backendConfig,

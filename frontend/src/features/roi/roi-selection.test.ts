@@ -46,6 +46,24 @@ describe('ROI selection', () => {
     expect(resolveFacesInRoiBox(scene, box, [1])).toEqual([])
   })
 
+  it('selects ROI faces in their transformed world position', () => {
+    const scene = createSceneFixture()
+    const translatedBox = { xMin: 158, xMax: 159, yMin: 1, yMax: 2 }
+
+    expect(
+      resolveFacesInRoiBox(
+        scene,
+        translatedBox,
+        [],
+        [],
+        (componentId, point) =>
+          componentId === 1
+            ? [point[0] + 100, point[1], point[2]]
+            : point,
+      ),
+    ).toEqual([0, 2])
+  })
+
   it('projects face selection onto YZ and ZX ROI planes', () => {
     const scene = createSceneFixture()
     const yzBox = {
@@ -326,29 +344,10 @@ describe('ROI selection', () => {
           ? [point[0] + 1.5, point[1], point[2]]
           : [point[0], point[1], point[2]],
     )
-    expect(translatedAcrossClipPlane).not.toBeNull()
-    expect(translatedAcrossClipPlane?.openChainCount).toBe(0)
-    expect(translatedAcrossClipPlane?.capLoopCount).toBe(2)
-    const translatedPositions =
-      translatedAcrossClipPlane?.surfaceGeometry.getAttribute(
-        'position',
-      )
-    const translatedXValues = Array.from(
-      { length: translatedPositions?.count ?? 0 },
-      (_, index) => translatedPositions?.getX(index) ?? 0,
-    )
-    expect(Math.min(...translatedXValues)).toBeCloseTo(1.75)
-    expect(Math.max(...translatedXValues)).toBeCloseTo(2.25)
-    const translatedCapPositions =
-      translatedAcrossClipPlane?.capGeometry?.getAttribute(
-        'position',
-      )
-    const translatedCapXValues = Array.from(
-      { length: translatedCapPositions?.count ?? 0 },
-      (_, index) => translatedCapPositions?.getX(index) ?? 0,
-    )
-    expect(Math.min(...translatedCapXValues)).toBeCloseTo(1.75)
-    expect(Math.max(...translatedCapXValues)).toBeCloseTo(2.25)
+    // ROI boxes live in world coordinates. Once the component moves beyond
+    // the box it must disappear instead of being clipped at its old position
+    // and translated back into view afterwards.
+    expect(translatedAcrossClipPlane).toBeNull()
 
     const yzClipped = buildRoiClippedGeometries(
       scene,

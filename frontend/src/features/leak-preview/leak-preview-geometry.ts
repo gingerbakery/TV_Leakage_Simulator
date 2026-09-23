@@ -26,47 +26,59 @@ export function createLeakPreviewPointTransform(
   const rules = new Map(
     transformRules
       .filter((rule) => rule.enabled && rule.targetType === 'component')
-      .map((rule) => [rule.componentId, rule]),
+      .map((rule) => {
+        const rx = rule.tilt.x * Math.PI / 180
+        const ry = rule.tilt.y * Math.PI / 180
+        const rz = rule.tilt.z * Math.PI / 180
+        return [
+          rule.componentId,
+          {
+            pivot: rule.pivot
+              ? [rule.pivot.x, rule.pivot.y, rule.pivot.z] as Vec3
+              : componentCenter(scene, rule.componentId),
+            move: [rule.move.x, rule.move.y, rule.move.z] as Vec3,
+            sinX: Math.sin(rx),
+            cosX: Math.cos(rx),
+            sinY: Math.sin(ry),
+            cosY: Math.cos(ry),
+            sinZ: Math.sin(rz),
+            cosZ: Math.cos(rz),
+            rotateX: Math.abs(rx) > 1e-12,
+            rotateY: Math.abs(ry) > 1e-12,
+            rotateZ: Math.abs(rz) > 1e-12,
+          },
+        ] as const
+      }),
   )
-  const pivots = new Map<number, Vec3>()
   return (componentId, point) => {
     const rule = rules.get(componentId)
-    if (!rule) return [...point]
-    let pivot = pivots.get(componentId)
-    if (!pivot) {
-      pivot = rule.pivot
-        ? [rule.pivot.x, rule.pivot.y, rule.pivot.z]
-        : componentCenter(scene, componentId)
-      pivots.set(componentId, pivot)
-    }
+    if (!rule) return point
+    const pivot = rule.pivot
     let x = point[0] - pivot[0]
     let y = point[1] - pivot[1]
     let z = point[2] - pivot[2]
-    const rx = rule.tilt.x * Math.PI / 180
-    const ry = rule.tilt.y * Math.PI / 180
-    const rz = rule.tilt.z * Math.PI / 180
-    if (Math.abs(rx) > 1e-12) {
-      const nextY = y * Math.cos(rx) - z * Math.sin(rx)
-      const nextZ = y * Math.sin(rx) + z * Math.cos(rx)
+    if (rule.rotateX) {
+      const nextY = y * rule.cosX - z * rule.sinX
+      const nextZ = y * rule.sinX + z * rule.cosX
       y = nextY
       z = nextZ
     }
-    if (Math.abs(ry) > 1e-12) {
-      const nextX = x * Math.cos(ry) + z * Math.sin(ry)
-      const nextZ = -x * Math.sin(ry) + z * Math.cos(ry)
+    if (rule.rotateY) {
+      const nextX = x * rule.cosY + z * rule.sinY
+      const nextZ = -x * rule.sinY + z * rule.cosY
       x = nextX
       z = nextZ
     }
-    if (Math.abs(rz) > 1e-12) {
-      const nextX = x * Math.cos(rz) - y * Math.sin(rz)
-      const nextY = x * Math.sin(rz) + y * Math.cos(rz)
+    if (rule.rotateZ) {
+      const nextX = x * rule.cosZ - y * rule.sinZ
+      const nextY = x * rule.sinZ + y * rule.cosZ
       x = nextX
       y = nextY
     }
     return [
-      x + pivot[0] + rule.move.x,
-      y + pivot[1] + rule.move.y,
-      z + pivot[2] + rule.move.z,
+      x + pivot[0] + rule.move[0],
+      y + pivot[1] + rule.move[1],
+      z + pivot[2] + rule.move[2],
     ]
   }
 }
