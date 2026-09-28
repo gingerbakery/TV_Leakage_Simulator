@@ -3073,7 +3073,12 @@ def run_direct_ray_trace(
         progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
     grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
-    metrics = _build_direct_metrics(grids, trace_input.config, total_rays)
+    metrics = _build_direct_metrics(
+        grids,
+        trace_input.config,
+        total_rays,
+        [receiver for receiver in trace_input.receivers if receiver.enabled],
+    )
     metrics["_optical_summary"] = optical_summary
     metrics["_reflection_summary"] = reflection_summary
     metrics["_termination_summary"] = termination_summary(
@@ -9412,8 +9417,12 @@ def _build_direct_metrics(
     grids: List[ReceiverGrid],
     config: RayTraceConfig,
     sample_count: int = 0,
+    receivers: Optional[List[ReceiverSpec]] = None,
 ) -> Dict[str, Dict[str, object]]:
     metrics: Dict[str, Dict[str, object]] = {}
+    receiver_by_id = {
+        receiver.receiver_id: receiver for receiver in (receivers or [])
+    }
     for grid in grids:
         values = [value for row in grid.flux_lumen for value in row]
         bin_area_m2 = grid.bin_area_mm2 * 1e-6
@@ -9429,6 +9438,24 @@ def _build_direct_metrics(
             p95 = sorted_nits[p95_index]
         else:
             p95 = 0.0
+        receiver = receiver_by_id.get(grid.receiver_id)
+        acceptance_half_angle_deg = min(
+            90.0,
+            max(0.0, receiver.acceptance_angle_deg if receiver else 90.0),
+        )
+        # The receiver grid already contains only rays admitted by its
+        # acceptance gate.  Dividing irradiance by the projected solid angle
+        # converts that accepted cone flux to cone-averaged radiance.  The
+        # projected solid angle is pi*sin(alpha)^2 and becomes pi at 90 deg,
+        # so the legacy hemisphere-based luminance remains unchanged there.
+        projected_solid_angle_sr = max(
+            math.pi * math.sin(math.radians(acceptance_half_angle_deg)) ** 2,
+            1e-18,
+        )
+        cone_multiplier = math.pi / projected_solid_angle_sr
+        cone_peak = peak * cone_multiplier
+        cone_mean = mean * cone_multiplier
+        cone_p95 = p95 * cone_multiplier
         area_above_zero = sum(1 for value in values if value > 0.0) * grid.bin_area_mm2
         total_flux = sum(values)
         def relative_error_percent(flux_sum: float, squared_sum: float) -> float:
@@ -9536,6 +9563,11 @@ def _build_direct_metrics(
             "peak_nit_est": peak,
             "mean_nit_est": mean,
             "p95_nit_est": p95,
+            "cone_peak_nit_est": cone_peak,
+            "cone_mean_nit_est": cone_mean,
+            "cone_p95_nit_est": cone_p95,
+            "cone_projected_solid_angle_sr": projected_solid_angle_sr,
+            "cone_acceptance_half_angle_deg": acceptance_half_angle_deg,
             "total_flux_lumen": total_flux,
             "hit_count": float(grid.hit_count),
             "area_above_zero_mm2": area_above_zero,

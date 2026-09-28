@@ -269,11 +269,16 @@ function receiverMetrics(
   totalRays: number,
   kAbs: number,
   kBrdf: number,
+  acceptanceAngleDeg = 90,
 ): Record<string, unknown> {
   const values = grid.flux_lumen.flat()
   const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
   const nits = values.map((flux) => kAbs * kBrdf * flux / binAreaM2 / Math.PI)
   const sortedNits = [...nits].sort((left, right) => left - right)
+  const coneHalfAngleDeg = Math.min(90, Math.max(0.1, acceptanceAngleDeg))
+  const coneSine = Math.sin(coneHalfAngleDeg * Math.PI / 180)
+  const coneProjectedSolidAngle = Math.PI * coneSine * coneSine
+  const coneMultiplier = Math.PI / Math.max(coneProjectedSolidAngle, 1e-18)
   const totalFlux = values.reduce((sum, value) => sum + value, 0)
   const relativeErrorPercent = (flux: number, squared: number) => {
     if (totalRays <= 1 || !Number.isFinite(flux) || !Number.isFinite(squared) || flux <= 0 || squared <= 0) return 100
@@ -342,6 +347,18 @@ function receiverMetrics(
           Math.ceil(sortedNits.length * 0.95) - 1,
         )]
       : 0,
+    cone_peak_nit_est: Math.max(...nits, 0) * coneMultiplier,
+    cone_mean_nit_est: (nits.length > 0
+      ? nits.reduce((sum, value) => sum + value, 0) / nits.length
+      : 0) * coneMultiplier,
+    cone_p95_nit_est: (sortedNits.length > 0
+      ? sortedNits[Math.min(
+          sortedNits.length - 1,
+          Math.ceil(sortedNits.length * 0.95) - 1,
+        )]
+      : 0) * coneMultiplier,
+    cone_projected_solid_angle_sr: coneProjectedSolidAngle,
+    cone_acceptance_half_angle_deg: coneHalfAngleDeg,
     total_flux_lumen: totalFlux,
     hit_count: grid.hit_count,
     area_above_zero_mm2:
@@ -494,6 +511,9 @@ export function mergeConvergenceRayTraceResults(
         totalRays,
         current.config.k_abs,
         current.config.k_brdf,
+        current.receivers.find(
+          (receiver) => receiver.receiver_id === grid.receiver_id,
+        )?.acceptance_angle_deg ?? 90,
       ),
     }
     const previousMetric = previous.metrics[grid.receiver_id]
