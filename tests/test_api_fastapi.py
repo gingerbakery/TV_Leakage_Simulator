@@ -144,7 +144,12 @@ class FastApiLayerTests(unittest.TestCase):
             }],
         }
 
-        first = runtime._build_trace_input_for_request(scene_mesh, payload)
+        preparation_phases = []
+        first = runtime._build_trace_input_for_request(
+            scene_mesh,
+            payload,
+            report_phase=preparation_phases.append,
+        )
         changed_receiver = dict(payload)
         changed_receiver["receivers"] = [
             {**payload["receivers"][0], "width_mm": 2}
@@ -152,6 +157,13 @@ class FastApiLayerTests(unittest.TestCase):
         second = runtime._build_trace_input_for_request(scene_mesh, changed_receiver)
 
         self.assertFalse(first.geometry_cache_hit)
+        self.assertIn("정밀 CAD Mesh 확인 중", preparation_phases)
+        self.assertIn("Geometry cache 확인 중", preparation_phases)
+        self.assertIn("Trace Mesh 및 BVH 생성 중", preparation_phases)
+        self.assertEqual(
+            preparation_phases[-1],
+            "Emitter 및 Receiver 계산 입력 구성 중",
+        )
         self.assertTrue(second.geometry_cache_hit)
         self.assertIs(first.mesh, second.mesh)
 

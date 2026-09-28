@@ -403,6 +403,7 @@ class ApiRuntime:
             "job_id": job_id,
             "status": "queued",
             "phase": "queued",
+            "phase_detail": "실행 대기 중",
             "processed_rays": 0,
             "total_rays": requested_ray_count,
             "progress": 0.0,
@@ -587,22 +588,31 @@ class ApiRuntime:
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
         should_stop: Optional[Callable[[], bool]] = None,
+        report_phase: Optional[Callable[[str], None]] = None,
     ) -> Any:
+        def phase(detail: str) -> None:
+            if report_phase is not None:
+                report_phase(detail)
+
         if should_stop is not None and should_stop():
             raise InterruptedError("Ray trace preparation stopped")
+        phase("정밀 CAD Mesh 확인 중")
         scene_mesh = self._resolve_deferred_trace_mesh(scene_mesh)
         if should_stop is not None and should_stop():
             raise InterruptedError("Ray trace preparation stopped")
+        phase("Emitter 및 ROI Surface 매핑 중")
         request_payload = self._map_viewer_faces_to_trace(
             scene_mesh,
             request_payload,
             should_stop,
         )
         if self._trace_input_builder is not build_direct_trace_input:
+            phase("Ray Tracing 입력 구성 중")
             trace_input = self._trace_input_builder(scene_mesh, request_payload)
             if should_stop is not None and should_stop():
                 raise InterruptedError("Ray trace preparation stopped")
             return trace_input
+        phase("Geometry cache 확인 중")
         cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
         with self._state_lock:
             # Refresh cache insertion order on a hit so the repeatedly used
@@ -634,6 +644,7 @@ class ApiRuntime:
                             scene_mesh,
                             request_payload,
                             should_stop,
+                            report_phase,
                         )
                     raise build_state.error
                 prepared = build_state.prepared
@@ -642,6 +653,7 @@ class ApiRuntime:
                 cache_hit = True
             else:
                 try:
+                    phase("Trace Mesh 및 BVH 생성 중")
                     prepared = build_prepared_trace_geometry(
                         scene_mesh,
                         request_payload,
@@ -661,6 +673,9 @@ class ApiRuntime:
                     build_state.prepared = prepared
                     self._trace_geometry_builds.pop(cache_key, None)
                     build_state.event.set()
+        if cache_hit:
+            phase("기존 Trace Mesh 및 BVH 불러오는 중")
+        phase("Emitter 및 Receiver 계산 입력 구성 중")
         return build_direct_trace_input(
             scene_mesh,
             request_payload,
@@ -839,15 +854,26 @@ class ApiRuntime:
                     return bool(job and job.get("stop_requested"))
 
             preparation_started_at = time.time()
+            def report_preparation_phase(detail: str) -> None:
+                self._update_raytrace_job(
+                    job_id,
+                    status="running",
+                    phase="preparing",
+                    phase_detail=detail,
+                    elapsed_sec=max(0.0, time.time() - preparation_started_at),
+                )
+
             self._update_raytrace_job(
                 job_id,
                 status="running",
                 phase="preparing",
+                phase_detail="Ray Tracing 준비 시작",
             )
             trace_input = self._build_trace_input_for_request(
                 scene_mesh,
                 request_payload,
                 should_stop,
+                report_preparation_phase,
             )
             preparation_elapsed_sec = max(0.0, time.time() - preparation_started_at)
             geometry_cache_hit = bool(
@@ -870,6 +896,7 @@ class ApiRuntime:
             self._update_raytrace_job(
                 job_id,
                 phase="tracing",
+                phase_detail="Ray 계산 진행 중",
                 processed_rays=0,
                 total_rays=total_ray_count,
                 progress=0.0,
@@ -910,6 +937,11 @@ class ApiRuntime:
                 self._update_raytrace_job(
                     job_id,
                     phase="stopping" if should_stop() else "tracing",
+                    phase_detail=(
+                        "중단 요청 처리 및 부분 결과 정리 중"
+                        if should_stop()
+                        else "Ray 계산 진행 중"
+                    ),
                     processed_rays=safe_processed,
                     total_rays=safe_total,
                     progress=progress,
@@ -933,6 +965,11 @@ class ApiRuntime:
                 job_id,
                 status="completed",
                 phase="stopped" if stopped_early else "completed",
+                phase_detail=(
+                    "부분 결과 정리 완료"
+                    if stopped_early
+                    else "Ray Tracing 완료"
+                ),
                 processed_rays=processed_ray_count,
                 total_rays=total_ray_count,
                 progress=(
@@ -954,6 +991,7 @@ class ApiRuntime:
                 job_id,
                 status="cancelled",
                 phase="stopped",
+                phase_detail="준비 작업 중단 완료",
                 stopped_early=True,
                 estimated_remaining_sec=0.0,
                 completed_at=time.time(),
@@ -963,6 +1001,7 @@ class ApiRuntime:
                 job_id,
                 status="failed",
                 phase="failed",
+                phase_detail="Ray Tracing 오류 발생",
                 error=str(exc),
                 estimated_remaining_sec=None,
                 completed_at=time.time(),

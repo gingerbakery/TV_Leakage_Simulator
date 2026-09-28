@@ -308,6 +308,7 @@ interface RayTraceJobProgress {
   estimated_remaining_sec: number | null
   rays_per_sec: number
   created_at: number
+  phase_detail?: string
   stop_requested?: boolean
   stopped_early?: boolean
   geometry_cache_hit?: boolean

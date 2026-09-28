@@ -118,6 +118,10 @@ import {
   type ViewerSectionAxis,
 } from './section-view'
 import {
+  screenTriangleIntersectsBox,
+  type ViewerScreenPoint,
+} from './screen-box-selection'
+import {
   cameraFovForPreset,
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
@@ -255,6 +259,7 @@ interface ViewerBoxDrag {
   currentX: number
   currentY: number
 }
+
 
 interface FacePlacementFrame {
   center: [number, number, number]
@@ -2617,6 +2622,111 @@ export function ThreeViewerCanvas({
       return null
     }
 
+    const resolveEmitterSurfaceBoxSelection = (
+      selection: ViewerBoxDrag,
+    ): { faceIds: number[]; componentIds: number[]; surfaceCount: number } | null => {
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return null
+      const box = {
+        minX: Math.min(selection.startX, selection.currentX),
+        maxX: Math.max(selection.startX, selection.currentX),
+        minY: Math.min(selection.startY, selection.currentY),
+        maxY: Math.max(selection.startY, selection.currentY),
+      }
+      const samplePoints = [
+        [(box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2],
+        [box.minX, box.minY],
+        [box.maxX, box.minY],
+        [box.maxX, box.maxY],
+        [box.minX, box.maxY],
+        [(box.minX + box.maxX) / 2, box.minY],
+        [box.maxX, (box.minY + box.maxY) / 2],
+        [(box.minX + box.maxX) / 2, box.maxY],
+        [box.minX, (box.minY + box.maxY) / 2],
+      ]
+      const seed = samplePoints
+        .map(([x, y]) => resolveSurfaceHit(rect.left + x, rect.top + y))
+        .find((hit) => hit?.faceId != null)
+      if (!seed || seed.faceId === null) return null
+
+      const component = scene.components.find(
+        (candidate) => candidate.component_id === seed.componentId,
+      )
+      const seedNormal = scene.mesh.face_normals[seed.faceId]
+      if (!component || !seedNormal) return null
+      const roiFaceSet = runtime.roiPreviewRoot.visible
+        ? new Set(roiFaceIdsRef.current)
+        : null
+      const pointTransform = createRoiPointTransform(
+        runtime,
+        transformRulesRef.current,
+      )
+      const surfaceFaces = new Set<number>()
+      const selectedPatches: number[][] = []
+
+      for (const faceId of component.face_indices) {
+        if (roiFaceSet && !roiFaceSet.has(faceId)) continue
+        if (surfaceFaces.has(faceId)) continue
+        const face = scene.mesh.faces[faceId]
+        const normal = scene.mesh.face_normals[faceId]
+        if (!face || face.length !== 3 || !normal) continue
+        const normalAlignment =
+          normal[0] * seedNormal[0] +
+          normal[1] * seedNormal[1] +
+          normal[2] * seedNormal[2]
+        if (normalAlignment < 0.35) continue
+        const projected = face.map((vertexId) => {
+          const source = scene.mesh.vertices[vertexId]
+          if (!source) return null
+          const transformed = pointTransform
+            ? pointTransform(seed.componentId, source)
+            : source
+          const point = new Vector3(...transformed).project(camera)
+          return {
+            x: (point.x + 1) * 0.5 * rect.width,
+            y: (1 - point.y) * 0.5 * rect.height,
+            z: point.z,
+          }
+        })
+        if (
+          projected.some((point) => point === null) ||
+          projected.every((point) =>
+            point !== null && (point.z < -1 || point.z > 1),
+          )
+        ) continue
+        if (!screenTriangleIntersectsBox(
+          projected as [ViewerScreenPoint, ViewerScreenPoint, ViewerScreenPoint],
+          box,
+        )) continue
+
+        const patch = resolveCadFacePick(
+          scene,
+          seed.componentId,
+          faceId,
+          runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
+        )
+        if (patch.some((patchFaceId) => surfaceFaces.has(patchFaceId))) continue
+        patch.forEach((patchFaceId) => surfaceFaces.add(patchFaceId))
+        selectedPatches.push(patch)
+      }
+
+      if (selectedPatches.length === 0) return null
+      const nextFaces = new Set(selectedFaceIdsRef.current)
+      selectedPatches.forEach((patch) =>
+        patch.forEach((faceId) => nextFaces.add(faceId)),
+      )
+      const faceIds = [...nextFaces].sort((left, right) => left - right)
+      const componentIds = [...new Set(faceIds.flatMap((faceId) => {
+        const componentId = scene.mesh.face_component_ids[faceId]
+        return componentId == null ? [] : [componentId]
+      }))].sort((left, right) => left - right)
+      return {
+        faceIds,
+        componentIds,
+        surfaceCount: selectedPatches.length,
+      }
+    }
+
     // NX-style pivot point snapping: within a small on-screen radius of the
     // click, prefer an edge endpoint (corner/intersection) first, then an
     // edge midpoint, over the exact raycast point - a rotation pivot is
@@ -2710,6 +2820,7 @@ export function ThreeViewerCanvas({
     let pointerDown: { x: number; y: number } | null = null
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
+    let emitterSurfaceBoxDrag = false
     let rollDrag: { lastX: number } | null = null
     let pipDrag: {
       lastX: number
@@ -2767,6 +2878,26 @@ export function ThreeViewerCanvas({
         return
       }
       if (event.button !== 0) return
+      if (
+        emitterFaceSelectionArmedRef.current &&
+        (event.ctrlKey || event.metaKey)
+      ) {
+        event.preventDefault()
+        pointerDown = null
+        emitterSurfaceBoxDrag = true
+        controls.enabled = false
+        const point = canvasPoint(event)
+        const selection = {
+          startX: point.x,
+          startY: point.y,
+          currentX: point.x,
+          currentY: point.y,
+        }
+        boxDragRef.current = selection
+        setBoxDrag(selection)
+        canvas.setPointerCapture(event.pointerId)
+        return
+      }
       if (roiBoxSelectionArmedRef.current) {
         // Shift/Alt+drag stays free to roll the camera even while armed -
         // orbit is locked so a plain drag always draws the box, but the
@@ -2872,6 +3003,9 @@ export function ThreeViewerCanvas({
       }
       const selection = boxDragRef.current
       if (selection) {
+        const wasEmitterSurfaceBoxDrag = emitterSurfaceBoxDrag
+        emitterSurfaceBoxDrag = false
+        controls.enabled = true
         const point = canvasPoint(event)
         const completedSelection = {
           ...selection,
@@ -2887,9 +3021,53 @@ export function ThreeViewerCanvas({
           Math.abs(completedSelection.currentX - completedSelection.startX) +
           Math.abs(completedSelection.currentY - completedSelection.startY)
         if (movement <= 8) {
-          leakPreviewStore.getState().finishBlockerAreaSelection()
-          actions.setRoiBoxSelectionArmed(false)
-          onStatusMessage('영역 선택을 취소했습니다.')
+          if (wasEmitterSurfaceBoxDrag) {
+            const hit = resolveSurfaceHit(event.clientX, event.clientY)
+            if (!hit || hit.faceId === null) {
+              onStatusMessage(
+                'Emitter surface picking · 선택할 CAD Surface를 클릭하세요.',
+              )
+              return
+            }
+            const patchFaceIds = resolveCadFacePick(
+              scene,
+              hit.componentId,
+              hit.faceId,
+              runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
+            )
+            const next = updateCadFaceSelection(
+              scene,
+              selectedFaceIdsRef.current,
+              patchFaceIds,
+              true,
+            )
+            const removePatch =
+              next.faceIds.length < selectedFaceIdsRef.current.length
+            actions.setFaceSelection(next.faceIds, next.componentIds)
+            onStatusMessage(
+              `Emitter surface picking · Component ${hit.componentId} · surface ${removePatch ? '해제' : '추가'}`,
+            )
+            return
+          } else {
+            leakPreviewStore.getState().finishBlockerAreaSelection()
+            actions.setRoiBoxSelectionArmed(false)
+            onStatusMessage('영역 선택을 취소했습니다.')
+            return
+          }
+        }
+
+        if (movement > 8 && wasEmitterSurfaceBoxDrag) {
+          const result = resolveEmitterSurfaceBoxSelection(completedSelection)
+          if (!result) {
+            onStatusMessage(
+              'Emitter surface box · 선택 박스 안에서 CAD Surface를 찾지 못했습니다.',
+            )
+            return
+          }
+          actions.setFaceSelection(result.faceIds, result.componentIds)
+          onStatusMessage(
+            `Emitter surface box · CAD Surface ${result.surfaceCount}개 추가`,
+          )
           return
         }
 
@@ -3302,6 +3480,7 @@ export function ThreeViewerCanvas({
       rightPointerMoved = false
       rollDrag = null
       pipDrag = null
+      emitterSurfaceBoxDrag = false
       controls.enabled = true
       boxDragRef.current = null
       setBoxDrag(null)
@@ -5133,6 +5312,8 @@ export function ThreeViewerCanvas({
           className={`pointer-events-none absolute z-20 border shadow-[0_0_0_1px_rgba(249,115,22,0.25)] ${
             blockerAreaSelectionId
               ? 'border-orange-500 bg-orange-400/20'
+              : emitterFaceSelectionArmed && !roiBoxSelectionArmed
+                ? 'border-sky-500 bg-sky-400/20 shadow-[0_0_0_1px_rgba(14,165,233,0.25)]'
               : 'border-warning bg-warning/15'
           }`}
           style={{
@@ -5302,7 +5483,7 @@ export function ThreeViewerCanvas({
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
           : emitterFaceSelectionArmed
-            ? 'Emitter surface mode · Click a CAD surface to add/remove'
+            ? 'Emitter surface mode · Click add/remove · Ctrl + left drag box select · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
       </div>
       {rendererError ? (

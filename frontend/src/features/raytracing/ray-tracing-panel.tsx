@@ -1349,6 +1349,19 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${minutes}m ${remainder}s`
 }
 
+function rayTracePhaseLabel(phase: string): string {
+  switch (phase) {
+    case 'queued': return 'Queued'
+    case 'preparing': return 'Geometry preparation'
+    case 'tracing': return 'Ray tracing'
+    case 'stopping': return 'Stopping'
+    case 'completed': return 'Completed'
+    case 'stopped': return 'Stopped'
+    case 'failed': return 'Failed'
+    default: return phase
+  }
+}
+
 function ConvergenceSparkline({ label, values }: { label: string; values: number[] }) {
   const maximum = Math.max(...values.filter(Number.isFinite), 0)
   const points = values.map((value, index) => {
@@ -2528,15 +2541,43 @@ export function RayTracingPanel({
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="flex items-center justify-between gap-2 text-sm">
               <span className="flex items-center gap-1.5 font-semibold">
-                <CircleDot className="size-3 text-primary" />
-                {job.phase}
+                {job.status === 'queued' || job.status === 'running' ? (
+                  <LoaderCircle className="size-3.5 animate-spin text-primary" />
+                ) : (
+                  <CircleDot className="size-3 text-primary" />
+                )}
+                {rayTracePhaseLabel(job.phase)}
               </span>
-              <span>{(progress * 100).toFixed(1)}%</span>
+              <span>
+                {job.phase === 'preparing' || job.phase === 'queued'
+                  ? 'Preparing'
+                  : `${(progress * 100).toFixed(1)}%`}
+              </span>
+            </div>
+            <div
+              role="status"
+              className="mt-1 min-h-4 text-xs font-medium text-foreground/85"
+            >
+              {job.phase_detail ?? (
+                job.phase === 'preparing'
+                  ? '정밀 계산 형상을 준비하고 있습니다.'
+                  : job.phase === 'tracing'
+                    ? 'Ray 계산을 진행하고 있습니다.'
+                    : rayTracePhaseLabel(job.phase)
+              )}
             </div>
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-primary transition-[width]"
-                style={{ width: `${progress * 100}%` }}
+                className={`h-full rounded-full bg-primary transition-[width] ${
+                  job.phase === 'preparing' || job.phase === 'queued'
+                    ? 'w-full animate-pulse opacity-65'
+                    : ''
+                }`}
+                style={
+                  job.phase === 'preparing' || job.phase === 'queued'
+                    ? undefined
+                    : { width: `${progress * 100}%` }
+                }
               />
             </div>
             <div className="mt-2 flex justify-between text-xs text-muted-foreground">
@@ -2547,7 +2588,11 @@ export function RayTracingPanel({
               <span>
                 {job.status === 'completed'
                   ? `${job.phase === 'stopped' ? 'stopped · partial result' : 'complete'} · ${formatDuration(job.elapsed_sec)}`
-                  : `${formatDuration(job.estimated_remaining_sec)} left`}
+                  : job.phase === 'preparing' || job.phase === 'queued'
+                    ? 'Geometry preparation · remaining time pending'
+                    : job.estimated_remaining_sec === null
+                      ? 'Ray speed estimating…'
+                      : `${formatDuration(job.estimated_remaining_sec)} left`}
               </span>
             </div>
           </div>

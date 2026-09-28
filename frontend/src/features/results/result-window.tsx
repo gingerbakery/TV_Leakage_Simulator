@@ -1022,9 +1022,22 @@ function ReceiverHeatmap({
   const regionStartRef = useRef<{ x: number; y: number } | null>(null)
   const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
   const [colorMode, setColorMode] = useState<'color' | 'mono'>('color')
+  const [displayScale, setDisplayScale] = useState(1)
+  const displayResizeRef = useRef<{
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    startScale: number
+  } | null>(null)
   const layout = receiverHeatmapLayout(
     receiver.width_mm,
     receiver.height_mm,
+  )
+  const displayWidthPx = Math.round(
+    layout.preferredWidthPx * displayScale,
+  )
+  const displayHeightPx = Math.round(
+    displayWidthPx / layout.aspectRatio,
   )
   const columns = Math.max(1, grid.resolution[0])
   const rows = Math.max(1, grid.resolution[1])
@@ -1362,6 +1375,27 @@ function ReceiverHeatmap({
     setHover(null)
   }
 
+  const updateDisplayScale = (
+    clientX: number,
+    clientY: number,
+  ) => {
+    const resize = displayResizeRef.current
+    if (!resize) return
+    const horizontalScaleDelta =
+      (clientX - resize.startClientX) / layout.preferredWidthPx
+    const preferredHeightPx =
+      layout.preferredWidthPx / layout.aspectRatio
+    const verticalScaleDelta =
+      (clientY - resize.startClientY) / preferredHeightPx
+    const scaleDelta =
+      Math.abs(horizontalScaleDelta) >= Math.abs(verticalScaleDelta)
+        ? horizontalScaleDelta
+        : verticalScaleDelta
+    setDisplayScale(
+      Math.min(1.8, Math.max(0.6, resize.startScale + scaleDelta)),
+    )
+  }
+
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
@@ -1471,6 +1505,13 @@ function ReceiverHeatmap({
             {formatReceiverCoordinate(layout.heightMm)} mm
           </span>
           <span
+            data-testid={`${grid.receiver_id}-display-scale`}
+            className="rounded border border-border bg-background/55 px-1.5 py-0.5 font-mono text-foreground"
+            title="Heatmap 표시 영역 크기"
+          >
+            Size {Math.round(displayScale * 100)}%
+          </span>
+          <span
             data-testid={`${grid.receiver_id}-zoom`}
             className="rounded border border-border bg-background/55 px-1.5 py-0.5 font-mono text-foreground"
           >
@@ -1483,6 +1524,14 @@ function ReceiverHeatmap({
             onClick={resetViewport}
           >
             Reset view
+          </button>
+          <button
+            type="button"
+            className="rounded border border-border px-1.5 py-0.5 text-foreground transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-35"
+            disabled={Math.abs(displayScale - 1) < 0.001}
+            onClick={() => setDisplayScale(1)}
+          >
+            Reset size
           </button>
         </div>
       </div>
@@ -1516,19 +1565,26 @@ function ReceiverHeatmap({
             : `${formatMetric(luminanceScale.maxNit)} nit`}
         </span>
       </div>
-      <div
-        className="mx-auto grid max-w-full grid-cols-[minmax(0,1fr)_4.5rem_minmax(11rem,14rem)] grid-rows-[auto_3.25rem_10rem] gap-x-2"
-        style={{
-          width: `${layout.preferredWidthPx + 292}px`,
-        }}
-      >
+      <div className="max-w-full overflow-x-auto pb-3">
+        <div
+          data-testid={`${grid.receiver_id}-heatmap-layout`}
+          className="mx-auto grid gap-x-2"
+          style={{
+            gridTemplateColumns: `${displayWidthPx}px 4.5rem minmax(11rem,14rem)`,
+            gridTemplateRows: `${displayHeightPx}px 3.25rem 10rem`,
+            width: `${displayWidthPx + 292}px`,
+          }}
+        >
         <div
           data-testid={`${grid.receiver_id}-heatmap-frame`}
           data-width-mm={layout.widthMm}
           data-height-mm={layout.heightMm}
+          data-display-scale={displayScale.toFixed(3)}
           className="relative col-start-1 row-start-1 min-w-0 overflow-visible"
           style={{
             aspectRatio: `${layout.widthMm} / ${layout.heightMm}`,
+            height: `${displayHeightPx}px`,
+            width: `${displayWidthPx}px`,
           }}
         >
           <div
@@ -1686,6 +1742,43 @@ function ReceiverHeatmap({
               </div>
             </div>
           ) : null}
+          <button
+            type="button"
+            aria-label="Resize Heatmap display"
+            title="드래그하여 Heatmap 전체 표시 크기 조절 · 더블클릭하여 초기화"
+            className="absolute right-1 bottom-1 z-30 flex size-7 cursor-nwse-resize touch-none items-center justify-center rounded border border-white/80 bg-slate-950/75 text-white shadow-md hover:bg-slate-900"
+            onDoubleClick={(event) => {
+              event.stopPropagation()
+              setDisplayScale(1)
+            }}
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              displayResizeRef.current = {
+                pointerId: event.pointerId,
+                startClientX: event.clientX,
+                startClientY: event.clientY,
+                startScale: displayScale,
+              }
+              event.currentTarget.setPointerCapture?.(event.pointerId)
+            }}
+            onPointerMove={(event) => {
+              if (displayResizeRef.current?.pointerId !== event.pointerId) return
+              updateDisplayScale(event.clientX, event.clientY)
+            }}
+            onPointerUp={(event) => {
+              if (displayResizeRef.current?.pointerId !== event.pointerId) return
+              updateDisplayScale(event.clientX, event.clientY)
+              displayResizeRef.current = null
+              if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                event.currentTarget.releasePointerCapture?.(event.pointerId)
+              }
+            }}
+            onPointerCancel={() => {
+              displayResizeRef.current = null
+            }}
+          >
+            <Maximize2 className="size-4" aria-hidden="true" />
+          </button>
         </div>
         <div
           data-testid={`${grid.receiver_id}-y-profile-frame`}
@@ -1755,6 +1848,7 @@ function ReceiverHeatmap({
             maximumMm={layout.widthMm / 2}
             fixedCoordinateMm={(0.5 - (profileDisplayRow + 0.5) / rows) * layout.heightMm}
           />
+        </div>
         </div>
       </div>
       {regionAnalysis ? (

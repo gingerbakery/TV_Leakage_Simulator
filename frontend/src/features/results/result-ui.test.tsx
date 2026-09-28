@@ -1055,6 +1055,31 @@ describe('Step 11 result UI', () => {
 
     const frame = screen.getByTestId('receiver_001-heatmap-frame')
     expect(frame.style.aspectRatio).toBe('40 / 20')
+    expect(frame.getAttribute('data-display-scale')).toBe('1.000')
+    const displayResizeHandle = screen.getByRole('button', {
+      name: 'Resize Heatmap display',
+    })
+    fireEvent.pointerDown(displayResizeHandle, {
+      clientX: 400,
+      clientY: 200,
+      pointerId: 7,
+    })
+    fireEvent.pointerMove(displayResizeHandle, {
+      clientX: 537,
+      clientY: 200,
+      pointerId: 7,
+    })
+    fireEvent.pointerUp(displayResizeHandle, {
+      clientX: 537,
+      clientY: 200,
+      pointerId: 7,
+    })
+    expect(Number(frame.getAttribute('data-display-scale'))).toBeGreaterThan(1)
+    expect(
+      screen.getByTestId('receiver_001-display-scale').textContent,
+    ).not.toBe('Size 100%')
+    fireEvent.click(screen.getByRole('button', { name: 'Reset size' }))
+    expect(frame.getAttribute('data-display-scale')).toBe('1.000')
     const viewport = screen.getByTestId(
       'receiver_001-heatmap-viewport',
     )
