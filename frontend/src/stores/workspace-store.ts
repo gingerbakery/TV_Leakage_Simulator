@@ -469,7 +469,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   intersection_backend: 'auto',
   compute_backend: 'cpu',
   store_ray_paths: true,
-  max_stored_paths: 500,
+  max_stored_paths: 2000,
   auto_convergence: false,
   convergence_target_percent: 5,
   max_convergence_multiplier: 8,
@@ -526,7 +526,7 @@ function normalizeRayTraceConfig(
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,
-      Math.min(1000, Math.trunc(config.max_stored_paths || 0)),
+      Math.min(5000, Math.trunc(config.max_stored_paths || 0)),
     ),
     auto_convergence: Boolean(config.auto_convergence),
     convergence_target_percent: Math.max(

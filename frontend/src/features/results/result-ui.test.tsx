@@ -1078,6 +1078,36 @@ describe('Step 11 result UI', () => {
     expect(
       screen.getByTestId('receiver_001-display-scale').textContent,
     ).not.toBe('Size 100%')
+    const sizeBoundary = screen.getByTestId(
+      'receiver_001-heatmap-size-boundary',
+    )
+    Object.defineProperty(sizeBoundary, 'clientWidth', {
+      configurable: true,
+      value: 2000,
+    })
+    fireEvent(window, new Event('resize'))
+    expect(
+      Number(sizeBoundary.getAttribute('data-maximum-display-scale')),
+    ).toBeGreaterThan(1.8)
+    fireEvent.pointerDown(displayResizeHandle, {
+      clientX: 400,
+      clientY: 200,
+      pointerId: 8,
+    })
+    fireEvent.pointerMove(displayResizeHandle, {
+      clientX: 2400,
+      clientY: 200,
+      pointerId: 8,
+    })
+    fireEvent.pointerUp(displayResizeHandle, {
+      clientX: 2400,
+      clientY: 200,
+      pointerId: 8,
+    })
+    expect(Number(frame.getAttribute('data-display-scale'))).toBeGreaterThan(1.8)
+    expect(Number(frame.getAttribute('data-display-scale'))).toBeLessThanOrEqual(
+      Number(sizeBoundary.getAttribute('data-maximum-display-scale')),
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Reset size' }))
     expect(frame.getAttribute('data-display-scale')).toBe('1.000')
     const viewport = screen.getByTestId(
@@ -1185,11 +1215,28 @@ describe('Step 11 result UI', () => {
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
     expect(tooltip.textContent).toContain('Incident flux')
     expect(tooltip.textContent).toContain('Pixel error')
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Highlight paths through Renamed chassis',
+    }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toEqual({
+      runId: result.run_id,
+      pathIndices: [1],
+      label: 'Component · Renamed chassis',
+    })
     fireEvent.click(screen.getByRole('button', { name: /Direct to Receiver/ }))
     expect(workspaceStore.getState().highlightedRayPathSelection).toEqual({
       runId: result.run_id,
       pathIndices: [0],
       label: 'Direct to Receiver',
+    })
+    expect(screen.getByText(/Stored Path Browser/)).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Highlight Stored Path 1',
+    }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toEqual({
+      runId: result.run_id,
+      pathIndices: [0],
+      label: 'Stored Path #1',
     })
     expect(onOpenChange).not.toHaveBeenCalled()
 

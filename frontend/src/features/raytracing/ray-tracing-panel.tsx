@@ -2259,13 +2259,13 @@ export function RayTracingPanel({
             label="Max stored paths"
             value={config.max_stored_paths}
             min={0}
-            max={1000}
-            step={10}
+            max={5000}
+            step={100}
             disabled={isRunning}
             onChange={(value) =>
               updateConfig({ max_stored_paths: Math.trunc(value) })
             }
-            description="3D Viewer·Ray Section View에 표시할 최대 경로 수입니다. Receiver 도달 경로가 우선 저장되며 통계 결과에는 영향을 주지 않습니다."
+            description="3D Viewer·Ray Contribution에 사용할 진단용 경로 수입니다. Receiver 도달 경로가 우선 저장되며, 값을 늘리면 희소한 영역의 반사 경로를 더 많이 볼 수 있지만 메모리·보고서 용량이 늘어납니다. 광학 통계 결과에는 영향을 주지 않습니다."
           />
           <label className={fieldLabelClassName}>
             <span className="flex items-center gap-1.5">

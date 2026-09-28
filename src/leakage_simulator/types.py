@@ -585,7 +585,7 @@ class RayTraceConfig:
     intersection_backend: str = "auto"
     compute_backend: str = "cpu"
     store_ray_paths: bool = False
-    max_stored_paths: int = 500
+    max_stored_paths: int = 2000
     auto_convergence: bool = False
     convergence_target_percent: float = 5.0
     max_convergence_multiplier: int = 8

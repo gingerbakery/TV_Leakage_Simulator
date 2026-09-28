@@ -972,6 +972,7 @@ function ReceiverHeatmap({
   kAbs,
   kBrdf,
   storedPaths,
+  maxStoredPaths,
   runId,
   componentNames,
   errorTargetPercent,
@@ -989,6 +990,7 @@ function ReceiverHeatmap({
   kAbs: number
   kBrdf: number
   storedPaths: RayHit[][]
+  maxStoredPaths: number
   runId: string
   componentNames: Map<number, string>
   errorTargetPercent: number
@@ -1005,6 +1007,7 @@ function ReceiverHeatmap({
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const displayBoundaryRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({
     ...initialReceiverHeatmapViewport,
   })
@@ -1023,6 +1026,7 @@ function ReceiverHeatmap({
   const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
   const [colorMode, setColorMode] = useState<'color' | 'mono'>('color')
   const [displayScale, setDisplayScale] = useState(1)
+  const [displayBoundaryWidthPx, setDisplayBoundaryWidthPx] = useState(0)
   const displayResizeRef = useRef<{
     pointerId: number
     startClientX: number
@@ -1033,6 +1037,17 @@ function ReceiverHeatmap({
     receiver.width_mm,
     receiver.height_mm,
   )
+  // Y axis, Y profile and the two grid gaps occupy this part of the
+  // Receiver layout. The remaining Result-window width is available to the
+  // Heatmap itself.
+  const displayLayoutChromeWidthPx = 292
+  const maximumDisplayScale = displayBoundaryWidthPx > displayLayoutChromeWidthPx
+    ? Math.max(
+      1,
+      (displayBoundaryWidthPx - displayLayoutChromeWidthPx) /
+        layout.preferredWidthPx,
+    )
+    : 1.8
   const displayWidthPx = Math.round(
     layout.preferredWidthPx * displayScale,
   )
@@ -1069,6 +1084,30 @@ function ReceiverHeatmap({
     setProfileColumn(Math.floor(columns / 2))
     setProfileDisplayRow(Math.floor(rows / 2))
   }, [columns, grid, receiver.height_mm, receiver.width_mm, rows])
+
+  useEffect(() => {
+    const boundary = displayBoundaryRef.current
+    if (!boundary) return
+    const measure = () => {
+      const width = boundary.clientWidth
+      if (width > 0) setDisplayBoundaryWidthPx(width)
+    }
+    measure()
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver((entries) => {
+        const width = entries[0]?.contentRect.width ?? boundary.clientWidth
+        if (width > 0) setDisplayBoundaryWidthPx(width)
+      })
+      observer.observe(boundary)
+      return () => observer.disconnect()
+    }
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+
+  useEffect(() => {
+    setDisplayScale((current) => Math.min(current, maximumDisplayScale))
+  }, [maximumDisplayScale])
 
   const luminanceValues = useMemo(() => {
     const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
@@ -1142,8 +1181,8 @@ function ReceiverHeatmap({
     const directCount = matchingPaths.filter(
       ({ path }) => !path.some((event) => event.event_type === 'surface'),
     ).length
-    const componentContributions = new Map<number, { count: number; flux: number }>()
-    const faceContributions = new Map<number, { count: number; flux: number }>()
+    const componentContributions = new Map<number, { count: number; flux: number; pathIndices: number[] }>()
+    const faceContributions = new Map<number, { count: number; flux: number; pathIndices: number[] }>()
     const lobeContributions = new Map<string, { count: number; flux: number }>()
     const depthContributions = new Map<number, { count: number; flux: number }>()
     const sequences = new Map<
@@ -1157,16 +1196,18 @@ function ReceiverHeatmap({
         .filter((event) => event.event_type === 'surface' && event.component_id !== null)
         .map((event) => event.component_id as number)
       for (const componentId of new Set(componentIds)) {
-        const current = componentContributions.get(componentId) ?? { count: 0, flux: 0 }
+        const current = componentContributions.get(componentId) ?? { count: 0, flux: 0, pathIndices: [] }
         current.count += 1
         current.flux += pathFlux
+        current.pathIndices.push(pathIndex)
         componentContributions.set(componentId, current)
       }
       const surfaceEvents = path.filter((event) => event.event_type === 'surface')
       for (const faceId of new Set(surfaceEvents.map((event) => faceSourceIds?.[event.face_index] ?? event.face_index))) {
-        const current = faceContributions.get(faceId) ?? { count: 0, flux: 0 }
+        const current = faceContributions.get(faceId) ?? { count: 0, flux: 0, pathIndices: [] }
         current.count += 1
         current.flux += pathFlux
+        current.pathIndices.push(pathIndex)
         faceContributions.set(faceId, current)
       }
       const lobe = receiverHit?.ray_kind ?? (surfaceEvents.length > 0 ? 'reflected' : 'direct')
@@ -1209,6 +1250,33 @@ function ReceiverHeatmap({
       sequences: [...sequences.entries()]
         .sort((left, right) => right[1].flux - left[1].flux)
         .slice(0, 5),
+      paths: matchingPaths
+        .map(({ path, pathIndex }) => {
+          const receiverHit = [...path].reverse().find(
+            (event) => event.event_type === 'receiver',
+          )
+          const surfaceEvents = path.filter(
+            (event) => event.event_type === 'surface',
+          )
+          const sequence = surfaceEvents.length > 0
+            ? surfaceEvents
+              .map((event) => event.component_id === null
+                ? `Face ${faceSourceIds?.[event.face_index] ?? event.face_index}`
+                : componentNames.get(event.component_id) ?? `Component ${event.component_id}`)
+              .join(' → ')
+            : 'Direct to Receiver'
+          return {
+            bounceCount: surfaceEvents.length,
+            flux: numeric(
+              receiverHit?.receiver_flux_lumen ??
+                receiverHit?.incoming_energy_lumen,
+            ),
+            pathIndex,
+            sequence,
+          }
+        })
+        .sort((left, right) => right.flux - left.flux)
+        .slice(0, 100),
     }
   }, [columns, componentNames, faceSourceIds, grid, receiver, region, rows, storedPaths])
 
@@ -1392,7 +1460,10 @@ function ReceiverHeatmap({
         ? horizontalScaleDelta
         : verticalScaleDelta
     setDisplayScale(
-      Math.min(1.8, Math.max(0.6, resize.startScale + scaleDelta)),
+      Math.min(
+        maximumDisplayScale,
+        Math.max(0.6, resize.startScale + scaleDelta),
+      ),
     )
   }
 
@@ -1565,14 +1636,19 @@ function ReceiverHeatmap({
             : `${formatMetric(luminanceScale.maxNit)} nit`}
         </span>
       </div>
-      <div className="max-w-full overflow-x-auto pb-3">
+      <div
+        ref={displayBoundaryRef}
+        data-testid={`${grid.receiver_id}-heatmap-size-boundary`}
+        data-maximum-display-scale={maximumDisplayScale.toFixed(3)}
+        className="max-w-full overflow-x-auto pb-3"
+      >
         <div
           data-testid={`${grid.receiver_id}-heatmap-layout`}
           className="mx-auto grid gap-x-2"
           style={{
             gridTemplateColumns: `${displayWidthPx}px 4.5rem minmax(11rem,14rem)`,
             gridTemplateRows: `${displayHeightPx}px 3.25rem 10rem`,
-            width: `${displayWidthPx + 292}px`,
+            width: `${displayWidthPx + displayLayoutChromeWidthPx}px`,
           }}
         >
         <div
@@ -1745,7 +1821,7 @@ function ReceiverHeatmap({
           <button
             type="button"
             aria-label="Resize Heatmap display"
-            title="드래그하여 Heatmap 전체 표시 크기 조절 · 더블클릭하여 초기화"
+            title="드래그하여 Result 창 가로 폭까지 Heatmap 크기 조절 · 더블클릭하여 초기화"
             className="absolute right-1 bottom-1 z-30 flex size-7 cursor-nwse-resize touch-none items-center justify-center rounded border border-white/80 bg-slate-950/75 text-white shadow-md hover:bg-slate-900"
             onDoubleClick={(event) => {
               event.stopPropagation()
@@ -1871,12 +1947,30 @@ function ReceiverHeatmap({
               </div>
               <div className="mt-2 text-sm font-semibold">Top Components</div>
               <div className="mt-1 space-y-1">
-                {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => (
-                  <div key={id} className="flex justify-between rounded border border-border px-2 py-1 text-base">
-                    <span>{componentNames.get(id) ?? `Component ${id}`}</span>
-                    <span className="font-mono">{value.count} paths · {formatMetric(value.flux)} lm</span>
-                  </div>
-                )) : <div className="popup-guide text-xs text-muted-foreground">No reflected stored path in this area.</div>}
+                {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => {
+                  const label = `Component · ${componentNames.get(id) ?? `Component ${id}`}`
+                  const selected = highlightedSelection?.runId === runId &&
+                    highlightedSelection.label === label
+                  return (
+                    <button
+                      type="button"
+                      key={id}
+                      aria-label={`Highlight paths through ${componentNames.get(id) ?? `Component ${id}`}`}
+                      aria-pressed={selected}
+                      className={`flex w-full items-center justify-between rounded border px-2 py-1 text-left text-base transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
+                      onClick={() => actions.setHighlightedRayPathSelection(
+                        selected ? null : {
+                          runId,
+                          pathIndices: value.pathIndices,
+                          label,
+                        },
+                      )}
+                    >
+                      <span>{componentNames.get(id) ?? `Component ${id}`}</span>
+                      <span className="font-mono">{value.count} paths · {formatMetric(value.flux)} lm</span>
+                    </button>
+                  )
+                }) : <div className="popup-guide text-xs text-muted-foreground">No reflected stored path in this area.</div>}
               </div>
             </div>
             <div>
@@ -1912,6 +2006,49 @@ function ReceiverHeatmap({
             </div>
           </div>
           <details className="mt-2 rounded-md border border-border bg-background/25 p-2">
+            <summary className="cursor-pointer text-sm font-semibold">
+              Stored Path Browser · {regionAnalysis.paths.length.toLocaleString()}
+            </summary>
+            <div className="mt-2 max-h-64 space-y-1 overflow-y-auto pr-1">
+              {regionAnalysis.paths.map((path) => {
+                const label = `Stored Path #${path.pathIndex + 1}`
+                const selected = highlightedSelection?.runId === runId &&
+                  highlightedSelection.label === label
+                return (
+                  <button
+                    type="button"
+                    key={path.pathIndex}
+                    aria-label={`Highlight Stored Path ${path.pathIndex + 1}`}
+                    aria-pressed={selected}
+                    className={`block w-full rounded border px-2 py-1.5 text-left text-sm transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
+                    onClick={() => actions.setHighlightedRayPathSelection(
+                      selected ? null : {
+                        runId,
+                        pathIndices: [path.pathIndex],
+                        label,
+                      },
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold">Path #{path.pathIndex + 1}</span>
+                      <span className="font-mono text-muted-foreground">
+                        {path.bounceCount} bounce · {formatMetric(path.flux)} lm
+                      </span>
+                    </div>
+                    <div className="mt-0.5 truncate text-muted-foreground" title={path.sequence}>
+                      {path.sequence}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            {regionAnalysis.matchingPathCount > regionAnalysis.paths.length ? (
+              <p className="popup-guide mt-1 text-xs text-muted-foreground">
+                Flux가 큰 경로부터 최대 100개를 표시합니다.
+              </p>
+            ) : null}
+          </details>
+          <details className="mt-2 rounded-md border border-border bg-background/25 p-2">
             <summary className="cursor-pointer text-sm font-semibold">Detailed face, reflection type and bounce contribution</summary>
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <div>
@@ -1929,7 +2066,7 @@ function ReceiverHeatmap({
             </div>
           </details>
           <p className="popup-guide mt-2 text-xs leading-4 text-muted-foreground">
-            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component와 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다.
+            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component와 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다. 현재 전체 {storedPaths.length.toLocaleString()} / 설정 {Math.max(0, maxStoredPaths).toLocaleString()} 경로가 저장되었습니다. 선택 영역에 1개만 나오면 Run Options의 Max stored paths를 늘린 후 다시 Tracing해야 합니다.
           </p>
         </details>
       ) : interactionMode === 'region' ? (
@@ -3477,6 +3614,7 @@ export function RayTraceResultWindow({
                           kAbs={result.config.k_abs}
                           kBrdf={result.config.k_brdf}
                           storedPaths={result.stored_paths}
+                          maxStoredPaths={result.config.max_stored_paths}
                           runId={result.run_id}
                           componentNames={componentNames}
                           errorTargetPercent={errorTargetPercent}
