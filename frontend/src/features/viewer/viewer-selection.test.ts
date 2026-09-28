@@ -118,7 +118,7 @@ describe('CAD face selection and component highlight contract', () => {
       .toEqual({ faceIds: [], componentIds: [] })
   })
 
-  it('clips only the selected source face and keeps its picking IDs after ROI and translation', () => {
+  it('clips transformed faces in world-space ROI coordinates and keeps picking IDs', () => {
     const scene = cadScene()
     scene.mesh.vertices[3][2] = 0
     const patch = resolveCadFacePick(scene, 1, 0, [0, 1, 2, 3, 4])
@@ -134,8 +134,8 @@ describe('CAD face selection and component highlight contract', () => {
     expect(bundle!.capGeometry).toBeNull()
     const position = bundle!.surfaceGeometry.getAttribute('position')
     for (let index = 0; index < position.count; index += 1) {
-      expect(position.getX(index)).toBeGreaterThanOrEqual(13)
-      expect(position.getX(index)).toBeLessThanOrEqual(43)
+      expect(position.getX(index)).toBeGreaterThanOrEqual(10)
+      expect(position.getX(index)).toBeLessThanOrEqual(40)
       expect(position.getY(index)).toBeGreaterThanOrEqual(10)
       expect(position.getY(index)).toBeLessThanOrEqual(40)
     }

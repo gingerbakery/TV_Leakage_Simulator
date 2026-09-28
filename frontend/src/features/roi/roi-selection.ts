@@ -234,11 +234,17 @@ function unavailableComponentIds(
   return new Set([...hiddenComponentIds, ...deletedComponentIds])
 }
 
+export type RoiPointTransform = (
+  componentId: number,
+  point: [number, number, number],
+) => [number, number, number]
+
 export function resolveFacesInRoiBox(
   scene: ScenePayload,
   box: RoiClipBox,
   hiddenComponentIds: Iterable<number>,
   deletedComponentIds: Iterable<number> = [],
+  transformPoint?: RoiPointTransform,
 ): number[] {
   const unavailable = unavailableComponentIds(
     hiddenComponentIds,
@@ -246,25 +252,51 @@ export function resolveFacesInRoiBox(
   )
   const faceIds: number[] = []
   const plane = roiPlane(box)
+  const selectionAxes: Array<0 | 1 | 2> =
+    plane === 'yz' ? [1, 2] : plane === 'zx' ? [2, 0] : [0, 1]
+  if (plane === 'xyz') selectionAxes.push(2)
 
   scene.mesh.faces.forEach((face, faceId) => {
     const componentId = scene.mesh.face_component_ids[faceId]
     if (componentId === null || unavailable.has(componentId)) return
 
+    const sourceA = scene.mesh.vertices[face[0]]
+    const sourceB = scene.mesh.vertices[face[1]]
+    const sourceC = scene.mesh.vertices[face[2]]
+    const a = (transformPoint
+      ? transformPoint(componentId, sourceA)
+      : sourceA) as Point3
+    const b = (transformPoint
+      ? transformPoint(componentId, sourceB)
+      : sourceB) as Point3
+    const c = (transformPoint
+      ? transformPoint(componentId, sourceC)
+      : sourceC) as Point3
+
+    // Large CAD files contain millions of triangles. Reject the overwhelming
+    // majority with allocation-free axis bounds before constructing arrays
+    // for the exact
+    // triangle/box intersection predicates below.
+    for (const axis of selectionAxes) {
+      const triangleMin = Math.min(a[axis], b[axis], c[axis])
+      const triangleMax = Math.max(a[axis], b[axis], c[axis])
+      const boxMin = axis === 0 ? box.xMin : axis === 1 ? box.yMin : box.zMin ?? 0
+      const boxMax = axis === 0 ? box.xMax : axis === 1 ? box.yMax : box.zMax ?? 0
+      if (triangleMax < boxMin || triangleMin > boxMax) return
+    }
+
+    const vertices: Point3[] = [a, b, c]
+
     if (plane === 'xyz') {
-      const triangle = face.map((vertexId) => [
-        ...scene.mesh.vertices[vertexId],
-      ]) as Point3[]
-      if (triangleIntersectsRoiVolume(triangle, box)) {
+      if (triangleIntersectsRoiVolume(vertices, box)) {
         faceIds.push(faceId)
       }
       return
     }
 
-    const triangle: Point2[] = face.map((vertexId) => {
-      const vertex = scene.mesh.vertices[vertexId]
-      return projectVertexToRoiPlane(vertex, plane)
-    })
+    const triangle: Point2[] = vertices.map((vertex) =>
+      projectVertexToRoiPlane(vertex, plane),
+    )
     if (triangleIntersectsRoiBox(triangle, box)) {
       faceIds.push(faceId)
     }
@@ -283,6 +315,7 @@ export function groupRoiFacesByComponent(
   scene: ScenePayload,
   faceIds: Iterable<number>,
   componentNameOverrides: Record<number, string> = {},
+  transformPoint?: RoiPointTransform,
 ): RoiComponentClip[] {
   const componentById = new Map(
     scene.components.map((component) => [
@@ -322,7 +355,10 @@ export function groupRoiFacesByComponent(
     group.faceIds.push(faceId)
     group.areaMm2 += scene.mesh.face_areas_mm2[faceId] ?? 0
     for (const vertexId of face) {
-      const vertex = scene.mesh.vertices[vertexId]
+      const sourceVertex = scene.mesh.vertices[vertexId]
+      const vertex = transformPoint
+        ? transformPoint(componentId, sourceVertex)
+        : sourceVertex
       for (let axis = 0; axis < 3; axis += 1) {
         group.min[axis] = Math.min(group.min[axis], vertex[axis])
         group.max[axis] = Math.max(group.max[axis], vertex[axis])
@@ -354,6 +390,7 @@ export function resolveNearestVisibleFace(
   point: Vector3Value,
   hiddenComponentIds: Iterable<number>,
   deletedComponentIds: Iterable<number> = [],
+  transformPoint?: RoiPointTransform,
 ): number | null {
   const unavailable = unavailableComponentIds(
     hiddenComponentIds,
@@ -365,9 +402,12 @@ export function resolveNearestVisibleFace(
   scene.mesh.face_centroids.forEach((centroid, faceId) => {
     const componentId = scene.mesh.face_component_ids[faceId]
     if (componentId === null || unavailable.has(componentId)) return
-    const dx = centroid[0] - point.x
-    const dy = centroid[1] - point.y
-    const dz = centroid[2] - point.z
+    const transformedCentroid = transformPoint
+      ? transformPoint(componentId, centroid)
+      : centroid
+    const dx = transformedCentroid[0] - point.x
+    const dy = transformedCentroid[1] - point.y
+    const dz = transformedCentroid[2] - point.z
     const distanceSquared = dx * dx + dy * dy + dz * dz
     if (distanceSquared < bestDistanceSquared) {
       bestDistanceSquared = distanceSquared

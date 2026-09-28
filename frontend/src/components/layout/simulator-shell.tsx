@@ -62,6 +62,7 @@ import type {
 } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import { receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
+import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-preview-geometry'
 import {
   groupRoiFacesByComponent,
   resolveFacesInRoiBox,
@@ -195,6 +196,8 @@ export function SimulatorShell() {
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const activeAccessoryPaths = cadCases.find((item) => item.caseId === activeCadCaseId)
+    ?.accessoryCads?.filter((item) => item.visible).map((item) => item.cad.path) ?? []
   const activeCadCaseVisible =
     cadCases.find((item) => item.caseId === activeCadCaseId)?.visible ?? true
   const nameOverrides = useWorkspaceStore(
@@ -207,11 +210,12 @@ export function SimulatorShell() {
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const rayTraceConfig = useWorkspaceStore(workspaceSelectors.rayTraceConfig)
   const restoredRayTraceResult = useWorkspaceStore(
     workspaceSelectors.restoredRayTraceResult,
   )
-  const sceneQuery = useSceneQuery(activeCad?.path ?? '')
+  const sceneQuery = useSceneQuery(activeCad?.path ?? '', activeAccessoryPaths)
   const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
   const rayTraceJob = rayTraceJobQuery.data
   const rawRayTraceResult =
@@ -256,6 +260,12 @@ export function SimulatorShell() {
   const activeComponentName = activeComponent
     ? getComponentDisplayName(activeComponent, nameOverrides)
     : ''
+  const roiPointTransform = useMemo(
+    () => scene
+      ? createLeakPreviewPointTransform(scene, transformRules)
+      : undefined,
+    [scene, transformRules],
+  )
 
   useEffect(() => {
     const previousCaseId = previousActiveCaseIdRef.current
@@ -277,9 +287,9 @@ export function SimulatorShell() {
     const remapped = roiScopes.map((scope) => {
       if (scope.components.length > 0) return scope
       const faceIds = scope.clipBox
-        ? resolveFacesInRoiBox(scene, scope.clipBox, [])
+        ? resolveFacesInRoiBox(scene, scope.clipBox, [], [], roiPointTransform)
         : scope.point
-          ? [resolveNearestVisibleFace(scene, scope.point, [])].filter(
+          ? [resolveNearestVisibleFace(scene, scope.point, [], [], roiPointTransform)].filter(
               (faceId): faceId is number => faceId !== null,
             )
           : []
@@ -287,6 +297,7 @@ export function SimulatorShell() {
         scene,
         faceIds,
         nameOverrides,
+        roiPointTransform,
       )
       if (components.length > 0) changed = true
       return {
@@ -295,7 +306,7 @@ export function SimulatorShell() {
       }
     })
     if (changed) actions.setRoiScopes(remapped)
-  }, [actions, nameOverrides, roiScopes, scene])
+  }, [actions, nameOverrides, roiPointTransform, roiScopes, scene])
 
   useEffect(() => {
     const savedCaseResult = cadCases.find(

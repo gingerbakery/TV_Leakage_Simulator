@@ -1,5 +1,5 @@
 import { useRef, type ChangeEvent } from 'react'
-import { Check, Eye, EyeOff, FolderOpen, LoaderCircle, Trash2 } from 'lucide-react'
+import { Check, Eye, EyeOff, FolderOpen, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 
 import { useUploadCadMutation } from '@/api'
 import { Button } from '@/components/ui/button'
@@ -12,11 +12,13 @@ interface ModelImportCardProps {
 
 export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const accessoryInputRef = useRef<HTMLInputElement>(null)
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const uploadMutation = useUploadCadMutation()
+  const activeCase = cadCases.find((item) => item.caseId === activeCadCaseId)
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
@@ -25,6 +27,22 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
     try {
       const uploaded = await uploadMutation.mutateAsync({ file, filename: file.name })
       actions.addCadCase({ path: uploaded.path, displayName: uploaded.display_name })
+      onImported()
+    } catch {
+      // The shared API error is rendered below.
+    }
+  }
+
+  const handleAccessoryFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file || !activeCadCaseId) return
+    try {
+      const uploaded = await uploadMutation.mutateAsync({ file, filename: file.name })
+      actions.addAccessoryCad(activeCadCaseId, {
+        path: uploaded.path,
+        displayName: uploaded.display_name,
+      })
       onImported()
     } catch {
       // The shared API error is rendered below.
@@ -127,6 +145,42 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
         <div className="mt-2 px-1 text-xs leading-4 text-muted-foreground">
           {activeCad ? `${sceneStatus ?? 'Loading'} · Step 03 follows the active Case.` : 'STEP (AP214/AP242) · STP · STL · OBJ'}
         </div>
+        {activeCase ? (
+          <div className="mt-3 border-t border-border pt-2">
+            <div className="mb-1.5 flex items-center justify-between px-1">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Accessory CAD</span>
+              <span className="text-xs text-muted-foreground">{(activeCase.accessoryCads ?? []).length}</span>
+            </div>
+            <div className="space-y-1">
+              {(activeCase.accessoryCads ?? []).map((accessory) => (
+                <div key={accessory.accessoryId} className="flex items-center gap-1.5 rounded-md border border-border bg-background/45 px-2 py-1.5">
+                  <input
+                    type="checkbox"
+                    aria-label={`Show Accessory CAD ${accessory.cad.displayName}`}
+                    checked={accessory.visible}
+                    onChange={(event) => actions.setAccessoryCadVisible(activeCase.caseId, accessory.accessoryId, event.currentTarget.checked)}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">{accessory.cad.displayName}</span>
+                  {accessory.visible ? <Eye className="size-3.5 text-primary" /> : <EyeOff className="size-3.5 text-muted-foreground" />}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Delete Accessory CAD ${accessory.cad.displayName}`}
+                    onClick={() => actions.removeAccessoryCad(activeCase.caseId, accessory.accessoryId)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <input ref={accessoryInputRef} type="file" className="sr-only" aria-label="Choose Accessory CAD file" accept=".step,.stp,.stl,.obj" onChange={handleAccessoryFileChange} />
+            <Button className="mt-2 w-full" size="sm" variant="outline" disabled={uploadMutation.isPending} onClick={() => accessoryInputRef.current?.click()}>
+              {uploadMutation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}
+              Add Accessory CAD
+            </Button>
+          </div>
+        ) : null}
       </div>
       <input ref={inputRef} type="file" className="sr-only" aria-label="Choose CAD file" accept=".step,.stp,.stl,.obj" onChange={handleFileChange} />
       <Button className="w-full" disabled={uploadMutation.isPending} onClick={() => inputRef.current?.click()}>

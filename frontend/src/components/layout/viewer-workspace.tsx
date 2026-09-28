@@ -44,6 +44,7 @@ import type {
 import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import { RayTraceResultWindow } from '@/features/results'
 import { useLeakPreviewStore } from '@/features/leak-preview/leak-preview-store'
+import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-preview-geometry'
 import {
   getActiveRoiFaceIds,
   groupRoiFacesByComponent,
@@ -183,6 +184,7 @@ export function ViewerWorkspace({
     workspaceSelectors.componentColorOverrides,
   )
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
   const roiBoxSelectionArmed = useWorkspaceStore(
@@ -221,6 +223,12 @@ export function ViewerWorkspace({
     () => getActiveRoiFaceIds(roiScopes, deletedComponentIds),
     [deletedComponentIds, roiScopes],
   )
+  const roiPointTransform = useMemo(
+    () => scene
+      ? createLeakPreviewPointTransform(scene, transformRules)
+      : undefined,
+    [scene, transformRules],
+  )
   const addBoxRoi = useCallback(
     ({ clipBox, view }: RoiBoxSelectionResult) => {
       if (!scene) return
@@ -239,6 +247,7 @@ export function ViewerWorkspace({
         clipBox,
         hiddenComponentIds,
         deletedComponentIds,
+        roiPointTransform,
       )
       actions.setRoiBoxSelectionArmed(false)
       if (faceIds.length === 0) {
@@ -252,6 +261,7 @@ export function ViewerWorkspace({
         scene,
         faceIds,
         componentNameOverrides,
+        roiPointTransform,
       )
       actions.addRoiScope({
         label: roiDraftLabel,
@@ -270,6 +280,7 @@ export function ViewerWorkspace({
       hiddenComponentIds,
       ignoreAreaSelectionArmed,
       roiDraftLabel,
+      roiPointTransform,
       scene,
     ],
   )

@@ -240,18 +240,42 @@ describe('whole-set leak preview', () => {
     expect(detection.candidates[0].widthMm).toBeCloseTo(
       receiver.width_mm * 2 / 3 + leakPreviewRoiOffsetMm * 2,
     )
+    const narrowReceiver = { ...receiver, width_mm: 12, height_mm: 12 }
+    const narrowDetection = detectLeakPreviewCandidates(scene, {
+      ...result,
+      receivers: [narrowReceiver],
+    })
+    expect(narrowDetection.candidates[0].widthMm).toBe(30)
+    expect(narrowDetection.candidates[0].heightMm).toBe(30)
+    expect(narrowDetection.candidates[0].clipBox.yMax - narrowDetection.candidates[0].clipBox.yMin).toBeCloseTo(30)
+    expect((narrowDetection.candidates[0].clipBox.zMax ?? 0) - (narrowDetection.candidates[0].clipBox.zMin ?? 0)).toBeCloseTo(30)
     const precisionReceiver = createCandidateReceiver(detection.candidates[0], 1)
+    const roi = detection.candidates[0].clipBox
     expect(precisionReceiver.center[0]).toBeCloseTo(
       detection.candidates[0].center[0] + leakPreviewReceiverDistanceMm,
     )
     expect(precisionReceiver.view_distance_mm).toBe(leakPreviewReceiverDistanceMm)
     expect(precisionReceiver.base_center).toEqual(detection.candidates[0].center)
+    expect(precisionReceiver.position_offset_mm).toEqual([
+      0,
+      precisionReceiver.center[1] - detection.candidates[0].center[1],
+      precisionReceiver.center[2] - detection.candidates[0].center[2],
+    ])
     expect(precisionReceiver.width_mm).toBeCloseTo(
-      detection.candidates[0].widthMm + leakPreviewReceiverOffsetMm * 2,
+      roi.yMax - roi.yMin - leakPreviewReceiverOffsetMm * 2,
     )
     expect(precisionReceiver.height_mm).toBeCloseTo(
-      detection.candidates[0].heightMm + leakPreviewReceiverOffsetMm * 2,
+      (roi.zMax ?? 0) - (roi.zMin ?? 0) - leakPreviewReceiverOffsetMm * 2,
     )
+    expect(precisionReceiver.center[1] - precisionReceiver.width_mm / 2).toBeCloseTo(roi.yMin + 2)
+    expect(precisionReceiver.center[1] + precisionReceiver.width_mm / 2).toBeCloseTo(roi.yMax - 2)
+    expect(precisionReceiver.center[2] - precisionReceiver.height_mm / 2).toBeCloseTo((roi.zMin ?? 0) + 2)
+    expect(precisionReceiver.center[2] + precisionReceiver.height_mm / 2).toBeCloseTo((roi.zMax ?? 0) - 2)
+    expect(precisionReceiver.center[0]).toBeLessThanOrEqual(roi.xMax)
+    expect(precisionReceiver.center[0]).toBeGreaterThanOrEqual(roi.xMin)
+    const narrowPrecisionReceiver = createCandidateReceiver(narrowDetection.candidates[0], 2)
+    expect(narrowPrecisionReceiver.width_mm).toBeCloseTo(26)
+    expect(narrowPrecisionReceiver.height_mm).toBeCloseTo(26)
 
     const point = detection.points[0].position
     const ignored = detectLeakPreviewCandidates(scene, result, {

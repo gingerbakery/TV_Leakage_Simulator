@@ -55,8 +55,8 @@ export function useGpuCudaStatusQuery(enabled: boolean) {
   }
 }
 
-export function useSceneQuery(cadPath: string) {
-  return useQuery(sceneQueryOptions(cadPath))
+export function useSceneQuery(cadPath: string, accessoryPaths: string[] = []) {
+  return useQuery(sceneQueryOptions(cadPath, accessoryPaths))
 }
 
 export function useRayTraceJobQuery(jobId: string | null) {

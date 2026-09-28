@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   BoxSelect,
   Check,
@@ -14,6 +14,7 @@ import { HelpTooltip } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
 import { cn } from '@/lib/utils'
+import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-preview-geometry'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -61,10 +62,17 @@ export function RoiSelectionPanel({
   const deletedComponentIds = useWorkspaceStore(
     workspaceSelectors.deletedComponentIds,
   )
+  const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const componentNameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const roiPointTransform = useMemo(
+    () => scene
+      ? createLeakPreviewPointTransform(scene, transformRules)
+      : undefined,
+    [scene, transformRules],
+  )
   const copyRoiCoordinates = async (
     scopeId: string,
     bounds: {
@@ -117,6 +125,7 @@ export function RoiSelectionPanel({
       clipBox,
       hiddenComponentIds,
       deletedComponentIds,
+      roiPointTransform,
     )
     if (faceIds.length === 0) {
       setCoordinateResult('입력한 좌표 범위에서 ROI를 찾지 못했습니다.')
@@ -132,6 +141,7 @@ export function RoiSelectionPanel({
         scene,
         faceIds,
         componentNameOverrides,
+        roiPointTransform,
       ),
     })
     setCoordinateResult('좌표 범위를 ROI List에 추가했습니다.')

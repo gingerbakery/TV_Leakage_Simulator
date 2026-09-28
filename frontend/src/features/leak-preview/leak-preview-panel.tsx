@@ -314,7 +314,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           error.message.includes('CAD scene cache expired')
         if (!cacheExpired || !activeCad?.path) throw error
         setMessage('CAD Scene 캐시를 자동 복구하고 있습니다.')
-        const refreshed = await apiClient.refreshScene(activeCad.path)
+        const accessoryPaths = scene.metadata.source_files?.slice(1) ?? []
+        const refreshed = await apiClient.refreshScene(activeCad.path, undefined, accessoryPaths)
         const refreshedScene: ScenePayload = {
           ...scene,
           metadata: {
@@ -324,7 +325,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         }
         rebindSceneToken(refreshed.scene_token)
         queryClient.setQueryData(
-          apiQueryKeys.scene(activeCad.path),
+          apiQueryKeys.scene(activeCad.path, accessoryPaths),
           refreshedScene,
         )
         started = await start(refreshedScene)

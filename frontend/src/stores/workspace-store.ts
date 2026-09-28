@@ -15,6 +15,12 @@ export interface ActiveCad {
   displayName: string
 }
 
+export interface AccessoryCad {
+  accessoryId: string
+  cad: ActiveCad
+  visible: boolean
+}
+
 export interface CadCase {
   caseId: string
   order: number
@@ -26,6 +32,7 @@ export interface CadCase {
   latestJobId?: string | null
   latestResult?: RayTraceResult | null
   componentMatchMetadata?: SceneComponentMatchMetadata[]
+  accessoryCads: AccessoryCad[]
 }
 
 export interface CopySetupTarget {
@@ -242,6 +249,9 @@ export type WorkspaceProjectState = Pick<
 export interface WorkspaceActions {
   setActiveCad(cad: ActiveCad | null): void
   addCadCase(cad: ActiveCad): void
+  addAccessoryCad(caseId: string, cad: ActiveCad): void
+  setAccessoryCadVisible(caseId: string, accessoryId: string, visible: boolean): void
+  removeAccessoryCad(caseId: string, accessoryId: string): void
   setActiveCadCase(caseId: string): void
   setCadCaseVisible(caseId: string, visible: boolean): void
   removeCadCase(caseId: string): void
@@ -463,6 +473,8 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   auto_convergence: false,
   convergence_target_percent: 5,
   max_convergence_multiplier: 8,
+  apply_preview_blockers: false,
+  apply_allowed_areas: false,
   primary_sampling_strategy: 'source',
   receiver_importance_fraction: 0.5,
   bounce_sampling_strategy: 'source',
@@ -525,6 +537,8 @@ function normalizeRayTraceConfig(
       1,
       Math.min(64, Math.trunc(config.max_convergence_multiplier || 8)),
     ),
+    apply_preview_blockers: Boolean(config.apply_preview_blockers),
+    apply_allowed_areas: Boolean(config.apply_allowed_areas),
     primary_sampling_strategy:
       config.primary_sampling_strategy === 'receiver_mis'
         ? 'receiver_mis'
@@ -1011,6 +1025,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             visible: true,
             workspaceState: blankProjectState(),
             latestResult: null,
+            accessoryCads: [],
           }
           const savedCases = state.cadCases.map((item) =>
             item.caseId === state.activeCadCaseId
@@ -1031,6 +1046,51 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...restoredSceneState(nextCase.workspaceState ?? blankProjectState()),
           }
         })
+      },
+      addAccessoryCad: (caseId, cad) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null, accessoryCads: [
+                ...(item.accessoryCads ?? []),
+                { accessoryId: `accessory-cad-${Date.now()}-${(item.accessoryCads ?? []).length + 1}`, cad, visible: true },
+              ] }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
+      },
+      setAccessoryCadVisible: (caseId, accessoryId, visible) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null,
+                accessoryCads: (item.accessoryCads ?? []).map((accessory) =>
+                  accessory.accessoryId === accessoryId ? { ...accessory, visible } : accessory) }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
+      },
+      removeAccessoryCad: (caseId, accessoryId) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, latestJobId: null, latestResult: null,
+                accessoryCads: (item.accessoryCads ?? []).filter((accessory) => accessory.accessoryId !== accessoryId) }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
       },
       setActiveCadCase: (caseId) => {
         set((state) => {
