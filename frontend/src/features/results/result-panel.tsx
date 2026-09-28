@@ -90,8 +90,12 @@ export function ResultPanel({
         ) : job.status !== 'completed' ? (
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
             <div className="flex justify-between">
-              <span className="font-semibold">{job.phase}</span>
-              <span>{(job.progress * 100).toFixed(1)}%</span>
+              <span className="font-semibold">{job.phase_detail ?? job.phase}</span>
+              <span>
+                {job.phase === 'aggregating' || job.phase === 'serializing'
+                  ? 'Finalizing'
+                  : `${(job.progress * 100).toFixed(1)}%`}
+              </span>
             </div>
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
               <div

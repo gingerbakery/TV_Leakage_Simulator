@@ -322,7 +322,7 @@ export interface QueuedRayTraceJob extends RayTraceJobProgress {
 
 export interface RunningRayTraceJob extends RayTraceJobProgress {
   status: 'running'
-  phase: 'preparing' | 'tracing' | 'stopping'
+  phase: 'preparing' | 'tracing' | 'aggregating' | 'serializing' | 'stopping'
 }
 
 export interface CompletedRayTraceJob extends RayTraceJobProgress {

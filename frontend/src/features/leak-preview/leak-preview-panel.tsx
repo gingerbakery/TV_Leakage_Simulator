@@ -151,6 +151,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
   const isRunning = startMutation.isPending || job?.status === 'queued' || job?.status === 'running'
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
+  const isFinalizing = job?.status === 'running' &&
+    (job.phase === 'aggregating' || job.phase === 'serializing')
   const existingEmitterFaces = emitters
     .filter((emitter) => emitter.enabled && emitter.emitter_type === 'face')
     .flatMap((emitter) => emitter.face_indices)
@@ -578,6 +580,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <div className="text-right text-xs text-muted-foreground">
               {isPreparing
                 ? '경량 CAD · BVH 준비 중'
+                : isFinalizing
+                  ? job?.phase_detail ?? '결과 집계 중'
                 : `${job?.geometry_cache_hit ? 'BVH 재사용 · ' : ''}${Math.round((job?.progress ?? 0) * 100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays`}
             </div>
           </div>

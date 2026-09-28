@@ -1354,6 +1354,8 @@ function rayTracePhaseLabel(phase: string): string {
     case 'queued': return 'Queued'
     case 'preparing': return 'Geometry preparation'
     case 'tracing': return 'Ray tracing'
+    case 'aggregating': return 'Result aggregation'
+    case 'serializing': return 'Result packaging'
     case 'stopping': return 'Stopping'
     case 'completed': return 'Completed'
     case 'stopped': return 'Stopped'
@@ -2551,6 +2553,8 @@ export function RayTracingPanel({
               <span>
                 {job.phase === 'preparing' || job.phase === 'queued'
                   ? 'Preparing'
+                  : job.phase === 'aggregating' || job.phase === 'serializing'
+                    ? 'Finalizing'
                   : `${(progress * 100).toFixed(1)}%`}
               </span>
             </div>
@@ -2563,6 +2567,10 @@ export function RayTracingPanel({
                   ? '정밀 계산 형상을 준비하고 있습니다.'
                   : job.phase === 'tracing'
                     ? 'Ray 계산을 진행하고 있습니다.'
+                    : job.phase === 'aggregating'
+                      ? 'Ray 계산이 끝나 Receiver와 기여도를 집계하고 있습니다.'
+                      : job.phase === 'serializing'
+                        ? '분석 결과와 Stored Path를 정리하고 있습니다.'
                     : rayTracePhaseLabel(job.phase)
               )}
             </div>
@@ -2590,6 +2598,10 @@ export function RayTracingPanel({
                   ? `${job.phase === 'stopped' ? 'stopped · partial result' : 'complete'} · ${formatDuration(job.elapsed_sec)}`
                   : job.phase === 'preparing' || job.phase === 'queued'
                     ? 'Geometry preparation · remaining time pending'
+                    : job.phase === 'aggregating'
+                      ? `Receiver·Contribution aggregation · ${formatDuration(job.elapsed_sec)} elapsed`
+                      : job.phase === 'serializing'
+                        ? `Result·Stored Path packaging · ${formatDuration(job.elapsed_sec)} elapsed`
                     : job.estimated_remaining_sec === null
                       ? 'Ray speed estimating…'
                       : `${formatDuration(job.estimated_remaining_sec)} left`}

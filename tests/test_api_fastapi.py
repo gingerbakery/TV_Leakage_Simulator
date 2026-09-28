@@ -628,6 +628,76 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertEqual(job["processed_rays"], 2)
         self.assertEqual(job["result"]["run_id"], "run_test")
 
+    def test_async_raytrace_reports_aggregation_and_serialization_before_completion(self):
+        aggregation_started = threading.Event()
+        release_aggregation = threading.Event()
+        serialization_started = threading.Event()
+        release_serialization = threading.Event()
+
+        class BlockingResult:
+            def to_dict(self):
+                serialization_started.set()
+                release_serialization.wait(timeout=2.0)
+                return {"run_id": "run_phases", "total_rays": 2}
+
+        def phased_runner(trace_input, progress_callback=None, should_stop=None):
+            if progress_callback is not None:
+                progress_callback(2, 2)
+            aggregation_started.set()
+            release_aggregation.wait(timeout=2.0)
+            return BlockingResult()
+
+        runtime = ApiRuntime(
+            Path(self.temp_dir.name) / "phases",
+            scene_loader=_scene_loader,
+            trace_input_builder=_trace_input_builder,
+            trace_runner=phased_runner,
+        )
+        client = TestClient(create_app(runtime))
+        try:
+            scene = runtime.load_scene("phases.step")
+            job = client.post(
+                "/api/raytrace/start",
+                json={
+                    "scene_token": scene["metadata"]["scene_token"],
+                    "emitters": [{"enabled": True, "ray_count": 2}],
+                },
+            ).json()
+            self.assertTrue(aggregation_started.wait(timeout=1.0))
+            snapshot = client.get(
+                "/api/raytrace/status",
+                params={"job_id": job["job_id"]},
+            ).json()
+            self.assertEqual(snapshot["phase"], "aggregating")
+            self.assertEqual(snapshot["processed_rays"], 2)
+            self.assertEqual(snapshot["progress"], 0.999)
+            self.assertIsNone(snapshot["estimated_remaining_sec"])
+
+            release_aggregation.set()
+            self.assertTrue(serialization_started.wait(timeout=1.0))
+            snapshot = client.get(
+                "/api/raytrace/status",
+                params={"job_id": job["job_id"]},
+            ).json()
+            self.assertEqual(snapshot["phase"], "serializing")
+            self.assertEqual(snapshot["progress"], 0.999)
+
+            release_serialization.set()
+            for _ in range(50):
+                snapshot = client.get(
+                    "/api/raytrace/status",
+                    params={"job_id": job["job_id"]},
+                ).json()
+                if snapshot["status"] == "completed":
+                    break
+                time.sleep(0.01)
+            self.assertEqual(snapshot["phase"], "completed")
+            self.assertEqual(snapshot["progress"], 1.0)
+        finally:
+            release_aggregation.set()
+            release_serialization.set()
+            client.close()
+
     def test_expired_scene_and_unknown_job_keep_error_contract(self):
         direct_response = self.client.post(
             "/api/raytrace/direct",

@@ -934,19 +934,35 @@ class ApiRuntime:
                     if ray_rate > 0.0
                     else None
                 )
+                ray_dispatch_complete = (
+                    safe_total > 0 and safe_processed >= safe_total
+                )
                 self._update_raytrace_job(
                     job_id,
-                    phase="stopping" if should_stop() else "tracing",
+                    phase=(
+                        "stopping"
+                        if should_stop()
+                        else "aggregating"
+                        if ray_dispatch_complete
+                        else "tracing"
+                    ),
                     phase_detail=(
                         "중단 요청 처리 및 부분 결과 정리 중"
                         if should_stop()
+                        else "Ray 계산 완료 · Receiver·기여도 집계 중"
+                        if ray_dispatch_complete
                         else "Ray 계산 진행 중"
                     ),
                     processed_rays=safe_processed,
                     total_rays=safe_total,
-                    progress=progress,
+                    # 100% is reserved for a completed, downloadable result.
+                    # The tracer may still be reducing Receiver grids and path
+                    # contributions after dispatching the final Ray batch.
+                    progress=min(progress, 0.999),
                     elapsed_sec=elapsed_sec,
-                    estimated_remaining_sec=estimated_remaining_sec,
+                    estimated_remaining_sec=(
+                        None if ray_dispatch_complete else estimated_remaining_sec
+                    ),
                     rays_per_sec=ray_rate,
                 )
 
@@ -955,6 +971,15 @@ class ApiRuntime:
                 progress_callback=report_progress,
                 should_stop=should_stop,
             )
+            if not should_stop():
+                self._update_raytrace_job(
+                    job_id,
+                    status="running",
+                    phase="serializing",
+                    phase_detail="분석 결과·Stored Path 정리 중",
+                    progress=0.999,
+                    estimated_remaining_sec=None,
+                )
             result_payload = result.to_dict()
             processed_ray_count = max(
                 0,
