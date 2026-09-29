@@ -60,6 +60,8 @@ import {
   createDatumEmitter,
   createDatumReceiver,
   createFaceEmitter,
+  distributeIntegerBudget,
+  groupSelectedCadFaces,
   mergeConvergenceRayTraceResults,
   metricErrorPercent,
   nextSpecId,
@@ -90,6 +92,8 @@ interface RayTracingPanelProps {
 
 type EmitterCreationMode = 'face' | 'datum_plane'
 type ReceiverCreationMode = 'datum_plane' | 'current_view'
+type FaceEmitterGrouping = 'combined' | 'per_cad_face'
+type ArrayPowerBasis = 'total_array' | 'per_led'
 
 const receiverDefaultSizeMm = 30
 const currentViewDefaultDistanceMm = 30
@@ -240,7 +244,7 @@ function EmitterDialog({
   existingIds: string[]
   initialEmitter?: EmitterSpec | null
   onOpenChange(open: boolean): void
-  onApply(emitter: EmitterSpec): void
+  onApply(emitters: EmitterSpec[]): void
 }) {
   const defaultCenter = useMemo(() => sceneCenter(scene), [scene])
   const [center, setCenter] = useState<Vec3>(defaultCenter)
@@ -263,6 +267,10 @@ function EmitterDialog({
   const [aim, setAim] = useState(() => createEmitterAim(defaultAimCenter))
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
   const [sourceFaceIds, setSourceFaceIds] = useState<number[]>([])
+  const [faceGrouping, setFaceGrouping] =
+    useState<FaceEmitterGrouping>('combined')
+  const [arrayPowerBasis, setArrayPowerBasis] =
+    useState<ArrayPowerBasis>('total_array')
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const datumFacePickArmed = useWorkspaceStore(
     workspaceSelectors.datumFacePickArmed,
@@ -310,6 +318,8 @@ function EmitterDialog({
         ? (initialEmitter?.face_indices ?? [])
         : (initialEmitter?.source_face_indices ?? [])
     setSourceFaceIds(initialSourceFaceIds)
+    setFaceGrouping('combined')
+    setArrayPowerBasis('total_array')
     if (mode === 'face' && initialEmitter) {
       actions.setSelectedFaceIds(initialEmitter.face_indices)
     } else if (mode === 'datum_plane') {
@@ -401,6 +411,10 @@ function EmitterDialog({
     scene,
   ])
   const emitterCadFaceCount = countCadFaces(scene, emitterFaceIds)
+  const emitterCadFaceGroups = useMemo(
+    () => groupSelectedCadFaces(scene, emitterFaceIds),
+    [emitterFaceIds, scene],
+  )
   const emitterAreaMm2 =
     mode === 'datum_plane'
       ? Math.max(0, width) * Math.max(0, height)
@@ -465,40 +479,105 @@ function EmitterDialog({
 
   const handleApply = () => {
     if (!canApply) return
-    const emitterId =
-      initialEmitter?.emitter_id ??
-      nextSpecId('emitter', existingIds)
-    const emitter =
-      mode === 'face'
-        ? createFaceEmitter(emitterId, emitterFaceIds)
-        : createDatumEmitter(emitterId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
-    onApply({
-      ...initialEmitter,
-      ...emitter,
-      ...(mode === 'datum_plane'
-        ? {
-            source_face_indices: sourceFaceIds,
-            center,
-            u_axis: axes.uAxis,
-            v_axis: axes.vAxis,
-            custom_normal: axes.normal,
-            width_mm: Math.max(0.001, width),
-            height_mm: Math.max(0.001, height),
-          }
-        : {}),
-      power_mode: powerMode,
-      power_lumen: Math.max(0, power),
-      power_density_lm_per_m2: Math.max(0, powerDensity),
-      luminance_nit: Math.max(0, luminanceNit),
-      ray_count: Math.max(1, Math.trunc(rayCount)),
-      direction_distribution: distribution,
-      gaussian_sigma_deg: Math.max(0.1, sigma),
-      normal_flip: normalFlip,
-      emission_direction: emissionDirection,
-      aim,
-      enabled: initialEmitter?.enabled ?? true,
+    const buildEmitter = (
+      emitterId: string,
+      faceIds: number[],
+      emitterPower: number,
+      emitterRayCount: number,
+    ): EmitterSpec => {
+      const emitter = mode === 'face'
+        ? createFaceEmitter(emitterId, faceIds)
+        : createDatumEmitter(emitterId, center, rotation)
+      const localCenter = mode === 'face' && scene
+        ? roiClippedSurfaceCentroid(scene, faceIds, activeRoiClipBoxes)
+        : null
+      const localAim = aim.mode === 'sphere' && localCenter && scene
+        ? (() => {
+            const normalSum = faceIds.reduce((sum, faceId) => {
+              const normal = scene.mesh.face_normals[faceId]
+              const area = scene.mesh.face_areas_mm2[faceId] ?? 0
+              if (!normal || area <= 0) return sum
+              return [
+                sum[0] + normal[0] * area,
+                sum[1] + normal[1] * area,
+                sum[2] + normal[2] * area,
+              ] as Vec3
+            }, [0, 0, 0] as Vec3)
+            const length = Math.hypot(...normalSum)
+            const direction: Vec3 = length > 1e-9
+              ? normalSum.map((value) => value / length * (normalFlip ? -1 : 1)) as Vec3
+              : [0, 0, normalFlip ? -1 : 1]
+            return {
+              ...aim,
+              center: [
+                localCenter[0] + direction[0] * 30,
+                localCenter[1] + direction[1] * 30,
+                localCenter[2] + direction[2] * 30,
+              ] as Vec3,
+            }
+          })()
+        : aim
+      return {
+        ...initialEmitter,
+        ...emitter,
+        ...(mode === 'datum_plane'
+          ? {
+              source_face_indices: sourceFaceIds,
+              center,
+              u_axis: axes.uAxis,
+              v_axis: axes.vAxis,
+              custom_normal: axes.normal,
+              width_mm: Math.max(0.001, width),
+              height_mm: Math.max(0.001, height),
+            }
+          : {}),
+        power_mode: powerMode,
+        power_lumen: emitterPower,
+        power_density_lm_per_m2: Math.max(0, powerDensity),
+        luminance_nit: Math.max(0, luminanceNit),
+        ray_count: emitterRayCount,
+        direction_distribution: distribution,
+        gaussian_sigma_deg: Math.max(0.1, sigma),
+        normal_flip: normalFlip,
+        emission_direction: emissionDirection,
+        aim: localAim,
+        enabled: initialEmitter?.enabled ?? true,
+      }
+    }
+
+    const createPerFace = mode === 'face'
+      && !initialEmitter
+      && faceGrouping === 'per_cad_face'
+      && emitterCadFaceGroups.length > 1
+    if (!createPerFace) {
+      const emitterId = initialEmitter?.emitter_id ?? nextSpecId('emitter', existingIds)
+      onApply([buildEmitter(
+        emitterId,
+        emitterFaceIds,
+        Math.max(0, power),
+        Math.max(1, Math.trunc(rayCount)),
+      )])
+      onOpenChange(false)
+      return
+    }
+
+    const areas = emitterCadFaceGroups.map((faceIds) => faceIds.reduce(
+      (sum, faceId) => sum + (scene?.mesh.face_areas_mm2[faceId] ?? 0),
+      0,
+    ))
+    const rayWeights = powerMode === 'total' ? areas.map(() => 1) : areas
+    const rayCounts = distributeIntegerBudget(rayCount, rayWeights)
+    const allocatedIds = [...existingIds]
+    const emitters = emitterCadFaceGroups.map((faceIds, index) => {
+      const emitterId = nextSpecId('emitter', allocatedIds)
+      allocatedIds.push(emitterId)
+      const emitterPower = powerMode === 'total' && arrayPowerBasis === 'total_array'
+        ? Math.max(0, power) / emitterCadFaceGroups.length
+        : Math.max(0, power)
+      return buildEmitter(emitterId, faceIds, emitterPower, rayCounts[index])
     })
+    onApply(emitters)
     onOpenChange(false)
   }
 
@@ -556,6 +635,41 @@ function EmitterDialog({
                 }}
               />
             </div>
+            {!initialEmitter && emitterCadFaceCount > 1 ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className={fieldLabelClassName}>
+                  <span>Emitter grouping</span>
+                  <select
+                    className={inputClassName}
+                    aria-label="Emitter grouping"
+                    value={faceGrouping}
+                    onChange={(event) => setFaceGrouping(event.currentTarget.value as FaceEmitterGrouping)}
+                  >
+                    <option value="combined">Combined Faces</option>
+                    <option value="per_cad_face">LED per Face</option>
+                  </select>
+                </label>
+                {faceGrouping === 'per_cad_face' && powerMode === 'total' ? (
+                  <label className={fieldLabelClassName}>
+                    <span>Power basis</span>
+                    <select
+                      className={inputClassName}
+                      aria-label="LED array power basis"
+                      value={arrayPowerBasis}
+                      onChange={(event) => setArrayPowerBasis(event.currentTarget.value as ArrayPowerBasis)}
+                    >
+                      <option value="total_array">Total Array Power</option>
+                      <option value="per_led">Power per LED</option>
+                    </select>
+                  </label>
+                ) : null}
+                {faceGrouping === 'per_cad_face' ? (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50/65 px-3 py-2 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100 sm:col-span-2">
+                    {emitterCadFaceGroups.length}개의 CAD Face를 각각 독립 Emitter와 Aim으로 생성합니다. 입력 Ray 수는 전체 LED에 나누어 배정됩니다.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : (
           <>
@@ -2688,8 +2802,8 @@ export function RayTracingPanel({
             setEditingEmitterId(null)
           }
         }}
-        onApply={(emitter) => {
-          actions.upsertEmitter(emitter)
+        onApply={(nextEmitters) => {
+          nextEmitters.forEach((emitter) => actions.upsertEmitter(emitter))
           actions.setSelectedFaceIds([])
           actions.setSelectedComponentIds([])
         }}

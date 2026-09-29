@@ -13,7 +13,12 @@ import {
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import { RayTracingPanel } from './ray-tracing-panel'
-import { createDatumEmitter, rotationFromPlaneAxes } from './ray-tracing-model'
+import {
+  createDatumEmitter,
+  distributeIntegerBudget,
+  groupSelectedCadFaces,
+  rotationFromPlaneAxes,
+} from './ray-tracing-model'
 import { createEmitterAim } from './emitter-aim'
 
 const apiHookState = vi.hoisted(() => ({
@@ -51,6 +56,41 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it('creates one independently editable Emitter and Aim per selected CAD face', async () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    render(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Add CAD Surface Emitter' }))
+    act(() => workspaceStore.getState().actions.setSelectedFaceIds([0, 1, 2]))
+    await waitFor(() => expect(screen.getByLabelText('Emitter grouping')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Emitter grouping'), { target: { value: 'per_cad_face' } })
+    fireEvent.change(screen.getByLabelText('Emitter power mode'), { target: { value: 'total' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Total power (lm)' }), { target: { value: '9' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Emitter rays' }), { target: { value: '101' } })
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'sphere' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add Emitter' }))
+
+    const emitters = workspaceStore.getState().emitters
+    expect(emitters).toHaveLength(2)
+    expect(emitters.map((emitter) => emitter.face_indices)).toEqual([[0, 1], [2]])
+    expect(emitters.map((emitter) => emitter.power_lumen)).toEqual([4.5, 4.5])
+    expect(emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(101)
+    expect(emitters.every((emitter) => emitter.aim?.mode === 'sphere')).toBe(true)
+    expect(new Set(emitters.map((emitter) => emitter.emitter_id)).size).toBe(2)
+  })
+
+  it('groups tessellation triangles by component and original CAD face', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [7, 7, 8, 7, 7]
+    expect(groupSelectedCadFaces(scene, [4, 0, 3, 2, 1])).toEqual([
+      [0, 1],
+      [2],
+      [3, 4],
+    ])
+    expect(distributeIntegerBudget(101, [1, 1])).toEqual([51, 50])
+  })
+
   it('saves a two-sided Emitter while preserving one Emitter identity', () => {
     const emitter = createDatumEmitter('emitter_001', [2, 3, 4], [0, 0, 0])
     act(() => {

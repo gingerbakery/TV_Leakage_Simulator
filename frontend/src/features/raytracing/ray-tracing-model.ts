@@ -702,6 +702,51 @@ export function nextSpecId(
   return `${prefix}_${String(maximum + 1).padStart(3, '0')}`
 }
 
+/** Groups tessellation triangles back into the CAD/B-rep faces selected by
+ * the user. Component id is part of the key because imported parts may reuse
+ * the same source-face numbering. */
+export function groupSelectedCadFaces(
+  scene: ScenePayload | undefined,
+  faceIds: number[],
+): number[][] {
+  if (!scene) return faceIds.map((faceId) => [faceId])
+  const groups = new Map<string, number[]>()
+  for (const faceId of [...new Set(faceIds)].sort((left, right) => left - right)) {
+    const componentId = scene.mesh.face_component_ids[faceId] ?? -1
+    const sourceFaceId = scene.mesh.face_source_ids?.[faceId] ?? faceId
+    const key = `${componentId}:${sourceFaceId}`
+    const group = groups.get(key)
+    if (group) group.push(faceId)
+    else groups.set(key, [faceId])
+  }
+  return [...groups.values()]
+}
+
+/** Keeps the requested array ray budget exact while assigning more samples to
+ * larger emitting faces for luminance and power-density modes. */
+export function distributeIntegerBudget(
+  total: number,
+  weights: number[],
+): number[] {
+  if (weights.length === 0) return []
+  const budget = Math.max(weights.length, Math.trunc(total || 0))
+  const normalized = weights.map((weight) => Math.max(0, weight))
+  const weightSum = normalized.reduce((sum, weight) => sum + weight, 0)
+  const effective = weightSum > 0 ? normalized : normalized.map(() => 1)
+  const effectiveSum = effective.reduce((sum, weight) => sum + weight, 0)
+  const distributable = budget - weights.length
+  const exact = effective.map((weight) => weight / effectiveSum * distributable)
+  const result = exact.map((value) => 1 + Math.floor(value))
+  let remainder = budget - result.reduce((sum, value) => sum + value, 0)
+  const order = exact
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction || left.index - right.index)
+  for (let cursor = 0; remainder > 0; cursor += 1, remainder -= 1) {
+    result[order[cursor % order.length].index] += 1
+  }
+  return result
+}
+
 /**
  * Converts internal ray-object IDs into consistent user-facing labels while
  * preserving names explicitly entered by the user.
