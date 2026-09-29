@@ -1124,16 +1124,11 @@ function ReceiverHeatmap({
   }, [maximumDisplayScale])
 
   const coneMultiplier = coneLuminanceMultiplier(receiver.acceptance_angle_deg)
-  const displayedLuminanceScale = useMemo<LuminanceDisplayScale>(() => {
-    if (luminanceBasis === 'surface' || luminanceScale.mode === 'customize') {
-      return luminanceScale
-    }
-    return {
-      ...luminanceScale,
-      minNit: luminanceScale.minNit * coneMultiplier,
-      maxNit: luminanceScale.maxNit * coneMultiplier,
-    }
-  }, [coneMultiplier, luminanceBasis, luminanceScale])
+  // Keep one fixed display scale while switching the calculation basis.
+  // Cone luminance is a uniform angular normalization of the same accepted
+  // flux grid; rescaling both the values and Auto maximum would make the
+  // Heatmap colors look unchanged and hide the actual intensity difference.
+  const displayedLuminanceScale = luminanceScale
   const luminanceValues = useMemo(() => {
     const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
     const scale = (kAbs * kBrdf) / (binAreaM2 * Math.PI) *
@@ -1496,7 +1491,7 @@ function ReceiverHeatmap({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span>좌표 기준 = Receiver Local X/Y</span>
             <span className="font-semibold text-red-500">
@@ -1536,9 +1531,14 @@ function ReceiverHeatmap({
             <button type="button" aria-pressed={displayMode === 'error'} disabled={errorValues.length === 0} className={`rounded px-2 py-0.5 disabled:opacity-35 ${displayMode === 'error' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('error')}>Error map</button>
           </div>
           {displayMode === 'luminance' ? (
-            <div className="flex rounded-md border border-border bg-background/60 p-0.5">
-              <button type="button" aria-pressed={luminanceBasis === 'surface'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'surface' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('surface')}>Existing</button>
-              <button type="button" aria-pressed={luminanceBasis === 'cone'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'cone' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('cone')}>View Cone</button>
+            <div className="flex items-center gap-1">
+              <span className="whitespace-nowrap font-semibold text-foreground">
+                Luminance basis
+              </span>
+              <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+                <button type="button" aria-pressed={luminanceBasis === 'surface'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'surface' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('surface')}>Existing</button>
+                <button type="button" aria-pressed={luminanceBasis === 'cone'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'cone' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('cone')}>View Cone</button>
+              </div>
             </div>
           ) : null}
           <div className="flex rounded-md border border-border bg-background/60 p-0.5">

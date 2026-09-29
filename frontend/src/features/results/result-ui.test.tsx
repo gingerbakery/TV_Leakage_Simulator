@@ -1038,9 +1038,11 @@ describe('Step 11 result UI', () => {
     const scale = screen.getByTestId('receiver_001-luminance-scale')
     expect(scale.getAttribute('data-scale-mode')).toBe('auto')
     expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
+    const drawCountBeforeCone = putImageData.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'View Cone' }))
     expect(scale.getAttribute('data-luminance-basis')).toBe('cone')
-    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(50)
+    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
+    expect(putImageData.mock.calls.length).toBeGreaterThan(drawCountBeforeCone)
     fireEvent.click(screen.getByRole('button', { name: 'Existing' }))
     expect(scale.getAttribute('data-luminance-basis')).toBe('surface')
     expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
