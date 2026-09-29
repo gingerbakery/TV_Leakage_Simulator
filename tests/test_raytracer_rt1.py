@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from leakage_simulator.geometry import TriangleMesh
-from leakage_simulator.raytracer import DirectRayTraceInput, _sample_polygon_point, _store_completed_path, run_direct_ray_trace
+from leakage_simulator.raytracer import DirectRayTraceInput, _build_receiver_frame, _sample_polygon_point, _store_completed_path, run_direct_ray_trace
 from leakage_simulator.types import EmitterSpec, OpticalProfile, RayHit, RayTraceConfig, ReceiverSpec
 
 
@@ -26,6 +26,21 @@ def build_emitter_plane() -> TriangleMesh:
 
 
 class RayTracerRT1Tests(unittest.TestCase):
+    def test_current_view_flip_resolves_to_camera_look_direction(self) -> None:
+        receiver = ReceiverSpec(
+            receiver_id="current_view",
+            placement_mode="current_view",
+            center=(0.0, 0.0, 50.0),
+            normal=(0.0, 0.0, 1.0),
+            u_axis=(1.0, 0.0, 0.0),
+            v_axis=(0.0, 1.0, 0.0),
+            normal_flip=True,
+        )
+
+        frame = _build_receiver_frame(receiver)
+
+        self.assertEqual(frame.normal, (0.0, 0.0, -1.0))
+
     def test_stored_path_quota_prioritizes_receiver_paths(self) -> None:
         def event(event_type: str) -> RayHit:
             return RayHit(

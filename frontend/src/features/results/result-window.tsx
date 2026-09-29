@@ -575,6 +575,7 @@ function analysisExcelSheets(
       const metrics = objectValue(item.result.metrics, receiver.receiver_id)
       const areas = receiverLightAreas(item.result, receiver.receiver_id)
       const peak = receiverHeatmapPeakPosition(grid, receiver.width_mm, receiver.height_mm)
+      const coneMultiplier = coneLuminanceMultiplier(receiver.acceptance_angle_deg)
       return [[
         item.name,
         item.cad_name,
@@ -592,6 +593,10 @@ function analysisExcelSheets(
         peak?.yMm ?? null,
         numeric(metrics.mean_nit_est),
         numeric(metrics.p95_nit_est),
+        numeric(metrics.cone_peak_nit_est) || numeric(metrics.peak_nit_est) * coneMultiplier,
+        numeric(metrics.cone_mean_nit_est) || numeric(metrics.mean_nit_est) * coneMultiplier,
+        numeric(metrics.cone_p95_nit_est) || numeric(metrics.p95_nit_est) * coneMultiplier,
+        numeric(metrics.cone_projected_solid_angle_sr) || Math.PI / coneMultiplier,
         numeric(metrics.total_flux_lumen),
         areas[1],
         areas[5],
@@ -711,11 +716,12 @@ function analysisExcelSheets(
         'Case', 'CAD', 'Receiver', 'Enabled', 'Width (mm)', 'Height (mm)',
         'Resolution X', 'Resolution Y', 'Pixel X (mm)', 'Pixel Y (mm)',
         'Acceptance Angle (deg)', 'Peak (nit)', 'Peak X (mm)', 'Peak Y (mm)',
-        'Mean (nit)', 'P95 (nit)', 'Total Flux (lm)', 'Light Area @1% (mm²)',
+        'Mean (nit)', 'P95 (nit)', 'Cone Peak (nit)', 'Cone Mean (nit)',
+        'Cone P95 (nit)', 'Projected Solid Angle (sr)', 'Total Flux (lm)', 'Light Area @1% (mm²)',
         'Light Area @5% (mm²)', 'Light Area @10% (mm²)', 'Hits',
         'Error Estimate (%)', 'Peak-Area Error (%)', 'Run ID',
       ], ...receiverRows],
-      columnWidths: [18, 24, 22, 10, 13, 13, 13, 13, 13, 13, 22, 14, 14, 14, 14, 14, 18, 23, 23, 24, 12, 20, 21, 22],
+      columnWidths: [18, 24, 22, 10, 13, 13, 13, 13, 13, 13, 22, 14, 14, 14, 14, 14, 17, 17, 17, 24, 18, 23, 23, 24, 12, 20, 21, 22],
     },
     {
       name: 'Run Conditions',
@@ -903,6 +909,12 @@ function numeric(value: unknown): number {
   return Number.isFinite(Number(value)) ? Number(value) : 0
 }
 
+function coneLuminanceMultiplier(acceptanceAngleDeg: number): number {
+  const halfAngleDeg = Math.min(90, Math.max(0.1, acceptanceAngleDeg))
+  const sine = Math.sin(halfAngleDeg * Math.PI / 180)
+  return 1 / Math.max(sine * sine, 1e-12)
+}
+
 function objectValue(
   source: Record<string, unknown>,
   key: string,
@@ -1024,6 +1036,8 @@ function ReceiverHeatmap({
   const [region, setRegion] = useState<ReceiverRegion | null>(null)
   const regionStartRef = useRef<{ x: number; y: number } | null>(null)
   const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
+  const [luminanceBasis, setLuminanceBasis] =
+    useState<'surface' | 'cone'>('surface')
   const [colorMode, setColorMode] = useState<'color' | 'mono'>('color')
   const [displayScale, setDisplayScale] = useState(1)
   const [displayBoundaryWidthPx, setDisplayBoundaryWidthPx] = useState(0)
@@ -1109,11 +1123,18 @@ function ReceiverHeatmap({
     setDisplayScale((current) => Math.min(current, maximumDisplayScale))
   }, [maximumDisplayScale])
 
+  const coneMultiplier = coneLuminanceMultiplier(receiver.acceptance_angle_deg)
+  // Keep one fixed display scale while switching the calculation basis.
+  // Cone luminance is a uniform angular normalization of the same accepted
+  // flux grid; rescaling both the values and Auto maximum would make the
+  // Heatmap colors look unchanged and hide the actual intensity difference.
+  const displayedLuminanceScale = luminanceScale
   const luminanceValues = useMemo(() => {
     const binAreaM2 = Math.max(grid.bin_area_mm2 * 1e-6, 1e-18)
-    const scale = (kAbs * kBrdf) / (binAreaM2 * Math.PI)
+    const scale = (kAbs * kBrdf) / (binAreaM2 * Math.PI) *
+      (luminanceBasis === 'cone' ? coneMultiplier : 1)
     return receiverHeatmapDisplayValues(grid).map((value) => value * scale)
-  }, [grid, kAbs, kBrdf])
+  }, [coneMultiplier, grid, kAbs, kBrdf, luminanceBasis])
   const errorValues = useMemo(() => {
     const squaredGrid = grid.flux_squared_lumen2_grid
     if (!squaredGrid) return []
@@ -1290,7 +1311,7 @@ function ReceiverHeatmap({
       ? errorValues
       : luminanceValues
     const luminanceSpan = Math.max(
-      luminanceScale.maxNit - luminanceScale.minNit,
+      displayedLuminanceScale.maxNit - displayedLuminanceScale.minNit,
       1e-12,
     )
     const image = context.createImageData(columns, rows)
@@ -1299,7 +1320,7 @@ function ReceiverHeatmap({
         ? Math.min(1, (values[index] || 0) / Math.max(errorTargetPercent * 2, 0.01))
         : Math.sqrt(Math.min(1, Math.max(
           0,
-          (numeric(values[index]) - luminanceScale.minNit) / luminanceSpan,
+          (numeric(values[index]) - displayedLuminanceScale.minNit) / luminanceSpan,
         )))
       const pixel = index * 4
       const [red, green, blue] = colorMode === 'mono'
@@ -1317,8 +1338,8 @@ function ReceiverHeatmap({
     displayMode,
     errorTargetPercent,
     errorValues,
-    luminanceScale.maxNit,
-    luminanceScale.minNit,
+    displayedLuminanceScale.maxNit,
+    displayedLuminanceScale.minNit,
     luminanceValues,
     rows,
   ])
@@ -1470,7 +1491,7 @@ function ReceiverHeatmap({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span>좌표 기준 = Receiver Local X/Y</span>
             <span className="font-semibold text-red-500">
@@ -1509,6 +1530,17 @@ function ReceiverHeatmap({
             <button type="button" aria-pressed={displayMode === 'luminance'} className={`rounded px-2 py-0.5 ${displayMode === 'luminance' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('luminance')}>Luminance</button>
             <button type="button" aria-pressed={displayMode === 'error'} disabled={errorValues.length === 0} className={`rounded px-2 py-0.5 disabled:opacity-35 ${displayMode === 'error' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setDisplayMode('error')}>Error map</button>
           </div>
+          {displayMode === 'luminance' ? (
+            <div className="flex items-center gap-1">
+              <span className="whitespace-nowrap font-semibold text-foreground">
+                Luminance basis
+              </span>
+              <div className="flex rounded-md border border-border bg-background/60 p-0.5">
+                <button type="button" aria-pressed={luminanceBasis === 'surface'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'surface' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('surface')}>Existing</button>
+                <button type="button" aria-pressed={luminanceBasis === 'cone'} className={`rounded px-2 py-0.5 ${luminanceBasis === 'cone' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setLuminanceBasis('cone')}>View Cone</button>
+              </div>
+            </div>
+          ) : null}
           <div className="flex rounded-md border border-border bg-background/60 p-0.5">
             <button type="button" aria-pressed={colorMode === 'color'} className={`rounded px-2 py-0.5 ${colorMode === 'color' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('color')}>Color</button>
             <button type="button" aria-pressed={colorMode === 'mono'} className={`rounded px-2 py-0.5 ${colorMode === 'mono' ? 'bg-primary/15 font-semibold text-primary' : ''}`} onClick={() => setColorMode('mono')}>Mono</button>
@@ -1608,18 +1640,19 @@ function ReceiverHeatmap({
       </div>
       <div
         data-testid={`${grid.receiver_id}-luminance-scale`}
-        data-scale-mode={luminanceScale.mode}
-        data-scale-min-nit={luminanceScale.minNit}
-        data-scale-max-nit={luminanceScale.maxNit}
+        data-scale-mode={displayedLuminanceScale.mode}
+        data-luminance-basis={luminanceBasis}
+        data-scale-min-nit={displayedLuminanceScale.minNit}
+        data-scale-max-nit={displayedLuminanceScale.maxNit}
         className="mb-2 flex items-center justify-end gap-2 text-xs text-muted-foreground"
       >
         <span className="font-medium text-foreground">
           {displayMode === 'error'
             ? 'Error scale'
-            : `${luminanceScale.mode === 'auto' ? 'Auto' : luminanceScale.mode === 'compare' ? 'Compare' : 'Customize'} nit scale`}
+            : `${luminanceBasis === 'cone' ? 'View Cone' : 'Existing'} · ${displayedLuminanceScale.mode === 'auto' ? 'Auto' : displayedLuminanceScale.mode === 'compare' ? 'Compare' : 'Customize'} nit scale`}
         </span>
         <span className="font-mono">
-          {displayMode === 'error' ? '0%' : `${formatMetric(luminanceScale.minNit)} nit`}
+          {displayMode === 'error' ? '0%' : `${formatMetric(displayedLuminanceScale.minNit)} nit`}
         </span>
         <span
           aria-hidden="true"
@@ -1633,7 +1666,7 @@ function ReceiverHeatmap({
         <span className="font-mono">
           {displayMode === 'error'
             ? `${formatMetric(errorTargetPercent * 2, 1)}%`
-            : `${formatMetric(luminanceScale.maxNit)} nit`}
+            : `${formatMetric(displayedLuminanceScale.maxNit)} nit`}
         </span>
       </div>
       <div
@@ -1864,7 +1897,7 @@ function ReceiverHeatmap({
             <ReceiverProfileChart
               axis="Y"
               values={yProfile}
-              luminanceScale={luminanceScale}
+              luminanceScale={displayedLuminanceScale}
               minimumMm={-layout.heightMm / 2}
               maximumMm={layout.heightMm / 2}
               fixedCoordinateMm={((profileColumn + 0.5) / columns - 0.5) * layout.widthMm}
@@ -1919,7 +1952,7 @@ function ReceiverHeatmap({
           <ReceiverProfileChart
             axis="X"
             values={xProfile}
-            luminanceScale={luminanceScale}
+            luminanceScale={displayedLuminanceScale}
             minimumMm={-layout.widthMm / 2}
             maximumMm={layout.widthMm / 2}
             fixedCoordinateMm={(0.5 - (profileDisplayRow + 0.5) / rows) * layout.heightMm}
@@ -3385,6 +3418,18 @@ export function RayTraceResultWindow({
                   receiver.receiver_id,
                 )
                 const currentPeakNit = numeric(values.peak_nit_est)
+                const coneMultiplier = coneLuminanceMultiplier(
+                  receiver.acceptance_angle_deg,
+                )
+                const conePeakNit = typeof values.cone_peak_nit_est === 'number'
+                  ? numeric(values.cone_peak_nit_est)
+                  : currentPeakNit * coneMultiplier
+                const coneMeanNit = typeof values.cone_mean_nit_est === 'number'
+                  ? numeric(values.cone_mean_nit_est)
+                  : numeric(values.mean_nit_est) * coneMultiplier
+                const coneSolidAngle = typeof values.cone_projected_solid_angle_sr === 'number'
+                  ? numeric(values.cone_projected_solid_angle_sr)
+                  : Math.PI / coneMultiplier
                 const peakPosition = grid
                   ? receiverHeatmapPeakPosition(
                       grid,
@@ -3511,7 +3556,7 @@ export function RayTraceResultWindow({
                       />
                       <Stat
                         className="order-4 col-span-2"
-                        label="Peak Nit"
+                        label="Existing Peak Nit"
                         value={formatMetric(values.peak_nit_est)}
                         detail={peakPosition
                           ? `X ${formatReceiverCoordinate(peakPosition.xMm)} mm · Y ${formatReceiverCoordinate(peakPosition.yMm)} mm`
@@ -3520,7 +3565,7 @@ export function RayTraceResultWindow({
                       />
                       <Stat
                         className="order-5 col-span-2"
-                        label="Mean Nit"
+                        label="Existing Mean Nit"
                         value={formatMetric(values.mean_nit_est)}
                         help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
@@ -3531,6 +3576,19 @@ export function RayTraceResultWindow({
                           values.total_flux_lumen,
                         )} lm`}
                         help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
+                      />
+                      <Stat
+                        className="order-7 col-span-2"
+                        label="View Cone Peak Nit"
+                        value={formatMetric(conePeakNit)}
+                        detail={`${formatMetric(receiver.acceptance_angle_deg, 1)}° · Ωp ${formatMetric(coneSolidAngle, 4)} sr`}
+                        help="Acceptance Cone 안으로 들어온 광속을 Receiver 셀 면적과 투영 입체각으로 나눈 관찰 방향 기반 평균 휘도입니다. 90°에서는 기존 값과 같고, 좁은 Cone에서는 동일 광속이 더 작은 입체각에 모인 것으로 계산됩니다."
+                      />
+                      <Stat
+                        className="order-8 col-span-2"
+                        label="View Cone Mean Nit"
+                        value={formatMetric(coneMeanNit)}
+                        help="View Cone 방식으로 환산한 Receiver 전체 셀의 평균 휘도입니다. 기존 방식과 같은 Ray 결과를 사용하므로 재추적 없이 비교할 수 있습니다."
                       />
                       <Stat
                         className="order-3 col-span-2"

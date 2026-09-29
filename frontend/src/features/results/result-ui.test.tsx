@@ -985,6 +985,7 @@ describe('Step 11 result UI', () => {
     const result = createRayTraceResultFixture()
     result.receivers[0].width_mm = 40
     result.receivers[0].height_mm = 20
+    result.receivers[0].acceptance_angle_deg = 30
     const comparisonResult = structuredClone(result)
     comparisonResult.run_id = 'run-comparison-scale'
     comparisonResult.metrics.receiver_001 = {
@@ -1036,6 +1037,14 @@ describe('Step 11 result UI', () => {
     expect(autoScaleButton.getAttribute('aria-pressed')).toBe('true')
     const scale = screen.getByTestId('receiver_001-luminance-scale')
     expect(scale.getAttribute('data-scale-mode')).toBe('auto')
+    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
+    const drawCountBeforeCone = putImageData.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'View Cone' }))
+    expect(scale.getAttribute('data-luminance-basis')).toBe('cone')
+    expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
+    expect(putImageData.mock.calls.length).toBeGreaterThan(drawCountBeforeCone)
+    fireEvent.click(screen.getByRole('button', { name: 'Existing' }))
+    expect(scale.getAttribute('data-luminance-basis')).toBe('surface')
     expect(Number(scale.getAttribute('data-scale-max-nit'))).toBeCloseTo(12.5)
     fireEvent.click(screen.getByRole('button', { name: 'Compare' }))
     expect(scale.getAttribute('data-scale-mode')).toBe('compare')

@@ -141,6 +141,7 @@ describe('ray tracing model', () => {
     first.config.ray_count = 100
     first.config.seed = convergenceSegmentSeed(42, 0)
     first.emitters[0].ray_count = 100
+    first.receivers[0].acceptance_angle_deg = 30
     first.receiver_grids[0] = {
       receiver_id: 'receiver_001',
       resolution: [1, 1],
@@ -182,6 +183,13 @@ describe('ray tracing model', () => {
       hit_count: 30,
       error_estimate_sample_count: 200,
     })
+    const mergedReceiverMetrics = merged.metrics.receiver_001 as Record<string, number>
+    expect(mergedReceiverMetrics.cone_peak_nit_est).toBeCloseTo(
+      mergedReceiverMetrics.peak_nit_est * 4,
+    )
+    expect(mergedReceiverMetrics.cone_projected_solid_angle_sr).toBeCloseTo(
+      Math.PI * 0.25,
+    )
     expect(merged.metrics._convergence_accumulation).toMatchObject({
       contract: 'independent_segment_weighted_v1',
       segment_count: 2,

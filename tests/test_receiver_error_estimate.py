@@ -2,10 +2,59 @@ import math
 import unittest
 
 from leakage_simulator.raytracer import _build_direct_metrics
-from leakage_simulator.types import RayTraceConfig, ReceiverGrid
+from leakage_simulator.types import RayTraceConfig, ReceiverGrid, ReceiverSpec
 
 
 class ReceiverErrorEstimateTests(unittest.TestCase):
+    def test_cone_luminance_uses_projected_acceptance_solid_angle(self) -> None:
+        grid = ReceiverGrid(
+            receiver_id="receiver",
+            resolution=(1, 1),
+            bin_area_mm2=1.0,
+            flux_lumen=[[1e-6]],
+            hit_count=100,
+            flux_squared_lumen2=1e-14,
+            flux_squared_lumen2_grid=[[1e-14]],
+        )
+        receiver = ReceiverSpec(
+            receiver_id="receiver",
+            acceptance_angle_deg=30.0,
+        )
+
+        metrics = _build_direct_metrics(
+            [grid], RayTraceConfig(k_abs=1.0, k_brdf=1.0), 100, [receiver]
+        )["receiver"]
+
+        self.assertAlmostEqual(metrics["peak_nit_est"], 1.0 / math.pi)
+        self.assertAlmostEqual(metrics["cone_projected_solid_angle_sr"], math.pi * 0.25)
+        self.assertAlmostEqual(
+            metrics["cone_peak_nit_est"], metrics["peak_nit_est"] * 4.0
+        )
+
+    def test_ninety_degree_cone_matches_existing_luminance(self) -> None:
+        grid = ReceiverGrid(
+            receiver_id="receiver",
+            resolution=(1, 1),
+            bin_area_mm2=1.0,
+            flux_lumen=[[1e-6]],
+            hit_count=100,
+            flux_squared_lumen2=1e-14,
+            flux_squared_lumen2_grid=[[1e-14]],
+        )
+        receiver = ReceiverSpec(
+            receiver_id="receiver",
+            acceptance_angle_deg=90.0,
+        )
+
+        metrics = _build_direct_metrics(
+            [grid], RayTraceConfig(), 100, [receiver]
+        )["receiver"]
+
+        self.assertAlmostEqual(
+            metrics["cone_peak_nit_est"], metrics["peak_nit_est"]
+        )
+        self.assertAlmostEqual(metrics["cone_projected_solid_angle_sr"], math.pi)
+
     def test_missing_nonpeak_moment_cannot_understate_bright_area_error(self) -> None:
         for missing_moment in (0.0, -0.001, math.nan, math.inf):
             with self.subTest(moment=missing_moment):
