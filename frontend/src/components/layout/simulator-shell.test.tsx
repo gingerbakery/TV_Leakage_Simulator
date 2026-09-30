@@ -148,6 +148,22 @@ describe('SimulatorShell', () => {
       expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
       fireEvent.click(within(dialog).getByRole('button', { name: '확인' }))
       await waitFor(() => expect(screen.queryByRole('dialog', { name: '불러오기 완료' })).toBeNull())
+      // Imported results have no live job, but must remain inspectable after closing.
+      const resultStep = screen.getByRole('button', { name: 'Step 05 Result' })
+      if (resultStep.getAttribute('aria-expanded') !== 'true') fireEvent.click(resultStep)
+      const closeResult = screen.queryByRole('button', { name: 'Close result window' })
+      if (closeResult) fireEvent.click(closeResult)
+      fireEvent.click(screen.getByRole('button', { name: '분석 결과 보기' }))
+      expect(await screen.findByRole('dialog', { name: 'Ray Tracing Analysis Result' })).not.toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Close result window' }))
+      expect(screen.queryByRole('dialog', { name: 'Ray Tracing Analysis Result' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'All off' }))
+      expect(Object.values(workspaceStore.getState().rayPathDisplayFilters).every((visible) => !visible)).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: 'All on' }))
+      expect(Object.values(workspaceStore.getState().rayPathDisplayFilters).every(Boolean)).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: '분석 결과 보기' }))
+      expect(await screen.findByRole('dialog', { name: 'Ray Tracing Analysis Result' })).not.toBeNull()
+      expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
     } finally {
       load.mockRestore()
     }

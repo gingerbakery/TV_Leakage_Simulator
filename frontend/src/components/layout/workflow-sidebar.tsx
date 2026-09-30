@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { RayTraceJob, ScenePayload } from '@/api'
+import type { RayTraceJob, RayTraceResult, ScenePayload } from '@/api'
 import {
   BoxSelect,
   ChevronDown,
@@ -86,6 +86,7 @@ interface WorkflowSidebarProps {
   isSceneLoading?: boolean
   sceneErrorMessage?: string
   rayTraceJob?: RayTraceJob
+  rayTraceResult?: RayTraceResult | null
   rayObjectEditRequest?: RayObjectEditRequest | null
   autoConvergenceCancelToken?: number
   onRayObjectEditRequestHandled?(): void
@@ -264,6 +265,7 @@ export function WorkflowSidebar({
   isSceneLoading = false,
   sceneErrorMessage,
   rayTraceJob,
+  rayTraceResult,
   rayObjectEditRequest,
   autoConvergenceCancelToken = 0,
   onRayObjectEditRequestHandled,
@@ -417,7 +419,13 @@ export function WorkflowSidebar({
     }
 
     if (sectionId === 'result') {
-      return <ResultPanel job={rayTraceJob} onOpenAnalysis={onOpenRayTraceResult} />
+      return (
+        <ResultPanel
+          job={rayTraceJob}
+          result={rayTraceResult}
+          onOpenAnalysis={onOpenRayTraceResult}
+        />
+      )
     }
 
     return null

@@ -9,6 +9,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { RayTraceJob } from '@/api'
 import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
 import {
@@ -949,6 +950,95 @@ describe('Step 11 result UI', () => {
       screen.getByRole('button', { name: '분석 결과 보기' }),
     )
     expect(onOpenAnalysis).toHaveBeenCalledOnce()
+  })
+
+  it('reopens restored results and toggles stored rays without a live job', () => {
+    const onOpenAnalysis = vi.fn()
+    render(
+      <AppProviders>
+        <ResultPanel
+          result={createRayTraceResultFixture()}
+          onOpenAnalysis={onOpenAnalysis}
+        />
+      </AppProviders>,
+    )
+
+    expect(screen.getByText('saved result')).not.toBeNull()
+    expect(screen.getByText('12.000%')).not.toBeNull()
+    expect(screen.getByText('2/2')).not.toBeNull()
+    expect(screen.getAllByRole('checkbox').every((input) => !(input as HTMLInputElement).disabled)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'All off' }))
+    expect(screen.getByText('0/2')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'All on' }))
+    expect(screen.getByText('2/2')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '분석 결과 보기' }))
+    expect(onOpenAnalysis).toHaveBeenCalledOnce()
+  })
+
+  it.each(['running', 'failed'] as const)(
+    'keeps prior result actions available while the current job is %s',
+    (status) => {
+      const completed = createCompletedRayTraceJobFixture()
+      const job: RayTraceJob = status === 'running'
+        ? { ...completed, status, phase: 'tracing', progress: 0.25, phase_detail: 'Tracing current rays' }
+        : { ...completed, status, phase: 'failed', error: 'Current trace failed' }
+      const onOpenAnalysis = vi.fn()
+      render(
+        <AppProviders>
+          <ResultPanel
+            job={job}
+            result={createRayTraceResultFixture()}
+            onOpenAnalysis={onOpenAnalysis}
+          />
+        </AppProviders>,
+      )
+
+      expect(screen.getByText(status === 'running' ? 'Tracing current rays' : 'Current trace failed')).not.toBeNull()
+      expect(screen.getByText('이전 해석 결과를 표시합니다.')).not.toBeNull()
+      expect(screen.getByText('12.000%')).not.toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'All off' }))
+      expect(screen.getByText('0/2')).not.toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: '분석 결과 보기' }))
+      expect(onOpenAnalysis).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('does not expose result actions when the displayed case has no result', () => {
+    const view = render(
+      <AppProviders>
+        <ResultPanel onOpenAnalysis={vi.fn()} />
+      </AppProviders>,
+    )
+    expect(screen.queryByRole('button', { name: '분석 결과 보기' })).toBeNull()
+    expect(screen.getAllByRole('checkbox').every((input) => (input as HTMLInputElement).disabled)).toBe(true)
+    expect((screen.getByRole('button', { name: 'All on' }) as HTMLButtonElement).disabled).toBe(true)
+
+    view.rerender(
+      <AppProviders>
+        <ResultPanel
+          job={createCompletedRayTraceJobFixture()}
+          result={null}
+          onOpenAnalysis={vi.fn()}
+        />
+      </AppProviders>,
+    )
+    expect(screen.queryByRole('button', { name: '분석 결과 보기' })).toBeNull()
+    expect(screen.getByText('0/0')).not.toBeNull()
+    expect((screen.getByRole('button', { name: 'All off' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('handles a completed job with a missing result safely', () => {
+    const job = {
+      ...createCompletedRayTraceJobFixture(),
+      result: undefined,
+    } as unknown as RayTraceJob
+    render(
+      <AppProviders>
+        <ResultPanel job={job} onOpenAnalysis={vi.fn()} />
+      </AppProviders>,
+    )
+    expect(screen.queryByRole('button', { name: '분석 결과 보기' })).toBeNull()
+    expect(screen.getByText('0/0')).not.toBeNull()
   })
 
   it('opens the movable analysis window and switches result tabs', () => {

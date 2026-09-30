@@ -1,4 +1,4 @@
-import type { RayTraceJob } from '@/api'
+import type { RayTraceJob, RayTraceResult } from '@/api'
 import {
   Activity,
   BarChart3,
@@ -23,6 +23,7 @@ import {
 
 interface ResultPanelProps {
   job?: RayTraceJob
+  result?: RayTraceResult | null
   onOpenAnalysis(): void
 }
 
@@ -37,13 +38,19 @@ const allFilters = (visible: boolean): RayPathDisplayFilters => ({
 
 export function ResultPanel({
   job,
+  result: suppliedResult,
   onOpenAnalysis,
 }: ResultPanelProps) {
   const filters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
-  const result = job?.status === 'completed' ? job.result : null
+  const result =
+    suppliedResult !== undefined
+      ? suppliedResult
+      : job?.status === 'completed'
+        ? job.result
+        : undefined
   const paths = result?.stored_paths ?? []
   const visiblePathCount = paths.reduce(
     (count, path) =>
@@ -63,31 +70,27 @@ export function ResultPanel({
             <Activity className="size-3.5" />
             Result status
             <HelpTooltip label="Result status 도움말">
-              Ray Tracing Job의 진행 상태입니다. 완료되면 총 Ray 수,
-              Receiver hit 수·비율, 실행 시간을 보여주고 "분석 결과
-              보기"로 상세 리포트(Result window)를 엽니다.
+              현재 Ray Tracing Job의 진행 상태와 저장된 해석 결과를
+              보여줍니다. "분석 결과 보기"로 상세 리포트(Result window)를
+              다시 열 수 있습니다.
             </HelpTooltip>
           </div>
           <Badge
             variant="outline"
             className={
-              job?.status === 'completed'
+              result && (!job || job.status === 'completed')
                 ? 'border-primary/25 bg-primary/8 text-primary'
                 : undefined
             }
           >
-            {job?.status ?? 'not run'}
+            {job?.status ?? (result ? 'saved result' : 'not run')}
           </Badge>
         </div>
-        {!job ? (
-          <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs leading-4 text-muted-foreground">
-            Ray Tracing을 실행하면 결과와 저장 경로가 표시됩니다.
-          </p>
-        ) : job.status === 'failed' ? (
+        {job?.status === 'failed' ? (
           <p className="rounded-lg border border-destructive/30 bg-destructive/8 p-2 text-xs text-destructive">
             {job.error}
           </p>
-        ) : job.status !== 'completed' ? (
+        ) : job && job.status !== 'completed' ? (
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
             <div className="flex justify-between">
               <span className="font-semibold">{job.phase_detail ?? job.phase}</span>
@@ -104,17 +107,23 @@ export function ResultPanel({
               />
             </div>
           </div>
-        ) : (
+        ) : null}
+        {result ? (
           <>
+            {job && job.status !== 'completed' ? (
+              <p className="text-xs leading-4 text-muted-foreground">
+                이전 해석 결과를 표시합니다.
+              </p>
+            ) : null}
             <div className="grid grid-cols-2 gap-1.5">
               {[
-                ['Total rays', result!.total_rays.toLocaleString()],
+                ['Total rays', result.total_rays.toLocaleString()],
                 [
                   'Receiver Hits',
-                  result!.receiver_hit_count.toLocaleString(),
+                  result.receiver_hit_count.toLocaleString(),
                 ],
                 ['Hit ratio', `${(hitRatio * 100).toFixed(3)}%`],
-                ['Runtime', `${result!.runtime_sec.toFixed(3)} s`],
+                ['Runtime', `${result.runtime_sec.toFixed(3)} s`],
               ].map(([label, value]) => (
                 <div
                   key={label}
@@ -136,7 +145,12 @@ export function ResultPanel({
               분석 결과 보기
             </Button>
           </>
-        )}
+        ) : !job || job.status === 'completed' ? (
+          <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs leading-4 text-muted-foreground">
+            Ray Tracing을 실행하거나 결과가 저장된 프로젝트를 열면
+            결과와 저장 경로가 표시됩니다.
+          </p>
+        ) : null}
       </section>
 
       <section className="space-y-2 border-t border-border pt-3">

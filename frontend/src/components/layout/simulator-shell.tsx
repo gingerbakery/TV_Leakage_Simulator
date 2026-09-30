@@ -963,6 +963,7 @@ export function SimulatorShell() {
           isSceneLoading={sceneQuery.isPending && activeCad !== null}
           sceneErrorMessage={sceneErrorMessage}
           rayTraceJob={rayTraceJob}
+          rayTraceResult={displayedRayTraceResult}
           autoConvergenceCancelToken={autoConvergenceCancelToken}
           rayObjectEditRequest={rayObjectEditRequest}
           onRayObjectEditRequestHandled={() =>
