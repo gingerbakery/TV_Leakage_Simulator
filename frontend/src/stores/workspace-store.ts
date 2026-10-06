@@ -8,6 +8,7 @@ import type {
   RayTraceResult,
   ReceiverSpec,
   SceneComponentMatchMetadata,
+  OpticalProfile,
 } from '@/api'
 
 export interface ActiveCad {
@@ -62,6 +63,9 @@ export interface OpticalValueOverride {
   loss: number
   specularRatio: number
   diffuseRatio: number
+  scatterModel?: OpticalProfile['scatter_model']
+  roughness?: number
+  scatterSigmaDeg?: number
 }
 
 export interface MaterialAssignment {

@@ -10,9 +10,7 @@ import type {
   ScenePayload,
   Vec3,
 } from '@/api'
-import {
-  compileOpticalProfile,
-} from '@/features/materials'
+import { resolveAssignmentProfile } from '@/features/materials/optical-profile'
 import type {
   ComponentTransformRule,
   MaterialAssignment,
@@ -1001,22 +999,17 @@ function buildOpticalPayload(assignments: MaterialAssignment[]): {
 
   for (const [priority, assignment] of assignments.entries()) {
     if (!assignment.enabled) continue
-    const profileId =
-      assignment.profileId.trim() || `compiled-${assignment.assignmentId}`
+    const profileId = `compiled-${assignment.assignmentId}`
     const baseMaterialId = assignment.targetType === 'faces'
       ? assignments.findLast((item) => item.enabled && item.targetType === 'part' && item.componentId === assignment.componentId)?.baseMaterialId ?? assignment.baseMaterialId
       : assignment.baseMaterialId
-    const compiled = compileOpticalProfile(
-      baseMaterialId,
-      assignment.surfaceId,
-    )
-    const custom = assignment.opticalOverride
+    const compiled = resolveAssignmentProfile(assignment, assignments)
     profiles.set(profileId, {
       profile_id: profileId,
-      reflectance: custom?.reflectance ?? compiled.reflectance,
-      absorption: custom?.loss ?? compiled.loss,
-      specular_ratio: custom?.specularRatio ?? compiled.specularRatio,
-      diffuse_ratio: custom?.diffuseRatio ?? compiled.diffuseRatio,
+      reflectance: compiled.reflectance,
+      absorption: compiled.loss,
+      specular_ratio: compiled.specularRatio,
+      diffuse_ratio: compiled.diffuseRatio,
       scatter_model: compiled.scatterModel,
       roughness: compiled.roughness,
       gaussian_sigma_deg: compiled.scatterSigmaDeg,

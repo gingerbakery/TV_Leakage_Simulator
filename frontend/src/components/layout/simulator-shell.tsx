@@ -145,6 +145,7 @@ export function SimulatorShell() {
     type: ComponentDialogType
     componentId: number
     surfaceOnly?: boolean
+    surfaceTarget?: 'faces' | 'part'
   } | null>(null)
   const [noticeDialog, setNoticeDialog] = useState<{
     title: string
@@ -1200,6 +1201,7 @@ export function SimulatorShell() {
       />
 
       <SurfacePropertyDialog
+        initialTarget={componentDialog?.surfaceTarget ?? 'faces'}
         open={componentDialog?.type === 'material' && !!componentDialog.surfaceOnly}
         onOpenChange={(open) => { if (!open) setComponentDialog(null) }}
         component={activeComponent} scene={scene} componentName={activeComponentName}

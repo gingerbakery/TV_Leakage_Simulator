@@ -2,6 +2,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type RefObject,
 } from 'react'
@@ -9,7 +10,6 @@ import type { SceneComponent, ScenePayload } from '@/api'
 import {
   Pencil,
   Save,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -32,13 +32,15 @@ import {
 
 import {
   baseMaterials,
-  compileOpticalProfile,
   findBaseMaterial,
   findSurfaceProperty,
   opticalProfilePresets,
   surfacePropertiesForCategory,
 } from './material-catalog'
-import { componentCadSurfaces } from './surface-assignment-model'
+import { componentCadSurfaces, partMaterialAssignment } from './surface-assignment-model'
+import { CompiledPreview } from './optical-profile-editor'
+import { CustomOpticalDialog } from './custom-optical-dialog'
+import { isCustomOpticalValid, resolveOpticalProfile, withSurfaceFinish } from './optical-profile'
 
 interface MaterialEditorDialogProps {
   open: boolean
@@ -77,122 +79,6 @@ function draftFromAssignment(assignment: MaterialAssignment | null): PartDraft {
     profileId: assignment?.profileId ?? '',
     opticalOverride: assignment?.opticalOverride,
   }
-}
-
-function catalogValues(baseMaterialId: string, surfaceId: string): OpticalValueOverride {
-  const value = compileOpticalProfile(baseMaterialId, surfaceId)
-  return {
-    reflectance: value.reflectance,
-    loss: value.loss,
-    specularRatio: value.specularRatio,
-    diffuseRatio: value.diffuseRatio,
-  }
-}
-
-function OpticalValueEditor({
-  value,
-  onChange,
-}: {
-  value: OpticalValueOverride
-  onChange(value: OpticalValueOverride): void
-}) {
-  const fields: Array<[keyof OpticalValueOverride, string]> = [
-    ['reflectance', 'Reflectance'],
-    ['loss', 'Loss'],
-    ['specularRatio', 'Specular'],
-    ['diffuseRatio', 'Diffuse'],
-  ]
-  const energyValid = Math.abs(value.reflectance + value.loss - 1) <= 0.001
-  const scatterValid = Math.abs(value.specularRatio + value.diffuseRatio - 1) <= 0.001
-
-  return (
-    <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-900 dark:bg-blue-950/25">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {fields.map(([key, label]) => (
-          <label
-            key={key}
-            className="grid min-w-0 grid-cols-1 gap-1 text-sm font-medium"
-          >
-            <span>{label}</span>
-            <input
-              type="number"
-              min="0"
-              max="1"
-              step="0.01"
-              aria-label={`Custom ${label}`}
-              className={`${selectClassName} block min-w-0 max-w-full`}
-              value={value[key]}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  [key]: Math.min(1, Math.max(0, Number(event.currentTarget.value))),
-                })
-              }
-            />
-          </label>
-        ))}
-      </div>
-      <p className={`text-xs ${energyValid && scatterValid ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive'}`}>
-        Reflectance + Loss = { (value.reflectance + value.loss).toFixed(3) } · Specular + Diffuse = { (value.specularRatio + value.diffuseRatio).toFixed(3) }
-      </p>
-    </div>
-  )
-}
-
-export function CompiledPreview({
-  baseMaterialId,
-  surfaceId,
-  opticalOverride,
-  compact = false,
-}: {
-  baseMaterialId: string
-  surfaceId: string
-  opticalOverride?: OpticalValueOverride
-  compact?: boolean
-}) {
-  const catalogProfile = compileOpticalProfile(baseMaterialId, surfaceId)
-  const compiledProfile = opticalOverride
-    ? {
-        ...catalogProfile,
-        ...opticalOverride,
-      }
-    : catalogProfile
-  const selectedBase = findBaseMaterial(baseMaterialId)
-  const selectedSurface = findSurfaceProperty(surfaceId)
-
-  return (
-    <section className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-      <div className="flex items-center gap-2 text-sm font-semibold">
-        <Sparkles className="size-3.5 text-primary" />
-        Compiled optical preview
-      </div>
-      <div className={`mt-3 grid grid-cols-2 gap-2 ${compact ? '' : 'sm:grid-cols-4'}`}>
-        {[
-          ['Reflectance', compiledProfile.reflectance.toFixed(3)],
-          ['Loss', compiledProfile.loss.toFixed(3)],
-          ['Specular', compiledProfile.specularRatio.toFixed(2)],
-          ['Diffuse', compiledProfile.diffuseRatio.toFixed(2)],
-        ].map(([label, value]) => (
-          <div
-            key={label}
-            className="rounded-lg border border-border bg-background/45 p-2"
-          >
-            <div className="text-sm text-muted-foreground">
-              {label}
-            </div>
-            <div className="mt-1 font-mono text-base font-semibold">
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="mt-3 text-xs leading-4 text-muted-foreground">
-        {selectedBase.category} · {selectedSurface.scatterModel} ·
-        roughness {compiledProfile.roughness.toFixed(2)} · σ{' '}
-        {compiledProfile.scatterSigmaDeg.toFixed(1)}°
-      </p>
-    </section>
-  )
 }
 
 function SurfacePropertySelect({
@@ -236,6 +122,7 @@ interface FaceEditorState {
   /** null while composing a brand-new face group that hasn't been applied yet. */
   assignmentId: string | null
   surfaceId: string
+  opticalOverride?: OpticalValueOverride
 }
 
 export function MaterialEditorDialog({
@@ -270,16 +157,10 @@ export function MaterialEditorDialog({
   const [faceEditor, setFaceEditor] = useState<FaceEditorState | null>(null)
   const [isNamingProfile, setIsNamingProfile] = useState(false)
   const [profileNameDraft, setProfileNameDraft] = useState('')
-  const customValuesValid =
-    !partDraft.opticalOverride ||
-    (Math.abs(
-      partDraft.opticalOverride.reflectance + partDraft.opticalOverride.loss - 1,
-    ) <= 0.001 &&
-      Math.abs(
-        partDraft.opticalOverride.specularRatio +
-          partDraft.opticalOverride.diffuseRatio -
-          1,
-      ) <= 0.001)
+  const [customEdit, setCustomEdit] = useState<PartDraft | null>(null)
+  const customEditButtonRef = useRef<HTMLButtonElement>(null)
+  const customValuesValid = !partDraft.opticalOverride || isCustomOpticalValid(partDraft.opticalOverride)
+  const faceOpticalOverride = faceEditor?.opticalOverride
 
   const allOpticalProfiles = useMemo(
     () => [...opticalProfilePresets, ...customOpticalProfiles],
@@ -326,11 +207,7 @@ export function MaterialEditorDialog({
   const partAssignment = useMemo(
     () =>
       component
-        ? (assignments.find(
-            (assignment) =>
-              assignment.componentId === component.component_id &&
-              assignment.targetType === 'part',
-          ) ?? null)
+        ? (partMaterialAssignment(assignments, component.component_id) ?? null)
         : null,
     [assignments, component],
   )
@@ -353,6 +230,7 @@ export function MaterialEditorDialog({
     if (!open || !component) return
     setPartDraft(draftFromAssignment(partAssignment))
     setFaceEditor(null)
+    setCustomEdit(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, component?.component_id])
 
@@ -366,21 +244,31 @@ export function MaterialEditorDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [component?.component_id])
 
-  const handleApplyPart = () => {
-    if (!component || !customValuesValid) return
+  const applyPartDraft = (draft: PartDraft) => {
+    if (!component || (draft.opticalOverride && !isCustomOpticalValid(draft.opticalOverride))) return
     const assignment: MaterialAssignment = {
       assignmentId: buildAssignmentId(component.component_id, 'part', []),
       componentId: component.component_id,
       targetType: 'part',
       faceIds: [],
-      baseMaterialId: partDraft.baseMaterialId,
-      surfaceId: partDraft.surfaceId,
-      profileId: partDraft.profileId,
+      baseMaterialId: draft.baseMaterialId,
+      surfaceId: draft.surfaceId,
+      profileId: draft.profileId,
       bsdfAssetId: '',
-      opticalOverride: partDraft.opticalOverride,
+      opticalOverride: draft.opticalOverride,
       enabled: true,
     }
     actions.upsertMaterialAssignment(assignment)
+  }
+
+  const handleApplyPart = () => applyPartDraft(partDraft)
+
+  const handleSaveCustom = (opticalOverride: OpticalValueOverride) => {
+    if (!customEdit || !component) return
+    const nextDraft = { ...customEdit, profileId: '', opticalOverride }
+    applyPartDraft(nextDraft)
+    setPartDraft(nextDraft)
+    setCustomEdit(null)
   }
 
   const handleRemovePart = () => {
@@ -422,7 +310,8 @@ export function MaterialEditorDialog({
     actions.setSelectedComponentIds([component.component_id])
     actions.setSelectedFaceIds([])
     actions.setMaterialFacePickArmed(true)
-    setFaceEditor({ assignmentId: null, surfaceId: partDraft.surfaceId })
+    setFaceEditor({ assignmentId: null, surfaceId: partDraft.surfaceId,
+      opticalOverride: partDraft.opticalOverride ? resolveOpticalProfile(partDraft.baseMaterialId, partDraft.surfaceId, partDraft.opticalOverride) : undefined })
   }
 
   // While the editor is open (new or existing group), the same button just
@@ -454,6 +343,7 @@ export function MaterialEditorDialog({
     setFaceEditor({
       assignmentId: assignment.assignmentId,
       surfaceId: assignment.surfaceId,
+      opticalOverride: assignment.opticalOverride,
     })
   }
 
@@ -479,6 +369,7 @@ export function MaterialEditorDialog({
       // differ per face group.
       baseMaterialId: partDraft.baseMaterialId,
       surfaceId: faceEditor.surfaceId,
+      opticalOverride: faceOpticalOverride,
       profileId: '',
       bsdfAssetId: '',
       enabled: true,
@@ -493,6 +384,7 @@ export function MaterialEditorDialog({
   }
 
   return (
+    <>
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
@@ -726,31 +618,15 @@ export function MaterialEditorDialog({
             opticalOverride={partDraft.opticalOverride}
           />
 
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm font-semibold">
-              <input
-                type="checkbox"
-                checked={Boolean(partDraft.opticalOverride)}
-                onChange={(event) =>
-                  setPartDraft({
-                    ...partDraft,
-                    profileId: '',
-                    opticalOverride: event.currentTarget.checked
-                      ? catalogValues(partDraft.baseMaterialId, partDraft.surfaceId)
-                      : undefined,
-                  })
-                }
-              />
-              Use Custom Optical Values
-            </label>
-            {partDraft.opticalOverride ? (
-              <OpticalValueEditor
-                value={partDraft.opticalOverride}
-                onChange={(opticalOverride) =>
-                  setPartDraft({ ...partDraft, profileId: '', opticalOverride })
-                }
-              />
-            ) : null}
+          <div className="space-y-2 text-xs text-muted-foreground">
+            {partDraft.opticalOverride ? <p>사용자 지정 광학 값 적용 중</p> : null}
+            <Button ref={customEditButtonRef} variant="outline" size="sm" disabled={!component}
+              onClick={() => {
+                actions.setMaterialFacePickArmed(false)
+                setCustomEdit({ ...partDraft })
+              }}>
+              Surface Property · 커스텀 편집
+            </Button>
           </div>
 
           <div className="flex items-center justify-end gap-2">
@@ -866,13 +742,16 @@ export function MaterialEditorDialog({
                 category={findBaseMaterial(partDraft.baseMaterialId).category}
                 onChange={(surfaceId) =>
                   setFaceEditor((current) =>
-                    current ? { ...current, surfaceId } : current,
+                    current ? { ...current, surfaceId, opticalOverride: faceOpticalOverride
+                      ? withSurfaceFinish(resolveOpticalProfile(partDraft.baseMaterialId, current.surfaceId, faceOpticalOverride), partDraft.baseMaterialId, surfaceId)
+                      : undefined } : current,
                   )
                 }
               />
               <CompiledPreview
                 baseMaterialId={partDraft.baseMaterialId}
                 surfaceId={faceEditor.surfaceId}
+                opticalOverride={faceOpticalOverride}
               />
               <div className="flex items-center justify-end gap-2">
                 {faceEditor.assignmentId ? (
@@ -906,5 +785,15 @@ export function MaterialEditorDialog({
         </section>
       </div>
     </AppDialog>
+    {open && component && customEdit ? <CustomOpticalDialog
+      componentName={componentName}
+      baseMaterialId={customEdit.baseMaterialId}
+      surfaceId={customEdit.surfaceId}
+      initialValue={resolveOpticalProfile(customEdit.baseMaterialId, customEdit.surfaceId, customEdit.opticalOverride)}
+      returnFocusRef={customEditButtonRef}
+      onClose={() => setCustomEdit(null)}
+      onSave={handleSaveCustom}
+    /> : null}
+    </>
   )
 }

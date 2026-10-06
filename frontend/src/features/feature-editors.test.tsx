@@ -213,6 +213,7 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().faceColorOverrides).toEqual([{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }])
     fireEvent.click(screen.getByLabelText('Select Face 1'))
     expect(workspaceStore.getState().selectedFaceIds).toEqual([0])
+    fireEvent.change(screen.getByLabelText('Optical settings mode'), { target: { value: 'preset' } })
     fireEvent.click(screen.getByRole('button', { name: 'Apply to selected faces' }))
     expect(workspaceStore.getState().materialAssignments[0].faceIds).toEqual([0, 1])
   })
@@ -1342,18 +1343,19 @@ describe('Step 07·08 feature editors', () => {
 
   it('applies and saves user-entered optical values', () => {
     const component = createSceneFixture().components[0]
-    render(
+    const surfaceView = render(
       <AppProviders>
-        <MaterialEditorDialog
+        <SurfacePropertyDialog
           open
           onOpenChange={vi.fn()}
           component={component}
           componentName="Cover Deco"
+          initialTarget="part"
         />
       </AppProviders>,
     )
 
-    fireEvent.click(screen.getByLabelText('Use Custom Optical Values'))
+    fireEvent.change(screen.getByLabelText('Optical settings mode'), { target: { value: 'custom' } })
     const customReflectance = screen.getByLabelText('Custom Reflectance')
     expect(customReflectance.parentElement?.parentElement?.className).toContain(
       'sm:grid-cols-2',
@@ -1361,16 +1363,12 @@ describe('Step 07·08 feature editors', () => {
     fireEvent.change(customReflectance, {
       target: { value: '0.2' },
     })
-    fireEvent.change(screen.getByLabelText('Custom Loss'), {
-      target: { value: '0.8' },
-    })
-    fireEvent.change(screen.getByLabelText('Custom Specular'), {
+    expect(screen.getByLabelText('Custom Loss')).toHaveProperty('value', '0.8')
+    fireEvent.change(screen.getByLabelText('Custom Specular / Gaussian ratio'), {
       target: { value: '0.35' },
     })
-    fireEvent.change(screen.getByLabelText('Custom Diffuse'), {
-      target: { value: '0.65' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Apply to part' }))
+    expect(screen.getByLabelText('Custom Diffuse')).toHaveProperty('value', '0.65')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to part default' }))
 
     expect(workspaceStore.getState().materialAssignments[0]).toMatchObject({
       opticalOverride: {
@@ -1381,6 +1379,8 @@ describe('Step 07·08 feature editors', () => {
       },
     })
 
+    surfaceView.unmount()
+    render(<AppProviders><MaterialEditorDialog open onOpenChange={vi.fn()} component={component} componentName="Cover Deco" /></AppProviders>)
     fireEvent.click(
       screen.getByRole('button', {
         name: 'Save current draft as a new profile',

@@ -90,27 +90,29 @@ export function AppDialog({
   useLayoutEffect(() => {
     if (!open || !floating || wasDraggedRef.current) return
 
-    const viewer = document.querySelector<HTMLElement>(
-      '[data-viewer-workspace]',
-    )
-    const viewerBounds = viewer?.getBoundingClientRect()
-    if (!viewerBounds || viewerBounds.width <= 0) return
-
-    const panelWidth =
-      contentRef.current?.getBoundingClientRect().width ?? 420
-    setPosition({
-      // Default to the right edge of the viewer instead of the left, so
-      // the panel doesn't immediately sit over the model - still just a
-      // starting position, dragging (below) moves it freely afterward.
-      x: Math.max(
-        floatingPanelGap,
-        Math.min(
-          viewerBounds.right - panelWidth - floatingPanelGap,
-          window.innerWidth - panelWidth - floatingPanelGap,
+    const placePanel = () => {
+      if (wasDraggedRef.current) return
+      const viewer = document.querySelector<HTMLElement>('[data-viewer-workspace]')
+      const viewerBounds = viewer?.getBoundingClientRect()
+      if (!viewerBounds || viewerBounds.width <= 0) return
+      // offsetWidth excludes the opening scale animation.
+      const panelWidth = contentRef.current?.offsetWidth || 420
+      setPosition({
+        x: Math.max(
+          floatingPanelGap,
+          Math.min(
+            viewerBounds.right - panelWidth - floatingPanelGap,
+            window.innerWidth - panelWidth - floatingPanelGap,
+          ),
         ),
-      ),
-      y: floatingPanelTop,
-    })
+        y: floatingPanelTop,
+      })
+    }
+    placePanel()
+    // Radix may mount its portal after this layout effect. Measure again
+    // once mounted so wider dialogs do not use the 420px fallback position.
+    const frame = window.requestAnimationFrame(placePanel)
+    return () => window.cancelAnimationFrame(frame)
   }, [floating, open])
 
   useEffect(() => {

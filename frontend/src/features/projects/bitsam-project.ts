@@ -192,7 +192,10 @@ function isOpticalValueOverride(
     isFiniteNumber(value.reflectance) &&
     isFiniteNumber(value.loss) &&
     isFiniteNumber(value.specularRatio) &&
-    isFiniteNumber(value.diffuseRatio)
+    isFiniteNumber(value.diffuseRatio) &&
+    (value.scatterModel === undefined || isOneOf(value.scatterModel, ['none', 'specular', 'lambertian', 'gaussian', 'mixed'])) &&
+    (value.roughness === undefined || (isFiniteNumber(value.roughness) && value.roughness >= 0 && value.roughness <= 1)) &&
+    (value.scatterSigmaDeg === undefined || (isFiniteNumber(value.scatterSigmaDeg) && value.scatterSigmaDeg > 0))
   )
 }
 
