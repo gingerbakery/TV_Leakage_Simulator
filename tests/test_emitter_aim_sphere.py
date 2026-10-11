@@ -53,6 +53,9 @@ class EmitterAimSphereTests(unittest.TestCase):
     def test_contract_round_trip_and_legacy_area(self):
         scene = sphere_scene()
         emitter = scene.emitters[0]
+        emitter.array_group_id = "led_array_001"
+        emitter.array_index = 2
+        emitter.array_power_basis = "total_array"
         self.assertEqual(EmitterSpec.from_dict(emitter.to_dict()), emitter)
         old = aim_scene().emitters[0].to_dict()
         for key in ("mode", "sphere_upper_deg", "sphere_lower_deg", "sphere_alpha_deg", "sphere_beta_deg"):

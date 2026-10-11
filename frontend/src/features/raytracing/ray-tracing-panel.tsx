@@ -232,7 +232,9 @@ function EmitterDialog({
   roiScopes,
   selectedFaceIds,
   existingIds,
+  existingGroupIds,
   initialEmitter,
+  initialEmitterGroup,
   onOpenChange,
   onApply,
 }: {
@@ -242,7 +244,9 @@ function EmitterDialog({
   roiScopes: RoiScope[]
   selectedFaceIds: number[]
   existingIds: string[]
+  existingGroupIds: string[]
   initialEmitter?: EmitterSpec | null
+  initialEmitterGroup?: EmitterSpec[]
   onOpenChange(open: boolean): void
   onApply(emitters: EmitterSpec[]): void
 }) {
@@ -294,13 +298,23 @@ function EmitterDialog({
     )
     setWidth(initialEmitter?.width_mm ?? 20)
     setHeight(initialEmitter?.height_mm ?? 20)
+    const group = initialEmitterGroup?.length ? initialEmitterGroup : null
+    const groupPowerBasis = group?.[0]?.array_power_basis ?? 'total_array'
     setPowerMode(initialEmitter?.power_mode ?? 'set_luminance')
-    setPower(initialEmitter?.power_lumen ?? 1)
+    setPower(
+      group && initialEmitter?.power_mode === 'total' && groupPowerBasis === 'total_array'
+        ? group.reduce((sum, emitter) => sum + emitter.power_lumen, 0)
+        : initialEmitter?.power_lumen ?? 1,
+    )
     setPowerDensity(
       initialEmitter?.power_density_lm_per_m2 ?? 100,
     )
     setLuminanceNit(initialEmitter?.luminance_nit ?? 500)
-    setRayCount(initialEmitter?.ray_count ?? 10_000)
+    setRayCount(
+      group
+        ? group.reduce((sum, emitter) => sum + emitter.ray_count, 0)
+        : initialEmitter?.ray_count ?? 10_000,
+    )
     setDistribution(
       initialEmitter?.direction_distribution ?? 'lambertian',
     )
@@ -315,17 +329,19 @@ function EmitterDialog({
     )
     const initialSourceFaceIds =
       mode === 'face'
-        ? (initialEmitter?.face_indices ?? [])
+        ? (group
+            ? group.flatMap((emitter) => emitter.face_indices)
+            : initialEmitter?.face_indices ?? [])
         : (initialEmitter?.source_face_indices ?? [])
     setSourceFaceIds(initialSourceFaceIds)
     setFaceGrouping('combined')
-    setArrayPowerBasis('total_array')
+    setArrayPowerBasis(groupPowerBasis)
     if (mode === 'face' && initialEmitter) {
-      actions.setSelectedFaceIds(initialEmitter.face_indices)
+      actions.setSelectedFaceIds(initialSourceFaceIds)
     } else if (mode === 'datum_plane') {
       actions.setSelectedFaceIds(initialSourceFaceIds)
     }
-  }, [actions, defaultCenter, defaultAimCenter, initialEmitter, mode, open])
+  }, [actions, defaultCenter, defaultAimCenter, initialEmitter, initialEmitterGroup, mode, open])
 
   // Same pick-a-face-in-the-viewer channel Receiver's Datum Plane uses -
   // reused as-is since both just want a starting center/rotation.
@@ -485,6 +501,7 @@ function EmitterDialog({
       faceIds: number[],
       emitterPower: number,
       emitterRayCount: number,
+      baseEmitter: EmitterSpec | null = initialEmitter ?? null,
     ): EmitterSpec => {
       const emitter = mode === 'face'
         ? createFaceEmitter(emitterId, faceIds)
@@ -519,7 +536,7 @@ function EmitterDialog({
           })()
         : aim
       return {
-        ...initialEmitter,
+        ...baseEmitter,
         ...emitter,
         ...(mode === 'datum_plane'
           ? {
@@ -542,8 +559,40 @@ function EmitterDialog({
         normal_flip: normalFlip,
         emission_direction: emissionDirection,
         aim: localAim,
-        enabled: initialEmitter?.enabled ?? true,
+        enabled: baseEmitter?.enabled ?? true,
       }
+    }
+
+    const groupToUpdate = initialEmitterGroup?.length && initialEmitterGroup.length > 1
+      ? initialEmitterGroup
+      : null
+    if (groupToUpdate) {
+      const areas = groupToUpdate.map((member) => member.face_indices.reduce(
+        (sum, faceId) => sum + (scene?.mesh.face_areas_mm2[faceId] ?? 0),
+        0,
+      ))
+      const rayWeights = powerMode === 'total' ? areas.map(() => 1) : areas
+      const rayCounts = distributeIntegerBudget(rayCount, rayWeights)
+      const updated = groupToUpdate.map((member, index) => {
+        const emitterPower = powerMode === 'total' && arrayPowerBasis === 'total_array'
+          ? Math.max(0, power) / groupToUpdate.length
+          : Math.max(0, power)
+        return {
+          ...buildEmitter(
+            member.emitter_id,
+            member.face_indices,
+            emitterPower,
+            rayCounts[index],
+            member,
+          ),
+          array_group_id: member.array_group_id,
+          array_index: member.array_index ?? index,
+          array_power_basis: arrayPowerBasis,
+        }
+      })
+      onApply(updated)
+      onOpenChange(false)
+      return
     }
 
     const createPerFace = mode === 'face'
@@ -569,13 +618,22 @@ function EmitterDialog({
     const rayWeights = powerMode === 'total' ? areas.map(() => 1) : areas
     const rayCounts = distributeIntegerBudget(rayCount, rayWeights)
     const allocatedIds = [...existingIds]
+    const usedGroupIds = new Set(existingGroupIds)
+    let groupNumber = 1
+    while (usedGroupIds.has(`led_array_${String(groupNumber).padStart(3, '0')}`)) groupNumber += 1
+    const groupId = `led_array_${String(groupNumber).padStart(3, '0')}`
     const emitters = emitterCadFaceGroups.map((faceIds, index) => {
       const emitterId = nextSpecId('emitter', allocatedIds)
       allocatedIds.push(emitterId)
       const emitterPower = powerMode === 'total' && arrayPowerBasis === 'total_array'
         ? Math.max(0, power) / emitterCadFaceGroups.length
         : Math.max(0, power)
-      return buildEmitter(emitterId, faceIds, emitterPower, rayCounts[index])
+      return {
+        ...buildEmitter(emitterId, faceIds, emitterPower, rayCounts[index], null),
+        array_group_id: groupId,
+        array_index: index,
+        array_power_basis: arrayPowerBasis,
+      }
     })
     onApply(emitters)
     onOpenChange(false)
@@ -587,7 +645,9 @@ function EmitterDialog({
       onOpenChange={onOpenChange}
       floating
       title={
-        initialEmitter
+        initialEmitterGroup && initialEmitterGroup.length > 1
+          ? `Edit LED Array ${initialEmitter?.array_group_id?.replace(/^led_array_0*/, '') || ''}`.trim()
+          : initialEmitter
           ? `Edit ${rayObjectDisplayName('emitter', initialEmitter.emitter_id)}`
           : mode === 'face'
             ? 'CAD Surface Emitter'
@@ -620,21 +680,27 @@ function EmitterDialog({
                 ? ` · CAD 면 ${emitterCadFaceCount}개`
                 : ''}
             </div>
-            <div className="mt-2">
-              <ViewerFacePickControl
-                armed={emitterFaceSelectionArmed}
-                assigned={emitterCadFaceCount > 0}
-                kind="surface"
-                cadFaceCount={emitterCadFaceCount}
-                onToggle={() => {
-                  if (emitterFaceSelectionArmed) {
-                    actions.setEmitterFaceSelectionArmed(false)
-                    return
-                  }
-                  actions.setEmitterFaceSelectionArmed(true)
-                }}
-              />
-            </div>
+            {initialEmitterGroup && initialEmitterGroup.length > 1 ? (
+              <div className="mt-2 rounded-lg border border-border bg-background/55 px-3 py-2 text-xs text-muted-foreground">
+                LED {initialEmitterGroup.length}개 · 공통 광학 설정을 일괄 수정합니다.
+              </div>
+            ) : (
+              <div className="mt-2">
+                <ViewerFacePickControl
+                  armed={emitterFaceSelectionArmed}
+                  assigned={emitterCadFaceCount > 0}
+                  kind="surface"
+                  cadFaceCount={emitterCadFaceCount}
+                  onToggle={() => {
+                    if (emitterFaceSelectionArmed) {
+                      actions.setEmitterFaceSelectionArmed(false)
+                      return
+                    }
+                    actions.setEmitterFaceSelectionArmed(true)
+                  }}
+                />
+              </div>
+            )}
             {!initialEmitter && emitterCadFaceCount > 1 ? (
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className={fieldLabelClassName}>
@@ -769,7 +835,9 @@ function EmitterDialog({
             />
           ) : powerMode === 'total' ? (
             <NumberField
-              label="Total power (lm)"
+              label={initialEmitterGroup?.length && initialEmitterGroup.length > 1 && arrayPowerBasis === 'per_led'
+                ? 'Power per LED (lm)'
+                : 'Total power (lm)'}
               value={power}
               min={0}
               onChange={setPower}
@@ -784,6 +852,20 @@ function EmitterDialog({
               description="단위 면적당 방출 광속입니다. 발광면 크기(Width×Height)를 곱한 값이 총 광속이 됩니다."
             />
           )}
+          {initialEmitterGroup?.length && initialEmitterGroup.length > 1 && powerMode === 'total' ? (
+            <label className={fieldLabelClassName}>
+              <span>Power basis</span>
+              <select
+                className={inputClassName}
+                aria-label="LED array power basis"
+                value={arrayPowerBasis}
+                onChange={(event) => setArrayPowerBasis(event.currentTarget.value as ArrayPowerBasis)}
+              >
+                <option value="total_array">Total Array Power</option>
+                <option value="per_led">Power per LED</option>
+              </select>
+            </label>
+          ) : null}
           {powerMode === 'set_luminance' ? (
             <div className="rounded-lg border border-blue-200 bg-blue-50/65 p-2.5 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100 sm:col-span-2">
               <div className="font-semibold">SET luminance conversion</div>
@@ -1510,6 +1592,8 @@ export function RayTracingPanel({
     useState<ReceiverCreationMode | null>(null)
   const [editingEmitterId, setEditingEmitterId] =
     useState<string | null>(null)
+  const [editingEmitterGroupId, setEditingEmitterGroupId] =
+    useState<string | null>(null)
   const [editingReceiverId, setEditingReceiverId] =
     useState<string | null>(null)
   const autoConvergenceActiveRef = useRef(false)
@@ -1562,6 +1646,35 @@ export function RayTracingPanel({
     emitters.find(
       (emitter) => emitter.emitter_id === editingEmitterId,
     ) ?? null
+  const editingEmitterGroup = useMemo(
+    () => editingEmitterGroupId
+      ? emitters
+          .filter((emitter) => emitter.array_group_id === editingEmitterGroupId)
+          .sort((left, right) => (left.array_index ?? 0) - (right.array_index ?? 0))
+      : [],
+    [editingEmitterGroupId, emitters],
+  )
+  const emitterRows = useMemo(() => {
+    const rows: { key: string; groupId: string | null; emitters: EmitterSpec[] }[] = []
+    const grouped = new Map<string, EmitterSpec[]>()
+    for (const emitter of emitters) {
+      if (!emitter.array_group_id) {
+        rows.push({ key: emitter.emitter_id, groupId: null, emitters: [emitter] })
+        continue
+      }
+      const current = grouped.get(emitter.array_group_id)
+      if (current) current.push(emitter)
+      else {
+        const members = [emitter]
+        grouped.set(emitter.array_group_id, members)
+        rows.push({ key: emitter.array_group_id, groupId: emitter.array_group_id, emitters: members })
+      }
+    }
+    for (const row of rows) {
+      row.emitters.sort((left, right) => (left.array_index ?? 0) - (right.array_index ?? 0))
+    }
+    return rows
+  }, [emitters])
   const editingReceiver =
     receivers.find(
       (receiver) => receiver.receiver_id === editingReceiverId,
@@ -1680,6 +1793,7 @@ export function RayTracingPanel({
       setReceiverMode(null)
       setEditingReceiverId(null)
       setEmitterMode(null)
+      setEditingEmitterGroupId(null)
       setEditingEmitterId(editRequest.id)
     } else if (
       editRequest.kind === 'receiver' &&
@@ -1965,6 +2079,7 @@ export function RayTracingPanel({
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingEmitterId(null)
+              setEditingEmitterGroupId(null)
               actions.setSelectedFaceIds([])
               actions.setSelectedComponentIds([])
               actions.setEmitterFaceSelectionArmed(true)
@@ -1981,6 +2096,7 @@ export function RayTracingPanel({
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingEmitterId(null)
+              setEditingEmitterGroupId(null)
               actions.setEmitterFaceSelectionArmed(false)
               setEmitterMode('datum_plane')
             }}
@@ -1995,63 +2111,90 @@ export function RayTracingPanel({
           </p>
         ) : (
           <div className="space-y-1.5">
-            {emitters.map((emitter) => (
-              <div
-                key={emitter.emitter_id}
-                className="flex items-center gap-2 rounded-lg border border-border bg-background/40 p-2"
-              >
-                <input
-                  aria-label={`Enable ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
-                  type="checkbox"
-                  checked={emitter.enabled}
-                  disabled={isRunning}
-                  onChange={(event) =>
-                    actions.setEmitterEnabled(
-                      emitter.emitter_id,
-                      event.currentTarget.checked,
-                    )
-                  }
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold">
-                    {rayObjectDisplayName('emitter', emitter.emitter_id)}
+            {emitterRows.map((row) => {
+              if (!row.groupId || row.emitters.length === 1) {
+                const emitter = row.emitters[0]
+                return (
+                  <div key={row.key} className="flex items-center gap-2 rounded-lg border border-border bg-background/40 p-2">
+                    <input
+                      aria-label={`Enable ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
+                      type="checkbox"
+                      checked={emitter.enabled}
+                      disabled={isRunning}
+                      onChange={(event) => actions.setEmitterEnabled(emitter.emitter_id, event.currentTarget.checked)}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {emitter.emitter_type === 'face' ? 'CAD Surface' : `${emitter.width_mm} × ${emitter.height_mm} mm`}
+                        {' · '}{emitter.ray_count.toLocaleString()} Rays
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="icon-xs" aria-label={`Edit ${rayObjectDisplayName('emitter', emitter.emitter_id)}`} disabled={isRunning}
+                      onClick={() => {
+                        actions.setEmitterFaceSelectionArmed(false)
+                        actions.setSelectedFaceIds([])
+                        actions.setSelectedComponentIds([])
+                        setEmitterMode(null)
+                        setEditingEmitterGroupId(null)
+                        setEditingEmitterId(emitter.emitter_id)
+                      }}><Pencil /></Button>
+                    <Button variant="ghost" size="icon-xs" aria-label={`Delete ${rayObjectDisplayName('emitter', emitter.emitter_id)}`} disabled={isRunning}
+                      onClick={() => actions.removeEmitter(emitter.emitter_id)}><Trash2 /></Button>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {emitter.emitter_type === 'face'
-                      ? 'CAD Surface'
-                      : `${emitter.width_mm} × ${emitter.height_mm} mm`}
-                    {' · '}
-                    {emitter.ray_count.toLocaleString()} Rays
+                )
+              }
+              const groupNumber = row.groupId.replace(/^led_array_0*/, '') || row.groupId
+              const allEnabled = row.emitters.every((emitter) => emitter.enabled)
+              const totalRays = row.emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)
+              return (
+                <details key={row.key} className="rounded-lg border border-primary/25 bg-primary/5">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 p-2">
+                    <input
+                      aria-label={`Enable LED Array ${groupNumber}`}
+                      type="checkbox"
+                      checked={allEnabled}
+                      disabled={isRunning}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => row.emitters.forEach((emitter) => actions.setEmitterEnabled(emitter.emitter_id, event.currentTarget.checked))}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">LED Array {groupNumber}</div>
+                      <div className="text-xs text-muted-foreground">{row.emitters.length} LEDs · {totalRays.toLocaleString()} Rays</div>
+                    </div>
+                    <Button variant="ghost" size="icon-xs" aria-label={`Edit LED Array ${groupNumber}`} disabled={isRunning}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        actions.setEmitterFaceSelectionArmed(false)
+                        actions.setSelectedFaceIds([])
+                        actions.setSelectedComponentIds([])
+                        setEmitterMode(null)
+                        setEditingEmitterGroupId(row.groupId)
+                        setEditingEmitterId(row.emitters[0].emitter_id)
+                      }}><Pencil /></Button>
+                    <Button variant="ghost" size="icon-xs" aria-label={`Delete LED Array ${groupNumber}`} disabled={isRunning}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        row.emitters.forEach((emitter) => actions.removeEmitter(emitter.emitter_id))
+                      }}><Trash2 /></Button>
+                  </summary>
+                  <div className="space-y-1 border-t border-primary/15 p-2">
+                    {row.emitters.map((emitter, index) => (
+                      <div key={emitter.emitter_id} className="flex items-center gap-2 rounded-md bg-background/60 px-2 py-1.5">
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">LED {index + 1} · {rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
+                        <Button variant="ghost" size="icon-xs" aria-label={`Edit LED ${index + 1} in Array ${groupNumber}`} disabled={isRunning}
+                          onClick={() => {
+                            setEditingEmitterGroupId(null)
+                            setEditingEmitterId(emitter.emitter_id)
+                          }}><Pencil /></Button>
+                        <Button variant="ghost" size="icon-xs" aria-label={`Delete LED ${index + 1} in Array ${groupNumber}`} disabled={isRunning}
+                          onClick={() => actions.removeEmitter(emitter.emitter_id)}><Trash2 /></Button>
+                      </div>
+                    ))}
                   </div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Edit ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
-                  disabled={isRunning}
-                  onClick={() => {
-                    actions.setEmitterFaceSelectionArmed(false)
-                    actions.setSelectedFaceIds([])
-                    actions.setSelectedComponentIds([])
-                    setEmitterMode(null)
-                    setEditingEmitterId(emitter.emitter_id)
-                  }}
-                >
-                  <Pencil />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Delete ${rayObjectDisplayName('emitter', emitter.emitter_id)}`}
-                  disabled={isRunning}
-                  onClick={() =>
-                    actions.removeEmitter(emitter.emitter_id)
-                  }
-                >
-                  <Trash2 />
-                </Button>
-              </div>
-            ))}
+                </details>
+              )
+            })}
           </div>
         )}
       </section>
@@ -2792,13 +2935,16 @@ export function RayTracingPanel({
         roiScopes={roiScopes}
         selectedFaceIds={selectedFaceIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
+        existingGroupIds={emitters.flatMap((emitter) => emitter.array_group_id ? [emitter.array_group_id] : [])}
         initialEmitter={editingEmitter}
+        initialEmitterGroup={editingEmitterGroup}
         onOpenChange={(open) => {
           if (!open) {
             actions.setEmitterFaceSelectionArmed(false)
             actions.setSelectedFaceIds([])
             actions.setSelectedComponentIds([])
             setEmitterMode(null)
+            setEditingEmitterGroupId(null)
             setEditingEmitterId(null)
           }
         }}

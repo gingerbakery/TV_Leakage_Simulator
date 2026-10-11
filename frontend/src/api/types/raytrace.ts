@@ -30,6 +30,10 @@ export interface EmitterAimSpec {
 
 export interface EmitterSpec {
   emitter_id: string
+  /** Optional UI grouping for independently traced LED-face emitters. */
+  array_group_id?: string | null
+  array_index?: number | null
+  array_power_basis?: 'total_array' | 'per_led' | null
   emitter_type: EmitterType
   face_indices: number[]
   /** Preview-only compact Body source reference; expanded by the API cache. */
