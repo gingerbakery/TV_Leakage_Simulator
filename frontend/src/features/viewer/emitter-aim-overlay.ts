@@ -9,7 +9,7 @@ function createSphereOverlay(emitter: EmitterSpec, sourceCenter: Vec3): Group {
   const source = new Vector3(...sourceCenter)
   const radius = Math.max(4, Math.min(25, Math.max(emitter.width_mm ?? 16, emitter.height_mm ?? 16) * 0.75))
   const upper = aim.sphere_upper_deg ?? 0
-  const lower = aim.sphere_lower_deg ?? 180
+  const lower = Math.min(aim.sphere_lower_deg ?? 180, aim.distribution === 'lambertian' ? 90 : 180)
   const color = 0xa78bfa
   const point = (polar: number, azimuth: number) => source.clone().addScaledVector(new Vector3(...emitterSphereDirection(aim, polar, azimuth)), radius)
   const edges: Vector3[] = []

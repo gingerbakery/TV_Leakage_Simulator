@@ -12,6 +12,7 @@ export function createEmitterAim(center: Vec3): EmitterAimSpec {
     radius_mm: 10,
     show_in_viewer: true,
     distribution: 'uniform_target_area',
+    gaussian_sigma_deg: 12,
     power_reference: 'aim_region',
     mode: 'area',
     sphere_upper_deg: 0,
@@ -29,9 +30,11 @@ export function isEmitterAimValid(aim: EmitterAimSpec): boolean {
   const lengthV = Math.hypot(...aim.v_axis)
   const dot = aim.u_axis.reduce((sum, value, axis) => sum + value * aim.v_axis[axis], 0)
   return (mode === 'area' || mode === 'sphere')
-    && aim.distribution === (mode === 'sphere' ? 'uniform_solid_angle' : 'uniform_target_area')
+    && [mode === 'sphere' ? 'uniform_solid_angle' : 'uniform_target_area', 'lambertian', 'gaussian'].includes(aim.distribution)
+    && Number.isFinite(aim.gaussian_sigma_deg ?? 12) && (aim.gaussian_sigma_deg ?? 12) > 0
     && [upper, lower, aim.sphere_alpha_deg ?? 0, aim.sphere_beta_deg ?? 0].every(Number.isFinite)
     && (mode !== 'sphere' || (upper >= 0 && upper < lower && lower <= 180) || (upper === 0 && lower === 0))
+    && (mode !== 'sphere' || aim.distribution !== 'lambertian' || upper < 90)
     && lengthU > 1e-12 && lengthV > 1e-12 && Math.abs(dot / (lengthU * lengthV)) <= 1e-6
     && [...aim.center, ...aim.u_axis, ...aim.v_axis].every(Number.isFinite)
     && [aim.width_mm, aim.height_mm, aim.radius_mm].every(
@@ -41,7 +44,10 @@ export function isEmitterAimValid(aim: EmitterAimSpec): boolean {
 
 export function setEmitterAimMode(aim: EmitterAimSpec, mode: 'off' | 'area' | 'sphere'): EmitterAimSpec {
   if (mode === 'off') return { ...aim, enabled: false }
-  return { ...aim, enabled: true, mode, distribution: mode === 'sphere' ? 'uniform_solid_angle' : 'uniform_target_area' }
+  const distribution = aim.distribution === 'lambertian' || aim.distribution === 'gaussian'
+    ? aim.distribution
+    : mode === 'sphere' ? 'uniform_solid_angle' : 'uniform_target_area'
+  return { ...aim, enabled: true, mode, distribution }
 }
 
 export function emitterSphereDirection(aim: EmitterAimSpec, polarDeg = 0, azimuthDeg = 0): Vec3 {

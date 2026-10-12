@@ -809,35 +809,38 @@ function EmitterDialog({
             <span className="flex items-center gap-1.5">
               Direction distribution
               <HelpTooltip label="Direction distribution 도움말">
-                발광 방향의 각도 분포입니다. Lambertian: cosine 가중 확산광
-                (일반 표면 발광). Isotropic: 반구 전체에 균일 분포.
-                Gaussian: normal 방향을 중심으로 좁게 퍼지는 지향성 광원.
+                {aim.enabled
+                  ? aim.mode === 'sphere'
+                    ? '균일: 지정 영역의 입체각에 균일하게 발광합니다. Lambertian: 중심축의 전방 반구에서 cosine 분포. Gaussian: 중심축에서 sigma에 따른 각도 세기 분포. 입력 광량 전체를 지정 각도 영역에 배분합니다.'
+                    : '균일: Target 면적에 균일하게 도착합니다. Lambertian / Gaussian: 광원 법선과 방출 방향을 기준으로 각도 분포를 적용하고 Target을 향하는 광선만 사용합니다. 입력 광량 전체를 Target 영역에 배분합니다.'
+                  : '발광 방향의 각도 분포입니다. Lambertian: cosine 가중 확산광. Isotropic: 반구 전체에 균일 분포. Gaussian: normal 방향을 중심으로 좁게 퍼지는 지향성 광원.'}
               </HelpTooltip>
             </span>
             <select
               className={inputClassName}
               aria-label="Emitter direction distribution"
-              disabled={aim.enabled}
-              value={distribution}
-              onChange={(event) =>
-                setDistribution(
-                  event.currentTarget.value as EmitterDistribution,
-                )
-              }
+              value={aim.enabled ? aim.distribution : distribution}
+              onChange={(event) => {
+                if (aim.enabled) setAim({ ...aim, distribution: event.currentTarget.value as typeof aim.distribution })
+                else setDistribution(event.currentTarget.value as EmitterDistribution)
+              }}
             >
-              {aim.enabled ? <option value={distribution}>{aim.mode === 'sphere' ? 'Sphere · 입체각 균일' : 'Aim · Target 면적 균일'}</option> : null}
-              {!aim.enabled ? <option value="lambertian">Lambertian</option> : null}
+              {aim.enabled ? <option value={aim.mode === 'sphere' ? 'uniform_solid_angle' : 'uniform_target_area'}>{aim.mode === 'sphere' ? '균일 · 입체각' : '균일 · Target 면적'}</option> : null}
+              <option value="lambertian">Lambertian</option>
               {!aim.enabled ? <option value="isotropic">Isotropic</option> : null}
-              {!aim.enabled ? <option value="gaussian">Gaussian</option> : null}
+              <option value="gaussian">Gaussian</option>
             </select>
           </label>
-          {!aim.enabled && distribution === 'gaussian' ? (
+          {(aim.enabled ? aim.distribution : distribution) === 'gaussian' ? (
             <NumberField
               label="Gaussian sigma (deg)"
-              value={sigma}
+              ariaLabel="Emitter Gaussian sigma (deg)"
+              value={aim.enabled ? aim.gaussian_sigma_deg ?? 12 : sigma}
               min={0.1}
-              onChange={setSigma}
-              description="Gaussian 분포의 표준편차(도)입니다. 작을수록 normal 방향으로 좁게 집중됩니다."
+              onChange={(value) => aim.enabled ? setAim({ ...aim, gaussian_sigma_deg: value }) : setSigma(value)}
+              description={aim.enabled && aim.mode === 'sphere'
+                ? 'Gaussian 각도 세기 분포의 sigma(도)입니다. 작을수록 Sphere 중심축으로 집중됩니다.'
+                : 'Gaussian 분포의 sigma(도)입니다. 작을수록 광원 normal 방향으로 집중됩니다.'}
             />
           ) : null}
         </div>
@@ -845,7 +848,9 @@ function EmitterDialog({
           <legend className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
             Emitter Direction
             <HelpTooltip label="Emitter Direction 도움말">
-              Forward는 기본 화살표 방향, Reverse는 반대 방향입니다. Both Sides는 입력한 총광량과 Ray 수를 유지하면서 앞·뒤 양쪽으로 대칭 방출합니다.
+              {aim.enabled && aim.mode !== 'sphere' && aim.distribution !== 'uniform_target_area'
+                ? 'Forward는 기본 법선, Reverse는 반대 법선을 기준으로 분포를 적용합니다. Both Sides는 앞·뒤 대칭 분포에서 Target을 향하는 광선만 사용합니다. Target 위치에 따라 양쪽 기여는 달라지며, 입력 총광량과 Ray 수는 유지됩니다.'
+                : 'Forward는 기본 화살표 방향, Reverse는 반대 방향입니다. Both Sides는 입력한 총광량과 Ray 수를 유지하면서 앞·뒤 양쪽으로 대칭 방출합니다.'}
             </HelpTooltip>
           </legend>
           <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted/25 p-1">
@@ -857,7 +862,7 @@ function EmitterDialog({
               <button
                 key={value}
                 type="button"
-                disabled={aim.enabled}
+                disabled={aim.enabled && (aim.mode === 'sphere' || aim.distribution === 'uniform_target_area')}
                 className={cn(
                   'rounded-md px-2 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
                   emissionDirection === value

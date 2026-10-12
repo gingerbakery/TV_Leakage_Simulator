@@ -19,7 +19,9 @@ export interface EmitterAimSpec {
   height_mm: number
   radius_mm: number
   show_in_viewer: boolean
-  distribution: 'uniform_target_area' | 'uniform_solid_angle'
+  distribution: 'uniform_target_area' | 'uniform_solid_angle' | 'lambertian' | 'gaussian'
+  /** Aim angular intensity width; independent of the dormant base distribution. */
+  gaussian_sigma_deg?: number
   power_reference: 'aim_region'
   mode?: 'area' | 'sphere'
   sphere_upper_deg?: number

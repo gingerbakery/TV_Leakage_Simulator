@@ -56,6 +56,62 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it.each([
+    ['area', 'lambertian'], ['area', 'gaussian'],
+    ['sphere', 'lambertian'], ['sphere', 'gaussian'],
+  ] as const)('saves and reopens %s %s without overwriting the base distribution', (mode, distribution) => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    emitter.direction_distribution = 'gaussian'
+    emitter.gaussian_sigma_deg = 7.5
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: mode } })
+    const select = screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    expect(select.value).toBe(mode === 'area' ? 'uniform_target_area' : 'uniform_solid_angle')
+    fireEvent.change(select, { target: { value: distribution } })
+    expect((screen.getByRole('button', { name: 'Both Sides' }) as HTMLButtonElement).disabled).toBe(mode === 'sphere')
+    if (distribution === 'gaussian') {
+      fireEvent.change(screen.getByLabelText('Emitter Gaussian sigma (deg)'), { target: { value: '21.5' } })
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    expect(workspaceStore.getState().emitters[0]).toMatchObject({
+      direction_distribution: 'gaussian', gaussian_sigma_deg: 7.5,
+      aim: { mode, distribution, gaussian_sigma_deg: distribution === 'gaussian' ? 21.5 : 12 },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe(distribution)
+    if (distribution === 'gaussian') expect((screen.getByLabelText('Emitter Gaussian sigma (deg)') as HTMLInputElement).value).toBe('21.5')
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: mode === 'area' ? 'sphere' : 'area' } })
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe(distribution)
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'off' } })
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('gaussian')
+    expect((screen.getByLabelText('Emitter Gaussian sigma (deg)') as HTMLInputElement).value).toBe('7.5')
+  })
+
+  it('rejects a Lambertian Sphere outside the forward hemisphere', () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    emitter.aim = { ...createEmitterAim([0, 0, 30]), enabled: true, mode: 'sphere', distribution: 'lambertian' }
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'aim.step', displayName: 'aim.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Aim Sphere Upper'), { target: { value: '90' } })
+    expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toContain('Upper가 90° 미만')
+    fireEvent.click(screen.getByRole('button', { name: '평행광' }))
+    expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('creates one independently editable Emitter and Aim per selected CAD face', async () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
@@ -202,7 +258,8 @@ describe('RayTracingPanel Aim editing', () => {
     expect(summary.closest('details')?.open).toBe(false)
     fireEvent.click(summary)
     fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'area' } })
-    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).disabled).toBe(false)
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('uniform_target_area')
     fireEvent.change(screen.getByLabelText('Aim shape'), { target: { value: 'circle' } })
     fireEvent.change(screen.getByLabelText('Aim diameter (mm)'), { target: { value: '6' } })
     await waitFor(() => expect(workspaceStore.getState().placementPreviewEmitter?.aim).toMatchObject({ enabled: true, shape: 'circle', radius_mm: 3 }))

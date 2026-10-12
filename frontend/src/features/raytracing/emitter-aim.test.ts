@@ -13,6 +13,31 @@ import { createEmitterAim, emitterAimBoundary, emitterSphereDirection, isEmitter
 import { createDatumEmitter, planeAxesFromRotation, rotationFromPlaneAxes } from './ray-tracing-model'
 
 describe('Emitter Aim geometry and persistence', () => {
+  it.each([
+    ['area', 'lambertian'], ['area', 'gaussian'],
+    ['sphere', 'lambertian'], ['sphere', 'gaussian'],
+  ] as const)('round-trips %s %s and its independent sigma through .bitsam', (mode, distribution) => {
+    const store = createWorkspaceStore()
+    const emitter = createDatumEmitter('angular-aim', [0, 0, 0], [0, 0, 0])
+    emitter.direction_distribution = 'gaussian'
+    emitter.gaussian_sigma_deg = 6
+    emitter.aim = { ...setEmitterAimMode(createEmitterAim([1, 2, 30]), mode), distribution, gaussian_sigma_deg: 23.5 }
+    store.getState().actions.setActiveCad({ path: 'test.step', displayName: 'test.step' })
+    store.getState().actions.upsertEmitter(emitter)
+    const project = createBitsamProject(createSceneFixture(), store.getState())
+    const restored = parseBitsamProject(serializeBitsamProject(project)).workspace.emitters[0]
+    expect(restored.aim).toEqual(emitter.aim)
+    expect(restored.gaussian_sigma_deg).toBe(6)
+    expect(setEmitterAimMode(restored.aim!, mode === 'area' ? 'sphere' : 'area').distribution).toBe(distribution)
+    for (const invalidSigma of [0, -1, null, '12']) {
+      project.workspace.emitters[0].aim = { ...emitter.aim, gaussian_sigma_deg: invalidSigma } as typeof emitter.aim
+      expect(() => parseBitsamProject(JSON.stringify(project))).toThrow()
+    }
+    project.workspace.emitters[0].aim = { ...emitter.aim }
+    delete project.workspace.emitters[0].aim.gaussian_sigma_deg
+    expect(parseBitsamProject(serializeBitsamProject(project)).workspace.emitters[0].aim?.gaussian_sigma_deg).toBeUndefined()
+  })
+
   it('uses world Alpha X then Beta Y for the sphere axis and angular boundary', () => {
     const aim = { ...setEmitterAimMode(createEmitterAim([50, 60, 70]), 'sphere'), sphere_alpha_deg: 35, sphere_beta_deg: -60 }
     const axis = new Vector3(...emitterSphereDirection(aim))
@@ -42,6 +67,18 @@ describe('Emitter Aim geometry and persistence', () => {
     expect(createEmitterAimOverlay(emitter, [1, 2, 3])!.getObjectByName('aim-sphere-center-direction')).toBeDefined()
     emitter.aim.sphere_upper_deg = 30
     expect(createEmitterAimOverlay(emitter, [1, 2, 3])).toBeNull()
+  })
+
+  it('shows the effective forward hemisphere for Lambertian Sphere without changing configured angles', () => {
+    const emitter = createDatumEmitter('lambertian-sphere', [1, 2, 3], [0, 0, 0])
+    emitter.aim = { ...setEmitterAimMode(createEmitterAim([0, 0, 30]), 'sphere'), distribution: 'lambertian' }
+    const overlay = createEmitterAimOverlay(emitter, [1, 2, 3])!
+    const boundary = overlay.getObjectByName('aim-sphere-boundary') as import('three').LineSegments
+    boundary.geometry.computeBoundingBox()
+    expect(boundary.geometry.boundingBox!.min.z).toBeCloseTo(3, 6)
+    expect(boundary.geometry.boundingBox!.max.z).toBeGreaterThan(3)
+    expect(emitter.aim.sphere_lower_deg).toBe(180)
+    expect(overlay.getObjectByName('aim-sphere-center-direction')).toBeDefined()
   })
 
   it('round-trips sphere ranges and angles and preserves dormant Area settings', () => {

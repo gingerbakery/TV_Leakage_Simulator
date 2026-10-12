@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from numbers import Integral
 from typing import Callable, Dict, List, Optional, Tuple
 import math
@@ -129,7 +129,8 @@ from .wavefront_event_tape import (
     TERMINAL_ESCAPED as TAPE_TERMINAL_ESCAPED,
     TERMINAL_RECEIVER as TAPE_TERMINAL_RECEIVER,
 )
-from .aim_sampling import AIM_SAMPLING_CONTRACT, AIM_SPHERE_SAMPLING_CONTRACT, sample_aim_ray, validate_emitter_aim
+from .aim_sampling import AIM_SAMPLING_CONTRACT, AIM_SPHERE_SAMPLING_CONTRACT, AIM_ANGULAR_SAMPLING_CONTRACT, sample_aim_ray, validate_emitter_aim
+from .fast_sampling import uses_angular_aim_area
 
 
 RECEIVER_FLUX_CONTRACT = "geometric_incident_flux_v2"
@@ -3126,13 +3127,36 @@ def run_direct_ray_trace(
         "face_batch_primary_ray_count": face_batch_primary_ray_count,
         "scalar_primary_ray_count": scalar_primary_ray_count,
         "aim_sampling_contract": (
-            "aim_regions_v2" if any(
+            AIM_ANGULAR_SAMPLING_CONTRACT if any(
+                emitter.enabled and emitter.aim is not None and emitter.aim.enabled
+                and emitter.aim.distribution in ("lambertian", "gaussian")
+                for emitter in trace_input.emitters
+            ) else "aim_regions_v2" if any(
                 emitter.enabled and emitter.aim is not None and emitter.aim.enabled and emitter.aim.mode == "sphere"
                 for emitter in trace_input.emitters
             ) else AIM_SAMPLING_CONTRACT
         ),
-        "aim_area_sampling_contract": AIM_SAMPLING_CONTRACT,
-        "aim_sphere_sampling_contract": AIM_SPHERE_SAMPLING_CONTRACT,
+        "aim_area_sampling_contract": (
+            AIM_ANGULAR_SAMPLING_CONTRACT if any(
+                emitter.enabled and uses_angular_aim_area(emitter)
+                for emitter in trace_input.emitters
+            ) else AIM_SAMPLING_CONTRACT
+        ),
+        "aim_sphere_sampling_contract": (
+            AIM_ANGULAR_SAMPLING_CONTRACT if any(
+                emitter.enabled and emitter.aim is not None and emitter.aim.enabled
+                and emitter.aim.mode == "sphere"
+                and emitter.aim.distribution in ("lambertian", "gaussian")
+                for emitter in trace_input.emitters
+            ) else AIM_SPHERE_SAMPLING_CONTRACT
+        ),
+        "aim_emitter_distributions": [
+            {"emitter_id": emitter.emitter_id, "mode": emitter.aim.mode,
+             "distribution": emitter.aim.distribution,
+             "gaussian_sigma_deg": emitter.aim.gaussian_sigma_deg if emitter.aim.distribution == "gaussian" else None}
+            for emitter in trace_input.emitters
+            if emitter.enabled and emitter.aim is not None and emitter.aim.enabled
+        ],
         "aim_sphere_emitter_count": sum(
             1 for emitter in trace_input.emitters
             if emitter.enabled and emitter.aim is not None and emitter.aim.enabled and emitter.aim.mode == "sphere"
@@ -8241,6 +8265,14 @@ def _iter_primary_emitter_rays(
     seed: int,
     epsilon_mm: float,
 ):
+    if emitter.emitter_type == "face" and uses_angular_aim_area(emitter):
+        geometry = build_face_emitter_batch_geometry(mesh, emitter)
+        if geometry is None:
+            return
+        for origins, directions, faces in iter_face_emitter_ray_batches(emitter, geometry, epsilon_mm, seed):
+            for origin, direction, face in zip(origins, directions, faces):
+                yield tuple(map(float, origin)), tuple(map(float, direction)), int(face)
+        return
     if supports_fast_virtual_plane_sampling(emitter):
         for origin_batch, direction_batch in iter_virtual_plane_ray_batches(
             emitter,
@@ -9142,6 +9174,14 @@ def _sample_face_emitter_ray(
     rng: random.Random,
     epsilon_mm: float,
 ) -> Optional[Tuple[Vec3, Vec3, int]]:
+    if uses_angular_aim_area(emitter):
+        geometry = build_face_emitter_batch_geometry(mesh, emitter)
+        if geometry is None:
+            return None
+        origins, directions, faces = next(iter_face_emitter_ray_batches(
+            replace(emitter, ray_count=1), geometry, epsilon_mm, rng.getrandbits(32),
+        ))
+        return tuple(map(float, origins[0])), tuple(map(float, directions[0])), int(faces[0])
     face_index = _choose_weighted_face(face_weights, rng)
     if face_index is None:
         return None
@@ -9173,6 +9213,11 @@ def _sample_virtual_plane_emitter_ray(
     rng: random.Random,
     epsilon_mm: float,
 ) -> Optional[Tuple[Vec3, Vec3, int]]:
+    if uses_angular_aim_area(emitter):
+        origins, directions = next(iter_virtual_plane_ray_batches(
+            replace(emitter, ray_count=1), epsilon_mm, rng.getrandbits(32),
+        ))
+        return tuple(map(float, origins[0])), tuple(map(float, directions[0])), -1
     if (
         emitter.center is None
         or emitter.u_axis is None

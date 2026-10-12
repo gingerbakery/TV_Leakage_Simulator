@@ -175,6 +175,7 @@ class EmitterAimSpec:
     sphere_lower_deg: float = 180.0
     sphere_alpha_deg: float = 0.0
     sphere_beta_deg: float = 0.0
+    gaussian_sigma_deg: float = 12.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool) or not isinstance(self.show_in_viewer, bool):
@@ -182,7 +183,10 @@ class EmitterAimSpec:
         self.shape = require_choice(self.shape, "aim.shape", ("rectangle", "circle"))
         self.mode = require_choice(self.mode, "aim.mode", ("area", "sphere"))
         expected_distribution = "uniform_solid_angle" if self.mode == "sphere" else "uniform_target_area"
-        require_choice(self.distribution, "aim.distribution", (expected_distribution,))
+        require_choice(self.distribution, "aim.distribution", (expected_distribution, "lambertian", "gaussian"))
+        self.gaussian_sigma_deg = require_positive(self.gaussian_sigma_deg, "aim.gaussian_sigma_deg")
+        if not math.isfinite(self.gaussian_sigma_deg):
+            raise ValueError("aim.gaussian_sigma_deg must be finite")
         require_choice(self.power_reference, "aim.power_reference", ("aim_region",))
         for name in ("sphere_upper_deg", "sphere_lower_deg", "sphere_alpha_deg", "sphere_beta_deg"):
             value = float(getattr(self, name))
@@ -192,6 +196,8 @@ class EmitterAimSpec:
         upper, lower = self.sphere_upper_deg, self.sphere_lower_deg
         if self.mode == "sphere" and not (0.0 <= upper < lower <= 180.0 or upper == lower == 0.0):
             raise ValueError("Aim Sphere requires 0 <= Upper < Lower <= 180 degrees, or 0/0 for collimated light")
+        if self.mode == "sphere" and self.distribution == "lambertian" and upper >= 90.0:
+            raise ValueError("Aim Sphere Lambertian requires Upper < 90 degrees; the rear hemisphere has zero emission")
         for name in ("center", "u_axis", "v_axis"):
             values = vec3_from(getattr(self, name), f"aim.{name}")
             if not all(math.isfinite(value) for value in values):

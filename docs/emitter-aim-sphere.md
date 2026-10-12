@@ -7,6 +7,7 @@
 1. Emitter properties에서 기본적으로 접힌 **Aim / Target**을 펼친다.
 2. 발광 방식을 **Aim Sphere**로 선택한다. 기존 Aim Area와 동시에 사용하지 않는다.
 3. Upper/Lower로 방사각 범위를, Alpha/Beta로 중심축 방향을 입력한다.
+   Direction distribution에서 균일 / Lambertian / Gaussian을 선택한다. Gaussian은 Aim 전용 sigma(deg)를 입력한다.
 4. 보라색 각도 가이드를 확인하고 기존 Save Emitter/Add Emitter로 확정한다.
 
 | 프리셋 | Upper / Lower | 의미 |
@@ -29,15 +30,24 @@ World +Z축을 World X축으로 Alpha, 다음 World Y축으로 Beta만큼 회전
 
 ## 광학·샘플링 계약
 
-- 계산 계약: `angular_region_uniform_solid_angle_v1`.
+- 균일 계산 계약: `angular_region_uniform_solid_angle_v1`. 2026-10-12 추가한 Lambertian/Gaussian은 `aim_angular_intensity_conditioned_region_v1`.
 - 기존 면적 균일 발광점 샘플링을 유지한다. Face/Datum/Reference polygon의 위치·형상 계약은 변경하지 않는다.
-- Sphere에서는 **입체각 균일** 초기 방향을 사용하며, 기존 Lambertian/Gaussian 분포는 적용하지 않는다. 기본 분포로 돌아가면 보관된 설정을 다시 사용한다.
+- 균일은 **입체각 균일** 초기 방향을 사용한다. Lambertian/Gaussian은 선택한 각도 범위 안에서 아래의 각도 세기 법칙을 적용한다. Aim Off의 분포와 sigma는 별도 보관하며 기본 분포로 돌아가면 다시 사용한다.
 - 극각 θ 자체를 균일하게 뽑지 않는다. 독립 균일 난수 U,V에 대해 `cosθ = cos(Upper) + U × (cos(Lower) − cos(Upper))`, `φ = 2πV`를 사용한다.
 - 실제 구현은 좁은 빔에서의 수치 손실을 줄이기 위해 동등한 `sin²(θ/2)` 보간을 사용한다. 방향 벡터를 Alpha/Beta 행렬로 회전한 뒤 기존 float64 Ray batch에 전달한다.
 - 초기 원점은 샘플링한 면 위 점에서 진행 방향으로 epsilon만큼 이동한다. 뒤쪽 방향도 정상 생성한다.
 - Sphere는 공간상 Target 면이 없으므로 **Aim Area의 겹침/접촉 금지 조건을 적용하지 않는다.** 실제 CAD 차폐·반사 판정은 그대로 수행한다.
 - CAD 표면의 뒤쪽으로 쏜 Ray는 부품 내부로 들어갈 수 있다. 다른 CAD 면에서 차폐·반사될 수 있으며, 앞뒤 발광이 CAD를 투명하게 만드는 것은 아니다.
 - 첫 반사 이후 방향은 기존 표면의 Specular/Lambertian/Gaussian 계약을 따른다. 매 반사마다 Sphere 방향으로 재조준하지 않는다.
+
+### Lambertian / Gaussian 각도 법칙
+
+두 분포 모두 Emitter 면의 법선 대신 **Sphere의 World 중심축**을 기준으로 한다.
+
+- Lambertian은 `I(θ) ∝ cos θ`, 확률 밀도 `p(θ) ∝ cos θ sin θ`이다. 지정 범위와 전방 반구(θ<90°)의 교집합에만 발광한다. 예를 들어 0~180°를 입력해도 뒤쪽 발광은 0이다. Upper≥90°는 광량이 0인 범위이므로 거절한다. 뒤로 향하게 하려면 중심축을 회전한다.
+- Gaussian은 `I(θ) ∝ exp(-θ²/(2σ²))`, `p(θ) ∝ exp(-θ²/(2σ²)) sin θ`이다. Upper~Lower 전체에서 조건부 정규화한다. σ는 양의 유한 각도(deg)이며 누락 시 12°이다.
+- 모든 분포에서 0°/0°는 평행광이다. 방위각은 축 주위 균일하며, 생성한 방향을 Alpha/Beta만큼 회전한다.
+- 입력 총광속은 해당 분포의 유효 각도 영역 전체에 배분한다. 범위를 줄여도 총광속을 임의로 줄이지 않는다.
 
 ### 총광량과 SET luminance
 
@@ -60,12 +70,14 @@ Total/Power per area의 기존 총광속 계산을 유지한다. SET luminance �
 | sphere_lower_deg | 180 |
 | sphere_alpha_deg | 0 |
 | sphere_beta_deg | 0 |
-| distribution | Area: `uniform_target_area`, Sphere: `uniform_solid_angle` |
+| distribution | Sphere: `uniform_solid_angle` / `lambertian` / `gaussian`; Area의 균일 값은 `uniform_target_area` |
+| gaussian_sigma_deg | Aim 전용 sigma(deg), 누락 시 12 |
 | power_reference | `aim_region` 유지 |
 
 - 예전 Aim 데이터에 mode가 없으면 Area로 해석한다. Aim 자체가 없으면 기존 Off 동작이다.
 - Area↔Sphere 전환 시 각 모드의 좌표·크기·각도 값을 보존한다. 현재 모드에 해당하는 범위/크기를 검사하고, 사용하지 않는 모드의 값은 계산에 쓰지 않는다. 비유한 수치는 항상 거절한다.
 - Alpha/Beta 입력 숫자는 직접 저장하므로 다시 편집할 때 0으로 초기화하지 않는다.
+- 분포와 Aim sigma를 저장·복원한다. Area↔Sphere 전환에서는 Lambertian/Gaussian을 유지하며 균일 값만 각 모드에 맞게 전환한다. 결과 Compare는 분포 또는 유효 Gaussian sigma 변경도 다른 조건으로 표시한다.
 - `.bitsam` 설정 및 저장된 해석 결과에 Aim 데이터를 보존한다. CAD 포함 패키지 복원 후 기존 결과 표시와 각도 변경 후 재해석을 지원한다.
 - 결과 Compare에서 Aim 방식, Upper/Lower, Alpha/Beta가 다르면 동일 조건 점수화에서 제외한다. 가이드 표시 여부는 물리 조건 비교에 포함하지 않는다.
 - 이전 프로그램은 Sphere 필드를 알지 못할 수 있으므로 새 Sphere 파일은 업데이트된 프로그램에서 연다.
@@ -78,6 +90,6 @@ Total/Power per area의 기존 총광속 계산을 유지한다. SET luminance �
 - `D:\LightTools\Help\illumination\liug_2.3.49.html`: 평행광 설정.
 - `D:\LightTools\Help\dbhlp\HIDC_ScatteringAimSphere_BetaOrientation.html`: Beta orientation.
 
-LT의 광원 로컬 좌표 해석이나 Whole Region/Aim Region 광량 옵션 전체를 복제한 것은 아니다. 이번 구현은 명시적인 **World 축·입체각 균일·입력 총광량 전체 배분** 계약이다. LT 및 실측 정합성은 별도 검증 사항이다.
+LT의 광원 로컬 좌표 해석이나 Whole Region/Aim Region 광량 옵션 전체를 복제한 것은 아니다. 구현은 **World 축·선택한 각도 분포·입력 총광량 전체 배분** 계약이다. LT 및 실측 정합성은 별도 검증 사항이다.
 
 실행 증거와 재현 방법: `docs/changes/2026-09-10_emitter-aim-sphere.md`.

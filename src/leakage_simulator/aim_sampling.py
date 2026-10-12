@@ -7,10 +7,12 @@ import numpy as np
 
 from .geometry import TriangleMesh
 from .types import EmitterAimSpec, EmitterSpec, Vec3
+from .aim_angular_sampling import sample_sphere_angles
 
 
 AIM_SAMPLING_CONTRACT = "target_only_uniform_area_v1"
 AIM_SPHERE_SAMPLING_CONTRACT = "angular_region_uniform_solid_angle_v1"
+AIM_ANGULAR_SAMPLING_CONTRACT = "aim_angular_intensity_conditioned_region_v1"
 
 
 def aim_sphere_rotation(aim: EmitterAimSpec) -> tuple[Vec3, Vec3, Vec3]:
@@ -26,6 +28,8 @@ def aim_sphere_rotation(aim: EmitterAimSpec) -> tuple[Vec3, Vec3, Vec3]:
 
 
 def _sphere_local_direction(first, second, aim: EmitterAimSpec):
+    if aim.distribution in ("lambertian", "gaussian"):
+        return sample_sphere_angles(first, second, aim)
     upper = math.sin(math.radians(aim.sphere_upper_deg) * 0.5) ** 2
     lower = math.sin(math.radians(aim.sphere_lower_deg) * 0.5) ** 2
     half_sine_squared = upper + (lower - upper) * first
@@ -96,6 +100,36 @@ def validate_emitter_aim(
                 f"within the {margin:g} mm numerical clearance. "
                 "Move, resize or tilt the Target to separate the actual areas."
             )
+    if aim.distribution in ("lambertian", "gaussian"):
+        if emitter.emitter_type == "face":
+            normals = [
+                emitter.custom_normal if emitter.normal_mode == "custom" and emitter.custom_normal is not None
+                else mesh.normal(index)
+                for index in emitter.face_indices if 0 <= index < len(mesh.faces)
+            ]
+        else:
+            normals = [np.cross(emitter.u_axis, emitter.v_axis)] * len(triangles)
+        supported = False
+        for triangle, source_normal in zip(triangles, normals):
+            source_normal = np.asarray(source_normal, dtype=np.float64)
+            length = np.linalg.norm(source_normal)
+            if length <= 1e-12:
+                continue
+            source_normal = source_normal / length * (-1.0 if emitter.normal_flip else 1.0)
+            for sign in ((1.0, -1.0) if emitter.emission_direction == "both" else (1.0,)):
+                direction = sign * source_normal
+                support_u = float(np.dot(aim.u_axis, direction))
+                support_v = float(np.dot(aim.v_axis, direction))
+                support = (aim.radius_mm * math.hypot(support_u, support_v)
+                           if aim.shape == "circle" else
+                           0.5 * (aim.width_mm * abs(support_u) + aim.height_mm * abs(support_v)))
+                forward_extent = float(np.dot(aim.center, direction)) - float(np.min(np.asarray(triangle) @ direction)) + support
+                supported = supported or forward_extent > 0.0
+        if not supported:
+            raise ValueError(
+                f"{emitter.emitter_id}: Aim {aim.distribution} Target has no power in the selected "
+                "emission direction. Check Forward/Reverse/Both and Target position."
+            )
 
 
 def _clip_aim_polygon(
@@ -152,6 +186,8 @@ def sample_aim_ray_batch(
             np.ascontiguousarray(points + epsilon_mm * directions, dtype=np.float64),
             np.ascontiguousarray(directions, dtype=np.float64),
         )
+    if aim.distribution in ("lambertian", "gaussian"):
+        raise ValueError("Angular Aim Area requires joint source sampling; use sample_area_angular_batch")
     if aim.shape == "circle":
         radius = aim.radius_mm * np.sqrt(first)
         angle = 2.0 * math.pi * second
@@ -189,6 +225,8 @@ def sample_aim_ray(
         direction = tuple(float(sum(row[axis] * local[axis] for axis in range(3))) for row in aim_sphere_rotation(aim))
         origin = tuple(point[axis] + epsilon_mm * direction[axis] for axis in range(3))
         return origin, direction
+    if aim.distribution in ("lambertian", "gaussian"):
+        raise ValueError("Angular Aim Area requires joint source sampling; use sample_area_angular_batch")
     if aim.shape == "circle":
         radius = aim.radius_mm * math.sqrt(first)
         angle = 2.0 * math.pi * second

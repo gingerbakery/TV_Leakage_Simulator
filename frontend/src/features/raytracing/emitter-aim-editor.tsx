@@ -42,7 +42,7 @@ export function EmitterAimEditor({
         {mode === 'sphere' ? <>
           <fieldset className="space-y-2">
             <legend className="flex items-center gap-1.5 text-xs text-muted-foreground">방사각 범위 (deg)
-              <HelpTooltip label="Sphere 방사각 도움말">중심축에서 측정하는 각도입니다. 0~180°: 앞뒤 전방위. 0~90°: 반구. 0~0°: 평행광. 방위각은 축 주위 360°입니다.</HelpTooltip>
+              <HelpTooltip label="Sphere 방사각 도움말">중심축에서 측정하는 각도입니다. 0~180°: 앞뒤 전방위. 0~90°: 반구. 0~0°: 평행광. 방위각은 축 주위 360°입니다. Lambertian은 지정 영역 중 전방 반구(90° 미만)에만 발광합니다.</HelpTooltip>
             </legend>
             <div className="grid grid-cols-2 gap-2">
               {([['sphere_upper_deg', 'Upper', 0], ['sphere_lower_deg', 'Lower', 180]] as const).map(([key, label, fallback]) =>
@@ -78,8 +78,8 @@ export function EmitterAimEditor({
             </label>
             <Button size="sm" variant="ghost" onClick={() => onChange({ ...aim, sphere_upper_deg: 0, sphere_lower_deg: 180, sphere_alpha_deg: 0, sphere_beta_deg: 0, show_in_viewer: true })}>Reset Sphere</Button>
           </div>
-          <div className="text-xs text-muted-foreground">입체각 균일 · 입력 광량 전체 배분</div>
-          {!isEmitterAimValid(aim) ? <div role="alert" className="text-xs text-destructive">0 ≤ Upper &lt; Lower ≤ 180°로 입력하세요. 평행광은 0° / 0°입니다.</div> : null}
+          <div className="text-xs text-muted-foreground">{aim.distribution === 'lambertian' ? 'Lambertian · 중심축 전방 반구' : aim.distribution === 'gaussian' ? 'Gaussian · 중심축 기준' : '입체각 균일'} · 입력 광량 전체 배분</div>
+          {!isEmitterAimValid(aim) ? <div role="alert" className="text-xs text-destructive">0 ≤ Upper &lt; Lower ≤ 180°로 입력하세요. 평행광은 0° / 0°입니다. Lambertian은 Upper가 90° 미만이어야 합니다. Gaussian sigma는 0보다 커야 합니다.</div> : null}
         </> : null}
         {mode === 'area' ? <>
           <div className="grid grid-cols-2 gap-2">
@@ -127,12 +127,13 @@ export function EmitterAimEditor({
               Show Target
             </label>
             <Button size="sm" variant="ghost" onClick={() => onChange({ ...createEmitterAim(defaultCenter), enabled: true,
+              distribution: aim.distribution, gaussian_sigma_deg: aim.gaussian_sigma_deg,
               sphere_upper_deg: aim.sphere_upper_deg, sphere_lower_deg: aim.sphere_lower_deg,
               sphere_alpha_deg: aim.sphere_alpha_deg, sphere_beta_deg: aim.sphere_beta_deg,
             })}>Reset Target</Button>
           </div>
-          <div className="text-xs text-muted-foreground">Target 면적 균일 · 입력 광량 전체 배분</div>
-          {!isEmitterAimValid(aim) ? <div role="alert" className="text-xs text-destructive">Target 크기를 0보다 크게 입력하세요.</div> : null}
+          <div className="text-xs text-muted-foreground">{aim.distribution === 'lambertian' ? 'Lambertian · 광원 법선 기준' : aim.distribution === 'gaussian' ? 'Gaussian · 광원 법선 기준' : 'Target 면적 균일'} · 입력 광량 전체 배분</div>
+          {!isEmitterAimValid(aim) ? <div role="alert" className="text-xs text-destructive">Target 크기와 Gaussian sigma를 0보다 크게 입력하세요.</div> : null}
         </> : null}
       </div>
     </details>

@@ -455,6 +455,24 @@ describe('Step 11 result UI', () => {
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })
 
+  it.each([
+    ['area', 'distribution'], ['area', 'gaussian_sigma_deg'],
+    ['sphere', 'distribution'], ['sphere', 'gaussian_sigma_deg'],
+  ] as const)('excludes changed %s Aim %s from like-for-like scoring', (mode, field) => {
+    const baseline = createRayTraceResultFixture()
+    baseline.emitters[0].aim = { ...createEmitterAim([0, 0, 30]), enabled: true, mode, distribution: 'gaussian' }
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-angular-aim-changed'
+    if (field === 'distribution') comparison.emitters[0].aim!.distribution = 'lambertian'
+    else comparison.emitters[0].aim!.gaussian_sigma_deg = 25
+    render(<RayTraceResultWindow open result={baseline} onOpenChange={vi.fn()} reportCases={[
+      { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+      { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+    ]} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    expect(screen.getAllByText('50.0')).toHaveLength(1)
+  })
+
   it('does not score reports produced by different Receiver flux contracts', () => {
     const baseline = createRayTraceResultFixture()
     const comparison = structuredClone(baseline)

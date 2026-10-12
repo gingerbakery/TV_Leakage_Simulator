@@ -84,7 +84,7 @@ class EmitterAimTests(unittest.TestCase):
             {"shape": "triangle"}, {"width_mm": 0}, {"radius_mm": -1},
             {"height_mm": math.inf}, {"center": (math.nan, 0, 0)},
             {"v_axis": (1, 0, 0)}, {"u_axis": (0, 0, 0)},
-            {"enabled": "false"}, {"distribution": "lambertian"},
+            {"enabled": "false"}, {"distribution": "unsupported"},
             {"power_reference": "whole_sphere"},
         ):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):

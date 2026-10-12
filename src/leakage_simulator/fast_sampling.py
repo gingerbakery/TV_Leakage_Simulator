@@ -9,6 +9,7 @@ import numpy as np
 from .geometry import TriangleMesh
 from .types import EmitterSpec
 from .aim_sampling import sample_aim_ray_batch
+from .aim_angular_sampling import sample_area_angular_batch
 
 
 RayBatch = Tuple[np.ndarray, np.ndarray]
@@ -110,6 +111,12 @@ def _is_two_sided(emitter: EmitterSpec) -> bool:
     return emitter.emission_direction == "both"
 
 
+def uses_angular_aim_area(emitter: EmitterSpec) -> bool:
+    return bool(emitter.aim is not None and emitter.aim.enabled
+                and emitter.aim.mode == "area"
+                and emitter.aim.distribution in ("lambertian", "gaussian"))
+
+
 def _two_sided_normal_rows(
     generator: np.random.Generator,
     emitter: EmitterSpec,
@@ -149,6 +156,34 @@ def iter_virtual_plane_ray_batches(
     basis_u, basis_v = _orthonormal_basis(normal)
     generator = np.random.default_rng(seed)
     polygon_geometry = _build_polygon_emitter_batch_geometry(emitter)
+    if uses_angular_aim_area(emitter):
+        def sample_sources(count):
+            points = _sample_virtual_plane_origins(
+                generator, emitter, center, u_axis, v_axis, normal, 0.0,
+                count, polygon_geometry,
+            )
+            return (points, np.broadcast_to(normal, (count, 3)),
+                    np.full(count, -1, dtype=np.int64))
+
+        if polygon_geometry is not None:
+            vertices = polygon_geometry.triangle_vertices.reshape(-1, 3)
+        else:
+            vertices = np.asarray([
+                center + su * emitter.width_mm * 0.5 * u_axis
+                + sv * emitter.height_mm * 0.5 * v_axis
+                for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+            ])
+        bounds = (vertices.min(axis=0), vertices.max(axis=0))
+        remaining = emitter.ray_count
+        while remaining > 0:
+            count = min(batch_size, remaining)
+            remaining -= count
+            origins, directions, _ = sample_area_angular_batch(
+                generator, count, emitter.aim, epsilon_mm, sample_sources,
+                two_sided=_is_two_sided(emitter), source_bounds=bounds,
+            )
+            yield origins, directions
+        return
     remaining = emitter.ray_count
     while remaining > 0:
         count = min(batch_size, remaining)
@@ -257,6 +292,29 @@ def iter_face_emitter_ray_batches(
         raise ValueError("Face ray batch_size must be positive")
 
     generator = np.random.default_rng(seed ^ 0x5DEECE66D)
+    if uses_angular_aim_area(emitter):
+        def sample_sources(count):
+            slots = np.searchsorted(geometry.cumulative_weights, generator.random(count), side="left")
+            slots = np.minimum(slots, len(geometry.face_indices) - 1)
+            triangles = geometry.triangle_vertices[slots]
+            root = np.sqrt(generator.random(count))
+            second = generator.random(count)
+            points = ((1.0 - root)[:, None] * triangles[:, 0]
+                      + (root * (1.0 - second))[:, None] * triangles[:, 1]
+                      + (root * second)[:, None] * triangles[:, 2])
+            return points, geometry.normals[slots], geometry.face_indices[slots]
+
+        vertices = geometry.triangle_vertices.reshape(-1, 3)
+        bounds = (vertices.min(axis=0), vertices.max(axis=0))
+        remaining = emitter.ray_count
+        while remaining > 0:
+            count = min(batch_size, remaining)
+            remaining -= count
+            yield sample_area_angular_batch(
+                generator, count, emitter.aim, epsilon_mm, sample_sources,
+                two_sided=_is_two_sided(emitter), source_bounds=bounds,
+            )
+        return
     remaining = emitter.ray_count
     while remaining > 0:
         count = min(batch_size, remaining)

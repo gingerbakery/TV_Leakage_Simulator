@@ -380,6 +380,12 @@ function comparisonConditionMismatches(
     } else if (emitter.aim?.enabled && baseEmitter.aim?.enabled) {
       const mode = emitter.aim.mode ?? 'area'
       const baseMode = baseEmitter.aim.mode ?? 'area'
+      if (emitter.aim.distribution !== baseEmitter.aim.distribution) {
+        mismatches.push(`Emitter ${index + 1} · Aim 분포`)
+      } else if (emitter.aim.distribution === 'gaussian'
+        && different(emitter.aim.gaussian_sigma_deg ?? 12, baseEmitter.aim.gaussian_sigma_deg ?? 12)) {
+        mismatches.push(`Emitter ${index + 1} · Aim Gaussian Sigma`)
+      }
       if (mode !== baseMode) {
         mismatches.push(`Emitter ${index + 1} · Aim 방식`)
       } else if (mode === 'sphere') {
@@ -388,7 +394,7 @@ function comparisonConditionMismatches(
           mismatches.push(`Emitter ${index + 1} · Aim Sphere`)
         }
       } else {
-        const aimKeys = ['shape', 'center', 'u_axis', 'v_axis', 'distribution', 'power_reference'] as const
+        const aimKeys = ['shape', 'center', 'u_axis', 'v_axis', 'power_reference'] as const
         const geometryDiffers = aimKeys.some((key) => different(emitter.aim![key], baseEmitter.aim![key]))
         const sizeDiffers = emitter.aim.shape === 'circle'
           ? different(emitter.aim.radius_mm, baseEmitter.aim.radius_mm)

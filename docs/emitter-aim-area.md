@@ -1,8 +1,9 @@
-# Emitter Aim Area — 목표 영역 한정 발광 v1
+# Emitter Aim Area — 목표 영역 한정 발광
 
 - 구현일: 2026-09-08
 - 기능 버전: `aim-area.v1`
 - 계산 계약: `target_only_uniform_area_v1`
+- 2026-10-12 확장: Direction distribution에서 균일 / Lambertian / Gaussian을 선택한다. 각도 분포의 계산 계약은 `aim_angular_intensity_conditioned_region_v1`이다. 기존 균일 파일의 계산은 유지한다.
 - 적용 작업본: `main` / `d991858b0626c8bd2f2b713b14d385d82ffab5c1` 이후 로컬 변경. Commit/Push는 별도 요청 시 수행한다.
 
 2026-09-10부터 같은 Aim 메뉴에 각도 범위를 지정하는 Sphere 모드를 추가했다. 이 문서는 Area의 공간 Target 계약을 설명하며, Sphere의 앞뒤 발광·각도·광량 기준은 `docs/emitter-aim-sphere.md`를 따른다.
@@ -17,7 +18,21 @@
 
 편집 중에는 프리뷰만 바뀌고 Cancel은 변경을 취소한다. Show Target은 표시만 끄며 해석에는 영향을 주지 않는다. Reset Target은 목표 설정만 초기화한다. Aim을 끄면 기존 normal, Lambertian/Isotropic/Gaussian 설정이 다시 사용된다. 기본 팝업 위치·이동·저장 조작은 유지한다.
 
-## 계산 의미 — 실제 광원 조건을 바꾸는 모드
+## Lambertian / Gaussian
+
+Direction distribution은 Aim On에서도 변경할 수 있다. Gaussian을 선택하면 Aim 전용 sigma(deg)를 입력한다. Aim Off의 기존 분포와 sigma는 별도로 보관한다.
+
+- Lambertian: 광원 법선 기준 세기 `I(θ) ∝ max(0, cos θ)`.
+- Gaussian: 광원 법선 기준 세기 `I(θ) ∝ exp(-θ²/(2σ²))`, 전방 반구에 한정한다. 이는 각도 θ 자체를 정규분포로 뽑는 방식과 다르며, 입체각 측도 `sin θ dθ dφ`를 포함한다.
+- Forward/Reverse는 광원 법선을 정한다. Both Sides는 양쪽 법선의 대칭 기본 분포를 사용한다. 그 뒤 Target을 향하는 광선만 취하므로 최종 앞/뒤 비율이 반드시 50:50인 것은 아니다.
+- 발광 위치와 진행 방향을 **함께** 다시 샘플링하여 Target에 닿는 광선의 조건부 분포를 만든다. 광원 점마다 따로 정규화하지 않는다. 따라서 Target을 더 잘 비추는 광원 위치가 더 자주 선택될 수 있다.
+- Target 면적당 밀도는 `I(θ_source) × abs(n_target·direction) / distance²`에 비례한다. 전체 광원 면적과 Target에 대해 한 번 정규화하며, 총광속은 계속 입력한 Aim Region 광량이다.
+- Target은 광선을 제한하는 가상 영역이다. 실제 CAD 차폐·반사와 이후 receiver 판정은 그대로 실행한다. 거리나 cosine을 광선의 에너지에 다시 곱하지 않는다.
+- Target이 방출 방향 밖에 있거나 극히 작은 확률 영역이면 명시적인 오류로 종료한다. 균일 분포로 조용히 대체하지 않는다. Target 위치/크기, Forward/Reverse, Gaussian sigma를 확인한다.
+
+LT와 비교할 때는 같은 광원 법선, 각도 분포, Aim Region 광량 기준 및 smoothing을 사용해야 한다. 이 기능 추가만으로 LT 수치 일치를 검증했다는 뜻은 아니다.
+
+## 기존 균일 모드의 계산 의미
 
 이번 기능은 원래 광원을 유지하는 중요도 샘플링이 아니다. 사용자가 지정한 목표 영역으로만 방출하는 별도의 물리적 광원 조건이다.
 
@@ -57,7 +72,8 @@ SET 값은 TV 화면에서 측면 누설광까지의 전달 효율을 보정한 
 | width_mm, height_mm | 사각형 전체 크기, mm |
 | radius_mm | 원형 반지름, mm. UI에는 Diameter=2R |
 | show_in_viewer | 표시 여부만 제어 |
-| distribution | uniform_target_area, v1 고정 |
+| distribution | uniform_target_area / lambertian / gaussian |
+| gaussian_sigma_deg | Aim 전용 양의 유한 sigma(deg), 누락 시 12 |
 | power_reference | aim_region, v1 고정 |
 
 XYZ Tilt는 기존 `planeAxesFromRotation`과 같은 순서를 쓰고 저장 시 U/V 축으로 변환한다. 다시 열 때는 U/V의 외적으로 normal을 복원하여 Tilt 숫자를 계산한다. 기존 파일에도 저장된 축이 있으면 방향에 해당하는 각도를 표시하며 파일 형식 변경은 없다. Euler 각도의 주기성 및 ±90도 특이점에서는 같은 방향을 나타내는 동등한 숫자로 정규화될 수 있다. .bitsam 및 결과의 Emitter 설정에도 이 객체를 포함한다. 결과 Compare는 Aim On/Off, 형상, 위치, 방향, 크기가 다르면 동일 조건으로 점수화하지 않는다. 표시 여부는 비교 조건에서 제외한다.
@@ -84,7 +100,7 @@ GPU 모드에서도 초기 샘플 배열 준비는 기존 CPU/NumPy 경로이고
 - Target은 물리적 충돌체가 아니다. 중첩 금지는 0 길이 방향과 발광 시작점 보정의 모호성을 피하기 위한 이 광원 모델의 안전 조건이다. 매우 얕은 방향, 실제 CAD 두께·틈새가 epsilon 수준인 배치는 별도로 수렴성 및 self-hit를 검토해야 한다.
 - ROI/Transform으로 원래 발광면이 바뀌어도 Target은 World에 고정된다. Source face ID는 기존 ROI remap을 사용한다. Target에 해당하는 CAD 반사면이 ROI에서 제외되면 그 반사는 계산되지 않는다.
 - Reference polygon 발광면은 계산·파일 계약에서 지원한다. 현재 React의 기존 생성 버튼(CAD/Datum)을 이 변경에서 확장하지는 않는다.
-- Lambertian/Gaussian을 유지하는 목표 제한 분포 및 원래 광원 유지 MIS는 별도 모드로 설계·검증한다.
+- Lambertian/Gaussian의 목표 제한 분포는 위 확장에 포함한다. Aim 밖으로 나가는 원래 광량까지 유지하는 Whole Region/MIS 모드는 포함하지 않는다.
 
 ## 검증
 

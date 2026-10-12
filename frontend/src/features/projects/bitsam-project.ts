@@ -293,7 +293,8 @@ function isEmitterAim(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled) || !isBoolean(value.show_in_viewer)
     || !isOneOf(value.shape, ['rectangle', 'circle']) || !isVec3(value.center)
     || !isVec3(value.u_axis) || !isVec3(value.v_axis)
-    || !isOneOf(value.distribution, ['uniform_target_area', 'uniform_solid_angle']) || value.power_reference !== 'aim_region') return false
+    || !isOneOf(value.distribution, ['uniform_target_area', 'uniform_solid_angle', 'lambertian', 'gaussian']) || value.power_reference !== 'aim_region'
+    || (value.gaussian_sigma_deg !== undefined && (!isFiniteNumber(value.gaussian_sigma_deg) || value.gaussian_sigma_deg <= 0))) return false
   if (value.mode !== undefined && !isOneOf(value.mode, ['area', 'sphere'])) return false
   if (!['sphere_upper_deg', 'sphere_lower_deg', 'sphere_alpha_deg', 'sphere_beta_deg'].every(
     (key) => value[key] === undefined || isFiniteNumber(value[key]),
