@@ -219,6 +219,11 @@ class EmitterAimSpec:
 @dataclass
 class EmitterSpec:
     emitter_id: str
+    # UI management metadata for a multi-face LED array. Ray tracing still
+    # treats every child as an independent emitter.
+    array_group_id: Optional[str] = None
+    array_index: Optional[int] = None
+    array_power_basis: Optional[str] = None
     emitter_type: str = "face"
     face_indices: List[int] = field(default_factory=list)
     # CAD placement reference for viewer/edit highlighting only.
@@ -253,6 +258,16 @@ class EmitterSpec:
     aim: Optional[EmitterAimSpec] = None
 
     def __post_init__(self) -> None:
+        if self.array_group_id is not None:
+            self.array_group_id = str(self.array_group_id).strip() or None
+        if self.array_index is not None:
+            self.array_index = max(0, int(self.array_index))
+        if self.array_power_basis is not None:
+            self.array_power_basis = require_choice(
+                self.array_power_basis,
+                "array_power_basis",
+                ("total_array", "per_led"),
+            )
         if isinstance(self.aim, dict):
             self.aim = EmitterAimSpec(**self.aim)
         if self.aim is not None and not isinstance(self.aim, EmitterAimSpec):

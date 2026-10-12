@@ -134,6 +134,17 @@ describe('RayTracingPanel Aim editing', () => {
     expect(emitters.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(101)
     expect(emitters.every((emitter) => emitter.aim?.mode === 'sphere')).toBe(true)
     expect(new Set(emitters.map((emitter) => emitter.emitter_id)).size).toBe(2)
+    expect(emitters.every((emitter) => emitter.array_group_id === 'led_array_001')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit LED Array 1' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Total power (lm)' }), { target: { value: '12' } })
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Aim Sphere Alpha'), { target: { value: '25' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    const updated = workspaceStore.getState().emitters
+    expect(updated.map((emitter) => emitter.power_lumen)).toEqual([6, 6])
+    expect(updated.every((emitter) => emitter.aim?.sphere_alpha_deg === 25)).toBe(true)
+    expect(updated.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(101)
   })
 
   it('groups tessellation triangles by component and original CAD face', () => {

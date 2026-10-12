@@ -311,6 +311,9 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
   return (
     isRecord(value) &&
     isString(value.emitter_id) &&
+    (value.array_group_id === undefined || value.array_group_id === null || isString(value.array_group_id)) &&
+    (value.array_index === undefined || value.array_index === null || isSafeId(value.array_index)) &&
+    (value.array_power_basis === undefined || value.array_power_basis === null || isOneOf(value.array_power_basis, ['total_array', 'per_led'])) &&
     isOneOf(value.emitter_type, [
       'face',
       'datum_plane',
