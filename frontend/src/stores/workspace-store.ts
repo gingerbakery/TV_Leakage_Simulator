@@ -206,6 +206,7 @@ export interface WorkspaceSnapshot {
   roiScopeSequence: number
   roiBoxSelectionArmed: boolean
   emitterFaceSelectionArmed: boolean
+  emitterSelectionTarget: 'surface' | 'body'
   /** True while the Material editor's "Face 지정" picker is armed - every
    *  viewer click toggles that face into/out of `selectedFaceIds` instead of
    *  replacing the selection, so several faces can be gathered before the
@@ -305,6 +306,7 @@ export interface WorkspaceActions {
   clearRoiScopes(): void
   setRoiBoxSelectionArmed(armed: boolean): void
   setEmitterFaceSelectionArmed(armed: boolean): void
+  setEmitterSelectionTarget(target: 'surface' | 'body'): void
   setMaterialFacePickArmed(armed: boolean): void
   setPivotPickArmed(armed: boolean): void
   setPivotPickPoint(point: Vector3Value | null): void
@@ -357,6 +359,9 @@ function normalizeEmitter(emitter: EmitterSpec): EmitterSpec {
   return {
     ...emitter,
     face_indices: normalizeIds(emitter.face_indices),
+    ...(emitter.source_component_ids
+      ? { source_component_ids: normalizeIds(emitter.source_component_ids) }
+      : {}),
     ...(emitter.source_face_indices
       ? { source_face_indices: normalizeIds(emitter.source_face_indices) }
       : {}),
@@ -746,6 +751,7 @@ function restoredSceneState(projectState: WorkspaceProjectState) {
     selectionKind: null,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    emitterSelectionTarget: 'surface' as const,
     materialFacePickArmed: false,
     pivotPickArmed: false,
     pivotPickPoint: null,
@@ -987,6 +993,7 @@ function createSceneSnapshot(): Omit<
     roiScopeSequence: 0,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    emitterSelectionTarget: 'surface' as const,
     materialFacePickArmed: false,
     pivotPickArmed: false,
     pivotPickPoint: null,
@@ -1668,6 +1675,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       setEmitterFaceSelectionArmed: (emitterFaceSelectionArmed) => {
         set({ emitterFaceSelectionArmed })
       },
+      setEmitterSelectionTarget: (emitterSelectionTarget) => {
+        set({ emitterSelectionTarget })
+      },
       setMaterialFacePickArmed: (materialFacePickArmed) => {
         set({ materialFacePickArmed })
       },
@@ -1860,6 +1870,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           selectionKind: null,
           roiBoxSelectionArmed: false,
           emitterFaceSelectionArmed: false,
+          emitterSelectionTarget: 'surface' as const,
           materialFacePickArmed: false,
           pivotPickArmed: false,
           pivotPickPoint: null,
@@ -1927,6 +1938,8 @@ export const workspaceSelectors = {
     state.roiBoxSelectionArmed,
   emitterFaceSelectionArmed: (state: WorkspaceStore) =>
     state.emitterFaceSelectionArmed ?? false,
+  emitterSelectionTarget: (state: WorkspaceStore) =>
+    state.emitterSelectionTarget ?? 'surface',
   materialFacePickArmed: (state: WorkspaceStore) =>
     state.materialFacePickArmed ?? false,
   pivotPickArmed: (state: WorkspaceStore) =>

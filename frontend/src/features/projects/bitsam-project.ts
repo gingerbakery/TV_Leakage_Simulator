@@ -328,6 +328,8 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       'reference_plane',
     ]) &&
     isIdArray(value.face_indices) &&
+    (value.source_component_ids === undefined ||
+      isIdArray(value.source_component_ids)) &&
     (value.source_face_indices === undefined ||
       isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&

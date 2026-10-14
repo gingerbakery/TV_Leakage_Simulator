@@ -52,6 +52,33 @@ export function updateCadFaceSelection(
   return { faceIds, componentIds }
 }
 
+export type CadFaceSelectionOperation = 'add' | 'remove'
+
+/** Applies the explicit modifier-key contract used by Emitter picking.
+ * Ctrl/plain selection adds a complete authored CAD surface; Shift removes
+ * it.  Keeping this separate from the legacy toggle helper avoids an already
+ * selected surface disappearing on an ordinary click. */
+export function modifyCadFaceSelection(
+  scene: ScenePayload,
+  currentFaceIds: readonly number[],
+  patchFaceIds: readonly number[],
+  operation: CadFaceSelectionOperation,
+): { faceIds: number[]; componentIds: number[] } {
+  const selected = new Set(currentFaceIds)
+  for (const faceId of patchFaceIds) {
+    if (operation === 'remove') selected.delete(faceId)
+    else selected.add(faceId)
+  }
+  const faceIds = [...selected].filter((faceId) =>
+    Number.isSafeInteger(faceId) &&
+    Number.isSafeInteger(scene.mesh.face_component_ids[faceId]),
+  ).sort((first, second) => first - second)
+  const componentIds = [...new Set(faceIds.map(
+    (faceId) => scene.mesh.face_component_ids[faceId] as number,
+  ))].sort((first, second) => first - second)
+  return { faceIds, componentIds }
+}
+
 export function resolveViewerHighlight(
   selection: Pick<WorkspaceSnapshot,
     'selectionKind' | 'selectedFaceIds' | 'selectedComponentIds'>,

@@ -199,6 +199,9 @@ export function ViewerWorkspace({
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
   )
+  const emitterSelectionTarget = useWorkspaceStore(
+    workspaceSelectors.emitterSelectionTarget,
+  )
   const roiDraftLabel = useWorkspaceStore(
     workspaceSelectors.roiDraftLabel,
   )
@@ -562,9 +565,13 @@ export function ViewerWorkspace({
             ) : null}
             {emitterFaceSelectionArmed ? (
               <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">
-                {selectedFaceIds.length > 0
-                  ? 'Emitter Surface · Selected'
-                  : 'Emitter Surface · Click a Face'}
+                {emitterSelectionTarget === 'body'
+                  ? selectedComponentIds.length > 0
+                    ? `Emitter Body · ${selectedComponentIds.length} Selected`
+                    : 'Emitter Body · Click a Body'
+                  : selectedFaceIds.length > 0
+                    ? 'Emitter Surface · Selected'
+                    : 'Emitter Surface · Click a Face'}
               </Badge>
             ) : selectedFaceIds.length > 0 ? (
               <Badge className="border border-blue-400/50 bg-blue-400/20 text-blue-300">

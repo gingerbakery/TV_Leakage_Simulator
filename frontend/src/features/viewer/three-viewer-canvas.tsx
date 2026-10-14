@@ -109,6 +109,7 @@ import { ViewerTrackballControls } from './viewer-controls'
 import {
   resolveCadFacePick,
   resolveViewerHighlight,
+  modifyCadFaceSelection,
   updateCadFaceSelection,
   cadFaceContextSelection,
 } from './viewer-selection'
@@ -1759,10 +1760,12 @@ export function ThreeViewerCanvas({
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
   const blockerAreaSelectionIdRef = useRef<string | null>(null)
   const emitterFaceSelectionArmedRef = useRef(false)
+  const emitterSelectionTargetRef = useRef<'surface' | 'body'>('surface')
   const materialFacePickArmedRef = useRef(false)
   const pivotPickArmedRef = useRef(false)
   const datumFacePickArmedRef = useRef(false)
   const selectedFaceIdsRef = useRef<number[]>([])
+  const selectedComponentIdsRef = useRef<number[]>([])
   const roiFaceIdsRef = useRef<number[]>(roiFaceIds)
   const roiScopesRef = useRef<RoiScope[]>(roiScopes)
   const emittersRef = useRef<EmitterSpec[]>([])
@@ -1802,6 +1805,9 @@ export function ThreeViewerCanvas({
   const selectionKind = useWorkspaceStore(workspaceSelectors.selectionKind)
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
+  )
+  const emitterSelectionTarget = useWorkspaceStore(
+    workspaceSelectors.emitterSelectionTarget,
   )
   const materialFacePickArmed = useWorkspaceStore(
     workspaceSelectors.materialFacePickArmed,
@@ -1899,6 +1905,10 @@ export function ThreeViewerCanvas({
   }, [emitterFaceSelectionArmed])
 
   useEffect(() => {
+    emitterSelectionTargetRef.current = emitterSelectionTarget
+  }, [emitterSelectionTarget])
+
+  useEffect(() => {
     materialFacePickArmedRef.current = materialFacePickArmed
   }, [materialFacePickArmed])
 
@@ -1913,6 +1923,10 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     selectedFaceIdsRef.current = selectedFaceIds
   }, [selectedFaceIds])
+
+  useEffect(() => {
+    selectedComponentIdsRef.current = selectedComponentIds
+  }, [selectedComponentIds])
 
   useEffect(() => {
     roiFaceIdsRef.current = roiFaceIds
@@ -2624,6 +2638,7 @@ export function ThreeViewerCanvas({
 
     const resolveEmitterSurfaceBoxSelection = (
       selection: ViewerBoxDrag,
+      operation: 'add' | 'remove',
     ): { faceIds: number[]; componentIds: number[]; surfaceCount: number } | null => {
       const rect = canvas.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return null
@@ -2712,9 +2727,10 @@ export function ThreeViewerCanvas({
 
       if (selectedPatches.length === 0) return null
       const nextFaces = new Set(selectedFaceIdsRef.current)
-      selectedPatches.forEach((patch) =>
-        patch.forEach((faceId) => nextFaces.add(faceId)),
-      )
+      selectedPatches.forEach((patch) => patch.forEach((faceId) => {
+        if (operation === 'remove') nextFaces.delete(faceId)
+        else nextFaces.add(faceId)
+      }))
       const faceIds = [...nextFaces].sort((left, right) => left - right)
       const componentIds = [...new Set(faceIds.flatMap((faceId) => {
         const componentId = scene.mesh.face_component_ids[faceId]
@@ -2820,7 +2836,7 @@ export function ThreeViewerCanvas({
     let pointerDown: { x: number; y: number } | null = null
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
-    let emitterSurfaceBoxDrag = false
+    let emitterSurfaceBoxDrag: 'add' | 'remove' | null = null
     let rollDrag: { lastX: number } | null = null
     let pipDrag: {
       lastX: number
@@ -2880,11 +2896,12 @@ export function ThreeViewerCanvas({
       if (event.button !== 0) return
       if (
         emitterFaceSelectionArmedRef.current &&
-        (event.ctrlKey || event.metaKey)
+        emitterSelectionTargetRef.current === 'surface' &&
+        (event.ctrlKey || event.metaKey || event.shiftKey)
       ) {
         event.preventDefault()
         pointerDown = null
-        emitterSurfaceBoxDrag = true
+        emitterSurfaceBoxDrag = event.shiftKey ? 'remove' : 'add'
         controls.enabled = false
         const point = canvasPoint(event)
         const selection = {
@@ -3003,8 +3020,8 @@ export function ThreeViewerCanvas({
       }
       const selection = boxDragRef.current
       if (selection) {
-        const wasEmitterSurfaceBoxDrag = emitterSurfaceBoxDrag
-        emitterSurfaceBoxDrag = false
+        const emitterSurfaceBoxOperation = emitterSurfaceBoxDrag
+        emitterSurfaceBoxDrag = null
         controls.enabled = true
         const point = canvasPoint(event)
         const completedSelection = {
@@ -3021,7 +3038,7 @@ export function ThreeViewerCanvas({
           Math.abs(completedSelection.currentX - completedSelection.startX) +
           Math.abs(completedSelection.currentY - completedSelection.startY)
         if (movement <= 8) {
-          if (wasEmitterSurfaceBoxDrag) {
+          if (emitterSurfaceBoxOperation) {
             const hit = resolveSurfaceHit(event.clientX, event.clientY)
             if (!hit || hit.faceId === null) {
               onStatusMessage(
@@ -3035,17 +3052,15 @@ export function ThreeViewerCanvas({
               hit.faceId,
               runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
             )
-            const next = updateCadFaceSelection(
+            const next = modifyCadFaceSelection(
               scene,
               selectedFaceIdsRef.current,
               patchFaceIds,
-              true,
+              emitterSurfaceBoxOperation,
             )
-            const removePatch =
-              next.faceIds.length < selectedFaceIdsRef.current.length
             actions.setFaceSelection(next.faceIds, next.componentIds)
             onStatusMessage(
-              `Emitter surface picking · Component ${hit.componentId} · surface ${removePatch ? '해제' : '추가'}`,
+              `Emitter surface picking · Component ${hit.componentId} · surface ${emitterSurfaceBoxOperation === 'remove' ? '해제' : '추가'}`,
             )
             return
           } else {
@@ -3056,8 +3071,11 @@ export function ThreeViewerCanvas({
           }
         }
 
-        if (movement > 8 && wasEmitterSurfaceBoxDrag) {
-          const result = resolveEmitterSurfaceBoxSelection(completedSelection)
+        if (movement > 8 && emitterSurfaceBoxOperation) {
+          const result = resolveEmitterSurfaceBoxSelection(
+            completedSelection,
+            emitterSurfaceBoxOperation,
+          )
           if (!result) {
             onStatusMessage(
               'Emitter surface box · 선택 박스 안에서 CAD Surface를 찾지 못했습니다.',
@@ -3066,7 +3084,7 @@ export function ThreeViewerCanvas({
           }
           actions.setFaceSelection(result.faceIds, result.componentIds)
           onStatusMessage(
-            `Emitter surface box · CAD Surface ${result.surfaceCount}개 추가`,
+            `Emitter surface box · CAD Surface ${result.surfaceCount}개 ${emitterSurfaceBoxOperation === 'remove' ? '해제' : '추가'}`,
           )
           return
         }
@@ -3302,30 +3320,38 @@ export function ThreeViewerCanvas({
       const { componentId, faceId } = hit
 
       if (emitterFaceSelectionArmedRef.current) {
+        if (emitterSelectionTargetRef.current === 'body') {
+          const selected = new Set(selectedComponentIdsRef.current)
+          if (event.shiftKey) selected.delete(componentId)
+          else selected.add(componentId)
+          actions.setSelectedComponentIds(selected)
+          onStatusMessage(
+            `Emitter body picking · Component ${componentId} · Body ${event.shiftKey ? '해제' : '추가'}`,
+          )
+          return
+        }
         if (faceId === null) {
           onStatusMessage(
             `Emitter surface picking · Component ${componentId}의 ROI 절단면은 원본 CAD face가 아니므로 발광면으로 선택할 수 없습니다.`,
           )
           return
         }
-        // Same coplanar-patch, toggle-add/remove behavior as the Material
-        // editor's Face 지정 picker and Transform's Local faces picker - a
-        // click grabs/releases the whole CAD surface as drawn, regardless
-        // of modifier keys, so all four "면 지정" pickers in the app behave
-        // identically.
+        // Surface selection uses an explicit modifier contract: ordinary or
+        // Ctrl click adds the authored CAD surface, while Shift click removes
+        // it. This matches Ctrl/Shift box-drag behavior.
         const patchFaceIds = resolveCadFacePick(
           scene,
           componentId,
           faceId,
           runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
         )
-        const next = updateCadFaceSelection(
-          scene, selectedFaceIdsRef.current, patchFaceIds, true,
+        const operation = event.shiftKey ? 'remove' : 'add'
+        const next = modifyCadFaceSelection(
+          scene, selectedFaceIdsRef.current, patchFaceIds, operation,
         )
-        const removePatch = next.faceIds.length < selectedFaceIdsRef.current.length
         actions.setFaceSelection(next.faceIds, next.componentIds)
         onStatusMessage(
-          `Emitter surface picking · Component ${componentId} · surface ${removePatch ? '해제' : '추가'}`,
+          `Emitter surface picking · Component ${componentId} · surface ${operation === 'remove' ? '해제' : '추가'}`,
         )
         return
       }
@@ -3480,7 +3506,7 @@ export function ThreeViewerCanvas({
       rightPointerMoved = false
       rollDrag = null
       pipDrag = null
-      emitterSurfaceBoxDrag = false
+      emitterSurfaceBoxDrag = null
       controls.enabled = true
       boxDragRef.current = null
       setBoxDrag(null)
@@ -4165,7 +4191,8 @@ export function ThreeViewerCanvas({
     runtime.roiSelectionRoot.visible = false
     const selectionHighlight = resolveViewerHighlight(
       { selectionKind, selectedFaceIds, selectedComponentIds },
-      emitterFaceSelectionArmed || materialFacePickArmed || datumFacePickArmed,
+      (emitterFaceSelectionArmed && emitterSelectionTarget === 'surface') ||
+        materialFacePickArmed || datumFacePickArmed,
       editingComponentMode === 'transform' ? editingComponentId : null,
     )
     const selectedRoiComponentIds = new Set(selectionHighlight.componentIds)
@@ -4237,7 +4264,11 @@ export function ThreeViewerCanvas({
         wireframe: renderMode === 'Wireframe', opacity: surfaceOpacity,
       })
       previousMaterials.forEach((material) => material.dispose())
-      if (emitterFaceSelectionArmed && selectionFaceIds.length) {
+      if (
+        emitterFaceSelectionArmed &&
+        emitterSelectionTarget === 'surface' &&
+        selectionFaceIds.length
+      ) {
         const frame = resolveFacePlacementFrame(scene, selectionFaceIds)
         if (frame) {
           const selectedBounds = new Box3()
@@ -4968,6 +4999,7 @@ export function ThreeViewerCanvas({
     deletedComponentIds,
     datumFacePickArmed,
     emitterFaceSelectionArmed,
+    emitterSelectionTarget,
     emitters,
     editingComponentId,
     editingComponentMode,
@@ -5483,7 +5515,9 @@ export function ThreeViewerCanvas({
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
           : emitterFaceSelectionArmed
-            ? 'Emitter surface mode · Click add/remove · Ctrl + left drag box select · Left drag rotate'
+            ? emitterSelectionTarget === 'body'
+              ? 'Emitter body mode · Click add · Shift + click remove · Left drag rotate'
+              : 'Emitter surface mode · Click/Ctrl drag add · Shift click/drag remove · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
       </div>
       {rendererError ? (

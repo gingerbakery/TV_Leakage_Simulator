@@ -38,7 +38,7 @@ export interface EmitterSpec {
   array_power_basis?: 'total_array' | 'per_led' | null
   emitter_type: EmitterType
   face_indices: number[]
-  /** Preview-only compact Body source reference; expanded by the API cache. */
+  /** Compact Body-emitter source reference; expanded by the API scene cache. */
   source_component_ids?: number[]
   /** CAD faces used to place a datum plane; display/edit reference only. */
   source_face_indices?: number[]

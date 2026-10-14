@@ -7,6 +7,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import {
   countSelectedCadFaces,
   cadFaceContextSelection,
+  modifyCadFaceSelection,
   resolveCadFacePick,
   resolveViewerHighlight,
   updateCadFaceSelection,
@@ -83,6 +84,18 @@ describe('CAD face selection and component highlight contract', () => {
     expect(anotherPart.componentIds).toEqual([1, 2])
     const removed = updateCadFaceSelection(scene, anotherPart.faceIds, [0, 1], true)
     expect(removed).toEqual({ faceIds: [2, 3, 4], componentIds: [1, 2] })
+  })
+
+  it('uses explicit add and Shift-remove semantics for emitter CAD surfaces', () => {
+    const scene = cadScene()
+    const added = modifyCadFaceSelection(scene, [0, 1], [2], 'add')
+    expect(added).toEqual({ faceIds: [0, 1, 2], componentIds: [1] })
+    // Adding an already selected surface is idempotent; it no longer toggles
+    // off unless the user explicitly holds Shift.
+    expect(modifyCadFaceSelection(scene, added.faceIds, [0, 1], 'add'))
+      .toEqual(added)
+    expect(modifyCadFaceSelection(scene, added.faceIds, [0, 1], 'remove'))
+      .toEqual({ faceIds: [2], componentIds: [1] })
   })
 
   it('never expands a face highlight through the selected parent component', () => {

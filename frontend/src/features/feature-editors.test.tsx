@@ -1280,6 +1280,36 @@ describe('Step 07·08 feature editors', () => {
     ])
   })
 
+  it('creates a compact CAD Body emitter from Viewer component selection', () => {
+    render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add CAD Body Emitter' }))
+    expect(screen.getByRole('dialog', { name: 'CAD Body Emitter' })).not.toBeNull()
+    expect(workspaceStore.getState().emitterSelectionTarget).toBe('body')
+    expect(workspaceStore.getState().emitterFaceSelectionArmed).toBe(true)
+
+    act(() => {
+      workspaceStore.getState().actions.setSelectedComponentIds([1, 2])
+    })
+    expect(screen.getByText('Selected Body · Component 2개')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Emitter' }))
+
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_type: 'face',
+        face_indices: [],
+        source_component_ids: [1, 2],
+      }),
+    ])
+  })
+
   it('applies an ROI CAD face property to the original CAD face, not its parent part', () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
