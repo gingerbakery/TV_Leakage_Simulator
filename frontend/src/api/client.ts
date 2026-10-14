@@ -12,6 +12,7 @@ import type {
   SectionCapResponse,
 } from './types'
 import { decodeSceneBinary } from './scene-binary'
+import { isBsdfAsset, type BsdfAsset } from '@/features/materials/bsdf-asset'
 
 export interface ApiRequestOptions {
   signal?: AbortSignal
@@ -22,6 +23,7 @@ export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
 }
 
 export interface LeakageApiClient {
+  importBsdf(files: { name: string; text: string }[], options?: ApiRequestOptions): Promise<BsdfAsset>
   getScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<ScenePayload>
   refreshScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<SceneRefreshResponse>
   getSectionCap(
@@ -58,6 +60,13 @@ export function createApiClient(
   const http = createHttpClient(options)
 
   return {
+    async importBsdf(files, requestOptions) {
+      const asset = await http.requestJson<unknown>('/api/bsdf/import', {
+        method: 'POST', json: { files }, signal: requestOptions?.signal,
+      })
+      if (!isBsdfAsset(asset)) throw new Error('BSDF 응답 형식이 올바르지 않습니다. 서버 버전을 확인하세요.')
+      return asset
+    },
     async getScene(cadPath, requestOptions, accessoryPaths = []) {
       const binaryQuery = new URLSearchParams({ cad: cadPath, format: 'binary' })
       accessoryPaths.forEach((path) => binaryQuery.append('aux', path))

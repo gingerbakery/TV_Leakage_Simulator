@@ -34,6 +34,7 @@ const allFilters = (visible: boolean): RayPathDisplayFilters => ({
   specular: visible,
   lambertian: visible,
   gaussian: visible,
+  bsdf: visible,
 })
 
 export function ResultPanel({

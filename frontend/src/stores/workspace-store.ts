@@ -1,4 +1,5 @@
 import { useStore } from 'zustand'
+import { emptyBsdfAssets, isBsdfAsset, type BsdfAsset } from '@/features/materials/bsdf-asset'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { normalizeFaceDisplayColors, updateFaceDisplayColors, type FaceDisplayColor } from './face-display-color'
 
@@ -167,11 +168,12 @@ export type RayPathDisplayFilter =
   | 'specular'
   | 'lambertian'
   | 'gaussian'
+  | 'bsdf'
 
 export type RayPathDisplayFilters = Record<
-  RayPathDisplayFilter,
+  Exclude<RayPathDisplayFilter, 'bsdf'>,
   boolean
->
+> & { bsdf?: boolean }
 
 export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   receiver_direct: true,
@@ -180,6 +182,7 @@ export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   specular: false,
   lambertian: false,
   gaussian: false,
+  bsdf: false,
 }
 
 export interface WorkspaceSnapshot {
@@ -197,6 +200,7 @@ export interface WorkspaceSnapshot {
   faceColorOverrides: FaceDisplayColor[]
   materialAssignments: MaterialAssignment[]
   customOpticalProfiles: SavedOpticalProfile[]
+  bsdfAssets?: BsdfAsset[]
   transformRules: ComponentTransformRule[]
   roiScopes: RoiScope[]
   roiScopeSequence: number
@@ -241,6 +245,7 @@ export type WorkspaceProjectState = Pick<
   | 'faceColorOverrides'
   | 'materialAssignments'
   | 'customOpticalProfiles'
+  | 'bsdfAssets'
   | 'transformRules'
   | 'roiScopes'
   | 'roiScopeSequence'
@@ -288,6 +293,7 @@ export interface WorkspaceActions {
   upsertMaterialAssignment(assignment: MaterialAssignment): void
   removeMaterialAssignment(assignmentId: string): void
   addCustomOpticalProfile(profile: SavedOpticalProfile): void
+  addBsdfAsset(asset: BsdfAsset): void
   removeCustomOpticalProfile(profileId: string): void
   upsertTransformRule(rule: ComponentTransformRule): void
   setTransformRuleEnabled(ruleId: string, enabled: boolean): void
@@ -675,6 +681,7 @@ function normalizeProjectState(
     customOpticalProfiles: structuredClone(
       projectState.customOpticalProfiles ?? [],
     ),
+    bsdfAssets: structuredClone(projectState.bsdfAssets ?? []),
     transformRules: projectState.transformRules
       .map(normalizeTransformRule)
       .filter(
@@ -710,6 +717,7 @@ function projectStateFromSnapshot(
     faceColorOverrides: state.faceColorOverrides,
     materialAssignments: state.materialAssignments,
     customOpticalProfiles: state.customOpticalProfiles,
+    bsdfAssets: state.bsdfAssets ?? [],
     transformRules: state.transformRules,
     roiScopes: state.roiScopes,
     roiScopeSequence: state.roiScopeSequence,
@@ -973,6 +981,7 @@ function createSceneSnapshot(): Omit<
     faceColorOverrides: [],
     materialAssignments: [],
     customOpticalProfiles: [],
+    bsdfAssets: [],
     transformRules: [],
     roiScopes: [],
     roiScopeSequence: 0,
@@ -1565,6 +1574,10 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ),
         }))
       },
+      addBsdfAsset: (asset) => {
+        if (!isBsdfAsset(asset)) throw new Error('Invalid BSDF asset')
+        set((state) => ({ bsdfAssets: [...(state.bsdfAssets ?? []).filter((item) => item.id !== asset.id), structuredClone(asset)] }))
+      },
       upsertTransformRule: (rule) => {
         const normalized = normalizeTransformRule(rule)
         set((state) => ({
@@ -1867,6 +1880,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set((state) => ({
           ...createSceneSnapshot(),
           customOpticalProfiles: state.customOpticalProfiles,
+          bsdfAssets: state.bsdfAssets ?? [],
         }))
       },
       resetWorkspace: () => {
@@ -1906,6 +1920,7 @@ export const workspaceSelectors = {
     state.materialAssignments,
   customOpticalProfiles: (state: WorkspaceStore) =>
     state.customOpticalProfiles ?? [],
+  bsdfAssets: (state: WorkspaceStore) => state.bsdfAssets ?? emptyBsdfAssets,
   transformRules: (state: WorkspaceStore) => state.transformRules,
   roiScopes: (state: WorkspaceStore) => state.roiScopes,
   roiBoxSelectionArmed: (state: WorkspaceStore) =>

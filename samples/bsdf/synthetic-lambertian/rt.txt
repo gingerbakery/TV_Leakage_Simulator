@@ -1,0 +1,9 @@
+DFAT Version 1.0
+DATANAME: Synthetic 30 percent Lambertian reflector - not measured
+ABSORBING: YES
+INDEX: 1
+DATAITEMS: TAVG RAVG
+wv 550
+AOI 0 0 0.3
+AOI 60 0 0.3
+AOI 90 0 0.3

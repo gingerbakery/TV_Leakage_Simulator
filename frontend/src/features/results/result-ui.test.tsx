@@ -957,12 +957,12 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('2/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([true, true, false, false, false, false])
+    ).toEqual([true, true, false, false, false, false, false])
     fireEvent.click(screen.getByRole('button', { name: 'All off' }))
     expect(screen.getByText('0/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([false, false, false, false, false, false])
+    ).toEqual([false, false, false, false, false, false, false])
 
     fireEvent.click(
       screen.getByRole('button', { name: '분석 결과 보기' }),

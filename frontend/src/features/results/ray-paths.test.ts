@@ -51,6 +51,13 @@ const reflectedMissPath = [
 ]
 
 describe('ray path visualization', () => {
+  it('displays a BSDF reflected escape path in its own group', () => {
+    const path = [hit([0,0,1], 'emitter', 'direct'), hit([0,0,0], 'surface', 'bsdf'), hit([1,0,1], 'escaped', 'bsdf')]
+    const visualization = buildRayPathVisualization([path], { ...defaultRayPathDisplayFilters, bsdf: true })
+    expect(visualization.visiblePathCount).toBe(1)
+    expect(visualization.groups.bsdf).toEqual([[[0,0,0],[1,0,1]]])
+    expect(visualization.groups.gaussian).toHaveLength(0)
+  })
   it('separates direct and reflected Receiver paths', () => {
     expect(receiverPathFilter(directReceiverPath)).toBe(
       'receiver_direct',

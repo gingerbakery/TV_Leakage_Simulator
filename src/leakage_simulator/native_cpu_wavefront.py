@@ -28,6 +28,7 @@ SCATTER_SPECULAR = 1
 SCATTER_LAMBERTIAN = 2
 SCATTER_GAUSSIAN = 3
 SCATTER_MIXED = 4
+SCATTER_BSDF = 5
 
 TERMINATION_THRESHOLD = 0
 TERMINATION_RUSSIAN_ROULETTE = 1
@@ -36,6 +37,7 @@ LOBE_NONE = -1
 LOBE_SPECULAR = 0
 LOBE_LAMBERTIAN = 1
 LOBE_GAUSSIAN = 2
+LOBE_BSDF = 3
 
 STATUS_ATTEMPTED = 1 << 0
 STATUS_DEPTH_LIMITED = 1 << 1
@@ -53,6 +55,7 @@ _VALID_SCATTER_CODES = frozenset(
         SCATTER_LAMBERTIAN,
         SCATTER_GAUSSIAN,
         SCATTER_MIXED,
+        SCATTER_BSDF,
     }
 )
 _SCATTER_CODE_BY_NAME = {
@@ -61,6 +64,7 @@ _SCATTER_CODE_BY_NAME = {
     "lambertian": SCATTER_LAMBERTIAN,
     "gaussian": SCATTER_GAUSSIAN,
     "mixed": SCATTER_MIXED,
+    "bsdf": SCATTER_BSDF,
 }
 _SCATTER_NAME_BY_CODE = {
     code: name for name, code in _SCATTER_CODE_BY_NAME.items()
@@ -933,6 +937,7 @@ def _choice_int(value: int, name: str, choices: frozenset[int]) -> int:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "LOBE_BSDF",
     "LOBE_GAUSSIAN",
     "LOBE_LAMBERTIAN",
     "LOBE_NONE",
@@ -942,6 +947,7 @@ __all__ = [
     "NativeCpuWavefrontProviderError",
     "NativeCpuWavefrontUnavailable",
     "SCATTER_GAUSSIAN",
+    "SCATTER_BSDF",
     "SCATTER_LAMBERTIAN",
     "SCATTER_MIXED",
     "SCATTER_NONE",

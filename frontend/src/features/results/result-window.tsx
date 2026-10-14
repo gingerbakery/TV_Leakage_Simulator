@@ -323,6 +323,14 @@ function comparisonConditionMismatches(
       metricGroup(candidate, '_performance_summary').receiver_flux_contract ??
         'cosine_weighted_incident_flux_v1',
     )
+  const bsdfContract = (candidate: RayTraceResult) => {
+    const models = metricGroup(candidate, '_performance_summary').bsdf_transport
+    return JSON.stringify(Array.isArray(models) ? [...models].sort((a, b) =>
+      JSON.stringify(a).localeCompare(JSON.stringify(b))) : [])
+  }
+  if (bsdfContract(result) !== bsdfContract(baseline)) {
+    mismatches.push('BSDF · 산란 표 / RT / 계산 파장 / 계산 모델')
+  }
   if (
     different(receiverFluxContract(result), receiverFluxContract(baseline))
   ) {
@@ -692,6 +700,8 @@ function analysisExcelSheets(
     })
     item.result.optical_profiles.forEach((profile) => {
       const fields: Array<[string, unknown, string?]> = [
+        ['bsdf_asset_id', profile.bsdf_asset_id ?? null],
+        ['optical_values_basis', profile.bsdf_asset_id ? 'BSDF/RT overrides analytic fields below' : 'analytic'],
         ['reflectance', profile.reflectance],
         ['absorption', profile.absorption],
         ['specular_ratio', profile.specular_ratio],
@@ -3101,6 +3111,11 @@ export function RayTraceResultWindow({
           ) : null}
           {tab === 'summary' ? (
             <div className="space-y-3">
+              {Array.isArray(performance.bsdf_transport) && performance.bsdf_transport.length > 0 ? (
+                <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs">
+                  BSDF 표 계산: 등방성 · No Shift. 실제 연산 장치는 Compute 항목을 확인하세요. RT 반사율과 산란 표를 사용했습니다. LT 비교 검증은 아직 완료되지 않았습니다.
+                </p>
+              ) : null}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Stat
                   label="Total Rays"
@@ -3337,7 +3352,7 @@ export function RayTraceResultWindow({
                   <span className="flex items-center gap-1">
                     Reflection model
                     <HelpTooltip label="Reflection model 설명">
-                      Receiver에 도달한 반사 경로를 Specular, Gaussian, Lambertian 산란 방식별로 분류합니다.
+                      Receiver에 도달한 반사 경로를 Specular, Gaussian, Lambertian, BSDF 산란 방식별로 분류합니다.
                     </HelpTooltip>
                   </span>
                   <span className="flex items-center gap-1">
@@ -3353,7 +3368,7 @@ export function RayTraceResultWindow({
                     </HelpTooltip>
                   </span>
                 </div>
-                {(['specular', 'gaussian', 'lambertian'] as const).map(
+                {(['specular', 'gaussian', 'lambertian', ...(numeric(objectValue(contribution.lobes, 'bsdf').emitted_count) > 0 ? ['bsdf'] : [])]).map(
                   (name) => {
                     const values = objectValue(
                       contribution.lobes,
@@ -3371,6 +3386,7 @@ export function RayTraceResultWindow({
                               ? '거울 반사처럼 입사각과 반사각을 따라 한 방향으로 집중된 반사 경로입니다.'
                               : name === 'gaussian'
                                 ? '정반사 방향을 중심으로 설정된 Sigma 각도만큼 퍼지는 반사 경로입니다.'
+                                : name === 'bsdf' ? '가져온 BSDF 표에서 반사 방향을 추출하고 RT 파일의 반사율로 광량을 계산한 경로입니다.'
                                 : '표면 법선 반구 방향으로 넓게 확산되는 난반사 경로입니다.'}
                           </HelpTooltip>
                         </span>

@@ -248,6 +248,8 @@ class Perf4BGpuResidentIntegrationTests(unittest.TestCase):
         )
         performance = replayed.metrics["_performance_summary"]
         self.assertEqual(performance["wavefront_residency"], "host_roundtrip")
+        self.assertEqual(performance["compute_execution_state"], "gpu_mixed")
+        self.assertEqual(performance["compute_execution_reason"], "forced_resident_failure")
         self.assertEqual(
             performance["gpu_resident_wavefront_fallback_count"],
             1,

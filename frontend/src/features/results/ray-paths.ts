@@ -46,6 +46,7 @@ export const rayPathStyles: Record<
     label: 'Gaussian',
     opacity: 0.76,
   },
+  bsdf: { color: 0xf472b6, label: 'BSDF', opacity: 0.76 },
 }
 
 export const rayPathFilterOrder: RayPathDisplayFilter[] = [
@@ -55,6 +56,7 @@ export const rayPathFilterOrder: RayPathDisplayFilter[] = [
   'specular',
   'lambertian',
   'gaussian',
+  'bsdf',
 ]
 
 export interface RayPathVisualization {
@@ -91,7 +93,7 @@ function reflectedFilter(event: RayHit | undefined) {
   const kind = event?.ray_kind
   return kind === 'specular' ||
     kind === 'lambertian' ||
-    kind === 'gaussian'
+    kind === 'gaussian' || kind === 'bsdf'
     ? kind
     : null
 }
@@ -126,6 +128,7 @@ export function buildRayPathVisualization(
     specular: [],
     lambertian: [],
     gaussian: [],
+    bsdf: [],
   }
   const visiblePathCount = paths.reduce(
     (count, path) => count + Number(isRayPathVisible(path, filters)),

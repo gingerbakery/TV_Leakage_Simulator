@@ -220,6 +220,7 @@ export interface RayTraceRequest {
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
   optical_profiles: OpticalProfile[]
+  bsdf_assets?: import('@/features/materials/bsdf-asset').BsdfAsset[]
   optical_assignments: OpticalAssignment[]
   transform_rules: TransformRule[]
   excluded_component_ids: number[]

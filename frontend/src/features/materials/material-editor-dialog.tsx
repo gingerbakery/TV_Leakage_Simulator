@@ -40,6 +40,7 @@ import {
 import { componentCadSurfaces, partMaterialAssignment } from './surface-assignment-model'
 import { CompiledPreview } from './optical-profile-editor'
 import { CustomOpticalDialog } from './custom-optical-dialog'
+import { BsdfAssetPanel } from './bsdf-asset-panel'
 import { isCustomOpticalValid, resolveOpticalProfile, withSurfaceFinish } from './optical-profile'
 
 interface MaterialEditorDialogProps {
@@ -67,6 +68,7 @@ interface PartDraft {
   baseMaterialId: string
   surfaceId: string
   profileId: string
+  bsdfAssetId: string
   opticalOverride?: OpticalValueOverride
 }
 
@@ -77,6 +79,7 @@ function draftFromAssignment(assignment: MaterialAssignment | null): PartDraft {
     baseMaterialId,
     surfaceId: assignment?.surfaceId ?? base.defaultSurfaceId,
     profileId: assignment?.profileId ?? '',
+    bsdfAssetId: assignment?.bsdfAssetId ?? '',
     opticalOverride: assignment?.opticalOverride,
   }
 }
@@ -122,6 +125,7 @@ interface FaceEditorState {
   /** null while composing a brand-new face group that hasn't been applied yet. */
   assignmentId: string | null
   surfaceId: string
+  bsdfAssetId: string
   opticalOverride?: OpticalValueOverride
 }
 
@@ -134,6 +138,7 @@ export function MaterialEditorDialog({
   returnFocusRef,
 }: MaterialEditorDialogProps) {
   const profileFieldId = useId()
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
   const baseMaterialFieldId = useId()
   const surfacePropertyFieldId = useId()
   const selectedFaceIds = useWorkspaceStore(
@@ -232,7 +237,7 @@ export function MaterialEditorDialog({
     setFaceEditor(null)
     setCustomEdit(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, component?.component_id])
+  }, [open, component?.component_id, activeCadCaseId])
 
   // Leaving the dialog (or switching target) must not leave the viewer
   // stuck in "every click toggles a face" mode.
@@ -254,7 +259,7 @@ export function MaterialEditorDialog({
       baseMaterialId: draft.baseMaterialId,
       surfaceId: draft.surfaceId,
       profileId: draft.profileId,
-      bsdfAssetId: '',
+      bsdfAssetId: draft.bsdfAssetId,
       opticalOverride: draft.opticalOverride,
       enabled: true,
     }
@@ -285,7 +290,7 @@ export function MaterialEditorDialog({
       name,
       baseMaterialId: partDraft.baseMaterialId,
       surfaceId: partDraft.surfaceId,
-      bsdfAssetId: '',
+      bsdfAssetId: partDraft.bsdfAssetId,
       opticalOverride: partDraft.opticalOverride,
     }
     actions.addCustomOpticalProfile(profile)
@@ -310,7 +315,7 @@ export function MaterialEditorDialog({
     actions.setSelectedComponentIds([component.component_id])
     actions.setSelectedFaceIds([])
     actions.setMaterialFacePickArmed(true)
-    setFaceEditor({ assignmentId: null, surfaceId: partDraft.surfaceId,
+    setFaceEditor({ assignmentId: null, surfaceId: partDraft.surfaceId, bsdfAssetId: partDraft.bsdfAssetId,
       opticalOverride: partDraft.opticalOverride ? resolveOpticalProfile(partDraft.baseMaterialId, partDraft.surfaceId, partDraft.opticalOverride) : undefined })
   }
 
@@ -343,6 +348,7 @@ export function MaterialEditorDialog({
     setFaceEditor({
       assignmentId: assignment.assignmentId,
       surfaceId: assignment.surfaceId,
+      bsdfAssetId: assignment.bsdfAssetId,
       opticalOverride: assignment.opticalOverride,
     })
   }
@@ -371,7 +377,7 @@ export function MaterialEditorDialog({
       surfaceId: faceEditor.surfaceId,
       opticalOverride: faceOpticalOverride,
       profileId: '',
-      bsdfAssetId: '',
+      bsdfAssetId: faceEditor.bsdfAssetId,
       enabled: true,
     }
     actions.upsertMaterialAssignment(assignment)
@@ -454,6 +460,7 @@ export function MaterialEditorDialog({
                     }
                     setPartDraft({
                       profileId: nextProfileId,
+                      bsdfAssetId: profile.bsdfAssetId,
                       baseMaterialId: profile.baseMaterialId,
                       surfaceId: profile.surfaceId,
                       opticalOverride: profile.opticalOverride,
@@ -562,6 +569,7 @@ export function MaterialEditorDialog({
                 onChange={(event) => {
                   const nextBase = findBaseMaterial(event.currentTarget.value)
                   setPartDraft({
+                    ...partDraft,
                     baseMaterialId: nextBase.id,
                     surfaceId: nextBase.defaultSurfaceId,
                     profileId: '',
@@ -616,7 +624,9 @@ export function MaterialEditorDialog({
             baseMaterialId={partDraft.baseMaterialId}
             surfaceId={partDraft.surfaceId}
             opticalOverride={partDraft.opticalOverride}
+            label={partDraft.bsdfAssetId ? '보관된 기존 광학 값 · BSDF 연결 해제 시 사용' : undefined}
           />
+          <BsdfAssetPanel value={partDraft.bsdfAssetId} onChange={(bsdfAssetId) => setPartDraft({ ...partDraft, bsdfAssetId, profileId: '' })} />
 
           <div className="space-y-2 text-xs text-muted-foreground">
             {partDraft.opticalOverride ? <p>사용자 지정 광학 값 적용 중</p> : null}
@@ -752,7 +762,9 @@ export function MaterialEditorDialog({
                 baseMaterialId={partDraft.baseMaterialId}
                 surfaceId={faceEditor.surfaceId}
                 opticalOverride={faceOpticalOverride}
+                label={faceEditor.bsdfAssetId ? '보관된 기존 광학 값 · BSDF 연결 해제 시 사용' : undefined}
               />
+              <BsdfAssetPanel value={faceEditor.bsdfAssetId} onChange={(bsdfAssetId) => setFaceEditor({ ...faceEditor, bsdfAssetId })} />
               <div className="flex items-center justify-end gap-2">
                 {faceEditor.assignmentId ? (
                   <Button

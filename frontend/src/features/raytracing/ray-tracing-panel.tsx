@@ -1625,6 +1625,7 @@ export function RayTracingPanel({
   )
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
+  const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
   const materialAssignments = useWorkspaceStore(
     workspaceSelectors.materialAssignments,
   )
@@ -1844,6 +1845,7 @@ export function RayTracingPanel({
         })),
         receivers,
         materialAssignments,
+        bsdfAssets,
         transformRules,
         excludedComponentIds,
         deletedComponentIds,
@@ -1925,7 +1927,7 @@ export function RayTracingPanel({
       )
       return false
     }
-  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, bsdfAssets, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false

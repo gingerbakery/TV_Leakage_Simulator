@@ -29,6 +29,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from . import gpu_cuda_intersection as cuda_backend
+from .bsdf_packed import PackedBsdf, validate_bsdf_indices, make_bsdf_functions
 from .gpu_cuda_summary_accumulator import (
     GpuSummaryAccumulatorExecution,
     GpuSummaryAccumulatorRequest,
@@ -50,6 +51,8 @@ from .native_cpu_counter_wavefront import (
     MAX_GAUSSIAN_ATTEMPTS,
 )
 from .native_cpu_wavefront import (
+    LOBE_BSDF,
+    SCATTER_BSDF,
     LOBE_GAUSSIAN,
     LOBE_LAMBERTIAN,
     LOBE_NONE,
@@ -74,6 +77,7 @@ from .wavefront_event_tape import (
     PrimaryMajorEventTape,
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT,
+    RAY_KIND_BSDF,
     RAY_KIND_GAUSSIAN,
     RAY_KIND_LAMBERTIAN,
     RAY_KIND_SPECULAR,
@@ -157,6 +161,8 @@ class GpuResidentWavefrontContext:
     receiver_minimum_cosines: FloatArray | ArrayLike
     receiver_columns: NDArray[np.int32] | ArrayLike
     receiver_rows: NDArray[np.int32] | ArrayLike
+    bsdf: PackedBsdf = field(default_factory=PackedBsdf.empty)
+    bsdf_indices: Optional[np.ndarray] = None
     _device_bindings: Any = field(default=None, init=False, repr=False)
     _summary_session: GpuSummaryAccumulatorSession = field(
         default_factory=GpuSummaryAccumulatorSession,
@@ -218,7 +224,7 @@ class GpuResidentWavefrontContext:
             raise ValueError("face_roughness values must be within [0, 1]")
         if np.any(
             (self.face_scatter < SCATTER_NONE)
-            | (self.face_scatter > SCATTER_MIXED)
+            | (self.face_scatter > SCATTER_BSDF)
         ):
             raise ValueError("face_scatter contains an unsupported code")
         if np.any(
@@ -229,6 +235,11 @@ class GpuResidentWavefrontContext:
         if np.any(self.face_gaussian_sigma_deg <= 0.0):
             raise ValueError("face_gaussian_sigma_deg values must be positive")
 
+        self.bsdf_indices = validate_bsdf_indices(
+            self.bsdf,
+            self.bsdf_indices if self.bsdf_indices is not None else np.full(face_count, -1),
+            self.face_scatter, SCATTER_BSDF,
+        )
         self.receiver_centers = _owned_array(
             self.receiver_centers,
             np.float64,
@@ -495,6 +506,8 @@ class _DeviceBindings:
     face_scatter: Any
     face_specular_ratio: Any
     face_gaussian_sigma_deg: Any
+    bsdf_indices: Any
+    bsdf_arrays: Any
     receiver_centers: Any
     receiver_normals: Any
     receiver_u_axes: Any
@@ -596,6 +609,8 @@ def _ensure_device_bindings(
                 face_gaussian_sigma_deg=cuda.to_device(
                     context.face_gaussian_sigma_deg
                 ),
+                bsdf_indices=cuda.to_device(context.bsdf_indices),
+                bsdf_arrays=tuple(cuda.to_device(a) for a in context.bsdf.arrays()),
                 receiver_centers=cuda.to_device(context.receiver_centers),
                 receiver_normals=cuda.to_device(context.receiver_normals),
                 receiver_u_axes=cuda.to_device(context.receiver_u_axes),
@@ -1379,6 +1394,10 @@ def _make_kernel() -> Callable[..., None]:
             return math.inf, -1, 0
         return best_distance, best_face, 0
 
+    bsdf_reflectance, bsdf_sample = make_bsdf_functions(
+        cuda.jit(device=True, inline=True, fastmath=False), uniform,
+    )
+
     @cuda.jit(fastmath=False)
     def resident_kernel(
         ray_count,
@@ -1414,6 +1433,7 @@ def _make_kernel() -> Callable[..., None]:
         face_scatter,
         face_specular_ratio,
         face_gaussian_sigma_deg,
+        bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
         receiver_centers,
         receiver_normals,
         receiver_u_axes,
@@ -1674,6 +1694,12 @@ def _make_kernel() -> Callable[..., None]:
                 face_roughness[face_index],
                 angle_dependent_reflectance,
             )
+            material = bsdf_indices[face_index]
+            if material >= 0:
+                reflected_power = current_power * bsdf_reflectance(
+                    material, -(direction_x*normal_x+direction_y*normal_y+direction_z*normal_z),
+                    bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
             event_faces[ray_index, depth] = face_index
             if record_geometry:
                 event_distances[ray_index, depth] = distance
@@ -1728,7 +1754,7 @@ def _make_kernel() -> Callable[..., None]:
                 emitted_power = min_energy
 
             scatter = face_scatter[face_index]
-            if scatter == SCATTER_NONE or face_reflectance[face_index] <= 0.0:
+            if (material < 0 and (scatter == SCATTER_NONE or face_reflectance[face_index] <= 0.0)) or reflected_power <= 0.0:
                 event_status[ray_index, depth] = status | STATUS_DISABLED
                 terminal_kind[ray_index] = TERMINAL_BLOCKED
                 terminal_depth[ray_index] = depth
@@ -1755,7 +1781,15 @@ def _make_kernel() -> Callable[..., None]:
             next_z = specular_z
             lobe = LOBE_SPECULAR
             next_kind = RAY_KIND_SPECULAR
-            if scatter == SCATTER_LAMBERTIAN:
+            if material >= 0:
+                stochastic_primary[ray_index] = 1
+                next_x, next_y, next_z, _ = bsdf_sample(
+                    material, direction_x, direction_y, direction_z, normal_x, normal_y, normal_z,
+                    key, depth, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
+                lobe = LOBE_BSDF
+                next_kind = RAY_KIND_BSDF
+            elif scatter == SCATTER_LAMBERTIAN:
                 stochastic_primary[ray_index] = 1
                 next_x, next_y, next_z = lambertian(
                     key,
@@ -1973,6 +2007,8 @@ def _launch_resident_kernel(
             bindings.face_scatter,
             bindings.face_specular_ratio,
             bindings.face_gaussian_sigma_deg,
+            bindings.bsdf_indices,
+            *bindings.bsdf_arrays,
             bindings.receiver_centers,
             bindings.receiver_normals,
             bindings.receiver_u_axes,

@@ -1,4 +1,5 @@
 import type { ScenePayload } from '@/api'
+import { bsdfAssetName } from './bsdf-asset'
 import { Layers3, Palette, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +35,7 @@ export function MaterialAssignmentPanel({
     workspaceSelectors.componentNameOverrides,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
 
   const componentsById = new Map(
     (scene?.components ?? []).map((component) => [
@@ -85,6 +87,7 @@ export function MaterialAssignmentPanel({
               : `Component ${assignment.componentId}`
             const base = findBaseMaterial(assignment.baseMaterialId)
             const surface = findSurfaceProperty(assignment.surfaceId)
+            const bsdf = bsdfAssets.find((asset) => asset.id === assignment.bsdfAssetId)
 
             return (
               <div
@@ -111,6 +114,7 @@ export function MaterialAssignmentPanel({
                         ? surface.name
                         : `${base.name} · ${surface.name}`}
                     </span>
+                    {assignment.bsdfAssetId ? <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">BSDF · {bsdf ? bsdfAssetName(bsdf) : '누락된 파일'} · {bsdf?.transport ? 'No Shift · CPU/GPU' : '계산 옵션 필요'}</span> : null}
                   </button>
                   <Button
                     variant="ghost"
