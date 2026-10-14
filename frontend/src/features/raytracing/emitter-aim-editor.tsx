@@ -54,7 +54,15 @@ export function EmitterAimEditor({
             </div>
             <div className="flex flex-wrap gap-1">
               {([['전방위', 0, 180], ['반구', 0, 90], ['좁은 빔', 0, 15], ['평행광', 0, 0]] as const).map(([label, upper, lower]) =>
-                <Button key={label} size="sm" variant="outline" onClick={() => onChange({ ...aim, sphere_upper_deg: upper, sphere_lower_deg: lower })}>{label}</Button>,
+                <Button key={label} size="sm" variant="outline" onClick={() => onChange({
+                  ...aim,
+                  sphere_upper_deg: upper,
+                  sphere_lower_deg: lower,
+                  // "전방위" means the complete 4π sphere. Lambertian has
+                  // no rear-hemisphere power, so keeping it here would make
+                  // this preset look and trace like only a forward hemisphere.
+                  ...(label === '전방위' ? { distribution: 'uniform_solid_angle' as const } : {}),
+                })}>{label}</Button>,
               )}
             </div>
           </fieldset>
@@ -76,7 +84,7 @@ export function EmitterAimEditor({
               <input type="checkbox" aria-label="Show Aim Sphere" checked={aim.show_in_viewer}
                 onChange={(event) => onChange({ ...aim, show_in_viewer: event.currentTarget.checked })} />각도 가이드 표시
             </label>
-            <Button size="sm" variant="ghost" onClick={() => onChange({ ...aim, sphere_upper_deg: 0, sphere_lower_deg: 180, sphere_alpha_deg: 0, sphere_beta_deg: 0, show_in_viewer: true })}>Reset Sphere</Button>
+            <Button size="sm" variant="ghost" onClick={() => onChange({ ...aim, distribution: 'uniform_solid_angle', sphere_upper_deg: 0, sphere_lower_deg: 180, sphere_alpha_deg: 0, sphere_beta_deg: 0, show_in_viewer: true })}>Reset Sphere</Button>
           </div>
           <div className="text-xs text-muted-foreground">{aim.distribution === 'lambertian' ? 'Lambertian · 중심축 전방 반구' : aim.distribution === 'gaussian' ? 'Gaussian · 중심축 기준' : '입체각 균일'} · 입력 광량 전체 배분</div>
           {!isEmitterAimValid(aim) ? <div role="alert" className="text-xs text-destructive">0 ≤ Upper &lt; Lower ≤ 180°로 입력하세요. 평행광은 0° / 0°입니다. Lambertian은 Upper가 90° 미만이어야 합니다. Gaussian sigma는 0보다 커야 합니다.</div> : null}

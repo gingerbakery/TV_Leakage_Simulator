@@ -113,6 +113,30 @@ describe('RayTracingPanel Aim editing', () => {
     expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('makes the full-sphere preset a true uniform 4π distribution', () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'sphere.step', displayName: 'sphere.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'area' } })
+    fireEvent.change(screen.getByLabelText('Emitter direction distribution'), { target: { value: 'lambertian' } })
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'sphere' } })
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('lambertian')
+    fireEvent.click(screen.getByRole('button', { name: '전방위' }))
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('uniform_solid_angle')
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    expect(workspaceStore.getState().emitters[0].aim).toMatchObject({
+      mode: 'sphere',
+      distribution: 'uniform_solid_angle',
+      sphere_upper_deg: 0,
+      sphere_lower_deg: 180,
+    })
+  })
+
   it('creates one independently editable Emitter and Aim per selected CAD face', async () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]

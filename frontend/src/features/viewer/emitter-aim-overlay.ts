@@ -1,6 +1,79 @@
 import { ArrowHelper, BufferGeometry, DoubleSide, Group, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, Vector3 } from 'three'
-import type { EmitterSpec, Vec3 } from '@/api'
+import type { EmitterSpec, SceneComponent, ScenePayload, Vec3 } from '@/api'
 import { emitterAimBoundary, emitterSphereDirection, isEmitterAimValid } from '@/features/raytracing/emitter-aim'
+
+export interface BodyEmitterDirectionFrame {
+  center: Vec3
+  normal: Vec3
+  arrowLength: number
+}
+
+/** Representative outward directions for a closed CAD Body.
+ * The ray tracer emits from every authored face normal; six bounding-box
+ * arrows communicate that body-wide contract without duplicating millions of
+ * triangle-normal arrows in the Viewer. */
+export function bodyEmitterDirectionFrames(
+  scene: ScenePayload,
+  component: SceneComponent,
+): BodyEmitterDirectionFrame[] {
+  const minimum = component.bbox_min
+  const maximum = component.bbox_max
+  const center = minimum.map(
+    (value, axis) => (value + maximum[axis]) * 0.5,
+  ) as Vec3
+  const size = minimum.map(
+    (value, axis) => Math.max(0, maximum[axis] - value),
+  ) as Vec3
+  const largestSize = Math.max(...size)
+  if (!Number.isFinite(largestSize) || largestSize <= 1e-9) return []
+  const arrowLength = Math.max(2, Math.min(18, largestSize * 0.12))
+  const candidates = new Map<number, { score: number; frame: BodyEmitterDirectionFrame }>()
+  const stride = Math.max(1, Math.floor(component.face_indices.length / 8192))
+  for (let index = 0; index < component.face_indices.length; index += stride) {
+    const faceId = component.face_indices[index]
+    const faceCenter = scene.mesh.face_centroids[faceId]
+    const sourceNormal = scene.mesh.face_normals[faceId]
+    if (!faceCenter || !sourceNormal) continue
+    const length = Math.hypot(...sourceNormal)
+    if (!Number.isFinite(length) || length <= 1e-12) continue
+    const normal = sourceNormal.map((value) => value / length) as Vec3
+    const axis = [0, 1, 2].reduce((best, candidate) =>
+      Math.abs(normal[candidate]) > Math.abs(normal[best]) ? candidate : best,
+    )
+    const sign = normal[axis] < 0 ? -1 : 1
+    const bucket = axis * 2 + (sign > 0 ? 1 : 0)
+    const score = sign * faceCenter[axis]
+    if ((candidates.get(bucket)?.score ?? -Infinity) >= score) continue
+    candidates.set(bucket, {
+      score,
+      frame: {
+        center: [...faceCenter] as Vec3,
+        normal,
+        arrowLength,
+      },
+    })
+  }
+  // Extremely small/legacy payloads can lack face normals. Keep a visible
+  // fallback, but normal production CAD uses the authored face normals above.
+  if (candidates.size === 0) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      for (const sign of [-1, 1] as const) {
+        const origin = [...center] as Vec3
+        origin[axis] = sign < 0 ? minimum[axis] : maximum[axis]
+        const normal: Vec3 = [0, 0, 0]
+        normal[axis] = sign
+        const bucket = axis * 2 + (sign > 0 ? 1 : 0)
+        candidates.set(bucket, {
+          score: sign * origin[axis],
+          frame: { center: origin, normal, arrowLength },
+        })
+      }
+    }
+  }
+  return [...candidates.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, candidate]) => candidate.frame)
+}
 
 function createSphereOverlay(emitter: EmitterSpec, sourceCenter: Vec3): Group {
   const aim = emitter.aim!
@@ -37,13 +110,15 @@ function createSphereOverlay(emitter: EmitterSpec, sourceCenter: Vec3): Group {
       }
     }
     const surface = new Mesh(new BufferGeometry().setFromPoints(triangles), new MeshBasicMaterial({
-      color, transparent: true, opacity: 0.07, side: DoubleSide, depthWrite: false, toneMapped: false,
+      color, transparent: true, opacity: 0.055, side: DoubleSide, depthWrite: false, depthTest: false, toneMapped: false,
     }))
     surface.name = 'aim-sphere-angular-region'
+    surface.renderOrder = 85
     const outline = new LineSegments(new BufferGeometry().setFromPoints(edges), new LineBasicMaterial({
-      color, transparent: true, opacity: 0.65, depthWrite: false, toneMapped: false,
+      color, transparent: true, opacity: 0.78, depthWrite: false, depthTest: false, toneMapped: false,
     }))
     outline.name = 'aim-sphere-boundary'
+    outline.renderOrder = 86
     root.add(surface, outline)
   }
   if (upper === 0 && lower < 180) {

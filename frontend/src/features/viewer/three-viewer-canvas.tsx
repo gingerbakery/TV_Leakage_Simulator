@@ -52,6 +52,7 @@ import type {
   SceneComponent,
   ScenePayload,
   SectionCapResponse,
+  Vec3,
 } from '@/api'
 import { apiClient } from '@/api'
 import type { ViewerCameraFrame } from '@/features/raytracing'
@@ -100,7 +101,10 @@ import {
   getSceneBounds,
 } from './scene-geometry'
 import { fitPerspectiveCameraToBounds } from './camera-fit'
-import { createEmitterAimOverlay } from './emitter-aim-overlay'
+import {
+  bodyEmitterDirectionFrames,
+  createEmitterAimOverlay,
+} from './emitter-aim-overlay'
 import { emitterSphereDirection } from '@/features/raytracing/emitter-aim'
 import { createRoiCapMaterial } from './roi-cap-material'
 import { roiSurfaceAppearance } from './roi-surface-appearance'
@@ -119,6 +123,7 @@ import {
   type ViewerSectionAxis,
 } from './section-view'
 import {
+  screenBoxSamplePoints,
   screenTriangleIntersectsBox,
   type ViewerScreenPoint,
 } from './screen-box-selection'
@@ -2648,27 +2653,17 @@ export function ThreeViewerCanvas({
         minY: Math.min(selection.startY, selection.currentY),
         maxY: Math.max(selection.startY, selection.currentY),
       }
-      const samplePoints = [
-        [(box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2],
-        [box.minX, box.minY],
-        [box.maxX, box.minY],
-        [box.maxX, box.maxY],
-        [box.minX, box.maxY],
-        [(box.minX + box.maxX) / 2, box.minY],
-        [box.maxX, (box.minY + box.maxY) / 2],
-        [(box.minX + box.maxX) / 2, box.maxY],
-        [box.minX, (box.minY + box.maxY) / 2],
-      ]
-      const seed = samplePoints
+      const seedsBySurface = new Map<string, NonNullable<ReturnType<typeof resolveSurfaceHit>>>()
+      screenBoxSamplePoints(box)
         .map(([x, y]) => resolveSurfaceHit(rect.left + x, rect.top + y))
-        .find((hit) => hit?.faceId != null)
-      if (!seed || seed.faceId === null) return null
+        .forEach((hit) => {
+          if (!hit || hit.faceId === null) return
+          const sourceFaceId = scene.mesh.face_source_ids?.[hit.faceId] ?? hit.faceId
+          seedsBySurface.set(`${hit.componentId}:${sourceFaceId}`, hit)
+        })
+      const seeds = [...seedsBySurface.values()]
+      if (seeds.length === 0) return null
 
-      const component = scene.components.find(
-        (candidate) => candidate.component_id === seed.componentId,
-      )
-      const seedNormal = scene.mesh.face_normals[seed.faceId]
-      if (!component || !seedNormal) return null
       const roiFaceSet = runtime.roiPreviewRoot.visible
         ? new Set(roiFaceIdsRef.current)
         : null
@@ -2679,50 +2674,58 @@ export function ThreeViewerCanvas({
       const surfaceFaces = new Set<number>()
       const selectedPatches: number[][] = []
 
-      for (const faceId of component.face_indices) {
-        if (roiFaceSet && !roiFaceSet.has(faceId)) continue
-        if (surfaceFaces.has(faceId)) continue
-        const face = scene.mesh.faces[faceId]
-        const normal = scene.mesh.face_normals[faceId]
-        if (!face || face.length !== 3 || !normal) continue
-        const normalAlignment =
-          normal[0] * seedNormal[0] +
-          normal[1] * seedNormal[1] +
-          normal[2] * seedNormal[2]
-        if (normalAlignment < 0.35) continue
-        const projected = face.map((vertexId) => {
-          const source = scene.mesh.vertices[vertexId]
-          if (!source) return null
-          const transformed = pointTransform
-            ? pointTransform(seed.componentId, source)
-            : source
-          const point = new Vector3(...transformed).project(camera)
-          return {
-            x: (point.x + 1) * 0.5 * rect.width,
-            y: (1 - point.y) * 0.5 * rect.height,
-            z: point.z,
-          }
-        })
-        if (
-          projected.some((point) => point === null) ||
-          projected.every((point) =>
-            point !== null && (point.z < -1 || point.z > 1),
-          )
-        ) continue
-        if (!screenTriangleIntersectsBox(
-          projected as [ViewerScreenPoint, ViewerScreenPoint, ViewerScreenPoint],
-          box,
-        )) continue
-
-        const patch = resolveCadFacePick(
-          scene,
-          seed.componentId,
-          faceId,
-          runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
+      for (const seed of seeds) {
+        if (seed.faceId === null) continue
+        const component = scene.components.find(
+          (candidate) => candidate.component_id === seed.componentId,
         )
-        if (patch.some((patchFaceId) => surfaceFaces.has(patchFaceId))) continue
-        patch.forEach((patchFaceId) => surfaceFaces.add(patchFaceId))
-        selectedPatches.push(patch)
+        const seedNormal = scene.mesh.face_normals[seed.faceId]
+        if (!component || !seedNormal) continue
+        for (const faceId of component.face_indices) {
+          if (roiFaceSet && !roiFaceSet.has(faceId)) continue
+          if (surfaceFaces.has(faceId)) continue
+          const face = scene.mesh.faces[faceId]
+          const normal = scene.mesh.face_normals[faceId]
+          if (!face || face.length !== 3 || !normal) continue
+          const normalAlignment =
+            normal[0] * seedNormal[0] +
+            normal[1] * seedNormal[1] +
+            normal[2] * seedNormal[2]
+          if (normalAlignment < 0.35) continue
+          const projected = face.map((vertexId) => {
+            const source = scene.mesh.vertices[vertexId]
+            if (!source) return null
+            const transformed = pointTransform
+              ? pointTransform(seed.componentId, source)
+              : source
+            const point = new Vector3(...transformed).project(camera)
+            return {
+              x: (point.x + 1) * 0.5 * rect.width,
+              y: (1 - point.y) * 0.5 * rect.height,
+              z: point.z,
+            }
+          })
+          if (
+            projected.some((point) => point === null) ||
+            projected.every((point) =>
+              point !== null && (point.z < -1 || point.z > 1),
+            )
+          ) continue
+          if (!screenTriangleIntersectsBox(
+            projected as [ViewerScreenPoint, ViewerScreenPoint, ViewerScreenPoint],
+            box,
+          )) continue
+
+          const patch = resolveCadFacePick(
+            scene,
+            seed.componentId,
+            faceId,
+            runtime.roiPreviewRoot.visible ? roiFaceIdsRef.current : null,
+          )
+          if (patch.some((patchFaceId) => surfaceFaces.has(patchFaceId))) continue
+          patch.forEach((patchFaceId) => surfaceFaces.add(patchFaceId))
+          selectedPatches.push(patch)
+        }
       }
 
       if (selectedPatches.length === 0) return null
@@ -4245,6 +4248,9 @@ export function ThreeViewerCanvas({
       (emitter) =>
         emitter.enabled && emitter.emitter_type === 'face',
     )
+    const enabledBodyEmitters = enabledFaceEmitters.filter(
+      (emitter) => (emitter.source_component_ids?.length ?? 0) > 0,
+    )
     const enabledFaceEmitterSets = enabledFaceEmitters.map((emitter) => ({
       emitter,
       faceIds: new Set(emitter.face_indices),
@@ -4338,24 +4344,45 @@ export function ThreeViewerCanvas({
       if (emitter.aim?.enabled) {
         let sourceCenter = emitter.center
         if (emitter.emitter_type === 'face') {
-          const clippedCenter = roiClippedSurfaceCentroid(
-            scene,
-            emitter.face_indices,
-            activePlacementClipBoxes,
-            roiPointTransform,
-          )
+          const bodyComponentIds = emitter.source_component_ids ?? []
+          const clippedCenter = emitter.face_indices.length > 0
+            ? roiClippedSurfaceCentroid(
+                scene,
+                emitter.face_indices,
+                activePlacementClipBoxes,
+                roiPointTransform,
+              )
+            : null
           const weightedCenter = new Vector3()
           let totalArea = 0
-          for (const faceId of emitter.face_indices) {
-            const point = scene.mesh.face_centroids[faceId]
-            const area = scene.mesh.face_areas_mm2[faceId] ?? 0
-            if (!point || area <= 0) continue
-            const componentId = scene.mesh.face_component_ids?.[faceId]
-            const transformed = roiPointTransform && componentId != null
-              ? roiPointTransform(componentId, point)
-              : point
-            weightedCenter.addScaledVector(new Vector3(...transformed), area)
-            totalArea += area
+          if (bodyComponentIds.length > 0) {
+            for (const componentId of bodyComponentIds) {
+              const component = scene.components.find(
+                (candidate) => candidate.component_id === componentId,
+              )
+              if (!component) continue
+              const point = component.bbox_min.map(
+                (value, axis) => (value + component.bbox_max[axis]) * 0.5,
+              ) as Vec3
+              const transformed = roiPointTransform
+                ? roiPointTransform(componentId, point)
+                : point
+              const area = Math.max(component.area_mm2, 1)
+              weightedCenter.addScaledVector(new Vector3(...transformed), area)
+              totalArea += area
+            }
+          } else {
+            for (const faceId of emitter.face_indices) {
+              const point = scene.mesh.face_centroids[faceId]
+              const area = scene.mesh.face_areas_mm2[faceId] ?? 0
+              if (!point || area <= 0) continue
+              const componentId = scene.mesh.face_component_ids?.[faceId]
+              const transformed = roiPointTransform && componentId != null
+                ? roiPointTransform(componentId, point)
+                : point
+              weightedCenter.addScaledVector(new Vector3(...transformed), area)
+              totalArea += area
+            }
           }
           sourceCenter = clippedCenter ??
             (totalArea > 0 ? weightedCenter.multiplyScalar(1 / totalArea).toArray() : null)
@@ -4748,6 +4775,33 @@ export function ThreeViewerCanvas({
               2,
               18,
             ),
+            emitterDirectionColor,
+            emitter.emission_direction === 'both',
+          )
+        }
+        node.emitterOverlayRoot.add(reference)
+      }
+      for (const emitter of enabledBodyEmitters) {
+        if (
+          emitter.aim?.enabled ||
+          !emitter.source_component_ids?.includes(componentId)
+        ) continue
+        const reference = new Group()
+        reference.name = `emitter-body-reference-${emitter.emitter_id}-${componentId}`
+        for (const frame of bodyEmitterDirectionFrames(scene, node.component)) {
+          const normal = new Vector3(...frame.normal).multiplyScalar(
+            emitter.normal_flip ? -1 : 1,
+          )
+          addEmitterDirectionArrows(
+            reference,
+            reference.name,
+            new Vector3(
+              frame.center[0] - node.center.x,
+              frame.center[1] - node.center.y,
+              frame.center[2] - node.center.z,
+            ),
+            normal,
+            frame.arrowLength,
             emitterDirectionColor,
             emitter.emission_direction === 'both',
           )
