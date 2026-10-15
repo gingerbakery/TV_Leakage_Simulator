@@ -1835,6 +1835,9 @@ export function ThreeViewerCanvas({
   const rayPathDisplayFilters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
   )
+  const rayPathDisplayLimit = useWorkspaceStore(
+    workspaceSelectors.rayPathDisplayLimit,
+  )
   const highlightedRayPathSelection = useWorkspaceStore(
     workspaceSelectors.highlightedRayPathSelection,
   )
@@ -5292,6 +5295,7 @@ export function ThreeViewerCanvas({
     const visualization = buildRayPathVisualization(
       rayTraceResult.stored_paths,
       rayPathDisplayFilters,
+      rayPathDisplayLimit,
     )
     for (const filter of rayPathFilterOrder) {
       const segments = visualization.groups[filter]
@@ -5365,9 +5369,9 @@ export function ThreeViewerCanvas({
       }
     }
     onStatusMessage(
-      `Ray paths · ${visualization.visiblePathCount}/${visualization.totalPathCount} visible`,
+      `Ray paths · ${visualization.renderedPathCount}/${visualization.visiblePathCount} displayed · ${visualization.totalPathCount} stored`,
     )
-  }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayTraceResult, sectionView.enabled])
+  }, [highlightedRayPathSelection, onStatusMessage, rayPathDisplayFilters, rayPathDisplayLimit, rayTraceResult, sectionView.enabled])
 
   const showFullViewPip =
     !roiBoxSelectionArmed &&

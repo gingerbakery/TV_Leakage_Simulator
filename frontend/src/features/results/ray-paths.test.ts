@@ -84,11 +84,34 @@ describe('ray path visualization', () => {
     expect(visualization).toMatchObject({
       totalPathCount: 3,
       visiblePathCount: 3,
+      renderedPathCount: 3,
     })
     expect(visualization.groups.receiver_direct).toHaveLength(1)
     expect(visualization.groups.receiver_reflected).toHaveLength(2)
     expect(visualization.groups.direct).toHaveLength(1)
     expect(visualization.groups.gaussian).toHaveLength(1)
+  })
+
+  it('applies the display limit after filtering and samples across all stored paths', () => {
+    const hidden = Array.from({ length: 5 }, () => reflectedMissPath)
+    const receiverPaths = Array.from({ length: 5 }, (_, index) => [
+      hit([index, 0, 0], 'emitter', 'direct'),
+      hit([index, 0, 10], 'receiver', 'direct'),
+    ])
+    const visualization = buildRayPathVisualization(
+      [...hidden, ...receiverPaths],
+      defaultRayPathDisplayFilters,
+      2,
+    )
+
+    expect(visualization).toMatchObject({
+      totalPathCount: 10,
+      visiblePathCount: 5,
+      renderedPathCount: 2,
+    })
+    expect(visualization.groups.receiver_direct).toHaveLength(2)
+    expect(visualization.groups.receiver_direct[0]?.[0]).toEqual([0, 0, 0])
+    expect(visualization.groups.receiver_direct[1]?.[0]).toEqual([4, 0, 0])
   })
 
   it('shows only Receiver-reaching paths by default', () => {

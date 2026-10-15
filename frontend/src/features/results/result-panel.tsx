@@ -45,6 +45,9 @@ export function ResultPanel({
   const filters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
   )
+  const displayLimit = useWorkspaceStore(
+    workspaceSelectors.rayPathDisplayLimit,
+  )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const result =
     suppliedResult !== undefined
@@ -58,6 +61,7 @@ export function ResultPanel({
       count + Number(isRayPathVisible(path, filters)),
     0,
   )
+  const displayedPathCount = Math.min(displayLimit, visiblePathCount)
   const hitRatio =
     result && result.total_rays > 0
       ? result.receiver_hit_count / result.total_rays
@@ -169,6 +173,45 @@ export function ResultPanel({
             {visiblePathCount}/{paths.length}
           </Badge>
         </div>
+        <div className="rounded-lg border border-border bg-background/35 p-2">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <label htmlFor="ray-path-display-limit" className="text-sm font-medium">
+              표시 경로 수 · 현재 {displayedPathCount.toLocaleString()}
+            </label>
+            <input
+              id="ray-path-display-limit"
+              type="number"
+              min={0}
+              max={Math.max(paths.length, 0)}
+              step={100}
+              value={Math.min(displayLimit, paths.length)}
+              disabled={!result || paths.length === 0}
+              onChange={(event) =>
+                actions.setRayPathDisplayLimit(
+                  Math.min(paths.length, Number(event.currentTarget.value) || 0),
+                )
+              }
+              className="h-7 w-24 rounded-md border border-input bg-background px-2 text-right text-sm"
+            />
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(paths.length, 1)}
+            step={paths.length > 5_000 ? 100 : paths.length > 1_000 ? 50 : 10}
+            value={Math.min(displayLimit, paths.length)}
+            disabled={!result || paths.length === 0}
+            onChange={(event) =>
+              actions.setRayPathDisplayLimit(Number(event.currentTarget.value))
+            }
+            className="w-full accent-primary"
+            aria-label="3D Viewer 표시 경로 수"
+          />
+          <div className="mt-1 flex justify-between text-xs text-muted-foreground">
+            <span>0</span>
+            <span>저장 {paths.length.toLocaleString()}</span>
+          </div>
+        </div>
         <div className="space-y-1">
           {rayPathFilterOrder.map((filter, index) => {
             const style = rayPathStyles[filter]
@@ -243,7 +286,8 @@ export function ResultPanel({
           </Button>
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          필터 변경은 재계산 없이 Viewer overlay에 즉시 반영됩니다.
+          표시 수와 필터는 재계산 없이 Viewer overlay에 즉시 반영됩니다.
+          표시는 필터에 맞는 저장 경로 전체에서 균등하게 선택됩니다.
         </p>
       </section>
     </div>

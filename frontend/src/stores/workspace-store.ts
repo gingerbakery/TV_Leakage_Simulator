@@ -185,6 +185,8 @@ export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   bsdf: false,
 }
 
+export const defaultRayPathDisplayLimit = 500
+
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
   cadCases: CadCase[]
@@ -229,6 +231,9 @@ export interface WorkspaceSnapshot {
   activeRayTraceJobId: string | null
   restoredRayTraceResult: RayTraceResult | null
   rayPathDisplayFilters: RayPathDisplayFilters
+  /** Maximum number of already-stored paths drawn in the 3D Viewer.
+   *  This is a display-only preference and never invalidates trace results. */
+  rayPathDisplayLimit: number
   highlightedRayPathSelection: {
     runId: string
     pathIndices: number[]
@@ -333,6 +338,7 @@ export interface WorkspaceActions {
   setRayPathDisplayFilters(
     filters: Partial<RayPathDisplayFilters>,
   ): void
+  setRayPathDisplayLimit(limit: number): void
   setHighlightedRayPathSelection(selection: {
     runId: string
     pathIndices: number[]
@@ -1009,6 +1015,7 @@ function createSceneSnapshot(): Omit<
     activeRayTraceJobId: null,
     restoredRayTraceResult: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
+    rayPathDisplayLimit: defaultRayPathDisplayLimit,
     highlightedRayPathSelection: null,
   }
 }
@@ -1854,6 +1861,14 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           },
         }))
       },
+      setRayPathDisplayLimit: (limit) => {
+        set({
+          rayPathDisplayLimit: Math.max(
+            0,
+            Math.min(50_000, Math.trunc(Number.isFinite(limit) ? limit : 0)),
+          ),
+        })
+      },
       setHighlightedRayPathSelection: (selection) => {
         set({
           highlightedRayPathSelection: selection
@@ -1967,6 +1982,8 @@ export const workspaceSelectors = {
     state.restoredRayTraceResult ?? null,
   rayPathDisplayFilters: (state: WorkspaceStore) =>
     state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
+  rayPathDisplayLimit: (state: WorkspaceStore) =>
+    state.rayPathDisplayLimit ?? defaultRayPathDisplayLimit,
   highlightedRayPathSelection: (state: WorkspaceStore) =>
     state.highlightedRayPathSelection ?? null,
   actions: (state: WorkspaceStore) => state.actions,
