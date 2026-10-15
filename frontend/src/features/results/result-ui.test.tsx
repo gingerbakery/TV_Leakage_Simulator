@@ -1355,6 +1355,15 @@ describe('Step 11 result UI', () => {
       pathIndices: [0],
       label: 'Stored Path #1',
     })
+    fireEvent.click(screen.getByRole('button', {
+      name: '선택 경로 숨기기',
+    }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Direct to Receiver/ }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    expect(screen.queryByText('Selected-area ray contribution')).toBeNull()
     expect(onOpenChange).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset view' }))

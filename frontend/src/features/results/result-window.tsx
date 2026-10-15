@@ -1108,6 +1108,19 @@ function ReceiverHeatmap({
     yMaximumMm,
   )
 
+  const clearContributionHighlight = () => {
+    if (highlightedSelection?.runId === runId) {
+      actions.setHighlightedRayPathSelection(null)
+    }
+  }
+
+  const closeRegionAnalysis = () => {
+    setInteractionMode('profile')
+    setRegion(null)
+    regionStartRef.current = null
+    clearContributionHighlight()
+  }
+
   useEffect(() => {
     setViewport({ ...initialReceiverHeatmapViewport })
     setHover(null)
@@ -1529,7 +1542,7 @@ function ReceiverHeatmap({
               type="button"
               aria-pressed={interactionMode === 'profile'}
               className={`rounded px-2 py-0.5 ${interactionMode === 'profile' ? 'bg-primary/15 font-semibold text-primary' : ''}`}
-              onClick={() => setInteractionMode('profile')}
+              onClick={closeRegionAnalysis}
             >
               Profile
             </button>
@@ -1537,7 +1550,15 @@ function ReceiverHeatmap({
               type="button"
               aria-pressed={interactionMode === 'region'}
               className={`rounded px-2 py-0.5 ${interactionMode === 'region' ? 'bg-primary/15 font-semibold text-primary' : ''}`}
-              onClick={() => setInteractionMode('region')}
+              onClick={() => {
+                if (interactionMode === 'region') {
+                  closeRegionAnalysis()
+                } else {
+                  setInteractionMode('region')
+                  setRegion(null)
+                  clearContributionHighlight()
+                }
+              }}
             >
               Analyze area
             </button>
@@ -1720,6 +1741,7 @@ function ReceiverHeatmap({
             onPointerDown={(event) => {
               event.currentTarget.setPointerCapture?.(event.pointerId)
               if (interactionMode === 'region') {
+                clearContributionHighlight()
                 regionStartRef.current = receiverPosition(
                   event.currentTarget,
                   event.clientX,
@@ -1981,6 +2003,18 @@ function ReceiverHeatmap({
           <summary className="cursor-pointer text-sm font-semibold">
             Selected-area ray contribution
           </summary>
+          {highlightedSelection?.runId === runId ? (
+            <div className="mt-2 flex justify-end">
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={clearContributionHighlight}
+              >
+                <X />
+                선택 경로 숨기기
+              </Button>
+            </div>
+          ) : null}
           <div className="mt-2 grid grid-cols-2 gap-1.5 md:grid-cols-4">
             <Stat label="Area" value={`${formatMetric(regionAnalysis.areaMm2)} mm²`} />
             <Stat label="Receiver Flux" value={`${formatMetric(regionAnalysis.selectedFlux)} lm`} />
