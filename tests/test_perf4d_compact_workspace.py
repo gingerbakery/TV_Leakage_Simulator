@@ -90,7 +90,7 @@ class Perf4DCompactWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(
             compact_performance["gpu_resident_event_geometry_capacity"],
-            8,
+            16,
         )
         self.assertGreater(
             full_performance["gpu_resident_event_geometry_capacity"],

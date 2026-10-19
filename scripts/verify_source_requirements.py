@@ -98,8 +98,7 @@ def format_human(result: dict[str, object]) -> str:
             f"{result['python']} ({result['architecture_bits']}-bit)",
             "[PYTHON VERIFIED] Exact dependency pins: "
             f"{result['verified_pin_count']} packages",
-            "[PYTHON VERIFIED] requirements-dev.txt + "
-            "requirements-gpu-cuda.txt are synchronized.",
+            "[PYTHON VERIFIED] " + " + ".join(result['requirements']) + " are synchronized.",
         )
     )
 
@@ -130,8 +129,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.human:
             print(f"[PYTHON FAILED] {error}", file=sys.stderr)
             print(
-                "[ACTION] Rerun run_web_gpu.bat. It rebuilds .venv-gpu when "
-                "requirement pins change.",
+                "[ACTION] Rerun the matching source launcher: run_web.bat for CPU "
+                "or run_web_gpu.bat for GPU.",
                 file=sys.stderr,
             )
         else:

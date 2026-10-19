@@ -151,6 +151,43 @@ class BitsamPackageTests(unittest.TestCase):
         self.assertNotEqual(changed["receiver_grids"], baseline["receiver_grids"])
         loader.assert_not_called()
 
+    def test_resave_loaded_package_keeps_edited_setup_and_new_run(self):
+        first = ApiRuntime(self.root / "initial", scene_loader=scene_fixture)
+        scene = first.load_scene(str(self.source))
+        request = trace_request(scene["metadata"]["scene_token"])
+        baseline = first.run_raytrace_direct(request)
+        self.project["workspace"].update(emitters=baseline["emitters"], receivers=baseline["receivers"])
+        self.project["analysis_result"] = baseline
+        exported = first.export_project({"scene_token": request["scene_token"], "project": self.project})
+        original, _ = first.project_export_file(exported["download_url"].split("/")[-1])
+
+        loader = Mock(side_effect=AssertionError("Re-save must reuse the embedded CAD"))
+        editing = ApiRuntime(self.root / "editing", scene_loader=loader)
+        imported = editing.import_project(original)
+        scene = editing.load_scene(imported["cad"]["path"])
+        request["scene_token"] = scene["metadata"]["scene_token"]
+        request["emitters"][0]["center"] = [0.25, 0, 1]
+        request["receivers"][0]["center"] = [0.25, 0, 0]
+        request["receivers"][0]["acceptance_angle_deg"] = 60
+        request["optical_profiles"][0]["reflectance"] = 0.4
+        changed = editing.run_raytrace_direct(request)
+        self.assertNotEqual(changed["run_id"], baseline["run_id"])
+        self.assertLess(changed["metrics"]["observer"]["total_flux_lumen"], baseline["metrics"]["observer"]["total_flux_lumen"])
+        edited_project = copy.deepcopy(imported["project"])
+        edited_project["project_name"] = "manually-edited"
+        edited_project["workspace"]["emitters"] = changed["emitters"]
+        edited_project["workspace"]["receivers"] = changed["receivers"]
+        edited_project["workspace"]["materialAssignments"][0]["opticalOverride"] = {
+            "reflectance": 0.4, "loss": 0.6, "specularRatio": 1, "diffuseRatio": 0,
+        }
+        edited_project["analysis_result"] = changed
+        saved = editing.export_project({"scene_token": request["scene_token"], "project": edited_project})
+        renamed, _ = editing.project_export_file(saved["download_url"].split("/")[-1])
+        reopened = ApiRuntime(self.root / "reopened", scene_loader=loader).import_project(renamed)
+        self.assertEqual(reopened["project"], json.loads(json.dumps(edited_project)))
+        self.assertNotEqual(reopened["project"]["workspace"], imported["project"]["workspace"])
+        loader.assert_not_called()
+
     def test_deferred_trace_not_built_during_save_or_load(self):
         trace_loader = Mock(return_value=self.scene["mesh"])
         def deferred(path):

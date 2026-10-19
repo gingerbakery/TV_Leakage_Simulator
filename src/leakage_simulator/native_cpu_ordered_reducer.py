@@ -4,6 +4,7 @@ from dataclasses import dataclass, fields
 import hashlib
 import hmac
 import importlib
+import os
 from numbers import Integral
 import threading
 import time
@@ -125,6 +126,19 @@ class NativeCpuOrderedReducerCapability:
     reason_code: Optional[str]
     numba_version: Optional[str]
     contract_version: str = CONTRACT_VERSION
+
+
+def exact_packet_squares(values: np.ndarray) -> np.ndarray:
+    if (
+        os.environ.get("LEAKAGE_CPU_TRANSPORT", "auto") in {"auto", "fused"}
+        and len(values)
+        and np.all(values == values[0])
+    ):
+        return np.full(len(values), float(values[0]) ** 2, dtype=np.float64)
+    return np.fromiter(
+        (float(power) ** 2 for power in values),
+        dtype=np.float64, count=len(values),
+    )
 
 
 def _readonly_input(
@@ -400,29 +414,22 @@ class OrderedSummaryBatch:
         ):
             raise ValueError("receiver terminal contains an unknown receiver")
         receiver_slots = np.flatnonzero(receiver_mask)
-        for primary_slot in receiver_slots:
-            receiver_index = int(self.terminal_receiver_indices[primary_slot])
-            columns = int(self.receiver_columns[receiver_index])
-            rows = int(
-                (
-                    self.grid_offsets[receiver_index + 1]
-                    - self.grid_offsets[receiver_index]
-                )
-                // columns
-            )
-            if (
-                int(self.terminal_rows[primary_slot]) < 0
-                or int(self.terminal_rows[primary_slot]) >= rows
-                or int(self.terminal_columns[primary_slot]) < 0
-                or int(self.terminal_columns[primary_slot]) >= columns
-            ):
-                raise ValueError("receiver terminal contains an invalid grid cell")
+        columns = self.receiver_columns[receiver_indices]
+        rows = (
+            self.grid_offsets[receiver_indices + 1]
+            - self.grid_offsets[receiver_indices]
+        ) // columns
+        if np.any(
+            (self.terminal_rows[receiver_slots] < 0)
+            | (self.terminal_rows[receiver_slots] >= rows)
+            | (self.terminal_columns[receiver_slots] < 0)
+            | (self.terminal_columns[receiver_slots] >= columns)
+        ):
+            raise ValueError("receiver terminal contains an invalid grid cell")
         expected_squared = np.zeros(primary_count, dtype=np.float64)
-        for primary_slot_value in receiver_slots:
-            primary_slot = int(primary_slot_value)
-            expected_squared[primary_slot] = (
-                float(self.terminal_received_power_lumen[primary_slot]) ** 2
-            )
+        expected_squared[receiver_slots] = exact_packet_squares(
+            self.terminal_received_power_lumen[receiver_slots],
+        )
         if not np.array_equal(
             self.terminal_received_power_squared_lumen2.view(np.uint64),
             expected_squared.view(np.uint64),
@@ -655,6 +662,7 @@ _STATE_LOCK = threading.RLock()
 _CAPABILITY: Optional[NativeCpuOrderedReducerCapability] = None
 _KERNEL: Optional[Callable[..., Any]] = None
 _KERNEL_COMPILED = False
+_FLOAT_ADD_KERNEL: Optional[Callable[..., Any]] = None
 
 
 def probe_native_cpu_ordered_reducer() -> NativeCpuOrderedReducerCapability:
@@ -1570,6 +1578,34 @@ def _validate_float_shadow(
             )
 
 
+def _ordered_float_add(target, indices, values):
+    global _FLOAT_ADD_KERNEL
+    if not len(values):
+        return
+    if _FLOAT_ADD_KERNEL is None:
+        with _STATE_LOCK:
+            if _FLOAT_ADD_KERNEL is None:
+                numba = importlib.import_module("numba")
+
+                @numba.njit(nogil=True, fastmath=False)
+                def add_kernel(destination, addresses, additions):
+                    for position in range(len(additions)):
+                        address = addresses[position]
+                        destination[address] = destination[address] + additions[position]
+
+                _FLOAT_ADD_KERNEL = add_kernel
+    if isinstance(indices, tuple):
+        if target.ndim != 2 or len(indices) != 2:
+            raise ValueError("ordered float oracle requires 1D or 2D indices")
+        addresses = indices[0] * target.shape[1] + indices[1]
+    else:
+        addresses = indices
+    addresses = np.ascontiguousarray(addresses, dtype=np.int64)
+    if addresses.shape != values.shape or np.any(addresses < 0) or np.any(addresses >= target.size):
+        raise ValueError("ordered float oracle received invalid addresses")
+    _FLOAT_ADD_KERNEL(target.reshape(-1), addresses, values)
+
+
 def _validate_float_reference(
     batch: OrderedSummaryBatch,
     baseline: dict[str, np.ndarray],
@@ -1577,12 +1613,16 @@ def _validate_float_reference(
 ) -> None:
     """Recompute every float accumulator independently from the sealed tape.
 
-    ``np.add.at`` performs unbuffered additions in input order.  Each source
-    vector below is already in primary-major/event-major order, so this is an
-    independent exact-order oracle rather than a second write in the native
-    kernel's control flow.
+    The NumPy and compiled indexed-add oracles use the same exact input order.
+    Source vectors are derived independently in primary-major/event-major order,
+    rather than sharing the production reducer kernel\'s control flow.
     """
 
+    add_at = (
+        _ordered_float_add
+        if os.environ.get("LEAKAGE_CPU_TRANSPORT", "auto") in {"auto", "fused"}
+        else np.add.at
+    )
     expected = {
         name: np.array(values, dtype=np.float64, copy=True, order="C")
         for name, values in baseline.items()
@@ -1596,12 +1636,12 @@ def _validate_float_reference(
         np.int64,
         copy=False,
     )
-    np.add.at(
+    add_at(
         expected["profile_incoming_flux_lumen"],
         profile_slots,
         batch.incoming_power_lumen,
     )
-    np.add.at(
+    add_at(
         expected["profile_reflected_flux_lumen"],
         profile_slots,
         batch.reflected_power_lumen,
@@ -1616,22 +1656,22 @@ def _validate_float_reference(
     emitted_depths = event_depths[emitted_positions] + 1
     emitted_power = batch.emitted_power_lumen[emitted_positions]
     emitted_columns = np.full(len(emitted_positions), OUTCOME_EMITTED)
-    np.add.at(
+    add_at(
         expected["reflection_lobe_flux_lumen"],
         (emitted_lobes, emitted_columns),
         emitted_power,
     )
-    np.add.at(
+    add_at(
         expected["reflection_depth_flux_lumen"],
         (emitted_depths, emitted_columns),
         emitted_power,
     )
-    np.add.at(
+    add_at(
         expected["contribution_lobe_flux_lumen"],
         (emitted_lobes, emitted_columns),
         emitted_power,
     )
-    np.add.at(
+    add_at(
         expected["contribution_depth_flux_lumen"],
         (
             emitted_depths,
@@ -1651,12 +1691,12 @@ def _validate_float_reference(
         OUTCOME_BLOCKED,
     )
     secondary_power = batch.incoming_power_lumen[secondary_positions]
-    np.add.at(
+    add_at(
         expected["contribution_lobe_flux_lumen"],
         (secondary_lobes, secondary_outcomes),
         secondary_power,
     )
-    np.add.at(
+    add_at(
         expected["contribution_depth_flux_lumen"],
         (event_depths[secondary_positions], secondary_outcomes + 1),
         secondary_power,
@@ -1686,22 +1726,22 @@ def _validate_float_reference(
     reflected_depths = receiver_depths[~direct_mask]
     reflected_power = received_power[~direct_mask]
 
-    np.add.at(
+    add_at(
         expected["reflection_flux_lumen"],
         np.full(len(direct_slots), REF_DIRECT_RECEIVER_FLUX),
         direct_power,
     )
-    np.add.at(
+    add_at(
         expected["contribution_receiver_flux_lumen"],
         np.full(len(direct_slots), CONTRIBUTION_DIRECT_RECEIVER),
         direct_power,
     )
-    np.add.at(
+    add_at(
         expected["reflection_flux_lumen"],
         np.full(len(reflected_slots), REF_REFLECTED_RECEIVER_FLUX),
         reflected_power,
     )
-    np.add.at(
+    add_at(
         expected["contribution_receiver_flux_lumen"],
         np.full(len(reflected_slots), CONTRIBUTION_REFLECTED_RECEIVER),
         reflected_power,
@@ -1713,17 +1753,17 @@ def _validate_float_reference(
             np.int64,
             copy=False,
         )
-        np.add.at(
+        add_at(
             expected["reflection_lobe_flux_lumen"],
             (reflected_lobes, np.full(len(reflected_slots), 1)),
             reflected_power,
         )
-        np.add.at(
+        add_at(
             expected["reflection_depth_flux_lumen"],
             (reflected_depths, np.full(len(reflected_slots), 1)),
             reflected_power,
         )
-        np.add.at(
+        add_at(
             expected["contribution_lobe_flux_lumen"],
             (
                 reflected_lobes,
@@ -1731,18 +1771,18 @@ def _validate_float_reference(
             ),
             reflected_power,
         )
-        np.add.at(
+        add_at(
             expected["receiver_flux_lumen"],
             (reflected_indices, np.full(len(reflected_slots), RECEIVER_REFLECTED)),
             reflected_power,
         )
-        np.add.at(
+        add_at(
             expected["receiver_flux_lumen"],
             (reflected_indices, RECEIVER_SPECULAR + reflected_lobes),
             reflected_power,
         )
 
-    np.add.at(
+    add_at(
         expected["contribution_depth_flux_lumen"],
         (
             receiver_depths,
@@ -1750,17 +1790,17 @@ def _validate_float_reference(
         ),
         received_power,
     )
-    np.add.at(
+    add_at(
         expected["receiver_flux_lumen"],
         (direct_indices, np.full(len(direct_slots), RECEIVER_DIRECT)),
         direct_power,
     )
-    np.add.at(
+    add_at(
         expected["receiver_flux_lumen"],
         (receiver_indices, np.full(len(receiver_slots), RECEIVER_TOTAL)),
         received_power,
     )
-    np.add.at(
+    add_at(
         expected["receiver_depth_flux_lumen"],
         (receiver_indices, receiver_depths),
         received_power,
@@ -1772,13 +1812,13 @@ def _validate_float_reference(
         * batch.receiver_columns[receiver_indices]
         + batch.terminal_columns[receiver_slots]
     ).astype(np.int64, copy=False)
-    np.add.at(expected["grid_flux_lumen"], grid_indices, received_power)
-    np.add.at(
+    add_at(expected["grid_flux_lumen"], grid_indices, received_power)
+    add_at(
         expected["grid_flux_squared_lumen2"],
         grid_indices,
         received_squared,
     )
-    np.add.at(
+    add_at(
         expected["grid_flux_squared_totals_lumen2"],
         receiver_indices,
         received_squared,
@@ -1799,12 +1839,12 @@ def _validate_float_reference(
             copy=False,
         )
         escaped_power = batch.terminal_current_power_lumen[escaped_slots]
-        np.add.at(
+        add_at(
             expected["contribution_lobe_flux_lumen"],
             (escaped_lobes, np.full(len(escaped_slots), OUTCOME_ESCAPED)),
             escaped_power,
         )
-        np.add.at(
+        add_at(
             expected["contribution_depth_flux_lumen"],
             (
                 escaped_depths,
@@ -1893,6 +1933,15 @@ def clone_ordered_summary_accumulator(
     if not isinstance(state, OrderedSummaryAccumulator):
         raise TypeError("state must be an OrderedSummaryAccumulator")
     return _copy_accumulator(state)
+
+
+def _pair_event_counts(
+    row_indices: np.ndarray,
+    column_indices: np.ndarray | int,
+    shape: tuple[int, int],
+) -> np.ndarray:
+    indices = row_indices.astype(np.int64, copy=False) * shape[1] + column_indices
+    return np.bincount(indices, minlength=shape[0] * shape[1]).reshape(shape)
 
 
 def _validate_result(
@@ -1990,26 +2039,17 @@ def _validate_result(
         batch.offsets[:-1],
         event_counts,
     )
-    expected_lobe_counts = np.zeros((LOBE_COUNT, OUTCOME_SIZE), dtype=np.int64)
-    expected_depth_counts = np.zeros(
-        (batch.depth_count, REF_DEPTH_SIZE),
-        dtype=np.int64,
-    )
     emitted_positions = np.flatnonzero(emitted_mask)
     emitted_lobes = batch.lobe_codes[emitted_positions].astype(
         np.int64,
         copy=False,
     )
     emitted_depths = event_depths[emitted_positions] + 1
-    np.add.at(
-        expected_lobe_counts,
-        (emitted_lobes, np.full(len(emitted_lobes), OUTCOME_EMITTED)),
-        1,
+    expected_lobe_counts = _pair_event_counts(
+        emitted_lobes, OUTCOME_EMITTED, (LOBE_COUNT, OUTCOME_SIZE),
     )
-    np.add.at(
-        expected_depth_counts,
-        (emitted_depths, np.full(len(emitted_depths), REF_DEPTH_EMITTED)),
-        1,
+    expected_depth_counts = _pair_event_counts(
+        emitted_depths, REF_DEPTH_EMITTED, (batch.depth_count, REF_DEPTH_SIZE),
     )
     secondary_positions = np.flatnonzero(event_depths > 0)
     secondary_lobes = batch.lobe_codes[secondary_positions - 1].astype(
@@ -2021,15 +2061,12 @@ def _validate_result(
         OUTCOME_CONTINUED,
         OUTCOME_BLOCKED,
     )
-    np.add.at(
-        expected_lobe_counts,
-        (secondary_lobes, secondary_outcomes),
-        1,
+    expected_lobe_counts += _pair_event_counts(
+        secondary_lobes, secondary_outcomes, (LOBE_COUNT, OUTCOME_SIZE),
     )
-    np.add.at(
-        expected_depth_counts,
-        (event_depths[secondary_positions], secondary_outcomes),
-        1,
+    expected_depth_counts += _pair_event_counts(
+        event_depths[secondary_positions], secondary_outcomes,
+        (batch.depth_count, REF_DEPTH_SIZE),
     )
     reflected_receiver_slots = np.flatnonzero(
         (batch.terminal_kind_codes == TERMINAL_RECEIVER)
@@ -2052,15 +2089,11 @@ def _validate_result(
             np.int64,
             copy=False,
         )
-        np.add.at(
-            expected_lobe_counts,
-            (terminal_lobes, np.full(len(terminal_lobes), outcome)),
-            1,
+        expected_lobe_counts += _pair_event_counts(
+            terminal_lobes, outcome, (LOBE_COUNT, OUTCOME_SIZE),
         )
-        np.add.at(
-            expected_depth_counts,
-            (terminal_depths, np.full(len(terminal_depths), outcome)),
-            1,
+        expected_depth_counts += _pair_event_counts(
+            terminal_depths, outcome, (batch.depth_count, REF_DEPTH_SIZE),
         )
     if not np.array_equal(
         state.reflection_lobe_counts - baseline["reflection_lobe_counts"],
@@ -2143,37 +2176,34 @@ def _validate_result(
     direct_indices = batch.terminal_receiver_indices[direct_slots]
     reflected_slots = receiver_slots[~direct_mask]
     reflected_indices = batch.terminal_receiver_indices[reflected_slots]
-    np.add.at(expected_receiver_counts, (direct_indices, RECEIVER_DIRECT), 1)
-    np.add.at(
-        expected_receiver_counts,
-        (reflected_indices, RECEIVER_REFLECTED),
-        1,
+    expected_receiver_counts += _pair_event_counts(
+        direct_indices, RECEIVER_DIRECT, expected_receiver_counts.shape,
     )
-    np.add.at(expected_receiver_counts, (receiver_indices, RECEIVER_TOTAL), 1)
+    expected_receiver_counts += _pair_event_counts(
+        reflected_indices, RECEIVER_REFLECTED, expected_receiver_counts.shape,
+    )
+    expected_receiver_counts += _pair_event_counts(
+        receiver_indices, RECEIVER_TOTAL, expected_receiver_counts.shape,
+    )
     if len(reflected_slots):
         reflected_last_events = batch.offsets[1:][reflected_slots] - 1
         reflected_lobes = batch.lobe_codes[reflected_last_events].astype(
             np.int64,
             copy=False,
         )
-        np.add.at(
-            expected_receiver_counts,
-            (reflected_indices, RECEIVER_SPECULAR + reflected_lobes),
-            1,
+        expected_receiver_counts += _pair_event_counts(
+            reflected_indices, RECEIVER_SPECULAR + reflected_lobes,
+            expected_receiver_counts.shape,
         )
     if not np.array_equal(
         state.receiver_counts - baseline["receiver_counts"],
         expected_receiver_counts,
     ):
         raise ValueError("receiver counters violate the tape contract")
-    expected_receiver_depth_counts = np.zeros_like(state.receiver_depth_counts)
-    np.add.at(
-        expected_receiver_depth_counts,
-        (
-            receiver_indices,
-            batch.terminal_depths[receiver_slots].astype(np.int64, copy=False),
-        ),
-        1,
+    expected_receiver_depth_counts = _pair_event_counts(
+        receiver_indices,
+        batch.terminal_depths[receiver_slots].astype(np.int64, copy=False),
+        state.receiver_depth_counts.shape,
     )
     if not np.array_equal(
         state.receiver_depth_counts - baseline["receiver_depth_counts"],
@@ -2223,17 +2253,6 @@ def _validate_result(
     ):
         raise ValueError("profile touch order violates primary-major order")
 
-    event_counts = batch.offsets[1:] - batch.offsets[:-1]
-    event_primary_slots = np.repeat(
-        np.arange(batch.primary_count, dtype=np.int64),
-        event_counts,
-    )
-    event_depths = np.arange(batch.event_count, dtype=np.int64) - np.repeat(
-        batch.offsets[:-1],
-        event_counts,
-    )
-    emitted_positions = np.flatnonzero(emitted_mask)
-    emitted_depths = event_depths[emitted_positions] + 1
     reflection_candidates = emitted_depths[
         ~baseline["reflection_depth_seen"][emitted_depths]
     ]

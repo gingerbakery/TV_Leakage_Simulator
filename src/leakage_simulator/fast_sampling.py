@@ -10,6 +10,7 @@ from .geometry import TriangleMesh
 from .types import EmitterSpec
 from .aim_sampling import sample_aim_ray_batch
 from .aim_angular_sampling import sample_area_angular_batch
+from . import native_cpu_sampling
 
 
 RayBatch = Tuple[np.ndarray, np.ndarray]
@@ -328,7 +329,6 @@ def iter_face_emitter_ray_batches(
             selected_slots,
             len(geometry.face_indices) - 1,
         )
-        selected_triangles = geometry.triangle_vertices[selected_slots]
         selected_normals = geometry.normals[selected_slots]
 
         first_random = generator.random(count)
@@ -337,11 +337,16 @@ def iter_face_emitter_ray_batches(
         weight_a = 1.0 - root
         weight_b = root * (1.0 - second_random)
         weight_c = root * second_random
-        points = (
-            weight_a[:, None] * selected_triangles[:, 0, :]
-            + weight_b[:, None] * selected_triangles[:, 1, :]
-            + weight_c[:, None] * selected_triangles[:, 2, :]
+        points = native_cpu_sampling.face_points(
+            geometry.triangle_vertices, selected_slots, weight_a, weight_b, weight_c,
         )
+        if points is None:
+            selected_triangles = geometry.triangle_vertices[selected_slots]
+            points = (
+                weight_a[:, None] * selected_triangles[:, 0, :]
+                + weight_b[:, None] * selected_triangles[:, 1, :]
+                + weight_c[:, None] * selected_triangles[:, 2, :]
+            )
         if emitter.aim is not None and emitter.aim.enabled:
             origins, directions = sample_aim_ray_batch(generator, points, emitter.aim, epsilon_mm)
         else:
@@ -455,6 +460,11 @@ def _sample_virtual_plane_origins(
     else:
         u_offsets = (generator.random(count) - 0.5) * emitter.width_mm
         v_offsets = (generator.random(count) - 0.5) * emitter.height_mm
+        prepared = native_cpu_sampling.plane_origins(
+            center, u_axis, v_axis, normal, u_offsets, v_offsets, epsilon_mm,
+        )
+        if prepared is not None:
+            return prepared
         points = (
             center[None, :]
             + u_offsets[:, None] * u_axis[None, :]
@@ -743,6 +753,14 @@ def _sample_direction_batch(
         )
         phi_values = generator.uniform(0.0, 2.0 * math.pi, count)
         sin_theta = np.sin(theta_values)
+        if native_cpu_sampling.enabled(count):
+            prepared = native_cpu_sampling.direction_rows(
+                normal, sin_theta * np.cos(phi_values),
+                sin_theta * np.sin(phi_values), np.cos(theta_values),
+                basis_u=basis_u, basis_v=basis_v,
+            )
+            if prepared is not None:
+                return prepared
         directions = (
             sin_theta[:, None] * np.cos(phi_values)[:, None] * basis_u[None, :]
             + sin_theta[:, None] * np.sin(phi_values)[:, None] * basis_v[None, :]
@@ -756,6 +774,12 @@ def _sample_direction_batch(
     x_values = radius * np.cos(phi_values)
     y_values = radius * np.sin(phi_values)
     z_values = np.sqrt(np.maximum(0.0, 1.0 - radial_samples))
+    if native_cpu_sampling.enabled(count):
+        prepared = native_cpu_sampling.direction_rows(
+            normal, x_values, y_values, z_values, basis_u=basis_u, basis_v=basis_v,
+        )
+        if prepared is not None:
+            return prepared
     directions = (
         x_values[:, None] * basis_u[None, :]
         + y_values[:, None] * basis_v[None, :]
@@ -782,7 +806,6 @@ def _sample_direction_rows(
             )
         )
 
-    basis_u, basis_v = _orthonormal_basis_rows(normals)
     if emitter.direction_distribution == "gaussian":
         sigma_rad = math.radians(max(1e-6, emitter.gaussian_sigma_deg))
         theta_values = np.minimum(
@@ -791,6 +814,14 @@ def _sample_direction_rows(
         )
         phi_values = generator.uniform(0.0, 2.0 * math.pi, count)
         sin_theta = np.sin(theta_values)
+        if native_cpu_sampling.enabled(count):
+            prepared = native_cpu_sampling.direction_rows(
+                normals, sin_theta * np.cos(phi_values),
+                sin_theta * np.sin(phi_values), np.cos(theta_values),
+            )
+            if prepared is not None:
+                return prepared
+        basis_u, basis_v = _orthonormal_basis_rows(normals)
         directions = (
             sin_theta[:, None] * np.cos(phi_values)[:, None] * basis_u
             + sin_theta[:, None] * np.sin(phi_values)[:, None] * basis_v
@@ -805,6 +836,11 @@ def _sample_direction_rows(
     x_values = radius * np.cos(phi_values)
     y_values = radius * np.sin(phi_values)
     z_values = np.sqrt(np.maximum(0.0, 1.0 - radial_samples))
+    if native_cpu_sampling.enabled(count):
+        prepared = native_cpu_sampling.direction_rows(normals, x_values, y_values, z_values)
+        if prepared is not None:
+            return prepared
+    basis_u, basis_v = _orthonormal_basis_rows(normals)
     directions = (
         x_values[:, None] * basis_u
         + y_values[:, None] * basis_v

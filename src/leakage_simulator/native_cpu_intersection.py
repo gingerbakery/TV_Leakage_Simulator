@@ -10,6 +10,8 @@ from typing import Any, Callable, Optional
 import numpy as np
 from numpy.typing import NDArray
 
+from .cpu_parallel import run_cpu_ranges
+
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -61,6 +63,7 @@ class NativeCpuExecution:
     jit_compile_sec: float
     execute_sec: float
     numba_version: str
+    parallel_workers: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,13 +436,15 @@ def intersect_native_cpu(
     stack_entries = np.empty(stack_size, dtype=np.float64)
     stack_nodes = np.empty(stack_size, dtype=np.int64)
     started = time.perf_counter()
-    try:
+    def execute_range(start: int, end: int) -> None:
+        local_entries = stack_entries if start == 0 else np.empty(stack_size, dtype=np.float64)
+        local_nodes = stack_nodes if start == 0 else np.empty(stack_size, dtype=np.int64)
         kernel(
-            origins,
-            directions,
-            minimum_t,
-            maximum_t,
-            ignored_faces,
+            origins[start:end],
+            directions[start:end],
+            minimum_t[start:end],
+            maximum_t[start:end],
+            ignored_faces[start:end],
             scene.triangle_v0,
             scene.triangle_edge1,
             scene.triangle_edge2,
@@ -450,11 +455,14 @@ def intersect_native_cpu(
             scene.node_start,
             scene.node_count,
             scene.ordered_faces,
-            distances,
-            face_indices,
-            stack_entries,
-            stack_nodes,
+            distances[start:end],
+            face_indices[start:end],
+            local_entries,
+            local_nodes,
         )
+    try:
+        parallel_workers = run_cpu_ranges(len(origins), execute_range, minimum_rows=512,
+                                          enabled=len(scene.triangle_v0) >= 64)
     except Exception as exc:
         raise NativeCpuProviderError("execute", "numba_execute_failed") from exc
     return NativeCpuExecution(
@@ -464,6 +472,7 @@ def intersect_native_cpu(
         jit_compile_sec=jit_compile_sec,
         execute_sec=time.perf_counter() - started,
         numba_version=capability.numba_version or "unknown",
+        parallel_workers=parallel_workers,
     )
 
 

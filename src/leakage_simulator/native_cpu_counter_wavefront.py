@@ -9,6 +9,8 @@ import time
 from typing import Any, Callable, Optional
 
 import numpy as np
+
+from .cpu_parallel import run_cpu_ranges
 from numpy.typing import ArrayLike, NDArray
 
 from .native_cpu_wavefront import (
@@ -200,7 +202,7 @@ class CounterWavefrontPlanInput:
             raise ValueError("profile_specular_ratio values must be between 0 and 1")
         if np.any(gaussian_sigma <= 0.0):
             raise ValueError("profile_gaussian_sigma_deg values must be positive")
-        if any(int(value) not in _VALID_SCATTER_CODES for value in scatter):
+        if np.any(~np.isin(scatter, tuple(_VALID_SCATTER_CODES))):
             raise ValueError("scatter_models contains an unknown value")
 
         depth = _non_negative_int(self.depth, "depth")
@@ -501,6 +503,7 @@ class NativeCpuCounterWavefrontExecution:
     numba_version: str
     contract_version: str = CONTRACT_VERSION
     rng_algorithm: str = RNG_ALGORITHM
+    parallel_workers: int = 1
 
 
 _STATE_LOCK = threading.RLock()
@@ -590,23 +593,23 @@ def plan_counter_native_cpu(
     kernel, jit_compile_sec = _ensure_kernel()
     arrays = _allocate_outputs(len(batch))
     started = time.perf_counter()
-    try:
+    def execute_range(start: int, end: int) -> None:
         kernel(
-            batch.incoming_directions,
-            batch.surface_normals,
-            batch.incoming_power_lumen,
-            batch.profile_reflectance,
-            batch.profile_roughness,
-            batch.scatter_models,
-            batch.profile_specular_ratio,
-            batch.profile_gaussian_sigma_deg,
-            batch.rng_keys,
+            batch.incoming_directions[start:end],
+            batch.surface_normals[start:end],
+            batch.incoming_power_lumen[start:end],
+            batch.profile_reflectance[start:end],
+            batch.profile_roughness[start:end],
+            batch.scatter_models[start:end],
+            batch.profile_specular_ratio[start:end],
+            batch.profile_gaussian_sigma_deg[start:end],
+            batch.rng_keys[start:end],
             batch.depth,
             batch.max_depth,
             batch.min_energy,
             batch.termination_mode,
             batch.angle_dependent_reflectance,
-            batch.surface_points,
+            batch.surface_points[start:end],
             batch.receiver_centers,
             batch.receiver_normals,
             batch.receiver_u_axes,
@@ -616,8 +619,10 @@ def plan_counter_native_cpu(
             batch.receiver_minimum_cosines,
             batch.receiver_importance_fraction,
             batch.epsilon_mm,
-            *arrays,
+            *(values[start:end] for values in arrays),
         )
+    try:
+        parallel_workers = run_cpu_ranges(len(batch), execute_range, minimum_rows=8192)
     except Exception as exc:
         raise NativeCpuCounterWavefrontProviderError(
             "execute",
@@ -639,6 +644,7 @@ def plan_counter_native_cpu(
         execute_sec=execute_sec,
         result_validation_sec=time.perf_counter() - validation_started,
         numba_version=capability.numba_version or "unknown",
+        parallel_workers=parallel_workers,
     )
 
 
@@ -895,7 +901,7 @@ def _receiver_direction_pdf_reference(
     return density
 
 
-def _make_kernel() -> Callable[..., None]:
+def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
     numba = importlib.import_module("numba")
 
     @numba.njit(inline="always", fastmath=False)
@@ -1260,45 +1266,29 @@ def _make_kernel() -> Callable[..., None]:
         weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
         return direction_x, direction_y, direction_z, weight, directed
 
-    @numba.njit(nogil=True, fastmath=False)
-    def plan_kernel(
-        incoming_directions: FloatArray,
-        surface_normals: FloatArray,
-        incoming_power_lumen: FloatArray,
-        profile_reflectance: FloatArray,
-        profile_roughness: FloatArray,
-        scatter_models: Int8Array,
-        profile_specular_ratio: FloatArray,
-        profile_gaussian_sigma_deg: FloatArray,
-        rng_keys: UInt64Array,
-        depth: int,
-        max_depth: int,
-        min_energy: float,
-        termination_mode: int,
-        angle_dependent_reflectance: bool,
-        surface_points: FloatArray,
-        receiver_centers: FloatArray,
-        receiver_normals: FloatArray,
-        receiver_u_axes: FloatArray,
-        receiver_v_axes: FloatArray,
-        receiver_half_widths: FloatArray,
-        receiver_half_heights: FloatArray,
-        receiver_minimum_cosines: FloatArray,
-        receiver_importance_fraction: float,
-        epsilon_mm: float,
-        supported_mask: BoolArray,
-        reflected_power_lumen: FloatArray,
-        emitted_power_lumen: FloatArray,
-        emitted_directions: FloatArray,
-        status_flags: UInt16Array,
-        lobe_codes: Int8Array,
-        rng_draw_counts: UInt8Array,
-        importance_eligible_mask: BoolArray,
-        importance_directed_mask: BoolArray,
-        importance_zero_weight_mask: BoolArray,
-        importance_unsupported_mask: BoolArray,
-        importance_weights: FloatArray,
-    ) -> None:
+    @numba.njit(nogil=True, fastmath=False, inline="always")
+    def packed_kernel(inputs, settings, receivers, outputs):
+        (
+            incoming_directions, surface_normals, incoming_power_lumen,
+            profile_reflectance, profile_roughness, scatter_models,
+            profile_specular_ratio, profile_gaussian_sigma_deg, rng_keys,
+            surface_points,
+        ) = inputs
+        (
+            depth, max_depth, min_energy, termination_mode,
+            angle_dependent_reflectance, receiver_importance_fraction, epsilon_mm,
+        ) = settings
+        (
+            receiver_centers, receiver_normals, receiver_u_axes, receiver_v_axes,
+            receiver_half_widths, receiver_half_heights, receiver_minimum_cosines,
+        ) = receivers
+        (
+            supported_mask, reflected_power_lumen, emitted_power_lumen,
+            emitted_directions, status_flags, lobe_codes, rng_draw_counts,
+            importance_eligible_mask, importance_directed_mask,
+            importance_zero_weight_mask, importance_unsupported_mask,
+            importance_weights,
+        ) = outputs
         for row_index in range(incoming_power_lumen.shape[0]):
             supported_mask[row_index] = True
             reflected_power_lumen[row_index] = 0.0
@@ -1492,7 +1482,70 @@ def _make_kernel() -> Callable[..., None]:
             status_flags[row_index] = status | STATUS_EMITTED
         return None
 
-    return plan_kernel
+    @numba.njit(nogil=True, fastmath=False)
+    def plan_kernel(
+        incoming_directions: FloatArray,
+        surface_normals: FloatArray,
+        incoming_power_lumen: FloatArray,
+        profile_reflectance: FloatArray,
+        profile_roughness: FloatArray,
+        scatter_models: Int8Array,
+        profile_specular_ratio: FloatArray,
+        profile_gaussian_sigma_deg: FloatArray,
+        rng_keys: UInt64Array,
+        depth: int,
+        max_depth: int,
+        min_energy: float,
+        termination_mode: int,
+        angle_dependent_reflectance: bool,
+        surface_points: FloatArray,
+        receiver_centers: FloatArray,
+        receiver_normals: FloatArray,
+        receiver_u_axes: FloatArray,
+        receiver_v_axes: FloatArray,
+        receiver_half_widths: FloatArray,
+        receiver_half_heights: FloatArray,
+        receiver_minimum_cosines: FloatArray,
+        receiver_importance_fraction: float,
+        epsilon_mm: float,
+        supported_mask: BoolArray,
+        reflected_power_lumen: FloatArray,
+        emitted_power_lumen: FloatArray,
+        emitted_directions: FloatArray,
+        status_flags: UInt16Array,
+        lobe_codes: Int8Array,
+        rng_draw_counts: UInt8Array,
+        importance_eligible_mask: BoolArray,
+        importance_directed_mask: BoolArray,
+        importance_zero_weight_mask: BoolArray,
+        importance_unsupported_mask: BoolArray,
+        importance_weights: FloatArray,
+    ) -> None:
+        packed_kernel(
+            (
+                incoming_directions, surface_normals, incoming_power_lumen,
+                profile_reflectance, profile_roughness, scatter_models,
+                profile_specular_ratio, profile_gaussian_sigma_deg, rng_keys,
+                surface_points,
+            ),
+            (
+                depth, max_depth, min_energy, termination_mode,
+                angle_dependent_reflectance, receiver_importance_fraction, epsilon_mm,
+            ),
+            (
+                receiver_centers, receiver_normals, receiver_u_axes, receiver_v_axes,
+                receiver_half_widths, receiver_half_heights, receiver_minimum_cosines,
+            ),
+            (
+                supported_mask, reflected_power_lumen, emitted_power_lumen,
+                emitted_directions, status_flags, lobe_codes, rng_draw_counts,
+                importance_eligible_mask, importance_directed_mask,
+                importance_zero_weight_mask, importance_unsupported_mask,
+                importance_weights,
+            ),
+        )
+
+    return packed_kernel if packed else plan_kernel
 
 
 def _ensure_kernel() -> tuple[Callable[..., Any], float]:

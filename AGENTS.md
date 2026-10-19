@@ -2,6 +2,48 @@
 
 These instructions apply to every AI agent working in this repository.
 
+## UI/UX: explanations belong in (?) help
+
+Apply these rules whenever adding or changing user-facing UI:
+
+- Keep the default screen compact. Do not add always-visible explanatory
+  paragraphs, usage instructions, examples, recommendations, or implementation
+  details beneath controls, inside cards, or in dialog headers/footers.
+- Put all supplementary explanations behind a small `(?)` help button beside
+  the relevant title, field label, or option. Reuse the existing `HelpTooltip`
+  and help/popover patterns; keep help closed by default.
+- Make help accessible by keyboard focus as well as pointer hover. Use a
+  click/tap-accessible popover when the explanation needs more space.
+- Keep button labels, field labels, and option names short and action-oriented.
+  Move explanations of their meaning or differences into `(?)` help.
+- Keep values, units, required-field indicators, concise status, validation
+  errors, and warnings needed to prevent data loss or incorrect analysis
+  visible. These are operational information, not supplementary help.
+- Before finishing a UI change, review the normal screen and move any newly
+  added explanatory copy into `(?)` help. Follow the existing visual style.
+
+## Delegated validation: independent reviewer
+
+When the user requests a validation subagent, read
+`docs/ai-validation-subagent.md` completely before delegating or accepting a
+review. Use `docs/templates/validation-handoff.md` to define the assignment.
+
+- Start with one reviewer and no nested delegation. This rule does not itself
+  authorize spawning agents, running benchmarks, or continuing indefinitely.
+- Pin the exact review inputs, including uncommitted files, with a snapshot and
+  SHA-256 manifest. Do not review a moving development checkout as a fixed build.
+- The reviewer must acknowledge the rules, input identity, permitted writes,
+  execution mode, and predeclared acceptance gates before substantive work.
+- Default to read-only product review. The main agent owns implementation and
+  integration; test/report writes require an explicit, disjoint write scope.
+- Serialize heavy CPU/GPU measurements. Keep the user's running servers,
+  sessions, environments, and original project files untouched.
+- Never loosen a failing gate, hide missing evidence, or equate CPU/GPU parity
+  with physical correctness. Independently check evidence before adopting a
+  review conclusion. Record unresolved findings and follow-up validation.
+- Commit, push, publication, server restart, installation, and system changes
+  remain subject to the user's explicit authorization and the GPU rules below.
+
 ## GPU/CUDA work is fail-closed
 
 When a user asks to install, start, test, benchmark, diagnose, package, or hand

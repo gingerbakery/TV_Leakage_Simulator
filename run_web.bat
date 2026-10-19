@@ -53,6 +53,14 @@ if not defined PY (
   if errorlevel 1 goto :setup_failed
 )
 
+echo [CPU SETUP] Synchronizing the CPU acceleration runtime...
+"%PY%" -m pip install --disable-pip-version-check -r "%ROOT%requirements-dev.txt" -r "%ROOT%requirements-cpu-accelerated.txt"
+if errorlevel 1 goto :setup_failed
+"%PY%" -m pip check
+if errorlevel 1 goto :setup_failed
+"%PY%" "%ROOT%scripts\verify_source_requirements.py" --requirements "%ROOT%requirements-dev.txt" --requirements "%ROOT%requirements-cpu-accelerated.txt" --human
+if errorlevel 1 goto :setup_failed
+
 for /f "delims=" %%I in ('where.exe npm.cmd 2^>nul') do (
   if not defined NPM set "NPM=%%I"
 )
@@ -64,11 +72,9 @@ if not defined NPM (
   exit /b 1
 )
 
-if not exist "%ROOT%frontend\node_modules" (
-  echo [SETUP] Installing frontend packages for the first run...
-  call "%NPM%" --prefix "%ROOT%frontend" ci --no-audit --no-fund
-  if errorlevel 1 goto :setup_failed
-)
+echo [SETUP] Synchronizing frontend packages...
+call "%NPM%" --prefix "%ROOT%frontend" ci --no-audit --no-fund
+if errorlevel 1 goto :setup_failed
 
 echo [BUILD] Preparing the latest web UI...
 call "%NPM%" --prefix "%ROOT%frontend" run build

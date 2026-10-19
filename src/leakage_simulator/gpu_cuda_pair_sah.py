@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import numpy as np
+
+
+class SahSplitter:
+    def __init__(self, triangles, bins=16, cutoff=32):
+        if bins not in (8, 16, 32) or cutoff < 2:
+            raise ValueError('Unsupported SAH bin count or cutoff')
+        self.bins = bins
+        self.cutoff = cutoff
+        self.center_points = [triangle.centroid for triangle in triangles]
+        self.centers = np.asarray(self.center_points, dtype=np.float64)
+        self.lower = np.asarray([triangle.bounds_min for triangle in triangles], dtype=np.float64)
+        self.upper = np.asarray([triangle.bounds_max for triangle in triangles], dtype=np.float64)
+        if (not all(np.all(np.isfinite(value)) for value in (self.centers, self.lower, self.upper))
+            or np.any(self.lower > self.upper)):
+            raise ValueError('SAH requires finite ordered triangle bounds')
+
+    @staticmethod
+    def areas(lower, upper):
+        extent = np.maximum(upper - lower, 0.0)
+        return 2.0 * (extent[:, 0] * extent[:, 1] + extent[:, 1] * extent[:, 2]
+            + extent[:, 2] * extent[:, 0])
+
+    def __call__(self, indices, depth):
+        if len(indices) == 2 and (self.cutoff > 2 or depth >= 48):
+            first, second = indices
+            first_center, second_center = self.center_points[first], self.center_points[second]
+            extent = [abs(second_center[axis] - first_center[axis]) for axis in range(3)]
+            axis = max(range(3), key=extent.__getitem__)
+            if first_center[axis] <= second_center[axis]:
+                return [first], [second]
+            return [second], [first]
+        selected = np.asarray(indices, dtype=np.int64)
+        centers = self.centers[selected]
+        minimum = centers.min(axis=0)
+        extent = centers.max(axis=0) - minimum
+        best_cost = np.inf
+        best_partition = None
+        if len(selected) >= self.cutoff and depth < 48:
+            lower, upper = self.lower[selected], self.upper[selected]
+            for axis in range(3):
+                if extent[axis] <= 0.0:
+                    continue
+                positions = np.minimum(((centers[:, axis] - minimum[axis])
+                    / extent[axis] * self.bins).astype(np.int64), self.bins - 1)
+                counts = np.bincount(positions, minlength=self.bins)
+                bin_lower = np.full((self.bins, 3), np.inf)
+                bin_upper = np.full((self.bins, 3), -np.inf)
+                np.minimum.at(bin_lower, positions, lower)
+                np.maximum.at(bin_upper, positions, upper)
+                left_counts = np.cumsum(counts)[:-1]
+                right_counts = np.cumsum(counts[::-1])[::-1][1:]
+                valid = np.flatnonzero((left_counts > 0) & (right_counts > 0))
+                if not len(valid):
+                    continue
+                left_lower = np.minimum.accumulate(bin_lower, axis=0)[:-1][valid]
+                left_upper = np.maximum.accumulate(bin_upper, axis=0)[:-1][valid]
+                right_lower = np.minimum.accumulate(bin_lower[::-1], axis=0)[::-1][1:][valid]
+                right_upper = np.maximum.accumulate(bin_upper[::-1], axis=0)[::-1][1:][valid]
+                costs = left_counts[valid] * self.areas(left_lower, left_upper)
+                costs += right_counts[valid] * self.areas(right_lower, right_upper)
+                choice = int(np.argmin(costs))
+                if costs[choice] < best_cost:
+                    best_cost = float(costs[choice])
+                    best_partition = positions <= valid[choice]
+        if best_partition is not None:
+            return selected[best_partition].tolist(), selected[~best_partition].tolist()
+        axis = int(np.argmax(extent))
+        order = np.argsort(centers[:, axis], kind='stable')
+        middle = len(selected) // 2
+        return selected[order[:middle]].tolist(), selected[order[middle:]].tolist()
