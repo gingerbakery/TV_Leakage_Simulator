@@ -2617,14 +2617,19 @@ export function RayTracingPanel({
             label="Max stored paths"
             value={config.max_stored_paths}
             min={0}
-            max={5000}
+            max={50000}
             step={100}
             disabled={isRunning}
             onChange={(value) =>
               updateConfig({ max_stored_paths: Math.trunc(value) })
             }
-            description="3D Viewer·Ray Contribution에 사용할 진단용 경로 수입니다. Receiver 도달 경로가 우선 저장되며, 값을 늘리면 희소한 영역의 반사 경로를 더 많이 볼 수 있지만 메모리·보고서 용량이 늘어납니다. 광학 통계 결과에는 영향을 주지 않습니다."
+            description="3D Viewer·Ray Contribution에 사용할 진단용 경로 수입니다. Receiver 도달 경로가 우선 저장되며, 값을 늘리면 희소한 영역의 반사 경로를 더 많이 볼 수 있지만 메모리·보고서 용량이 늘어납니다. 광학 통계 결과에는 영향을 주지 않습니다. 일반 분석은 5,000~10,000, 상세 진단은 20,000부터 권장합니다."
           />
+          {config.max_stored_paths > 10_000 ? (
+            <p className="-mt-2 rounded-md border border-amber-400/40 bg-amber-50/70 px-2 py-1.5 text-xs leading-4 text-amber-900 dark:bg-amber-950/25 dark:text-amber-200">
+              10,000개를 초과하면 100% 이후 결과 정리·전송, 메모리 사용량과 프로젝트 파일 크기가 크게 증가할 수 있습니다.
+            </p>
+          ) : null}
           <label className={fieldLabelClassName}>
             <span className="flex items-center gap-1.5">
               Termination

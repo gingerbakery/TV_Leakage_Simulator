@@ -16,6 +16,23 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('accepts up to 50,000 stored diagnostic paths', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      max_stored_paths: 50_000,
+    })
+    expect(store.getState().rayTraceConfig.max_stored_paths).toBe(50_000)
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      max_stored_paths: 75_000,
+    })
+    expect(store.getState().rayTraceConfig.max_stored_paths).toBe(50_000)
+  })
+
   it('uses relative termination for new cases without reinterpreting legacy units', () => {
     const store = createWorkspaceStore()
     expect(store.getState().rayTraceConfig.min_energy_basis).toBe('initial_ray_fraction')

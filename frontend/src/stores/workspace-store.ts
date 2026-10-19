@@ -547,7 +547,7 @@ function normalizeRayTraceConfig(
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,
-      Math.min(5000, Math.trunc(config.max_stored_paths || 0)),
+      Math.min(50_000, Math.trunc(config.max_stored_paths || 0)),
     ),
     auto_convergence: Boolean(config.auto_convergence),
     convergence_target_percent: Math.max(
