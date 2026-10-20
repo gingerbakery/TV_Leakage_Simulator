@@ -1051,6 +1051,11 @@ function ReceiverHeatmap({
   const [interactionMode, setInteractionMode] = useState<'profile' | 'region'>('profile')
   const [region, setRegion] = useState<ReceiverRegion | null>(null)
   const regionStartRef = useRef<{ x: number; y: number } | null>(null)
+  const [contributionRayDisplayLimit, setContributionRayDisplayLimit] = useState(200)
+  const contributionHighlightSourceRef = useRef<{
+    label: string
+    pathIndices: number[]
+  } | null>(null)
   const [displayMode, setDisplayMode] = useState<'luminance' | 'error'>('luminance')
   const [luminanceBasis, setLuminanceBasis] =
     useState<'surface' | 'cone'>('surface')
@@ -1109,8 +1114,51 @@ function ReceiverHeatmap({
   )
 
   const clearContributionHighlight = () => {
+    contributionHighlightSourceRef.current = null
     if (highlightedSelection?.runId === runId) {
       actions.setHighlightedRayPathSelection(null)
+    }
+  }
+
+  const sampledPathIndices = (pathIndices: number[], limit: number) => {
+    const count = Math.max(0, Math.min(pathIndices.length, Math.trunc(limit)))
+    if (count === 0) return []
+    if (count === pathIndices.length) return pathIndices
+    if (count === 1) return [pathIndices[0]]
+    return Array.from({ length: count }, (_, index) =>
+      pathIndices[Math.round((index * (pathIndices.length - 1)) / (count - 1))],
+    )
+  }
+
+  const showContributionPaths = (label: string, pathIndices: number[]) => {
+    const selected = highlightedSelection?.runId === runId &&
+      highlightedSelection.label === label
+    if (selected) {
+      clearContributionHighlight()
+      return
+    }
+    contributionHighlightSourceRef.current = { label, pathIndices }
+    actions.setHighlightedRayPathSelection({
+      runId,
+      pathIndices: sampledPathIndices(pathIndices, contributionRayDisplayLimit),
+      label,
+    })
+  }
+
+  const updateContributionRayDisplayLimit = (limit: number) => {
+    const nextLimit = Math.max(0, Math.trunc(limit))
+    setContributionRayDisplayLimit(nextLimit)
+    const source = contributionHighlightSourceRef.current
+    if (
+      source &&
+      highlightedSelection?.runId === runId &&
+      highlightedSelection.label === source.label
+    ) {
+      actions.setHighlightedRayPathSelection({
+        runId,
+        pathIndices: sampledPathIndices(source.pathIndices, nextLimit),
+        label: source.label,
+      })
     }
   }
 
@@ -1239,9 +1287,11 @@ function ReceiverHeatmap({
       string,
       { count: number; flux: number; pathIndices: number[] }
     >()
+    let matchingStoredFlux = 0
     for (const { path, pathIndex } of matchingPaths) {
       const receiverHit = [...path].reverse().find((event) => event.event_type === 'receiver')
       const pathFlux = numeric(receiverHit?.receiver_flux_lumen ?? receiverHit?.incoming_energy_lumen)
+      matchingStoredFlux += pathFlux
       const componentIds = path
         .filter((event) => event.event_type === 'surface' && event.component_id !== null)
         .map((event) => event.component_id as number)
@@ -1288,6 +1338,7 @@ function ReceiverHeatmap({
       selectedFlux,
       fluxRatio: totalFlux > 0 ? selectedFlux / totalFlux : 0,
       matchingPathCount: matchingPaths.length,
+      matchingStoredFlux,
       directCount,
       components: [...componentContributions.entries()]
         .sort((left, right) => right[1].flux - left[1].flux)
@@ -2021,12 +2072,59 @@ function ReceiverHeatmap({
             <Stat label="Flux share" value={`${formatMetric(regionAnalysis.fluxRatio * 100, 1)}%`} />
             <Stat label="Stored Paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help="선택 영역에 도달한 대표 저장 경로 수입니다. 전체 Ray가 아니라 경로 원인을 확인하기 위해 저장된 진단용 표본입니다." />
           </div>
+          <div className="mt-3 rounded-md border border-border bg-background/35 p-2">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor={`${grid.receiver_id}-contribution-ray-limit`} className="text-sm font-semibold">
+                3D 강조 Ray 수
+              </label>
+              <span className="font-mono text-sm">
+                {(highlightedSelection?.runId === runId
+                  ? highlightedSelection.pathIndices.length
+                  : Math.min(contributionRayDisplayLimit, regionAnalysis.matchingPathCount)
+                ).toLocaleString()}
+                {' / '}
+                {(contributionHighlightSourceRef.current?.pathIndices.length ??
+                  regionAnalysis.matchingPathCount).toLocaleString()}
+              </span>
+            </div>
+            <input
+              id={`${grid.receiver_id}-contribution-ray-limit`}
+              aria-label="Contribution 3D highlight ray count"
+              type="range"
+              min={0}
+              max={Math.max(1, regionAnalysis.matchingPathCount)}
+              step={regionAnalysis.matchingPathCount > 5_000
+                ? 100
+                : regionAnalysis.matchingPathCount > 1_000
+                  ? 50
+                  : regionAnalysis.matchingPathCount > 200
+                    ? 10
+                    : 1}
+              value={Math.min(contributionRayDisplayLimit, regionAnalysis.matchingPathCount)}
+              disabled={regionAnalysis.matchingPathCount === 0}
+              onChange={(event) => updateContributionRayDisplayLimit(Number(event.currentTarget.value))}
+              className="mt-1 w-full accent-orange-500"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              저장된 분석 경로의 통계는 유지하고, 3D Viewer의 주황색 강조 개수만 변경합니다.
+            </p>
+          </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
               <div className="text-sm font-semibold">Path Type</div>
               <div className="mt-1 rounded-md border border-border bg-background/35 p-2 text-base">
-                Direct {regionAnalysis.directCount.toLocaleString()} · Reflected{' '}
-                {(regionAnalysis.matchingPathCount - regionAnalysis.directCount).toLocaleString()}
+                Direct {regionAnalysis.directCount.toLocaleString()} ({formatMetric(
+                  regionAnalysis.matchingPathCount > 0
+                    ? regionAnalysis.directCount / regionAnalysis.matchingPathCount * 100
+                    : 0,
+                  1,
+                )}%) · Reflected{' '}
+                {(regionAnalysis.matchingPathCount - regionAnalysis.directCount).toLocaleString()} ({formatMetric(
+                  regionAnalysis.matchingPathCount > 0
+                    ? (regionAnalysis.matchingPathCount - regionAnalysis.directCount) / regionAnalysis.matchingPathCount * 100
+                    : 0,
+                  1,
+                )}%)
               </div>
               <div className="mt-2 text-sm font-semibold">Top Components</div>
               <div className="mt-1 space-y-1">
@@ -2041,16 +2139,17 @@ function ReceiverHeatmap({
                       aria-label={`Highlight paths through ${componentNames.get(id) ?? `Component ${id}`}`}
                       aria-pressed={selected}
                       className={`flex w-full items-center justify-between rounded border px-2 py-1 text-left text-base transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
-                      onClick={() => actions.setHighlightedRayPathSelection(
-                        selected ? null : {
-                          runId,
-                          pathIndices: value.pathIndices,
-                          label,
-                        },
-                      )}
+                      onClick={() => showContributionPaths(label, value.pathIndices)}
                     >
                       <span>{componentNames.get(id) ?? `Component ${id}`}</span>
-                      <span className="font-mono">{value.count} paths · {formatMetric(value.flux)} lm</span>
+                      <span className="font-mono">
+                        {value.count} paths · {formatMetric(value.flux)} lm · {formatMetric(
+                          regionAnalysis.matchingStoredFlux > 0
+                            ? value.flux / regionAnalysis.matchingStoredFlux * 100
+                            : 0,
+                          1,
+                        )}% Flux
+                      </span>
                     </button>
                   )
                 }) : <div className="popup-guide text-xs text-muted-foreground">No reflected stored path in this area.</div>}
@@ -2068,20 +2167,17 @@ function ReceiverHeatmap({
                       key={sequence}
                       aria-pressed={selected}
                       className={`block w-full rounded border px-2 py-1 text-left text-base transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
-                      onClick={() => {
-                        actions.setHighlightedRayPathSelection(
-                          selected
-                            ? null
-                            : {
-                                runId,
-                                pathIndices: value.pathIndices,
-                                label: sequence,
-                              },
-                        )
-                      }}
+                      onClick={() => showContributionPaths(sequence, value.pathIndices)}
                     >
                       <div className="truncate font-medium" title={sequence}>{sequence}</div>
-                      <div className="mt-0.5 font-mono text-muted-foreground">{value.count} paths · {formatMetric(value.flux)} lm</div>
+                      <div className="mt-0.5 font-mono text-muted-foreground">
+                        {value.count} paths · {formatMetric(value.flux)} lm · {formatMetric(
+                          regionAnalysis.matchingStoredFlux > 0
+                            ? value.flux / regionAnalysis.matchingStoredFlux * 100
+                            : 0,
+                          1,
+                        )}% Flux
+                      </div>
                     </button>
                   )
                 }) : <div className="popup-guide text-xs text-muted-foreground">Enable Store ray paths and rerun to diagnose this area.</div>}
@@ -2104,13 +2200,7 @@ function ReceiverHeatmap({
                     aria-label={`Highlight Stored Path ${path.pathIndex + 1}`}
                     aria-pressed={selected}
                     className={`block w-full rounded border px-2 py-1.5 text-left text-sm transition-colors ${selected ? 'border-orange-400 bg-orange-100 text-orange-950 dark:bg-orange-950/45 dark:text-orange-100' : 'border-border hover:border-orange-300 hover:bg-orange-50/60 dark:hover:bg-orange-950/20'}`}
-                    onClick={() => actions.setHighlightedRayPathSelection(
-                      selected ? null : {
-                        runId,
-                        pathIndices: [path.pathIndex],
-                        label,
-                      },
-                    )}
+                    onClick={() => showContributionPaths(label, [path.pathIndex])}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold">Path #{path.pathIndex + 1}</span>
@@ -2149,7 +2239,7 @@ function ReceiverHeatmap({
             </div>
           </details>
           <p className="popup-guide mt-2 text-xs leading-4 text-muted-foreground">
-            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component와 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다. 현재 전체 {storedPaths.length.toLocaleString()} / 설정 {Math.max(0, maxStoredPaths).toLocaleString()} 경로가 저장되었습니다. 선택 영역에 1개만 나오면 Run Options의 Max stored paths를 늘린 후 다시 Tracing해야 합니다.
+            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component는 첫 반사점이 아니라 해당 경로가 지나간 모든 Component를 경로당 한 번씩 집계합니다. Component Flux 비율은 경로 관여율이므로 여러 Component를 통과한 경로가 중복 귀속되어 합계가 100%를 넘을 수 있습니다. 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다. 현재 전체 {storedPaths.length.toLocaleString()} / 설정 {Math.max(0, maxStoredPaths).toLocaleString()} 경로가 저장되었습니다. 선택 영역에 1개만 나오면 Run Options의 Max stored paths를 늘린 후 다시 Tracing해야 합니다.
           </p>
         </details>
       ) : interactionMode === 'region' ? (

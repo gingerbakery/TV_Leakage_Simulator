@@ -1328,7 +1328,11 @@ describe('Step 11 result UI', () => {
     fireEvent.pointerMove(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     fireEvent.pointerUp(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     expect(screen.getByText('Selected-area ray contribution')).not.toBeNull()
+    expect(screen.getByRole('slider', {
+      name: 'Contribution 3D highlight ray count',
+    })).not.toBeNull()
     expect(screen.getAllByText('Renamed chassis').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/% Flux/).length).toBeGreaterThan(0)
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
     expect(tooltip.textContent).toContain('Incident flux')
     expect(tooltip.textContent).toContain('Pixel error')
