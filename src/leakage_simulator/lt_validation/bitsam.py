@@ -15,6 +15,7 @@ MAX_JSON_BYTES = 128 * 1024**2
 MAX_MANIFEST_BYTES = 1024**2
 MAX_CELLS = 1_000_000
 PACKAGE_SCHEMA = "bitsam-project.v2"
+SETTINGS_SCHEMAS = {"bitsam-project.v1", "bitsam-project.v1-bsdf1"}
 CACHE_CONTRACT = "bitsam-lossless-scene.v1"
 
 
@@ -248,6 +249,9 @@ def _receiver(snapshot: dict, grid: dict | None, metrics: dict) -> dict:
 
 def _source(snapshot: dict, issues: list[dict]) -> dict:
     source_id = str(snapshot.get("emitter_id") or "unknown")
+    if snapshot.get("emitter_type") not in ("datum_plane", "reference_plane"):
+        issues.append(_issue("unsupported_source_geometry",
+                             f"{source_id}: 실제 면 광원 형상은 저장된 사각 치수만으로 검증할 수 없습니다."))
     u_axis, v_axis = (_vector(snapshot.get(key), unit=True) for key in ("u_axis", "v_axis"))
     if u_axis and v_axis and abs(math.fsum(a * b for a, b in zip(u_axis, v_axis))) > 1e-6:
         issues.append(_issue("invalid_source_frame", f"{source_id}: 저장된 광원 U/V 축이 직교하지 않습니다."))
@@ -319,12 +323,13 @@ def read_bitsam(path: Path, filename: str | None = None) -> dict:
         project, provenance = _read_project(path)
     except OSError as exc:
         raise ValueError("BITSAM file is unreadable") from exc
-    if project.get("format") != "tv-leakage-simulator-project" or project.get("schema_version") != "bitsam-project.v1":
+    if project.get("format") != "tv-leakage-simulator-project" or project.get("schema_version") not in SETTINGS_SCHEMAS:
         raise ValueError("Unsupported BITSAM project format or version")
     dataset = {
         "schema": "lt-validation.v1", "kind": "bitsam", "filename": Path(filename or path.name).name,
         "receivers": [], "sources": [], "issues": [],
-        "provenance": {**provenance, "project_name": _text(project.get("project_name")),
+        "provenance": {**provenance, "settings_schema": project["schema_version"],
+                       "project_name": _text(project.get("project_name")),
                        "saved_at": _text(project.get("saved_at")),
                        "application_version": _text(project.get("application_version"))},
     }

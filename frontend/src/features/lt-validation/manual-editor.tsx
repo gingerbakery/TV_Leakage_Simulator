@@ -97,7 +97,7 @@ export function ManualEditor({ dataset, receiverId, busy, onSave, onCancel }: {
           {textInput('uAxis', '로컬 U 방향 X, Y, Z', 'World 좌표의 단위 벡터입니다. 리시버 가로 좌표의 양의 방향을 입력합니다.')}
           {textInput('vAxis', '로컬 V 방향 X, Y, Z', 'World 좌표의 단위 벡터입니다. 리시버 세로 좌표의 양의 방향을 입력합니다.')}
           {textInput('normal', '수광 법선 X, Y, Z', '실제로 빛을 받는 면의 법선 단위 벡터입니다. 방향 반전 설정을 반영한 값을 입력합니다.')}
-          {textInput('acceptance', '수광각 (deg)')}
+          {textInput('acceptance', '수광각 (deg)', '유효 수광 법선을 중심으로 한 허용 반각입니다. 0° 초과, 90° 이하의 값을 입력합니다. 전체 각도가 아닙니다.')}
           <label className="space-y-1 text-xs"><span className="block">Aperture</span><select aria-label="LT aperture" className={fieldClass} value={draft.aperture} onChange={(event) => field('aperture', event.currentTarget.value as ManualDraft['aperture'])}><option value="">미확인</option><option value="none">없음 확인</option></select></label>
           {textInput('tolerance', 'TotalPower 반올림 허용량 (lm)', '사진에 표시된 총광속의 반올림이 확인된 경우에만 입력합니다. 최대 5e−8 lm이며 기본 검증 허용오차를 임의로 완화하지 않습니다.')}
         </div>

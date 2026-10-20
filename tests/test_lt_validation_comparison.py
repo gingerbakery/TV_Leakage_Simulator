@@ -28,6 +28,28 @@ def compare(sim=None, lt=None):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_extracted_lts_provenance_cannot_be_bypassed_by_manual_or_json_input(self):
+        lt = dataset()
+        receiver = lt["receivers"][0]
+        receiver["provenance"] = {
+            "raw_dimensions": [2, 2], "raw_flux_lm_flat": [1., 2., 3., 4.],
+            "user_confirmed_extracted_order": "fast=U;U=ascending;V=ascending",
+        }
+        self.assertEqual(compare(lt=lt)["status"], "ready")
+        receiver["flux_lm"] = [[2., 1.], [3., 4.]]
+        self.assertEqual(compare(lt=lt)["status"], "blocked")
+        receiver.update(flux_lm=[[1., 2., 3., 4.]], u_edges_mm=[-1., -.5, 0., .5, 1.], v_edges_mm=[-1., 1.])
+        self.assertEqual(compare(lt, copy.deepcopy(lt))["status"], "blocked")
+        receiver.update(flux_lm=[[1., 2.], [3., 4.]], u_edges_mm=[-1., 0., 1.], v_edges_mm=[-1., 0., 1.])
+        del receiver["provenance"]["user_confirmed_extracted_order"]
+        self.assertEqual(compare(lt=lt)["status"], "blocked")
+        receiver["provenance"]["user_confirmed_extracted_order"] = "fast=U;U=ascending;V=ascending"
+        del receiver["provenance"]["raw_flux_lm_flat"]
+        receiver["flux_lm"] = [[2., 1.], [3., 4.]]
+        result = compare(lt=lt)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("extracted_mesh_mismatch", [item["code"] for item in result["issues"]])
+
     def test_absolute_flux_is_separate_from_distribution(self):
         result = compare(dataset([[2., 4.], [6., 8.]]), dataset())
         self.assertEqual(result["status"], "ready")

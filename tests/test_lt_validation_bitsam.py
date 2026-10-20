@@ -271,6 +271,12 @@ class BitsamValidationReaderTests(unittest.TestCase):
         emitter["emission_direction"] = "both"
         self.assertIsNone(read_bitsam(self.json_file())["sources"][0]["normal"])
 
+    def test_face_source_cannot_masquerade_as_a_rectangular_plane(self):
+        emitter = self.project["analysis_result"]["emitters"][0]
+        emitter.update(emitter_type="face", normal_mode="custom", custom_normal=[0, 1, 0])
+        result = read_bitsam(self.json_file())
+        self.assertIn("unsupported_source_geometry", issue_codes(result))
+
 
 if __name__ == "__main__":
     unittest.main()

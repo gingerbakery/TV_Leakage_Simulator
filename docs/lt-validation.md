@@ -46,7 +46,8 @@ U/V별 격자 수가 다르면 차단하므로 25×15와 15×25도 직접 비교
 
 `.bitsam`은 ZIP의 `manifest.json`과 `project.json`만 읽습니다. project.json 크기,
 CRC, SHA-256과 manifest 구조를 검사하지만 CAD·scene payload의 전체 무결성을
-검증하거나 압축을 해제하지 않습니다. 기존 JSON 형식도 읽습니다. 저장된
+검증하거나 압축을 해제하지 않습니다. 기존 JSON 형식과 최신 BSDF 포함 설정
+형식(`bitsam-project.v1-bsdf1`)도 읽습니다. BSDF 계산과 저장 구조는 변경하지 않습니다. 저장된
 `analysis_result.receivers / emitters / receiver_grids`를 사용하며 편집 중 workspace
 설정으로 결과의 누락 조건을 대신하지 않습니다.
 
@@ -59,10 +60,12 @@ Photometric·Lumen·Incident를 확인한 데이터만 lm 값으로 제공합니
 ORACAD 저장 배열 순서와 세계좌표 변환은 확인 자료가 부족해 자동 확정하지 않습니다.
 추출한 flat 배열은 검산된 값과 저장 치수를 보존하며, 사용자가 확인한 U/V 순서 및
 셀 경계로만 연결할 수 있습니다. 방향·수광 조건·광원 조건은 별도 확인이 필요합니다.
+추출 원본이 있는 경우 수동 입력과 세션 JSON에도 원래 치수·셀값 및 명시한 배열
+순서 검사를 적용합니다. 합계가 같아도 격자 모양이나 개별 셀을 바꾸면 비교를 차단합니다.
 미확인 상태 자체를 '동일 조건'으로 처리하지 않습니다.
 
 현재 광원 조건 비교는 사각 평면 광원과 사각 Aim Area를 중심으로 지원합니다.
-Gaussian 폭, 다각형 광원, 구면 Aim, 양면 방사 등 표현되지 않은 조건은 차단합니다.
+Gaussian 폭, 실제 면 광원, 다각형 광원, 구면 Aim, 양면 방사 등 표현되지 않은 조건은 차단합니다.
 독립 형식 정의는 [lt-validation-contract.md](lt-validation-contract.md)를 참고하세요.
 
 ## 실제 결과 검증에 필요한 자료

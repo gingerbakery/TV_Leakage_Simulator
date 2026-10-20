@@ -48,6 +48,21 @@ describe('LT manual raw data', () => {
     expect(() => mapExtractedFlux([1, 2, 3, 4], '0 1 2', '0 1 2', 'U', 'ascending', 'ascending', undefined)).toThrow('원본 mesh')
   })
 
+  it('validates original LTS dimensions and cells even when directly editing the table', () => {
+    const original = buildManualDataset(createManualDraft(null, undefined), null, null)
+    const receiver = original.receivers[0]
+    receiver.provenance = { raw_dimensions: [2, 2], raw_flux_lm_flat: [1, 2, 3, 4] }
+    const draft = { ...createManualDraft(original, receiver), unit: 'flux_lm' as const, coordinateOrderConfirmed: true, uEdges: '0 1 2', vEdges: '0 1 2', matrix: '1 2\n3 4', total: '10', extractedOrder: 'fast=U;U=ascending;V=ascending' }
+    const mapped = buildManualDataset(draft, original, receiver.id)
+    expect(mapped.receivers[0].flux_lm).toEqual([[1, 2], [3, 4]])
+    expect(createManualDraft(mapped, mapped.receivers[0]).extractedOrder).toBe(draft.extractedOrder)
+    expect(() => buildManualDataset({ ...draft, uEdges: '0 1 2 3 4', vEdges: '0 1', matrix: '1 2 3 4' }, original, receiver.id)).toThrow('원본 mesh')
+    expect(() => buildManualDataset({ ...draft, matrix: '2 1\n3 4' }, original, receiver.id)).toThrow('원시값')
+    expect(() => buildManualDataset({ ...draft, extractedOrder: undefined }, original, receiver.id)).toThrow('저장 순서')
+    delete receiver.provenance.raw_flux_lm_flat
+    expect(() => buildManualDataset({ ...draft, matrix: '2 1\n3 4' }, original, receiver.id)).toThrow('원시 배열')
+  })
+
   it('normalizes structured source fields and keeps unentered source/Aim fields unknown', () => {
     const draft = createManualDraft(null, undefined)
     draft.sources = JSON.stringify([{ id: 's1', name: 'Lamp', total_flux_lm: '0.5', center_mm: '4.5, 0, 0', aim: { width_mm: '2', center_mm: '' } }])

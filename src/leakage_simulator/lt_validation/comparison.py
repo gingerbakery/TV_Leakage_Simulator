@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from math import fsum, isclose, isfinite, sqrt
+import re
 from typing import Any
 
 MAX_CELLS = 1_000_000
@@ -73,6 +74,7 @@ def valid_grid(receiver: dict) -> tuple[float | None, list[dict]]:
         return None, [issue("invalid_flux", "수광량 합계가 유효 범위를 초과합니다.")]
     if not isfinite(total):
         return None, [issue("invalid_flux", "수광량 합계가 유효하지 않습니다.")]
+    errors += _extracted_mesh_errors(receiver)
     stored = receiver.get("total_flux_lm")
     if not number(stored) or stored < 0:
         errors.append(issue("missing_total", "저장된 총 수광량(lm)이 없거나 유효하지 않습니다."))
@@ -83,6 +85,39 @@ def valid_grid(receiver: dict) -> tuple[float | None, list[dict]]:
         elif not isclose(total, stored, rel_tol=REL_TOL, abs_tol=rounding):
             errors.append(issue("total_mismatch", f"셀 합계 {total:.10g} lm와 저장 총광속 {stored:.10g} lm가 다릅니다."))
     return total, errors
+
+
+def _extracted_mesh_errors(receiver: dict) -> list[dict]:
+    """Keep a supplemented LTS mesh tied to its extracted, unmodified cells."""
+    provenance = receiver.get("provenance")
+    extracted_fields = ("raw_flux_lm_flat", "raw_dimensions", "raw_field",
+                        "raw_flat_values", "integration_interval", "user_confirmed_extracted_order")
+    if not isinstance(provenance, dict) or not any(key in provenance for key in extracted_fields):
+        return []
+    values = provenance.get("raw_flux_lm_flat")
+    dimensions = provenance.get("raw_dimensions")
+    flux = receiver["flux_lm"]
+    ny, nx = len(flux), len(flux[0])
+    if (not isinstance(dimensions, list) or len(dimensions) != 2
+            or any(type(n) is not int or n <= 0 for n in dimensions)
+            or dimensions not in ([nx, ny], [ny, nx])
+            or not isinstance(values, list) or len(values) != nx * ny
+            or any(not number(x) or x < 0 for x in values)):
+        return [issue("extracted_mesh_mismatch", "입력 격자가 추출한 LT 원본의 치수·셀 수와 다릅니다.")]
+    order = provenance.get("user_confirmed_extracted_order")
+    match = re.fullmatch(r"fast=([UV]);U=(ascending|descending);V=(ascending|descending)", order or "") if isinstance(order, str) else None
+    if match is None:
+        return [issue("missing_extracted_order", "추출한 LT 배열의 빠른 축과 U/V 저장 순서를 확인해야 합니다.")]
+    fast, u_order, v_order = match.groups()
+    for v, row in enumerate(flux):
+        for u, value in enumerate(row):
+            raw_u = u if u_order == "ascending" else nx - 1 - u
+            raw_v = v if v_order == "ascending" else ny - 1 - v
+            expected = values[raw_v * nx + raw_u if fast == "U" else raw_u * ny + raw_v]
+            # Only roundoff from an explicit lm/lx unit conversion is allowed.
+            if not isclose(value, expected, rel_tol=1e-12, abs_tol=1e-18):
+                return [issue("extracted_mesh_mismatch", "입력 셀값이 확인한 좌표 순서의 LT 원시값과 다릅니다.")]
+    return []
 
 
 def _basis_errors(value: dict, label: str) -> list[dict]:

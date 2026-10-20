@@ -37,6 +37,7 @@ export function createManualDraft(dataset: ValidationDataset | null, receiver: V
     tolerance: receiver?.total_flux_tolerance_lm?.toString() ?? '',
     sources: JSON.stringify(dataset?.sources ?? [], null, 2),
     coordinateOrderConfirmed: Boolean(receiver?.flux_lm && receiver.u_edges_mm && receiver.v_edges_mm),
+    extractedOrder: typeof receiver?.provenance?.user_confirmed_extracted_order === 'string' ? receiver.provenance.user_confirmed_extracted_order : undefined,
   }
 }
 
@@ -112,6 +113,16 @@ export function buildManualDataset(draft: ManualDraft, original: ValidationDatas
     throw new Error('광원 조건을 확인하세요. 숫자와 X, Y, Z 벡터가 유효해야 하며, JSON은 광원 객체 배열이어야 합니다.')
   }
   const previous = original?.receivers.find((receiver) => receiver.id === selectedId)
+  const extracted = previous?.provenance?.raw_flux_lm_flat
+  const extractedFields = ['raw_flux_lm_flat', 'raw_dimensions', 'raw_field', 'raw_flat_values', 'integration_interval', 'user_confirmed_extracted_order']
+  const linkedExtraction = previous?.provenance && extractedFields.some((key) => Object.hasOwn(previous.provenance!, key))
+  if (flux && linkedExtraction) {
+    if (!Array.isArray(extracted) || !extracted.every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)) throw new Error('추출한 LT 원시 배열이 유효하지 않습니다.')
+    const order = /^fast=([UV]);U=(ascending|descending);V=(ascending|descending)$/.exec(draft.extractedOrder ?? '')
+    if (!order) throw new Error('추출 배열의 빠른 축과 U/V 저장 순서를 확인하고 적용하세요.')
+    const expected = mapExtractedFlux(extracted, draft.uEdges, draft.vEdges, order[1], order[2], order[3], previous?.provenance?.raw_dimensions)
+    if (flux.some((row, v) => row.some((value, u) => Math.abs(value - expected[v][u]) > Math.max(1e-18, 1e-12 * Math.max(Math.abs(value), Math.abs(expected[v][u])))))) throw new Error('입력 셀값이 확인한 좌표 순서의 LT 원시값과 다릅니다.')
+  }
   const receiver: ValidationReceiver = {
     id: previous?.id ?? 'manual-lt-receiver', name: draft.name.trim() || 'LT receiver',
     quantity: previous?.quantity === 'radiometric' ? 'radiometric' : draft.unit ? 'photometric' : previous?.quantity ?? 'unknown',

@@ -99,13 +99,13 @@ describe('LT validation UI', () => {
     const lt = dataset('lighttools')
     sim.filename = 'Before-original.bitsam'
     lt.filename = 'Before-original.lts'
-    sim.receivers[0].total_flux_lm = 0.0013643
+    sim.receivers[0].total_flux_lm = 0.0012345
     lt.receivers[0].total_flux_lm = 0.0042
     vi.mocked(importValidationFile)
       .mockResolvedValueOnce({ ...sim, filename: 'session-data.json' })
       .mockResolvedValueOnce({ ...lt, filename: 'session-data.json' })
     vi.mocked(compareValidationCases).mockImplementation(async (cases, baselineId) => ({
-      cases: cases.map((item) => ({ ...caseResult(item), sim_total_lm: 0.0013643, lt_total_lm: 0.0042 })), baseline_id: baselineId,
+      cases: cases.map((item) => ({ ...caseResult(item), sim_total_lm: 0.0012345, lt_total_lm: 0.0042 })), baseline_id: baselineId,
     }))
     const session = { schema: 'lt-validation-session.v1', baseline_id: 'stored', cases: [{ id: 'stored', name: 'Stored', sim, lt, sim_receiver_id: 'front', lt_receiver_id: 'front' }] }
     const file = new File([JSON.stringify(session)], 'saved-session.json', { type: 'application/json' })
@@ -114,12 +114,12 @@ describe('LT validation UI', () => {
     fireEvent.change(screen.getByLabelText('LT 검증 세션 파일'), { target: { files: [file] } })
     expect(await screen.findByText('Before-original.bitsam')).not.toBeNull()
     expect(screen.getByText('Before-original.lts')).not.toBeNull()
-    expect(screen.getByText('조건 · 2행 × 2열 · 0.0013643 lm')).not.toBeNull()
+    expect(screen.getByText('조건 · 2행 × 2열 · 0.0012345 lm')).not.toBeNull()
     expect(screen.getByText('조건 · 2행 × 2열 · 0.0042 lm')).not.toBeNull()
     expect(vi.mocked(importValidationFile).mock.calls.map((call) => call[1])).toEqual(['session-data.json', 'session-data.json'])
     fireEvent.click(screen.getByRole('button', { name: '전체 비교' }))
     const table = await screen.findByRole('table', { name: 'LT 매칭 결과 표' })
-    expect(within(table).getByText('0.0013643')).not.toBeNull()
+    expect(within(table).getByText('0.0012345')).not.toBeNull()
     expect(within(table).getByText('0.0042')).not.toBeNull()
   })
 

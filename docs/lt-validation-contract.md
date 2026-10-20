@@ -60,6 +60,12 @@ Use issue severity error only for unrecoverable data errors; missing metadata is
 detected by comparison, so a user can explicitly supplement unknown LT conditions.
 Any unverified mesh ordering must leave flux_lm null (can retain raw flat values
 in provenance for explicit coordinate mapping). Never silently fix negatives/NaN.
+When extracted LTS provenance is present, supplemented grids must retain its
+original dimensions, flux array, and explicitly confirmed storage order.
+Missing original arrays, reshaped grids, or edited cells block comparison.
+Cell equality allows only unit-conversion roundoff (1e-12 relative / 1e-18 lm
+absolute); it does not rescale the grid to match TotalPower. Provenance is
+consistency metadata, not cryptographic proof of an external file's origin.
 
 ## HTTP
 
