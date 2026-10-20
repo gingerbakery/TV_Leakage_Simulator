@@ -1,3 +1,4 @@
+import { isBsdfAsset } from '@/features/materials/bsdf-asset'
 import type {
   EmitterAimSpec,
   EmitterSpec,
@@ -25,6 +26,13 @@ import { isEmitterAimValid } from '@/features/raytracing/emitter-aim'
 
 export const bitsamFileExtension = '.bitsam'
 export const bitsamSchemaVersion = 'bitsam-project.v1'
+export const bitsamBsdfSchemaVersion = 'bitsam-project.v1-bsdf1'
+
+/** Older builds ignore BSDF references. A distinct schema makes them reject these projects. */
+export function projectSchemaVersion(workspace: WorkspaceProjectState) {
+  return (workspace.bsdfAssets?.length || workspace.materialAssignments.some((item) => Boolean(item.bsdfAssetId)) ||
+    workspace.customOpticalProfiles?.some((item) => Boolean(item.bsdfAssetId))) ? bitsamBsdfSchemaVersion : bitsamSchemaVersion
+}
 
 const bitsamFormat = 'tv-leakage-simulator-project'
 const applicationVersion = '1.0.0'
@@ -45,7 +53,7 @@ export interface BitsamCadReference {
 
 export interface BitsamProject {
   format: typeof bitsamFormat
-  schema_version: typeof bitsamSchemaVersion
+  schema_version: typeof bitsamSchemaVersion | typeof bitsamBsdfSchemaVersion
   application_version: string
   saved_at: string
   project_name: string
@@ -320,6 +328,8 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
       'reference_plane',
     ]) &&
     isIdArray(value.face_indices) &&
+    (value.source_component_ids === undefined ||
+      isIdArray(value.source_component_ids)) &&
     (value.source_face_indices === undefined ||
       isIdArray(value.source_face_indices)) &&
     isOneOf(value.normal_mode, ['face_normal', 'custom']) &&
@@ -445,7 +455,8 @@ function isRayPathDisplayFilters(
     isBoolean(value.direct) &&
     isBoolean(value.specular) &&
     isBoolean(value.lambertian) &&
-    isBoolean(value.gaussian)
+    isBoolean(value.gaussian) &&
+    (value.bsdf === undefined || isBoolean(value.bsdf))
   )
 }
 
@@ -514,6 +525,7 @@ function isWorkspaceProjectState(
     isArrayOf(value.materialAssignments, isMaterialAssignment) &&
     (value.customOpticalProfiles === undefined ||
       isArrayOf(value.customOpticalProfiles, isSavedOpticalProfile)) &&
+    (value.bsdfAssets === undefined || isArrayOf(value.bsdfAssets, isBsdfAsset)) &&
     isArrayOf(value.transformRules, isTransformRule) &&
     isArrayOf(value.roiScopes, isRoiScope) &&
     isFiniteNumber(value.roiScopeSequence) &&
@@ -614,6 +626,7 @@ function createWorkspaceProjectState(
     faceColorOverrides: workspace.faceColorOverrides,
     materialAssignments: workspace.materialAssignments,
     customOpticalProfiles: workspace.customOpticalProfiles,
+    bsdfAssets: workspace.bsdfAssets ?? [],
     transformRules: workspace.transformRules,
     roiScopes: workspace.roiScopes,
     roiScopeSequence: workspace.roiScopeSequence,
@@ -642,7 +655,7 @@ export function createBitsamProject(
   )
   return {
     format: bitsamFormat,
-    schema_version: bitsamSchemaVersion,
+    schema_version: projectSchemaVersion(workspace),
     application_version: applicationVersion,
     saved_at: savedAt.toISOString(),
     project_name:
@@ -674,7 +687,7 @@ export function createBitsamProjectFromLoadedProject(
   )
   return {
     format: bitsamFormat,
-    schema_version: bitsamSchemaVersion,
+    schema_version: projectSchemaVersion(workspace),
     application_version: applicationVersion,
     saved_at: savedAt.toISOString(),
     project_name: loadedProject.project_name,
@@ -692,7 +705,7 @@ export function createBitsamProjectFromLoadedProject(
 export function serializeBitsamProject(
   project: BitsamProject,
 ): string {
-  return `${JSON.stringify(project, null, 2)}\n`
+  return `${JSON.stringify({ ...project, schema_version: projectSchemaVersion(project.workspace) }, null, 2)}\n`
 }
 
 export function parseBitsamProject(source: string): BitsamProject {
@@ -715,7 +728,7 @@ export function parseBitsamProject(source: string): BitsamProject {
       'TV Leakage Simulator 프로젝트 파일이 아닙니다.',
     )
   }
-  if (parsed.schema_version !== bitsamSchemaVersion) {
+  if (parsed.schema_version !== bitsamSchemaVersion && parsed.schema_version !== bitsamBsdfSchemaVersion) {
     throw new BitsamProjectError(
       `지원하지 않는 BITSAM 버전입니다: ${String(parsed.schema_version)}`,
     )
@@ -740,6 +753,9 @@ export function parseBitsamProject(source: string): BitsamProject {
     )
   }
 
+  if (parsed.schema_version === bitsamSchemaVersion && parsed.workspace.bsdfAssets?.length) {
+    throw new BitsamProjectError('BSDF 데이터를 포함한 프로젝트에는 BSDF 확장 버전 표시가 필요합니다.')
+  }
   return structuredClone(parsed) as unknown as BitsamProject
 }
 
@@ -832,6 +848,7 @@ export function createBitsamSettingsOnlyState(
       faceColorOverrides: [],
       materialAssignments: [],
       customOpticalProfiles: source.customOpticalProfiles ?? [],
+      bsdfAssets: source.bsdfAssets ?? [],
       transformRules: [],
       roiScopes: [],
       roiScopeSequence: 0,

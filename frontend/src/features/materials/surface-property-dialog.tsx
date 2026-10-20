@@ -8,6 +8,8 @@ import { OpticalProfilePreview, OpticalValueEditor } from './optical-profile-edi
 import { faceMaterialAssignment, isCustomOpticalValid, resolveAssignmentProfile, resolveOpticalProfile, unassignedOpticalProfile, withSurfaceFinish } from './optical-profile'
 import { componentCadSurfaces, partMaterialAssignment } from './surface-assignment-model'
 import { resolveComponentColorHex } from '@/features/viewer/viewer-display'
+import { BsdfAssetPanel } from './bsdf-asset-panel'
+import { bsdfAssetName } from './bsdf-asset'
 
 type SettingsMode = 'inherit' | 'preset' | 'custom'
 type EditTarget = 'faces' | 'part'
@@ -15,6 +17,7 @@ interface SurfaceDraft {
   mode: SettingsMode
   surfaceId: string
   custom: OpticalValueOverride
+  bsdfAssetId: string
 }
 
 export function SurfacePropertyDialog({ open, onOpenChange, component, scene, componentName, returnFocusRef, initialTarget = 'faces' }: {
@@ -27,8 +30,10 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
   initialTarget?: EditTarget
 }) {
   const actions = useWorkspaceStore(workspaceSelectors.actions)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
   const assignments = useWorkspaceStore(workspaceSelectors.materialAssignments)
+  const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
   const componentColors = useWorkspaceStore(workspaceSelectors.componentColorOverrides)
   const faceColors = useWorkspaceStore(workspaceSelectors.faceColorOverrides)
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
@@ -57,13 +62,14 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
   const initialProfile = initialAssignment ? resolveAssignmentProfile(initialAssignment, assignments) : unassignedOpticalProfile
   const sourceSignatures = new Set(targetFaceIds.map((faceId) => {
     const assignment = faceAssignment(faceId) ?? part
-    return JSON.stringify(assignment ? [assignment.targetType, assignment.surfaceId, resolveAssignmentProfile(assignment, assignments)] : null)
+    return JSON.stringify(assignment ? [assignment.targetType, assignment.surfaceId, assignment.bsdfAssetId, resolveAssignmentProfile(assignment, assignments)] : null)
   }))
   const mixed = target === 'faces' && sourceSignatures.size > 1
   const initialDraft: SurfaceDraft = {
     mode: target === 'faces' && !faceAssignment(targetFaceIds[0]) ? 'inherit' : initialAssignment?.opticalOverride ? 'custom' : 'preset',
     surfaceId: initialAssignment?.surfaceId ?? defaultSurfaceId,
     custom: initialAssignment ? initialProfile : resolveOpticalProfile(base.id, defaultSurfaceId),
+    bsdfAssetId: initialAssignment?.bsdfAssetId ?? '',
   }
   const initialKey = JSON.stringify(initialDraft)
   const selectionKey = targetFaceIds.join(',')
@@ -72,7 +78,7 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
     if (!open) return
     setDraft(JSON.parse(initialKey) as SurfaceDraft)
     setDirty(false)
-  }, [open, component?.component_id, target, selectionKey, initialKey])
+  }, [open, component?.component_id, activeCadCaseId, target, selectionKey, initialKey])
   useEffect(() => {
     if (open) { setTarget(initialTarget); setSearch(''); setColorEditorKey(null) }
     return () => actions.setMaterialFacePickArmed(false)
@@ -93,7 +99,7 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
       else actions.removeMaterialAssignment(item.assignmentId)
     }
     actions.setMaterialFacePickArmed(false)
-    edit({ mode: 'inherit', surfaceId: defaultSurfaceId, custom: partProfile })
+    edit({ mode: 'inherit', surfaceId: defaultSurfaceId, custom: partProfile, bsdfAssetId: part?.bsdfAssetId ?? '' })
   }
   const apply = () => {
     if (!component || !canApply) return
@@ -101,7 +107,7 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
     actions.upsertMaterialAssignment({
       assignmentId: target === 'part' ? part?.assignmentId ?? `material-part-${component.component_id}` : `material-faces-${component.component_id}-${targetFaceIds.join('-')}`,
       componentId: component.component_id, targetType: target, faceIds: target === 'faces' ? targetFaceIds : [],
-      baseMaterialId: base.id, surfaceId: draft.surfaceId, profileId: '', bsdfAssetId: '',
+      baseMaterialId: base.id, surfaceId: draft.surfaceId, profileId: '', bsdfAssetId: draft.bsdfAssetId,
       opticalOverride: draft.mode === 'custom' ? { ...preview } : undefined, enabled: true,
     })
     actions.setMaterialFacePickArmed(false)
@@ -109,7 +115,7 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
   }
   const changeFinish = (surfaceId: string) => {
     const keepCustom = draft.mode === 'custom' || (draft.mode === 'inherit' && Boolean(part?.opticalOverride))
-    edit({ surfaceId, mode: keepCustom ? 'custom' : 'preset',
+    edit({ ...draft, surfaceId, mode: keepCustom ? 'custom' : 'preset',
       custom: keepCustom ? withSurfaceFinish(preview, base.id, surfaceId) : resolveOpticalProfile(base.id, surfaceId) })
   }
 
@@ -142,7 +148,8 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
             const available = visibleFaces(group.faceIds)
             const labels = new Set(group.faceIds.map((id) => {
               const assignment = faceAssignment(id) ?? part
-              return assignment ? `${assignment.opticalOverride ? 'Custom' : findSurfaceProperty(assignment.surfaceId).name} · ${assignment.targetType === 'faces' ? '면 지정' : '부품 상속'}` : '미지정'
+              const asset = bsdfAssets.find((item) => item.id === assignment?.bsdfAssetId)
+              return assignment ? `${assignment.bsdfAssetId ? `BSDF: ${asset ? bsdfAssetName(asset) : '누락'}` : assignment.opticalOverride ? 'Custom' : findSurfaceProperty(assignment.surfaceId).name} · ${assignment.targetType === 'faces' ? '면 지정' : '부품 상속'}` : '미지정'
             }))
             const colors = new Set(group.faceIds.map((id) => colorByFace.get(id)))
             const customColor = colors.size === 1 ? [...colors][0] : undefined
@@ -179,7 +186,8 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
         <select aria-label="Optical settings mode" className="h-9 rounded-lg border border-input bg-background px-2" value={draft.mode}
           onChange={(event) => {
             const mode = event.currentTarget.value as SettingsMode
-            edit({ ...draft, mode, custom: mode === 'custom' ? { ...(draft.mode === 'inherit' && !part ? resolveOpticalProfile(base.id, draft.surfaceId) : preview) } : draft.custom })
+            edit({ ...draft, mode, bsdfAssetId: mode === 'inherit' ? part?.bsdfAssetId ?? '' : draft.bsdfAssetId,
+              custom: mode === 'custom' ? { ...(draft.mode === 'inherit' && !part ? resolveOpticalProfile(base.id, draft.surfaceId) : preview) } : draft.custom })
           }}>
           {target === 'faces' ? <option value="inherit">부품 기본값 사용</option> : null}
           <option value="preset">Preset · 카탈로그 값으로 설정</option><option value="custom">Custom · 독립 값 직접 입력</option>
@@ -198,8 +206,11 @@ export function SurfacePropertyDialog({ open, onOpenChange, component, scene, co
         <OpticalValueEditor value={draft.custom} onChange={(custom) => edit({ ...draft, custom })} />
       </> : null}
       {!customValid ? <p role="alert" className="text-xs text-destructive">비율은 0–1, σ는 0보다 큰 값이어야 합니다. None의 반사율은 0입니다.</p> : null}
+      <BsdfAssetPanel value={draft.mode === 'inherit' ? part?.bsdfAssetId ?? '' : draft.bsdfAssetId}
+        onChange={(bsdfAssetId) => edit({ ...draft, bsdfAssetId, mode: draft.mode === 'inherit' ? 'custom' : draft.mode,
+          custom: draft.mode === 'inherit' ? { ...preview } : draft.custom })} />
       {!(mixed && !dirty) && (target === 'part' || targetFaceIds.length > 0) ? <OpticalProfilePreview profile={preview}
-        label={!dirty && !(target === 'part' && !part) ? '현재 적용 광학 값' : '적용 예정 광학 값'} /> : null}
+        label={(draft.mode === 'inherit' ? part?.bsdfAssetId : draft.bsdfAssetId) ? '보관된 기존 광학 값 · BSDF 연결 해제 시 사용' : !dirty && !(target === 'part' && !part) ? '현재 적용 광학 값' : '적용 예정 광학 값'} /> : null}
       <div className="text-xs text-muted-foreground">입사각 반사율 보정: {angleDependent ? 'ON · 실제 반사율은 각도에 따라 달라짐' : 'OFF · 입력 반사율 고정'}</div>
     </div>
   </AppDialog>

@@ -46,6 +46,7 @@ export const rayPathStyles: Record<
     label: 'Gaussian',
     opacity: 0.76,
   },
+  bsdf: { color: 0xf472b6, label: 'BSDF', opacity: 0.76 },
 }
 
 export const rayPathFilterOrder: RayPathDisplayFilter[] = [
@@ -55,12 +56,25 @@ export const rayPathFilterOrder: RayPathDisplayFilter[] = [
   'specular',
   'lambertian',
   'gaussian',
+  'bsdf',
 ]
 
 export interface RayPathVisualization {
   groups: Record<RayPathDisplayFilter, RayPathSegment[]>
   totalPathCount: number
   visiblePathCount: number
+  renderedPathCount: number
+}
+
+function evenlySamplePaths(paths: RayHit[][], limit: number): RayHit[][] {
+  const count = Math.max(0, Math.min(paths.length, Math.trunc(limit)))
+  if (count === 0) return []
+  if (count === paths.length) return paths
+  if (count === 1) return [paths[0]]
+
+  return Array.from({ length: count }, (_, index) =>
+    paths[Math.round((index * (paths.length - 1)) / (count - 1))],
+  )
 }
 
 function validPath(path: RayHit[]): boolean {
@@ -91,7 +105,7 @@ function reflectedFilter(event: RayHit | undefined) {
   const kind = event?.ray_kind
   return kind === 'specular' ||
     kind === 'lambertian' ||
-    kind === 'gaussian'
+    kind === 'gaussian' || kind === 'bsdf'
     ? kind
     : null
 }
@@ -126,13 +140,15 @@ export function buildRayPathVisualization(
     specular: [],
     lambertian: [],
     gaussian: [],
+    bsdf: [],
   }
-  const visiblePathCount = paths.reduce(
-    (count, path) => count + Number(isRayPathVisible(path, filters)),
-    0,
+  const visiblePaths = paths.filter((path) =>
+    isRayPathVisible(path, filters),
   )
+  const visiblePathCount = visiblePaths.length
+  const renderedPaths = evenlySamplePaths(visiblePaths, maxRenderedPaths)
 
-  for (const path of paths.slice(0, maxRenderedPaths)) {
+  for (const path of renderedPaths) {
     if (!validPath(path)) continue
     const receiverFilter = receiverPathFilter(path)
     if (receiverFilter) {
@@ -172,5 +188,6 @@ export function buildRayPathVisualization(
     groups,
     totalPathCount: paths.length,
     visiblePathCount,
+    renderedPathCount: renderedPaths.length,
   }
 }

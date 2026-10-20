@@ -957,17 +957,48 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('2/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([true, true, false, false, false, false])
+    ).toEqual([true, true, false, false, false, false, false])
     fireEvent.click(screen.getByRole('button', { name: 'All off' }))
     expect(screen.getByText('0/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([false, false, false, false, false, false])
+    ).toEqual([false, false, false, false, false, false, false])
 
     fireEvent.click(
       screen.getByRole('button', { name: '분석 결과 보기' }),
     )
     expect(onOpenAnalysis).toHaveBeenCalledOnce()
+  })
+
+  it('projects an existing Receiver Heatmap in 3D without retracing', () => {
+    render(
+      <AppProviders>
+        <ResultPanel
+          result={createRayTraceResultFixture()}
+          onOpenAnalysis={vi.fn()}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap Physical' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dMode).toBe('physical')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap scale compare' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dScaleMode).toBe('compare')
+
+    fireEvent.change(screen.getByRole('slider', { name: '3D Heatmap opacity' }), {
+      target: { value: '65' },
+    })
+    expect(workspaceStore.getState().receiverHeatmap3dOpacity).toBe(0.65)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap smooth' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dInterpolation).toBe('smooth')
   })
 
   it('reopens restored results and toggles stored rays without a live job', () => {
@@ -1328,7 +1359,13 @@ describe('Step 11 result UI', () => {
     fireEvent.pointerMove(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     fireEvent.pointerUp(viewport, { clientX: 300, clientY: 150, pointerId: 2 })
     expect(screen.getByText('Selected-area ray contribution')).not.toBeNull()
+    expect(screen.getByRole('slider', {
+      name: 'Contribution 3D highlight ray count',
+    })).not.toBeNull()
+    expect(screen.getByRole('button', { name: '3D 강조 Ray 수 설명' })).not.toBeNull()
+    expect(screen.queryByText('저장된 분석 경로의 통계는 유지하고, 3D Viewer의 주황색 강조 개수만 변경합니다.')).toBeNull()
     expect(screen.getAllByText('Renamed chassis').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/% Flux/).length).toBeGreaterThan(0)
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
     expect(tooltip.textContent).toContain('Incident flux')
     expect(tooltip.textContent).toContain('Pixel error')
@@ -1355,6 +1392,15 @@ describe('Step 11 result UI', () => {
       pathIndices: [0],
       label: 'Stored Path #1',
     })
+    fireEvent.click(screen.getByRole('button', {
+      name: '선택 경로 숨기기',
+    }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Direct to Receiver/ }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    expect(screen.queryByText('Selected-area ray contribution')).toBeNull()
     expect(onOpenChange).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset view' }))

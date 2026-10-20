@@ -474,6 +474,9 @@ export function buildLeakPreviewRequest({
   blockers = [],
   directions = allLeakPreviewDirections,
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
+  if (materialAssignments.some((assignment) => assignment.enabled && assignment.bsdfAssetId)) {
+    throw new Error('BSDF 표 계산은 Leak Preview에서 아직 지원하지 않습니다. Ray Tracing에서 CPU / Source sampling으로 실행하세요.')
+  }
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
     balanced: { rayCount: 500_000, maxDepth: 5 },

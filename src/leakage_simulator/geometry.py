@@ -388,6 +388,7 @@ class TriangleMesh:
         self._native_cpu_scene_build_sec = 0.0
         self._native_cpu_scene_lock = threading.RLock()
         self._gpu_cuda_scene = None
+        self._gpu_pair_scene_cache = None
         self._gpu_cuda_scene_build_sec = 0.0
         self._gpu_cuda_scene_lock = threading.RLock()
 
@@ -1463,6 +1464,7 @@ class TriangleMesh:
         self._native_cpu_scene = None
         self._native_cpu_scene_build_sec = 0.0
         self._gpu_cuda_scene = None
+        self._gpu_pair_scene_cache = None
         self._gpu_cuda_scene_build_sec = 0.0
 
     def _invalidate_acceleration_if_built(self) -> None:

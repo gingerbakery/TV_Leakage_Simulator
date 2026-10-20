@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -12,7 +13,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
-import { createWorkspaceStore, workspaceStore } from '@/stores'
+import { createWorkspaceStore, workspaceStore, type MaterialAssignment } from '@/stores'
+import { buildRayTraceRequest } from '@/features/raytracing'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import {
@@ -21,6 +23,7 @@ import {
 } from '@/features/projects/copy-analysis-setup'
 import {
   createBitsamProject,
+  parseBitsamProject,
   serializeBitsamProject,
 } from '@/features/projects'
 
@@ -168,6 +171,141 @@ describe('SimulatorShell', () => {
       load.mockRestore()
     }
   })
+
+  it.each([false, true])(
+    'saves edited portable settings with the new result and restores both (case switch: %s)',
+    async (switchCases) => {
+      const scene = createSceneFixture()
+      apiHookState.scene = scene
+      const savedStore = createWorkspaceStore()
+      const savedActions = savedStore.getState().actions
+      savedActions.setActiveCad({ path: 'after.step', displayName: 'after.step' })
+      const oldResult = createCompletedRayTraceJobFixture().result!
+      oldResult.run_id = 'before-manual-edits'
+      oldResult.emitters[0].center = [4, 1, 15]
+      oldResult.receivers[0].center = [5.7, 9, 17.1]
+      oldResult.receivers[0].acceptance_angle_deg = 30
+      savedActions.upsertEmitter(oldResult.emitters[0])
+      savedActions.upsertReceiver(oldResult.receivers[0])
+      const originalAssignments: MaterialAssignment[] = [
+        {
+          assignmentId: 'material-part-chr', componentId: 1,
+          targetType: 'part', faceIds: [], baseMaterialId: 'secc_bare',
+          surfaceId: 'metal_gloss', profileId: '', bsdfAssetId: '', enabled: true,
+          opticalOverride: { reflectance: 0.3, loss: 0.7, specularRatio: 1, diffuseRatio: 0 },
+        },
+        {
+          assignmentId: 'material-part-fmb', componentId: 2,
+          targetType: 'part', faceIds: [], baseMaterialId: 'pc_white',
+          surfaceId: 'high_gloss_resin', profileId: '', bsdfAssetId: '', enabled: true,
+          opticalOverride: { reflectance: 0.25, loss: 0.75, specularRatio: 0.98, diffuseRatio: 0.02 },
+        },
+      ]
+      originalAssignments.forEach(savedActions.upsertMaterialAssignment)
+      const originalProject = createBitsamProject(scene, savedStore.getState(), new Date(), oldResult)
+      const load = vi.spyOn(portableProjects, 'loadPortableProject').mockResolvedValueOnce({
+        project: originalProject, scene,
+        cad: { path: 'restored/after.step', displayName: 'after.step' }, traceCached: true,
+      })
+      const save = vi.spyOn(portableProjects, 'savePortableProject').mockResolvedValueOnce({
+        cancelled: false, traceCached: true, downloaded: false,
+      })
+      try {
+        renderShell()
+        fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+          target: { files: [new File([new Uint8Array([80, 75, 3, 4])], 'original.bitsam')] },
+        })
+        const loaded = await screen.findByRole('dialog', { name: '불러오기 완료' })
+        fireEvent.click(within(loaded).getByRole('button', { name: '확인' }))
+        const closeOldResult = screen.queryByRole('button', { name: 'Close result window' })
+        if (closeOldResult) fireEvent.click(closeOldResult)
+        const actions = workspaceStore.getState().actions
+        const editedAssignments: MaterialAssignment[] = originalAssignments.map((assignment) => ({
+          ...assignment,
+          opticalOverride: assignment.componentId === 1
+            ? { reflectance: 0.3, loss: 0.7, specularRatio: 0, diffuseRatio: 1 }
+            : { reflectance: 0.3, loss: 0.7, specularRatio: 0.98, diffuseRatio: 0.02 },
+        }))
+        act(() => {
+          editedAssignments.forEach(actions.upsertMaterialAssignment)
+          actions.upsertEmitter({ ...workspaceStore.getState().emitters[0], center: [4.5, 1, 15] })
+          actions.upsertReceiver({
+            ...workspaceStore.getState().receivers[0],
+            center: [5.15, 9, 17.1], base_center: [4.65, 9, 16.1],
+            position_offset_mm: [0.5, 0, 1], acceptance_angle_deg: 90,
+          })
+        })
+        const editedState = workspaceStore.getState()
+        const request = buildRayTraceRequest({
+          scene, projectName: 'manual-edits', emitters: editedState.emitters,
+          receivers: editedState.receivers, materialAssignments: editedState.materialAssignments,
+          transformRules: editedState.transformRules, excludedComponentIds: editedState.excludedComponentIds,
+          deletedComponentIds: editedState.deletedComponentIds, roiScopes: editedState.roiScopes,
+          config: editedState.rayTraceConfig,
+        })
+        expect(request.optical_profiles).toEqual(expect.arrayContaining([
+          expect.objectContaining({ reflectance: 0.3, specular_ratio: 0, diffuse_ratio: 1 }),
+          expect.objectContaining({ reflectance: 0.3, specular_ratio: 0.98, diffuse_ratio: 0.02 }),
+        ]))
+        const completedJob = createCompletedRayTraceJobFixture()
+        completedJob.job_id = 'new-manually-edited-job'
+        completedJob.result = {
+          ...completedJob.result!, run_id: 'after-manual-edits',
+          emitters: structuredClone(request.emitters), receivers: structuredClone(request.receivers),
+          optical_profiles: structuredClone(request.optical_profiles),
+        }
+        act(() => {
+          apiHookState.rayTraceJob = completedJob
+          actions.setActiveRayTraceJobId(completedJob.job_id)
+        })
+        await waitFor(() => expect(workspaceStore.getState().cadCases.find(
+          (item) => item.caseId === workspaceStore.getState().activeCadCaseId,
+        )?.latestResult?.run_id).toBe('after-manual-edits'))
+        const closeNewResult = screen.queryByRole('button', { name: 'Close result window' })
+        if (closeNewResult) fireEvent.click(closeNewResult)
+        if (switchCases) {
+          const editedCaseId = workspaceStore.getState().activeCadCaseId!
+          act(() => {
+            apiHookState.rayTraceJob = undefined
+            actions.addCadCase({ path: 'another.step', displayName: 'another.step' })
+          })
+          act(() => actions.setActiveCadCase(editedCaseId))
+        }
+        fireEvent.click(screen.getByRole('button', { name: 'Save BITSAM project' }))
+        const saved = await screen.findByRole('dialog', { name: '저장 완료' })
+        const savedProject = parseBitsamProject(serializeBitsamProject(save.mock.calls[0][0]))
+        expect(savedProject.workspace.materialAssignments).toEqual(editedAssignments)
+        expect(savedProject.workspace.emitters[0].center).toEqual([4.5, 1, 15])
+        expect(savedProject.workspace.receivers[0]).toMatchObject({
+          center: [5.15, 9, 17.1], base_center: [4.65, 9, 16.1], acceptance_angle_deg: 90,
+        })
+        expect(savedProject.analysis_result).toMatchObject({
+          run_id: 'after-manual-edits', optical_profiles: request.optical_profiles,
+          emitters: request.emitters, receivers: request.receivers,
+        })
+        expect(originalProject.workspace.materialAssignments).toEqual(originalAssignments)
+        fireEvent.click(within(saved).getByRole('button', { name: '확인' }))
+        apiHookState.rayTraceJob = undefined
+        load.mockResolvedValueOnce({
+          project: savedProject, scene,
+          cad: { path: 'reloaded/after.step', displayName: 'after.step' }, traceCached: true,
+        })
+        fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+          target: { files: [new File([new Uint8Array([80, 75, 3, 4])], 'edited.bitsam')] },
+        })
+        await screen.findByRole('dialog', { name: '불러오기 완료' })
+        const restoredState = workspaceStore.getState()
+        expect(restoredState.materialAssignments).toEqual(editedAssignments)
+        expect(restoredState.emitters).toEqual(savedProject.workspace.emitters)
+        expect(restoredState.receivers).toEqual(savedProject.workspace.receivers)
+        expect(restoredState.restoredRayTraceResult).toEqual(savedProject.analysis_result)
+      } finally {
+        load.mockRestore()
+        save.mockRestore()
+      }
+    },
+  )
+
   it('uses the same completion dialog for a compatible legacy project', async () => {
     const scene = createSceneFixture()
     apiHookState.scene = scene

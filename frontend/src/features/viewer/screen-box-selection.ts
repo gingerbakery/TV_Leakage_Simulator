@@ -4,6 +4,35 @@ export interface ViewerScreenPoint {
   z?: number
 }
 
+/** Returns an adaptive grid of screen points for visible-surface discovery.
+ * A fixed center/corner probe misses small faces and gaps between components;
+ * the bounded grid remains predictable while covering the complete drag box. */
+export function screenBoxSamplePoints(
+  box: { minX: number; maxX: number; minY: number; maxY: number },
+  targetSpacing = 24,
+  maxSamplesPerAxis = 25,
+): Array<[number, number]> {
+  const width = Math.max(0, box.maxX - box.minX)
+  const height = Math.max(0, box.maxY - box.minY)
+  const countFor = (span: number) => {
+    const requested = Math.max(3, Math.ceil(span / Math.max(1, targetSpacing)) + 1)
+    const bounded = Math.min(Math.max(3, maxSamplesPerAxis), requested)
+    // An odd count always probes the exact center as well as both edges.
+    return bounded % 2 === 0 && bounded < maxSamplesPerAxis ? bounded + 1 : bounded
+  }
+  const columns = countFor(width)
+  const rows = countFor(height)
+  const points: Array<[number, number]> = []
+  for (let row = 0; row < rows; row += 1) {
+    const y = box.minY + height * row / Math.max(1, rows - 1)
+    for (let column = 0; column < columns; column += 1) {
+      const x = box.minX + width * column / Math.max(1, columns - 1)
+      points.push([x, y])
+    }
+  }
+  return points
+}
+
 function pointInsideBox(
   point: ViewerScreenPoint,
   minX: number,

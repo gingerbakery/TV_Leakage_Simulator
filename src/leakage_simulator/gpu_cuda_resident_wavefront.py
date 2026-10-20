@@ -20,6 +20,7 @@ the established host-roundtrip implementation exactly once.
 from dataclasses import dataclass, field
 import importlib
 import math
+import os
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -29,6 +30,10 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from . import gpu_cuda_intersection as cuda_backend
+from . import gpu_cuda_transfer as fixed_transfer
+from . import gpu_cuda_pair_scene as pair_scene_backend
+from . import gpu_cuda_pair_bvh as pair_intersector
+from .bsdf_packed import PackedBsdf, validate_bsdf_indices, make_bsdf_functions
 from .gpu_cuda_summary_accumulator import (
     GpuSummaryAccumulatorExecution,
     GpuSummaryAccumulatorRequest,
@@ -50,6 +55,8 @@ from .native_cpu_counter_wavefront import (
     MAX_GAUSSIAN_ATTEMPTS,
 )
 from .native_cpu_wavefront import (
+    LOBE_BSDF,
+    SCATTER_BSDF,
     LOBE_GAUSSIAN,
     LOBE_LAMBERTIAN,
     LOBE_NONE,
@@ -71,9 +78,11 @@ from .native_cpu_wavefront import (
 )
 from .wavefront_event_tape import (
     MAX_BATCH_EVENT_SLOTS,
+    bounded_wavefront_batch_size,
     PrimaryMajorEventTape,
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT,
+    RAY_KIND_BSDF,
     RAY_KIND_GAUSSIAN,
     RAY_KIND_LAMBERTIAN,
     RAY_KIND_SPECULAR,
@@ -96,6 +105,8 @@ COMPACT_WORKSPACE_CONTRACT = "compact_summary_sparse_path_retrace_v1"
 FULL_WORKSPACE_CONTRACT = "full_event_geometry_workspace_v1"
 THREADS_PER_BLOCK = 128
 MAX_SUPPORTED_DEPTH = MAX_REFLECTION_DEPTH
+INITIAL_EVENT_WINDOW_DEPTH = 32
+EVENT_WINDOW_CONTRACT = 'bounded_depth_window_replay_before_commit_v1'
 
 _MASK64 = (1 << 64) - 1
 _DEPTH_SALT = 0xD2B74407B1CE6E93
@@ -117,6 +128,22 @@ class GpuResidentWavefrontProviderError(RuntimeError):
         super().__init__(reason_code)
         self.phase = phase
         self.reason_code = reason_code
+
+
+class GpuResidentEventWindowExceeded(GpuResidentWavefrontProviderError):
+    def __init__(self, record_depth, next_depth, ray_count, kernel_sec, total_sec, workspace_bytes):
+        super().__init__('record_budget', 'gpu_resident_event_window_exceeded')
+        self.record_depth = int(record_depth)
+        self.next_depth = int(next_depth)
+        self.ray_count = int(ray_count)
+        self.kernel_sec = float(kernel_sec)
+        self.total_sec = float(total_sec)
+        self.workspace_bytes = int(workspace_bytes)
+
+
+def event_window_batch_size(context, requested_size, max_depth):
+    window = min(max_depth + 1, max(INITIAL_EVENT_WINDOW_DEPTH, context._event_depth_hint))
+    return bounded_wavefront_batch_size(requested_size, window - 1)
 
 
 def _owned_array(
@@ -157,6 +184,8 @@ class GpuResidentWavefrontContext:
     receiver_minimum_cosines: FloatArray | ArrayLike
     receiver_columns: NDArray[np.int32] | ArrayLike
     receiver_rows: NDArray[np.int32] | ArrayLike
+    bsdf: PackedBsdf = field(default_factory=PackedBsdf.empty)
+    bsdf_indices: Optional[np.ndarray] = None
     _device_bindings: Any = field(default=None, init=False, repr=False)
     _summary_session: GpuSummaryAccumulatorSession = field(
         default_factory=GpuSummaryAccumulatorSession,
@@ -168,6 +197,9 @@ class GpuResidentWavefrontContext:
         init=False,
         repr=False,
     )
+    _event_depth_hint: int = field(default=INITIAL_EVENT_WINDOW_DEPTH, init=False, repr=False)
+    _path_workspace_bytes: int = field(default=0, init=False, repr=False)
+    _pair_scene_prepare_sec: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         face_count = len(self.scene.triangle_v0)
@@ -218,7 +250,7 @@ class GpuResidentWavefrontContext:
             raise ValueError("face_roughness values must be within [0, 1]")
         if np.any(
             (self.face_scatter < SCATTER_NONE)
-            | (self.face_scatter > SCATTER_MIXED)
+            | (self.face_scatter > SCATTER_BSDF)
         ):
             raise ValueError("face_scatter contains an unsupported code")
         if np.any(
@@ -229,6 +261,11 @@ class GpuResidentWavefrontContext:
         if np.any(self.face_gaussian_sigma_deg <= 0.0):
             raise ValueError("face_gaussian_sigma_deg values must be positive")
 
+        self.bsdf_indices = validate_bsdf_indices(
+            self.bsdf,
+            self.bsdf_indices if self.bsdf_indices is not None else np.full(face_count, -1),
+            self.face_scatter, SCATTER_BSDF,
+        )
         self.receiver_centers = _owned_array(
             self.receiver_centers,
             np.float64,
@@ -483,6 +520,12 @@ class GpuResidentWavefrontExecution:
     strict_float64: bool = True
     provider_contract: str = PROVIDER_CONTRACT
     state_layout: str = STATE_LAYOUT
+    event_record_depth: int = 0
+    event_window_contract: Optional[str] = None
+    receiver_hit_hint_download_bytes: int = 0
+    emission_hint_download_bytes: int = 0
+    pair_bvh_selected: bool = False
+    pair_scene_prepare_sec: float = 0.0
 
 
 @dataclass(slots=True)
@@ -495,6 +538,8 @@ class _DeviceBindings:
     face_scatter: Any
     face_specular_ratio: Any
     face_gaussian_sigma_deg: Any
+    bsdf_indices: Any
+    bsdf_arrays: Any
     receiver_centers: Any
     receiver_normals: Any
     receiver_u_axes: Any
@@ -507,6 +552,7 @@ class _DeviceBindings:
     receiver_columns: Any
     receiver_rows: Any
     upload_sec: float
+    packed_transfer: Any = None
 
 
 @dataclass(slots=True)
@@ -552,11 +598,16 @@ class _Workspace:
     overflow_flags: Any
     bounce_importance_counts: Any
     bounce_importance_weight_stats: Any
+    input_transfer: Any = None
+    host_input_transfer: Optional[np.ndarray] = None
+    host_inputs: Optional[dict[str, np.ndarray]] = None
 
 
 _STATE_LOCK = threading.RLock()
 _KERNEL: Optional[Callable[..., None]] = None
 _KERNEL_COMPILED = False
+_PAIR_KERNEL: Optional[Callable[..., None]] = None
+_PAIR_KERNEL_COMPILED = False
 _PATH_SELECT_KERNEL: Optional[Callable[..., None]] = None
 _PATH_GATHER_KERNEL: Optional[Callable[..., None]] = None
 _WORKSPACES = threading.local()
@@ -569,6 +620,32 @@ def _workspace_capacity(ray_count: int) -> int:
     return capacity
 
 
+def _allocate_input_workspace(cuda: Any, capacity: int, depth_capacity: int):
+    specifications = {
+        "origins": ((capacity, 3), np.float64),
+        "directions": ((capacity, 3), np.float64),
+        "powers": ((capacity,), np.float64),
+        "source_faces": ((capacity,), np.int64),
+        "reflection_seeds": ((capacity,), np.uint64),
+        "active_by_depth": ((depth_capacity,), np.int64),
+        "bounce_importance_counts": ((7,), np.int64),
+        "bounce_importance_weight_stats": ((4,), np.float64),
+    }
+    byte_count = sum(int(np.prod(shape)) * np.dtype(dtype).itemsize
+                     for shape, dtype in specifications.values())
+    host = np.empty(byte_count, dtype=np.uint8)
+    device = cuda.device_array(byte_count, dtype=np.uint8)
+    host_arrays = {}
+    device_arrays = {}
+    offset = 0
+    for name, (shape, dtype) in specifications.items():
+        end = offset + int(np.prod(shape)) * np.dtype(dtype).itemsize
+        host_arrays[name] = host[offset:end].view(dtype).reshape(shape)
+        device_arrays[name] = device[offset:end].view(dtype).reshape(shape)
+        offset = end
+    return device, host, device_arrays, host_arrays
+
+
 def _ensure_device_bindings(
     context: GpuResidentWavefrontContext,
     capability: cuda_backend.GpuCudaCapability,
@@ -579,42 +656,31 @@ def _ensure_device_bindings(
             "initialize",
             "gpu_resident_cuda_runtime_not_initialized",
         )
+    transfer_mode = os.environ.get('LEAKAGE_GPU_STATIC_TRANSFER', 'packed')
+    if transfer_mode not in ('packed', 'legacy'):
+        raise GpuResidentWavefrontProviderError('input_validation', 'gpu_resident_static_transfer_mode_invalid')
     with context._device_lock:
         existing = context._device_bindings
         if existing is not None and existing.device_id == capability.device_id:
             return existing, True
         started = time.perf_counter()
         try:
-            bindings = _DeviceBindings(
-                context_identity=id(context),
-                device_id=capability.device_id,
-                triangle_normals=cuda.to_device(context.triangle_normals),
-                face_reflectance=cuda.to_device(context.face_reflectance),
-                face_roughness=cuda.to_device(context.face_roughness),
-                face_scatter=cuda.to_device(context.face_scatter),
-                face_specular_ratio=cuda.to_device(context.face_specular_ratio),
-                face_gaussian_sigma_deg=cuda.to_device(
-                    context.face_gaussian_sigma_deg
-                ),
-                receiver_centers=cuda.to_device(context.receiver_centers),
-                receiver_normals=cuda.to_device(context.receiver_normals),
-                receiver_u_axes=cuda.to_device(context.receiver_u_axes),
-                receiver_v_axes=cuda.to_device(context.receiver_v_axes),
-                receiver_half_widths=cuda.to_device(context.receiver_half_widths),
-                receiver_half_heights=cuda.to_device(context.receiver_half_heights),
-                receiver_inverse_widths=cuda.to_device(
-                    context.receiver_inverse_widths
-                ),
-                receiver_inverse_heights=cuda.to_device(
-                    context.receiver_inverse_heights
-                ),
-                receiver_minimum_cosines=cuda.to_device(
-                    context.receiver_minimum_cosines
-                ),
-                receiver_columns=cuda.to_device(context.receiver_columns),
-                receiver_rows=cuda.to_device(context.receiver_rows),
-                upload_sec=0.0,
-            )
+            names = ('triangle_normals', 'face_reflectance', 'face_roughness',
+                'face_scatter', 'face_specular_ratio', 'face_gaussian_sigma_deg',
+                'bsdf_indices',
+                'receiver_centers', 'receiver_normals', 'receiver_u_axes', 'receiver_v_axes',
+                'receiver_half_widths', 'receiver_half_heights', 'receiver_inverse_widths',
+                'receiver_inverse_heights', 'receiver_minimum_cosines', 'receiver_columns', 'receiver_rows')
+            arrays = {name: getattr(context, name) for name in names}
+            packed = None
+            if transfer_mode == 'packed':
+                packed, device_arrays = fixed_transfer.upload_aligned_arrays(cuda, arrays)
+            else:
+                device_arrays = {name: cuda.to_device(values) for name, values in arrays.items()}
+            bindings = _DeviceBindings(context_identity=id(context), device_id=capability.device_id,
+                **device_arrays,
+                bsdf_arrays=tuple(cuda.to_device(values) for values in context.bsdf.arrays()),
+                upload_sec=0.0, packed_transfer=packed)
             cuda.synchronize()
         except Exception as exc:
             raise GpuResidentWavefrontProviderError(
@@ -633,6 +699,8 @@ def _ensure_workspace(
     depth_count: int,
     geometry_count: int,
     workspace_contract: str,
+    *,
+    logical_depth_count: Optional[int] = None,
 ) -> tuple[_Workspace, bool, float]:
     cuda = cuda_backend._CUDA
     if cuda is None or capability.device_id is None:
@@ -641,6 +709,9 @@ def _ensure_workspace(
             "gpu_resident_cuda_runtime_not_initialized",
         )
     workspace_cache = getattr(_WORKSPACES, "values", None)
+    logical_depth_count = depth_count if logical_depth_count is None else logical_depth_count
+    if not 1 <= depth_count <= logical_depth_count:
+        raise ValueError('GPU event recording depth must fit the logical depth')
     if workspace_cache is None:
         workspace_cache = {}
         _WORKSPACES.values = workspace_cache
@@ -651,6 +722,8 @@ def _ensure_workspace(
         and existing.device_id == capability.device_id
         and existing.capacity >= ray_count
         and existing.depth_capacity >= depth_count
+        and existing.capacity * existing.depth_capacity <= MAX_BATCH_EVENT_SLOTS
+        and existing.active_by_depth.size >= logical_depth_count
         and existing.geometry_capacity >= geometry_count
         and existing.stack_width >= context.scene.stack_width
     ):
@@ -666,7 +739,11 @@ def _ensure_workspace(
     geometry_capacity = min(capacity, geometry_capacity)
     event_shape = (capacity, depth_capacity)
     geometry_event_shape = (geometry_capacity, depth_capacity)
+    event_order = "F" if workspace_contract == COMPACT_WORKSPACE_CONTRACT else "C"
     try:
+        input_transfer, host_input_transfer, device_inputs, host_inputs = _allocate_input_workspace(
+            cuda, capacity, logical_depth_count,
+        )
         workspace = _Workspace(
             context_identity=id(context),
             device_id=capability.device_id,
@@ -675,12 +752,12 @@ def _ensure_workspace(
             depth_capacity=depth_capacity,
             geometry_capacity=geometry_capacity,
             stack_width=context.scene.stack_width,
-            origins=cuda.device_array((capacity, 3), dtype=np.float64),
-            directions=cuda.device_array((capacity, 3), dtype=np.float64),
-            powers=cuda.device_array(capacity, dtype=np.float64),
-            source_faces=cuda.device_array(capacity, dtype=np.int64),
-            reflection_seeds=cuda.device_array(capacity, dtype=np.uint64),
-            event_faces=cuda.device_array(event_shape, dtype=np.int32),
+            origins=device_inputs["origins"],
+            directions=device_inputs["directions"],
+            powers=device_inputs["powers"],
+            source_faces=device_inputs["source_faces"],
+            reflection_seeds=device_inputs["reflection_seeds"],
+            event_faces=cuda.device_array(event_shape, dtype=np.int32, order=event_order),
             event_distances=cuda.device_array(
                 geometry_event_shape,
                 dtype=np.float64,
@@ -693,12 +770,12 @@ def _ensure_workspace(
                 (*geometry_event_shape, 3),
                 dtype=np.float64,
             ),
-            event_incoming_power=cuda.device_array(event_shape, dtype=np.float64),
-            event_reflected_power=cuda.device_array(event_shape, dtype=np.float64),
-            event_emitted_power=cuda.device_array(event_shape, dtype=np.float64),
-            event_status=cuda.device_array(event_shape, dtype=np.uint16),
-            event_lobes=cuda.device_array(event_shape, dtype=np.int8),
-            event_incoming_kinds=cuda.device_array(event_shape, dtype=np.int8),
+            event_incoming_power=cuda.device_array(event_shape, dtype=np.float64, order=event_order),
+            event_reflected_power=cuda.device_array(event_shape, dtype=np.float64, order=event_order),
+            event_emitted_power=cuda.device_array(event_shape, dtype=np.float64, order=event_order),
+            event_status=cuda.device_array(event_shape, dtype=np.uint16, order=event_order),
+            event_lobes=cuda.device_array(event_shape, dtype=np.int8, order=event_order),
+            event_incoming_kinds=cuda.device_array(event_shape, dtype=np.int8, order=event_order),
             terminal_kind=cuda.device_array(capacity, dtype=np.int8),
             terminal_depth=cuda.device_array(capacity, dtype=np.int16),
             terminal_power=cuda.device_array(capacity, dtype=np.float64),
@@ -721,7 +798,7 @@ def _ensure_workspace(
             ),
             terminal_incoming_power=cuda.device_array(capacity, dtype=np.float64),
             stochastic_primary=cuda.device_array(capacity, dtype=np.uint8),
-            active_by_depth=cuda.device_array(depth_capacity, dtype=np.int64),
+            active_by_depth=device_inputs["active_by_depth"],
             stack_entries=cuda.device_array(
                 capacity * context.scene.stack_width,
                 dtype=np.float64,
@@ -731,11 +808,11 @@ def _ensure_workspace(
                 dtype=np.int64,
             ),
             overflow_flags=cuda.device_array(capacity, dtype=np.uint8),
-            bounce_importance_counts=cuda.device_array(4, dtype=np.int64),
-            bounce_importance_weight_stats=cuda.device_array(
-                4,
-                dtype=np.float64,
-            ),
+            bounce_importance_counts=device_inputs["bounce_importance_counts"],
+            bounce_importance_weight_stats=device_inputs["bounce_importance_weight_stats"],
+            input_transfer=input_transfer,
+            host_input_transfer=host_input_transfer,
+            host_inputs=host_inputs,
         )
     except Exception as exc:
         raise GpuResidentWavefrontProviderError(
@@ -786,13 +863,31 @@ def _workspace_bytes(workspace: _Workspace) -> int:
     return sum(int(array.size) * int(array.dtype.itemsize) for array in arrays)
 
 
-def _make_kernel() -> Callable[..., None]:
+def _make_presence_marker(cuda, warp_aggregated):
+    libdevice = importlib.import_module('numba.cuda.libdevice')
+
+    @cuda.jit(device=True, inline=True)
+    def mark(counters, index):
+        if not warp_aggregated or (cuda.threadIdx.x & 31) == libdevice.ffs(np.int32(cuda.activemask())) - 1:
+            cuda.atomic.max(counters, index, 1)
+            return True
+        return False
+
+    return mark
+
+
+def _make_kernel(*, _intersector_factory=None) -> Callable[..., None]:
     cuda = cuda_backend._CUDA
     if cuda is None:
         raise GpuResidentWavefrontProviderError(
             "initialize",
             "gpu_resident_cuda_runtime_not_initialized",
         )
+
+    presence_mode = os.environ.get('LEAKAGE_GPU_PRESENCE_FLAGS', 'warp')
+    if presence_mode not in ('scalar', 'warp'):
+        raise GpuResidentWavefrontProviderError('input_validation', 'gpu_resident_presence_flag_mode_invalid')
+    mark_presence = _make_presence_marker(cuda, presence_mode == 'warp')
 
     @cuda.jit(device=True, inline=True)
     def normalize(x_value, y_value, z_value):
@@ -1239,7 +1334,8 @@ def _make_kernel() -> Callable[..., None]:
         if math.isinf(root_entry):
             return math.inf, -1, 0
 
-        base = ray_index * stack_width
+        base = ray_index
+        stack_stride = stack_entries.size // stack_width
         best_distance = maximum_t
         best_face = -1
         stack_entries[base] = root_entry
@@ -1247,8 +1343,8 @@ def _make_kernel() -> Callable[..., None]:
         stack_size = 1
         while stack_size > 0:
             stack_size -= 1
-            entry = stack_entries[base + stack_size]
-            current_node = stack_nodes[base + stack_size]
+            entry = stack_entries[base + stack_size * stack_stride]
+            current_node = stack_nodes[base + stack_size * stack_stride]
             if entry > best_distance:
                 continue
             leaf_count = node_count[current_node]
@@ -1354,30 +1450,37 @@ def _make_kernel() -> Callable[..., None]:
                 return math.inf, -1, 1
             if left_hit and right_hit:
                 if left_entry <= right_entry:
-                    stack_entries[base + stack_size] = right_entry
-                    stack_nodes[base + stack_size] = right_index
+                    stack_entries[base + stack_size * stack_stride] = right_entry
+                    stack_nodes[base + stack_size * stack_stride] = right_index
                     stack_size += 1
-                    stack_entries[base + stack_size] = left_entry
-                    stack_nodes[base + stack_size] = left_index
+                    stack_entries[base + stack_size * stack_stride] = left_entry
+                    stack_nodes[base + stack_size * stack_stride] = left_index
                     stack_size += 1
                 else:
-                    stack_entries[base + stack_size] = left_entry
-                    stack_nodes[base + stack_size] = left_index
+                    stack_entries[base + stack_size * stack_stride] = left_entry
+                    stack_nodes[base + stack_size * stack_stride] = left_index
                     stack_size += 1
-                    stack_entries[base + stack_size] = right_entry
-                    stack_nodes[base + stack_size] = right_index
+                    stack_entries[base + stack_size * stack_stride] = right_entry
+                    stack_nodes[base + stack_size * stack_stride] = right_index
                     stack_size += 1
             elif left_hit:
-                stack_entries[base + stack_size] = left_entry
-                stack_nodes[base + stack_size] = left_index
+                stack_entries[base + stack_size * stack_stride] = left_entry
+                stack_nodes[base + stack_size * stack_stride] = left_index
                 stack_size += 1
             elif right_hit:
-                stack_entries[base + stack_size] = right_entry
-                stack_nodes[base + stack_size] = right_index
+                stack_entries[base + stack_size * stack_stride] = right_entry
+                stack_nodes[base + stack_size * stack_stride] = right_index
                 stack_size += 1
         if best_face < 0:
             return math.inf, -1, 0
         return best_distance, best_face, 0
+
+    if _intersector_factory is not None:
+        intersect_bvh = _intersector_factory(cuda, intersect_bvh, ray_box_entry)
+
+    bsdf_reflectance, bsdf_sample = make_bsdf_functions(
+        cuda.jit(device=True, inline=True, fastmath=False), uniform,
+    )
 
     @cuda.jit(fastmath=False)
     def resident_kernel(
@@ -1414,6 +1517,7 @@ def _make_kernel() -> Callable[..., None]:
         face_scatter,
         face_specular_ratio,
         face_gaussian_sigma_deg,
+        bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
         receiver_centers,
         receiver_normals,
         receiver_u_axes,
@@ -1477,9 +1581,9 @@ def _make_kernel() -> Callable[..., None]:
             terminal_normal[ray_index, 2] = 0.0
             terminal_distance[ray_index] = 0.0
         terminal_incoming_power[ray_index] = 0.0
-        for depth_slot in range(depth_count):
-            event_faces[ray_index, depth_slot] = -1
-            if record_geometry:
+        if record_geometry:
+            for depth_slot in range(depth_count):
+                event_faces[ray_index, depth_slot] = -1
                 event_distances[ray_index, depth_slot] = 0.0
                 event_points[ray_index, depth_slot, 0] = 0.0
                 event_points[ray_index, depth_slot, 1] = 0.0
@@ -1487,12 +1591,12 @@ def _make_kernel() -> Callable[..., None]:
                 event_normals[ray_index, depth_slot, 0] = 0.0
                 event_normals[ray_index, depth_slot, 1] = 0.0
                 event_normals[ray_index, depth_slot, 2] = 0.0
-            event_incoming_power[ray_index, depth_slot] = 0.0
-            event_reflected_power[ray_index, depth_slot] = 0.0
-            event_emitted_power[ray_index, depth_slot] = 0.0
-            event_status[ray_index, depth_slot] = 0
-            event_lobes[ray_index, depth_slot] = LOBE_NONE
-            event_incoming_kinds[ray_index, depth_slot] = RAY_KIND_DIRECT
+                event_incoming_power[ray_index, depth_slot] = 0.0
+                event_reflected_power[ray_index, depth_slot] = 0.0
+                event_emitted_power[ray_index, depth_slot] = 0.0
+                event_status[ray_index, depth_slot] = 0
+                event_lobes[ray_index, depth_slot] = LOBE_NONE
+                event_incoming_kinds[ray_index, depth_slot] = RAY_KIND_DIRECT
 
         origin_x = origins[ray_index, 0]
         origin_y = origins[ray_index, 1]
@@ -1506,7 +1610,6 @@ def _make_kernel() -> Callable[..., None]:
         key = reflection_seeds[ray_index]
 
         for depth in range(depth_count):
-            cuda.atomic.add(active_by_depth, depth, 1)
             best_receiver_distance = math.inf
             best_receiver = -1
             best_receiver_row = -1
@@ -1636,6 +1739,8 @@ def _make_kernel() -> Callable[..., None]:
                 terminal_incoming_power[ray_index] = current_power
                 if best_receiver >= 0:
                     terminal_kind[ray_index] = TERMINAL_RECEIVER
+                    if bounce_importance_counts.size > 5 and bounce_importance_counts[5] == 0:
+                        mark_presence(bounce_importance_counts, 5)
                     terminal_receiver[ray_index] = best_receiver
                     terminal_row[ray_index] = best_receiver_row
                     terminal_column[ray_index] = best_receiver_column
@@ -1674,6 +1779,19 @@ def _make_kernel() -> Callable[..., None]:
                 face_roughness[face_index],
                 angle_dependent_reflectance,
             )
+            if depth >= event_faces.shape[1]:
+                overflow_flags[ray_index] = 2
+                cuda.atomic.max(bounce_importance_counts, 4, depth + 1)
+                return
+            if not record_geometry:
+                event_emitted_power[ray_index, depth] = 0.0
+                event_lobes[ray_index, depth] = LOBE_NONE
+            material = bsdf_indices[face_index]
+            if material >= 0:
+                reflected_power = current_power * bsdf_reflectance(
+                    material, -(direction_x*normal_x+direction_y*normal_y+direction_z*normal_z),
+                    bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
             event_faces[ray_index, depth] = face_index
             if record_geometry:
                 event_distances[ray_index, depth] = distance
@@ -1728,7 +1846,7 @@ def _make_kernel() -> Callable[..., None]:
                 emitted_power = min_energy
 
             scatter = face_scatter[face_index]
-            if scatter == SCATTER_NONE or face_reflectance[face_index] <= 0.0:
+            if (material < 0 and (scatter == SCATTER_NONE or face_reflectance[face_index] <= 0.0)) or reflected_power <= 0.0:
                 event_status[ray_index, depth] = status | STATUS_DISABLED
                 terminal_kind[ray_index] = TERMINAL_BLOCKED
                 terminal_depth[ray_index] = depth
@@ -1755,7 +1873,15 @@ def _make_kernel() -> Callable[..., None]:
             next_z = specular_z
             lobe = LOBE_SPECULAR
             next_kind = RAY_KIND_SPECULAR
-            if scatter == SCATTER_LAMBERTIAN:
+            if material >= 0:
+                stochastic_primary[ray_index] = 1
+                next_x, next_y, next_z, _ = bsdf_sample(
+                    material, direction_x, direction_y, direction_z, normal_x, normal_y, normal_z,
+                    key, depth, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
+                lobe = LOBE_BSDF
+                next_kind = RAY_KIND_BSDF
+            elif scatter == SCATTER_LAMBERTIAN:
                 stochastic_primary[ray_index] = 1
                 next_x, next_y, next_z = lambertian(
                     key,
@@ -1875,6 +2001,8 @@ def _make_kernel() -> Callable[..., None]:
             event_emitted_power[ray_index, depth] = emitted_power
             event_lobes[ray_index, depth] = lobe
             event_status[ray_index, depth] = status | STATUS_EMITTED
+            if bounce_importance_counts.size > 6 and bounce_importance_counts[6] == 0:
+                mark_presence(bounce_importance_counts, 6)
             origin_x = point_x + next_x * epsilon_mm
             origin_y = point_y + next_y * epsilon_mm
             origin_z = point_z + next_z * epsilon_mm
@@ -1906,6 +2034,21 @@ def _ensure_kernel() -> Callable[..., None]:
         return _KERNEL
 
 
+def _ensure_pair_kernel() -> Callable[..., None]:
+    global _PAIR_KERNEL
+    if _PAIR_KERNEL is not None:
+        return _PAIR_KERNEL
+    with _STATE_LOCK:
+        if _PAIR_KERNEL is None:
+            try:
+                _PAIR_KERNEL = _make_kernel(_intersector_factory=pair_intersector.make_pair_intersector)
+            except GpuResidentWavefrontProviderError:
+                raise
+            except Exception as exc:
+                raise GpuResidentWavefrontProviderError('initialize', 'gpu_resident_pair_kernel_create_failed') from exc
+        return _PAIR_KERNEL
+
+
 def _launch_resident_kernel(
     kernel: Callable[..., None],
     context: GpuResidentWavefrontContext,
@@ -1933,12 +2076,13 @@ def _launch_resident_kernel(
         performance_warning = Warning
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", performance_warning)
-        workspace.bounce_importance_counts.copy_to_device(
-            np.zeros(4, dtype=np.int64)
-        )
-        workspace.bounce_importance_weight_stats.copy_to_device(
-            np.asarray([0.0, 0.0, math.inf, 0.0], dtype=np.float64)
-        )
+        if workspace.input_transfer is None:
+            workspace.bounce_importance_counts.copy_to_device(
+                np.zeros(workspace.bounce_importance_counts.size, dtype=np.int64)
+            )
+            workspace.bounce_importance_weight_stats.copy_to_device(
+                np.asarray([0.0, 0.0, math.inf, 0.0], dtype=np.float64)
+            )
         kernel[block_count, THREADS_PER_BLOCK](
             ray_count,
             depth_count,
@@ -1973,6 +2117,8 @@ def _launch_resident_kernel(
             bindings.face_scatter,
             bindings.face_specular_ratio,
             bindings.face_gaussian_sigma_deg,
+            bindings.bsdf_indices,
+            *bindings.bsdf_arrays,
             bindings.receiver_centers,
             bindings.receiver_normals,
             bindings.receiver_u_axes,
@@ -2024,6 +2170,39 @@ def _copy_host(device_array: Any, slice_value: Any, dtype: Any) -> np.ndarray:
     )
 
 
+def _upload_resident_inputs(
+    workspace: _Workspace,
+    batch: GpuResidentWavefrontBatch,
+    ray_count: int,
+    depth_count: int,
+) -> None:
+    inputs = {
+        "origins": batch.origins,
+        "directions": batch.directions,
+        "powers": batch.initial_power_lumen,
+        "source_faces": batch.source_faces,
+        "reflection_seeds": batch.reflection_seeds,
+    }
+    if workspace.input_transfer is None:
+        for name, values in inputs.items():
+            getattr(workspace, name)[:ray_count].copy_to_device(values)
+        workspace.active_by_depth[:depth_count].copy_to_device(np.zeros(depth_count, dtype=np.int64))
+        return
+    assert workspace.host_inputs is not None and workspace.host_input_transfer is not None
+    for name, values in inputs.items():
+        workspace.host_inputs[name][:ray_count] = values
+    workspace.host_inputs["active_by_depth"].fill(0)
+    workspace.host_inputs["bounce_importance_counts"].fill(0)
+    workspace.host_inputs["bounce_importance_weight_stats"][:] = (0.0, 0.0, math.inf, 0.0)
+    workspace.input_transfer.copy_to_device(workspace.host_input_transfer)
+
+
+def _active_counts_from_terminal_histogram(histogram: np.ndarray, ray_count: int) -> np.ndarray:
+    if np.any(histogram < 0) or int(np.sum(histogram)) != ray_count:
+        raise ValueError("terminal depth histogram does not cover the primary batch")
+    return np.ascontiguousarray(np.cumsum(histogram[::-1], dtype=np.int64)[::-1])
+
+
 def _make_path_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
     cuda = cuda_backend._CUDA
     if cuda is None:
@@ -2049,6 +2228,8 @@ def _make_path_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
         dead_end_count = existing_dead_end_count
         output_count = 0
         for primary_slot in range(ray_count):
+            if path_count >= max_paths and dead_end_count == 0:
+                break
             if output_count >= selection_capacity:
                 break
             terminal_code = terminal_kind[primary_slot]
@@ -2207,8 +2388,7 @@ def _path_candidate_capacity(
         ray_count,
         max(
             0,
-            selection.max_paths
-            - selection.existing_path_count
+            2 * (selection.max_paths - selection.existing_path_count)
             + selection.existing_dead_end_count,
         ),
     )
@@ -2378,22 +2558,13 @@ def _retrace_selected_path_tape(
         )
     retrace_started = time.perf_counter()
     try:
-        workspace.origins[:selected_count].copy_to_device(selected_batch.origins)
-        workspace.directions[:selected_count].copy_to_device(
-            selected_batch.directions
-        )
-        workspace.powers[:selected_count].copy_to_device(
-            selected_batch.initial_power_lumen
-        )
-        workspace.source_faces[:selected_count].copy_to_device(
-            selected_batch.source_faces
-        )
-        workspace.reflection_seeds[:selected_count].copy_to_device(
-            selected_batch.reflection_seeds
-        )
-        workspace.active_by_depth[:depth_count].copy_to_device(
-            np.zeros(depth_count, dtype=np.int64)
-        )
+        if workspace.depth_capacity < depth_count:
+            workspace, _, _ = _ensure_workspace(
+                context, cuda_backend.probe_gpu_cuda(), selected_count, depth_count,
+                selected_count, FULL_WORKSPACE_CONTRACT,
+            )
+            context._path_workspace_bytes = _workspace_bytes(workspace)
+        _upload_resident_inputs(workspace, selected_batch, selected_count, depth_count)
         _launch_resident_kernel(
             kernel,
             context,
@@ -2909,6 +3080,7 @@ def trace_resident_wavefront_gpu_cuda(
     )
 
     total_started = time.perf_counter()
+    context._path_workspace_bytes = 0
     try:
         device_scene, reused_device_scene = cuda_backend._ensure_device_scene(
             context.scene,
@@ -2918,6 +3090,18 @@ def trace_resident_wavefront_gpu_cuda(
         raise GpuResidentWavefrontProviderError(exc.phase, exc.reason_code) from exc
     bindings, reused_bindings = _ensure_device_bindings(context, capability)
     depth_count = batch.max_depth + 1
+    windowed_events = bool(
+        compact_summary_workspace and depth_count > INITIAL_EVENT_WINDOW_DEPTH
+        and os.environ.get('LEAKAGE_GPU_EVENT_WINDOW', 'auto') != 'off'
+        and (
+            os.environ.get('LEAKAGE_GPU_EVENT_WINDOW', 'auto') == 'force'
+            or _workspace_capacity(ray_count) * depth_count > MAX_BATCH_EVENT_SLOTS
+        )
+    )
+    record_depth_count = depth_count
+    if windowed_events:
+        budget_depth = MAX_BATCH_EVENT_SLOTS // _workspace_capacity(ray_count)
+        record_depth_count = min(depth_count, budget_depth, max(INITIAL_EVENT_WINDOW_DEPTH, context._event_depth_hint))
     geometry_count = ray_count
     if compact_summary_workspace:
         geometry_count = (
@@ -2929,13 +3113,14 @@ def trace_resident_wavefront_gpu_cuda(
         context,
         capability,
         ray_count,
-        depth_count,
+        record_depth_count,
         geometry_count,
         (
             COMPACT_WORKSPACE_CONTRACT
             if compact_summary_workspace
             else FULL_WORKSPACE_CONTRACT
         ),
+        logical_depth_count=depth_count,
     )
     cuda = cuda_backend._CUDA
     if cuda is None:
@@ -2946,16 +3131,7 @@ def trace_resident_wavefront_gpu_cuda(
 
     upload_started = time.perf_counter()
     try:
-        workspace.origins[:ray_count].copy_to_device(batch.origins)
-        workspace.directions[:ray_count].copy_to_device(batch.directions)
-        workspace.powers[:ray_count].copy_to_device(batch.initial_power_lumen)
-        workspace.source_faces[:ray_count].copy_to_device(batch.source_faces)
-        workspace.reflection_seeds[:ray_count].copy_to_device(
-            batch.reflection_seeds
-        )
-        workspace.active_by_depth[:depth_count].copy_to_device(
-            np.zeros(depth_count, dtype=np.int64)
-        )
+        _upload_resident_inputs(workspace, batch, ray_count, depth_count)
         cuda.synchronize()
     except Exception as exc:
         raise GpuResidentWavefrontProviderError(
@@ -2964,9 +3140,10 @@ def trace_resident_wavefront_gpu_cuda(
         ) from exc
     input_upload_sec = time.perf_counter() - upload_started
 
-    kernel = _ensure_kernel()
-    global _KERNEL_COMPILED
-    was_compiled = _KERNEL_COMPILED
+    pair_enabled = pair_scene_backend.pair_mode() != 'off' and pair_scene_backend.has_pair_scene(context.scene)
+    kernel = _ensure_pair_kernel() if pair_enabled else _ensure_kernel()
+    global _KERNEL_COMPILED, _PAIR_KERNEL_COMPILED
+    was_compiled = _PAIR_KERNEL_COMPILED if pair_enabled else _KERNEL_COMPILED
     kernel_started = time.perf_counter()
     try:
         _launch_resident_kernel(
@@ -2986,20 +3163,34 @@ def trace_resident_wavefront_gpu_cuda(
             "gpu_resident_kernel_failed",
         ) from exc
     kernel_elapsed = time.perf_counter() - kernel_started
-    _KERNEL_COMPILED = True
+    if pair_enabled:
+        _PAIR_KERNEL_COMPILED = True
+    else:
+        _KERNEL_COMPILED = True
 
     importance_download_started = time.perf_counter()
+    receiver_hit_hint_available = summary_request is not None and workspace.bounce_importance_counts.size > 5
+    emission_hint_available = summary_request is not None and workspace.bounce_importance_counts.size > 6
     try:
         bounce_importance_counts = _copy_host(
             workspace.bounce_importance_counts,
-            slice(0, 4),
+            slice(0, 7 if emission_hint_available else 6 if receiver_hit_hint_available else 5 if windowed_events else 4),
             np.int64,
         )
+        if windowed_events and bounce_importance_counts[4] > 0:
+            next_depth = min(depth_count, max(record_depth_count * 2, int(bounce_importance_counts[4])))
+            context._event_depth_hint = max(context._event_depth_hint, next_depth)
+            raise GpuResidentEventWindowExceeded(
+                record_depth_count, next_depth, ray_count, kernel_elapsed,
+                time.perf_counter() - total_started, _workspace_bytes(workspace),
+            )
         bounce_importance_weight_stats = _copy_host(
             workspace.bounce_importance_weight_stats,
             slice(0, 4),
             np.float64,
         )
+    except GpuResidentEventWindowExceeded:
+        raise
     except Exception as exc:
         raise GpuResidentWavefrontProviderError(
             "result_validation",
@@ -3017,6 +3208,8 @@ def trace_resident_wavefront_gpu_cuda(
         or bounce_zero_weight_count < 0
         or bounce_zero_weight_count > bounce_eligible_count
         or bounce_unsupported_count < 0
+        or (receiver_hit_hint_available and bounce_importance_counts[5] not in (0, 1))
+        or (emission_hint_available and bounce_importance_counts[6] not in (0, 1))
     ):
         raise GpuResidentWavefrontProviderError(
             "result_validation",
@@ -3076,6 +3269,11 @@ def trace_resident_wavefront_gpu_cuda(
                     terminal_received_power=workspace.terminal_received_power,
                     stochastic_primary=workspace.stochastic_primary,
                     overflow_flags=workspace.overflow_flags,
+                    terminal_depth_histogram=workspace.active_by_depth,
+                    receiver_hits_present=(bool(bounce_importance_counts[5]) if receiver_hit_hint_available else None),
+                    emissions_present=(bool(bounce_importance_counts[6]) if emission_hint_available else None),
+                    receiver_power_uniform=bool(emission_hint_available and ray_count > 0 and not bounce_importance_counts[6]
+                        and np.all(batch.initial_power_lumen.view(np.uint64) == batch.initial_power_lumen.view(np.uint64)[0])),
                 ),
                 summary_request,
                 context._summary_session,
@@ -3092,11 +3290,12 @@ def trace_resident_wavefront_gpu_cuda(
             ) from exc
         active_download_started = time.perf_counter()
         try:
-            active_by_depth = _copy_host(
+            terminal_histogram = _copy_host(
                 workspace.active_by_depth,
                 slice(0, depth_count),
                 np.int64,
             )
+            active_by_depth = _active_counts_from_terminal_histogram(terminal_histogram, ray_count)
         except Exception as exc:
             raise GpuResidentWavefrontProviderError(
                 "result_validation",
@@ -3129,6 +3328,8 @@ def trace_resident_wavefront_gpu_cuda(
                 bindings=bindings,
                 kernel=kernel,
             )
+        pair_prepare_sec = context._pair_scene_prepare_sec
+        context._pair_scene_prepare_sec = 0.0
         return GpuResidentWavefrontExecution(
             tape=None,
             summary_execution=summary_execution,
@@ -3143,8 +3344,12 @@ def trace_resident_wavefront_gpu_cuda(
                 if compact_summary_workspace
                 else FULL_WORKSPACE_CONTRACT
             ),
-            workspace_bytes=_workspace_bytes(workspace),
+            workspace_bytes=_workspace_bytes(workspace) + context._path_workspace_bytes,
             event_geometry_capacity=workspace.geometry_capacity,
+            event_record_depth=workspace.depth_capacity,
+            event_window_contract=(EVENT_WINDOW_CONTRACT if windowed_events else None),
+            receiver_hit_hint_download_bytes=(8 if windowed_events else 16) if receiver_hit_hint_available else 0,
+            emission_hint_download_bytes=8 if emission_hint_available else 0,
             active_ray_count_by_depth=tuple(
                 int(value) for value in active_by_depth
             ),
@@ -3191,6 +3396,8 @@ def trace_resident_wavefront_gpu_cuda(
             bounce_importance_weight_square_sum=bounce_weight_square_sum,
             bounce_importance_weight_min=bounce_weight_min,
             bounce_importance_weight_max=bounce_weight_max,
+            pair_bvh_selected=pair_enabled,
+            pair_scene_prepare_sec=pair_prepare_sec,
         )
 
     download_started = time.perf_counter()
@@ -3312,11 +3519,6 @@ def trace_resident_wavefront_gpu_cuda(
             slice(0, ray_count),
             np.uint8,
         )
-        active_by_depth = _copy_host(
-            workspace.active_by_depth,
-            slice(0, depth_count),
-            np.int64,
-        )
         overflow_flags = _copy_host(
             workspace.overflow_flags,
             slice(0, ray_count),
@@ -3338,6 +3540,9 @@ def trace_resident_wavefront_gpu_cuda(
             "result_validation",
             "gpu_resident_terminal_contract_invalid",
         )
+    active_by_depth = _active_counts_from_terminal_histogram(
+        np.bincount(terminal_depth.astype(np.int64), minlength=depth_count), ray_count,
+    )
     if np.any(event_faces >= len(context.scene.triangle_v0)):
         raise GpuResidentWavefrontProviderError(
             "result_validation",
@@ -3377,6 +3582,8 @@ def trace_resident_wavefront_gpu_cuda(
             "gpu_resident_event_tape_invalid",
         ) from exc
     tape_build_sec = time.perf_counter() - tape_started
+    pair_prepare_sec = context._pair_scene_prepare_sec
+    context._pair_scene_prepare_sec = 0.0
     return GpuResidentWavefrontExecution(
         tape=tape,
         summary_execution=None,
@@ -3419,14 +3626,19 @@ def trace_resident_wavefront_gpu_cuda(
         bounce_importance_weight_square_sum=bounce_weight_square_sum,
         bounce_importance_weight_min=bounce_weight_min,
         bounce_importance_weight_max=bounce_weight_max,
+        pair_bvh_selected=pair_enabled,
+        pair_scene_prepare_sec=pair_prepare_sec,
     )
 
 
 def _reset_gpu_resident_wavefront_for_tests() -> None:
     global _KERNEL, _KERNEL_COMPILED, _PATH_SELECT_KERNEL, _PATH_GATHER_KERNEL
+    global _PAIR_KERNEL, _PAIR_KERNEL_COMPILED
     with _STATE_LOCK:
         _KERNEL = None
         _KERNEL_COMPILED = False
+        _PAIR_KERNEL = None
+        _PAIR_KERNEL_COMPILED = False
         _PATH_SELECT_KERNEL = None
         _PATH_GATHER_KERNEL = None
         if hasattr(_WORKSPACES, "values"):

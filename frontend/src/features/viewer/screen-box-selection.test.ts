@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { screenTriangleIntersectsBox } from './screen-box-selection'
+import { screenBoxSamplePoints, screenTriangleIntersectsBox } from './screen-box-selection'
 
 const box = { minX: 10, maxX: 30, minY: 10, maxY: 30 }
 
@@ -27,5 +27,19 @@ describe('screenTriangleIntersectsBox', () => {
       { x: 60, y: 40 },
       { x: 50, y: 60 },
     ], box)).toBe(false)
+  })
+})
+
+describe('screenBoxSamplePoints', () => {
+  it('covers the complete drag box, including its exact center', () => {
+    const points = screenBoxSamplePoints({ minX: 0, maxX: 100, minY: 20, maxY: 120 })
+    expect(points).toContainEqual([0, 20])
+    expect(points).toContainEqual([100, 120])
+    expect(points).toContainEqual([50, 70])
+  })
+
+  it('bounds the raycast probe count for a large viewer selection', () => {
+    expect(screenBoxSamplePoints({ minX: 0, maxX: 4000, minY: 0, maxY: 3000 }))
+      .toHaveLength(25 * 25)
   })
 })

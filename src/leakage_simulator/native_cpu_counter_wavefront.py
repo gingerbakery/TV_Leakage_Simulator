@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib
 import math
 from numbers import Integral
@@ -9,9 +9,15 @@ import time
 from typing import Any, Callable, Optional
 
 import numpy as np
+
+from .cpu_parallel import run_cpu_ranges
 from numpy.typing import ArrayLike, NDArray
 
+from .bsdf_packed import PackedBsdf, validate_bsdf_indices, make_bsdf_functions
+
 from .native_cpu_wavefront import (
+    LOBE_BSDF,
+    SCATTER_BSDF,
     LOBE_GAUSSIAN,
     LOBE_LAMBERTIAN,
     LOBE_NONE,
@@ -76,6 +82,7 @@ _VALID_SCATTER_CODES = frozenset(
         SCATTER_LAMBERTIAN,
         SCATTER_GAUSSIAN,
         SCATTER_MIXED,
+        SCATTER_BSDF,
     }
 )
 _VALID_TERMINATION_CODES = frozenset(
@@ -140,6 +147,8 @@ class CounterWavefrontPlanInput:
     receiver_importance_fraction: float = 0.0
     epsilon_mm: float = 1e-4
     angle_dependent_reflectance: bool = True
+    bsdf: PackedBsdf = field(default_factory=PackedBsdf.empty)
+    bsdf_indices: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         directions = _owned_readonly_vectors(
@@ -200,9 +209,17 @@ class CounterWavefrontPlanInput:
             raise ValueError("profile_specular_ratio values must be between 0 and 1")
         if np.any(gaussian_sigma <= 0.0):
             raise ValueError("profile_gaussian_sigma_deg values must be positive")
-        if any(int(value) not in _VALID_SCATTER_CODES for value in scatter):
+        if np.any(~np.isin(scatter, tuple(_VALID_SCATTER_CODES))):
             raise ValueError("scatter_models contains an unknown value")
 
+        bsdf_indices = validate_bsdf_indices(
+            self.bsdf,
+            self.bsdf_indices if self.bsdf_indices is not None else np.full(row_count, -1),
+            scatter, SCATTER_BSDF,
+        )
+        if np.any(bsdf_indices >= 0) and self.receiver_importance_fraction > 0:
+            raise ValueError("BSDF receiver MIS is not supported")
+        object.__setattr__(self, "bsdf_indices", bsdf_indices)
         depth = _non_negative_int(self.depth, "depth")
         max_depth = _non_negative_int(self.max_depth, "max_depth")
         min_energy = float(self.min_energy)
@@ -434,7 +451,7 @@ class CounterWavefrontPlanResult:
             raise ValueError("emitted_power_lumen must be finite and non-negative")
         if not np.all(np.isfinite(directions)):
             raise ValueError("emitted_directions must be finite")
-        if np.any((lobes < LOBE_NONE) | (lobes > LOBE_GAUSSIAN)):
+        if np.any((lobes < LOBE_NONE) | (lobes > LOBE_BSDF)):
             raise ValueError("lobe_codes contains an unknown lobe")
         if not np.all(np.isfinite(importance_weights)) or np.any(
             importance_weights < 0.0
@@ -501,6 +518,7 @@ class NativeCpuCounterWavefrontExecution:
     numba_version: str
     contract_version: str = CONTRACT_VERSION
     rng_algorithm: str = RNG_ALGORITHM
+    parallel_workers: int = 1
 
 
 _STATE_LOCK = threading.RLock()
@@ -557,6 +575,9 @@ def counter_uniform(rng_key: int, depth: int, lane: int) -> float:
     return float(mixed >> 11) * _TWO_POW_NEG_53
 
 
+_bsdf_reference_reflectance, _bsdf_reference_sample = make_bsdf_functions(lambda f: f, counter_uniform)
+
+
 def plan_counter_reference(
     batch: CounterWavefrontPlanInput,
 ) -> CounterWavefrontPlanResult:
@@ -590,23 +611,23 @@ def plan_counter_native_cpu(
     kernel, jit_compile_sec = _ensure_kernel()
     arrays = _allocate_outputs(len(batch))
     started = time.perf_counter()
-    try:
+    def execute_range(start: int, end: int) -> None:
         kernel(
-            batch.incoming_directions,
-            batch.surface_normals,
-            batch.incoming_power_lumen,
-            batch.profile_reflectance,
-            batch.profile_roughness,
-            batch.scatter_models,
-            batch.profile_specular_ratio,
-            batch.profile_gaussian_sigma_deg,
-            batch.rng_keys,
+            batch.incoming_directions[start:end],
+            batch.surface_normals[start:end],
+            batch.incoming_power_lumen[start:end],
+            batch.profile_reflectance[start:end],
+            batch.profile_roughness[start:end],
+            batch.scatter_models[start:end],
+            batch.profile_specular_ratio[start:end],
+            batch.profile_gaussian_sigma_deg[start:end],
+            batch.rng_keys[start:end],
             batch.depth,
             batch.max_depth,
             batch.min_energy,
             batch.termination_mode,
             batch.angle_dependent_reflectance,
-            batch.surface_points,
+            batch.surface_points[start:end],
             batch.receiver_centers,
             batch.receiver_normals,
             batch.receiver_u_axes,
@@ -616,8 +637,12 @@ def plan_counter_native_cpu(
             batch.receiver_minimum_cosines,
             batch.receiver_importance_fraction,
             batch.epsilon_mm,
-            *arrays,
+            batch.bsdf_indices[start:end],
+            *batch.bsdf.arrays(),
+            *(values[start:end] for values in arrays),
         )
+    try:
+        parallel_workers = run_cpu_ranges(len(batch), execute_range, minimum_rows=8192)
     except Exception as exc:
         raise NativeCpuCounterWavefrontProviderError(
             "execute",
@@ -639,6 +664,7 @@ def plan_counter_native_cpu(
         execute_sec=execute_sec,
         result_validation_sec=time.perf_counter() - validation_started,
         numba_version=capability.numba_version or "unknown",
+        parallel_workers=parallel_workers,
     )
 
 
@@ -686,6 +712,10 @@ def _plan_reference_row(
         float(batch.profile_roughness[row_index]),
         batch.angle_dependent_reflectance,
     )
+    material = int(batch.bsdf_indices[row_index])
+    if material >= 0:
+        cosine = -sum(a*b for a, b in zip(incoming_unit, surface_normal))
+        reflectance = _bsdf_reference_reflectance(material, cosine, *batch.bsdf.arrays())
     reflected_power = float(batch.incoming_power_lumen[row_index]) * reflectance
     reflected[row_index] = reflected_power
     if batch.depth >= batch.max_depth:
@@ -712,7 +742,7 @@ def _plan_reference_row(
         emitted_power = batch.min_energy
     scatter = int(batch.scatter_models[row_index])
     base_reflectance = float(batch.profile_reflectance[row_index])
-    if scatter == SCATTER_NONE or base_reflectance <= 0.0:
+    if (material < 0 and (scatter == SCATTER_NONE or base_reflectance <= 0.0)) or reflectance <= 0.0:
         statuses[row_index] = status | STATUS_DISABLED
         return
     if (
@@ -721,7 +751,13 @@ def _plan_reference_row(
     ):
         importance_unsupported[row_index] = True
     specular = _ideal_specular(incoming_unit, surface_normal)
-    if scatter == SCATTER_SPECULAR:
+    if material >= 0:
+        sx, sy, sz, draw_count = _bsdf_reference_sample(
+            material, *incoming_unit, *surface_normal, key, batch.depth, *batch.bsdf.arrays(),
+        )
+        direction, lobe = (sx, sy, sz), LOBE_BSDF
+        draws[row_index] = min(255, int(draws[row_index]) + draw_count)
+    elif scatter == SCATTER_SPECULAR:
         direction = specular
         lobe = LOBE_SPECULAR
     elif scatter == SCATTER_LAMBERTIAN:
@@ -895,7 +931,7 @@ def _receiver_direction_pdf_reference(
     return density
 
 
-def _make_kernel() -> Callable[..., None]:
+def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
     numba = importlib.import_module("numba")
 
     @numba.njit(inline="always", fastmath=False)
@@ -1260,45 +1296,34 @@ def _make_kernel() -> Callable[..., None]:
         weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
         return direction_x, direction_y, direction_z, weight, directed
 
-    @numba.njit(nogil=True, fastmath=False)
-    def plan_kernel(
-        incoming_directions: FloatArray,
-        surface_normals: FloatArray,
-        incoming_power_lumen: FloatArray,
-        profile_reflectance: FloatArray,
-        profile_roughness: FloatArray,
-        scatter_models: Int8Array,
-        profile_specular_ratio: FloatArray,
-        profile_gaussian_sigma_deg: FloatArray,
-        rng_keys: UInt64Array,
-        depth: int,
-        max_depth: int,
-        min_energy: float,
-        termination_mode: int,
-        angle_dependent_reflectance: bool,
-        surface_points: FloatArray,
-        receiver_centers: FloatArray,
-        receiver_normals: FloatArray,
-        receiver_u_axes: FloatArray,
-        receiver_v_axes: FloatArray,
-        receiver_half_widths: FloatArray,
-        receiver_half_heights: FloatArray,
-        receiver_minimum_cosines: FloatArray,
-        receiver_importance_fraction: float,
-        epsilon_mm: float,
-        supported_mask: BoolArray,
-        reflected_power_lumen: FloatArray,
-        emitted_power_lumen: FloatArray,
-        emitted_directions: FloatArray,
-        status_flags: UInt16Array,
-        lobe_codes: Int8Array,
-        rng_draw_counts: UInt8Array,
-        importance_eligible_mask: BoolArray,
-        importance_directed_mask: BoolArray,
-        importance_zero_weight_mask: BoolArray,
-        importance_unsupported_mask: BoolArray,
-        importance_weights: FloatArray,
-    ) -> None:
+    bsdf_reflectance, bsdf_sample = make_bsdf_functions(
+        numba.njit(inline="always", fastmath=False), uniform,
+    )
+
+    @numba.njit(nogil=True, fastmath=False, inline="always")
+    def packed_kernel(inputs, settings, receivers, outputs):
+        (
+            incoming_directions, surface_normals, incoming_power_lumen,
+            profile_reflectance, profile_roughness, scatter_models,
+            profile_specular_ratio, profile_gaussian_sigma_deg, rng_keys,
+            surface_points,
+            bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+        ) = inputs
+        (
+            depth, max_depth, min_energy, termination_mode,
+            angle_dependent_reflectance, receiver_importance_fraction, epsilon_mm,
+        ) = settings
+        (
+            receiver_centers, receiver_normals, receiver_u_axes, receiver_v_axes,
+            receiver_half_widths, receiver_half_heights, receiver_minimum_cosines,
+        ) = receivers
+        (
+            supported_mask, reflected_power_lumen, emitted_power_lumen,
+            emitted_directions, status_flags, lobe_codes, rng_draw_counts,
+            importance_eligible_mask, importance_directed_mask,
+            importance_zero_weight_mask, importance_unsupported_mask,
+            importance_weights,
+        ) = outputs
         for row_index in range(incoming_power_lumen.shape[0]):
             supported_mask[row_index] = True
             reflected_power_lumen[row_index] = 0.0
@@ -1339,6 +1364,12 @@ def _make_kernel() -> Callable[..., None]:
                 profile_roughness[row_index],
                 angle_dependent_reflectance,
             )
+            material = bsdf_indices[row_index]
+            if material >= 0:
+                reflected_power = incoming_power_lumen[row_index] * bsdf_reflectance(
+                    material, -(incoming_x*normal_x+incoming_y*normal_y+incoming_z*normal_z),
+                    bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
             reflected_power_lumen[row_index] = reflected_power
             if depth >= max_depth:
                 status_flags[row_index] = STATUS_DEPTH_LIMITED | STATUS_DISABLED
@@ -1366,7 +1397,7 @@ def _make_kernel() -> Callable[..., None]:
                 emitted_power = min_energy
 
             scatter = scatter_models[row_index]
-            if scatter == SCATTER_NONE or profile_reflectance[row_index] <= 0.0:
+            if (material < 0 and (scatter == SCATTER_NONE or profile_reflectance[row_index] <= 0.0)) or reflected_power <= 0.0:
                 status_flags[row_index] = status | STATUS_DISABLED
                 continue
             if (
@@ -1390,7 +1421,14 @@ def _make_kernel() -> Callable[..., None]:
             direction_x = specular_x
             direction_y = specular_y
             direction_z = specular_z
-            if scatter == SCATTER_LAMBERTIAN:
+            if material >= 0:
+                direction_x, direction_y, direction_z, draw_count = bsdf_sample(
+                    material, incoming_x, incoming_y, incoming_z, normal_x, normal_y, normal_z,
+                    key, depth, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                )
+                rng_draw_counts[row_index] = min(255, int(rng_draw_counts[row_index])+draw_count)
+                lobe = LOBE_BSDF
+            elif scatter == SCATTER_LAMBERTIAN:
                 direction_x, direction_y, direction_z = lambertian(
                     key,
                     depth,
@@ -1492,7 +1530,72 @@ def _make_kernel() -> Callable[..., None]:
             status_flags[row_index] = status | STATUS_EMITTED
         return None
 
-    return plan_kernel
+    @numba.njit(nogil=True, fastmath=False)
+    def plan_kernel(
+        incoming_directions: FloatArray,
+        surface_normals: FloatArray,
+        incoming_power_lumen: FloatArray,
+        profile_reflectance: FloatArray,
+        profile_roughness: FloatArray,
+        scatter_models: Int8Array,
+        profile_specular_ratio: FloatArray,
+        profile_gaussian_sigma_deg: FloatArray,
+        rng_keys: UInt64Array,
+        depth: int,
+        max_depth: int,
+        min_energy: float,
+        termination_mode: int,
+        angle_dependent_reflectance: bool,
+        surface_points: FloatArray,
+        receiver_centers: FloatArray,
+        receiver_normals: FloatArray,
+        receiver_u_axes: FloatArray,
+        receiver_v_axes: FloatArray,
+        receiver_half_widths: FloatArray,
+        receiver_half_heights: FloatArray,
+        receiver_minimum_cosines: FloatArray,
+        receiver_importance_fraction: float,
+        epsilon_mm: float,
+        bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+        supported_mask: BoolArray,
+        reflected_power_lumen: FloatArray,
+        emitted_power_lumen: FloatArray,
+        emitted_directions: FloatArray,
+        status_flags: UInt16Array,
+        lobe_codes: Int8Array,
+        rng_draw_counts: UInt8Array,
+        importance_eligible_mask: BoolArray,
+        importance_directed_mask: BoolArray,
+        importance_zero_weight_mask: BoolArray,
+        importance_unsupported_mask: BoolArray,
+        importance_weights: FloatArray,
+    ) -> None:
+        packed_kernel(
+            (
+                incoming_directions, surface_normals, incoming_power_lumen,
+                profile_reflectance, profile_roughness, scatter_models,
+                profile_specular_ratio, profile_gaussian_sigma_deg, rng_keys,
+                surface_points,
+                bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+            ),
+            (
+                depth, max_depth, min_energy, termination_mode,
+                angle_dependent_reflectance, receiver_importance_fraction, epsilon_mm,
+            ),
+            (
+                receiver_centers, receiver_normals, receiver_u_axes, receiver_v_axes,
+                receiver_half_widths, receiver_half_heights, receiver_minimum_cosines,
+            ),
+            (
+                supported_mask, reflected_power_lumen, emitted_power_lumen,
+                emitted_directions, status_flags, lobe_codes, rng_draw_counts,
+                importance_eligible_mask, importance_directed_mask,
+                importance_zero_weight_mask, importance_unsupported_mask,
+                importance_weights,
+            ),
+        )
+
+    return packed_kernel if packed else plan_kernel
 
 
 def _ensure_kernel() -> tuple[Callable[..., Any], float]:
@@ -1548,6 +1651,8 @@ def _ensure_kernel() -> tuple[Callable[..., Any], float]:
                 empty_floats,
                 0.0,
                 1e-4,
+                np.empty(0, dtype=np.int64),
+                *PackedBsdf.empty().arrays(),
                 *_allocate_outputs(0),
             )
         except Exception as exc:

@@ -15,6 +15,7 @@ from leakage_simulator.raytrace_bridge import (
     build_direct_trace_input,
     build_prepared_trace_geometry,
 )
+from leakage_simulator.bsdf_guard import validate_bsdf_request
 from leakage_simulator.raytracer import run_direct_ray_trace
 from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.section_cap import build_section_cap_contours
@@ -304,7 +305,7 @@ class ApiRuntime:
             staging = Path(temporary)
             manifest = extract_package(package, staging)
             project = read_json(staging / "project.json")
-            if project.get("schema_version") != "bitsam-project.v1" or not isinstance(project.get("workspace"), dict):
+            if project.get("schema_version") not in {"bitsam-project.v1", "bitsam-project.v1-bsdf1"} or not isinstance(project.get("workspace"), dict):
                 raise ValueError("Invalid BITSAM settings")
             payload = self._load_portable_scene(staging)
             fingerprint = (project.get("cad") or {}).get("fingerprint") or {}
@@ -392,6 +393,7 @@ class ApiRuntime:
         self,
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        validate_bsdf_request(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         requested_ray_count = sum(
             max(0, int(emitter.get("ray_count", 0)))
@@ -471,6 +473,7 @@ class ApiRuntime:
         self,
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        validate_bsdf_request(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         trace_input = self._build_trace_input_for_request(
             scene_mesh,

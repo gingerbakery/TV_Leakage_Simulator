@@ -790,7 +790,7 @@ class RayHit:
                 self.receiver_flux_lumen, "receiver_flux_lumen"
             )
         if self.scatter_model is not None:
-            self.scatter_model = require_choice(self.scatter_model, "scatter_model", SCATTER_MODELS)
+            self.scatter_model = require_choice(self.scatter_model, "scatter_model", (*SCATTER_MODELS, "bsdf"))
 
     def to_dict(self) -> Dict:
         return asdict(self)

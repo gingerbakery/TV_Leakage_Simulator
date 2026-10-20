@@ -1,0 +1,14 @@
+#UDOP AngGridMultiple 1.0
+# Synthetic relative Lambertian shape; NOT measured material data.
+FileName = ..\scatter.txt
+MeshFormat = Polar
+MeshDataType = BSDF
+Lambda = 550
+POI = 0
+RAOI = 0
+FileName = ..\scatter.txt
+MeshFormat = Polar
+MeshDataType = BSDF
+Lambda = 550
+POI = 0
+RAOI = 60

@@ -15,6 +15,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { RayTracingPanel } from './ray-tracing-panel'
 import {
   createDatumEmitter,
+  createFaceEmitter,
   distributeIntegerBudget,
   groupSelectedCadFaces,
   rotationFromPlaneAxes,
@@ -112,6 +113,30 @@ describe('RayTracingPanel Aim editing', () => {
     expect((screen.getByRole('button', { name: 'Save Emitter' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('makes the full-sphere preset a true uniform 4π distribution', () => {
+    const emitter = createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0])
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'sphere.step', displayName: 'sphere.step' })
+      workspaceStore.getState().actions.upsertEmitter(emitter)
+    })
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit Emitter 1/i }))
+    fireEvent.click(screen.getByText('Aim / Target'))
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'area' } })
+    fireEvent.change(screen.getByLabelText('Emitter direction distribution'), { target: { value: 'lambertian' } })
+    fireEvent.change(screen.getByLabelText('Emitter aiming mode'), { target: { value: 'sphere' } })
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('lambertian')
+    fireEvent.click(screen.getByRole('button', { name: '전방위' }))
+    expect((screen.getByLabelText('Emitter direction distribution') as HTMLSelectElement).value).toBe('uniform_solid_angle')
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+    expect(workspaceStore.getState().emitters[0].aim).toMatchObject({
+      mode: 'sphere',
+      distribution: 'uniform_solid_angle',
+      sphere_upper_deg: 0,
+      sphere_lower_deg: 180,
+    })
+  })
+
   it('creates one independently editable Emitter and Aim per selected CAD face', async () => {
     const scene = createSceneFixture()
     scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
@@ -145,6 +170,44 @@ describe('RayTracingPanel Aim editing', () => {
     expect(updated.map((emitter) => emitter.power_lumen)).toEqual([6, 6])
     expect(updated.every((emitter) => emitter.aim?.sphere_alpha_deg === 25)).toBe(true)
     expect(updated.reduce((sum, emitter) => sum + emitter.ray_count, 0)).toBe(101)
+  })
+
+  it('reassigns Copy Setup LED-per-face emitters to newly selected target CAD faces', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_source_ids = [10, 10, 11, 20, 20]
+    const first = {
+      ...createFaceEmitter('emitter_001', []),
+      array_group_id: 'led_array_001',
+      array_index: 0,
+      array_power_basis: 'total_array' as const,
+    }
+    const second = {
+      ...createFaceEmitter('emitter_002', []),
+      array_group_id: 'led_array_001',
+      array_index: 1,
+      array_power_basis: 'total_array' as const,
+    }
+    act(() => {
+      workspaceStore.getState().actions.addCadCase({ path: 'copy-target.step', displayName: 'copy-target.step' })
+      workspaceStore.getState().actions.upsertEmitter(first)
+      workspaceStore.getState().actions.upsertEmitter(second)
+    })
+    render(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit LED Array 1' }))
+    expect(screen.getByRole('button', { name: '뷰어에서 CAD Face 선택' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '뷰어에서 CAD Face 선택' }))
+    act(() => workspaceStore.getState().actions.setSelectedFaceIds([3, 4]))
+    fireEvent.click(screen.getByRole('button', { name: 'Save Emitter' }))
+
+    expect(workspaceStore.getState().emitters).toEqual([
+      expect.objectContaining({
+        emitter_id: 'emitter_001',
+        face_indices: [3, 4],
+        array_group_id: 'led_array_001',
+        array_index: 0,
+      }),
+    ])
   })
 
   it('groups tessellation triangles by component and original CAD face', () => {

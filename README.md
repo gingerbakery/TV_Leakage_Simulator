@@ -43,6 +43,14 @@ npm run dev
 더블클릭하는 것입니다. 새 clone 환경에서는 `.venv`와 frontend package를
 최초 1회 자동으로 준비하고 `http://127.0.0.1:8788/`을 엽니다.
 
+CPU 소스 실행기는 기존 환경에서도 `requirements-dev.txt`와
+`requirements-cpu-accelerated.txt`를 동기화하고 최신 UI를 빌드합니다.
+Numba CPU 가속에는 NVIDIA GPU나 CUDA Toolkit이 필요하지 않습니다.
+CPU 추가 가속과 검증 결과는
+[`PERF-5 CPU 보고서`](docs/reports/2026-10-18_perf5a-perf5b-cpu.md)를 참조합니다.
+후속 CPU/GPU 가속, 정확도 검사 및 아직 미달인 조건은
+[`5B/5C 최신 중간 보고`](docs/reports/2026-10-19_perf5c-primary-and-partitioned-summary.md)에 정리합니다.
+
 GPU를 검증할 source 사용자는 `run_web.bat` 대신 `run_web_gpu.bat`을
 더블클릭합니다. 이 파일은 전용 `.venv-gpu`, CPU/GPU requirements와 frontend를
 pull된 source에 맞게 동기화하고 실제 production Ray/BVH CUDA kernel이 통과한 경우에만 서버를

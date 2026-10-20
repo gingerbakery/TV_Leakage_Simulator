@@ -1,4 +1,5 @@
 import { useStore } from 'zustand'
+import { emptyBsdfAssets, isBsdfAsset, type BsdfAsset } from '@/features/materials/bsdf-asset'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { normalizeFaceDisplayColors, updateFaceDisplayColors, type FaceDisplayColor } from './face-display-color'
 
@@ -167,11 +168,12 @@ export type RayPathDisplayFilter =
   | 'specular'
   | 'lambertian'
   | 'gaussian'
+  | 'bsdf'
 
 export type RayPathDisplayFilters = Record<
-  RayPathDisplayFilter,
+  Exclude<RayPathDisplayFilter, 'bsdf'>,
   boolean
->
+> & { bsdf?: boolean }
 
 export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   receiver_direct: true,
@@ -180,7 +182,14 @@ export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
   specular: false,
   lambertian: false,
   gaussian: false,
+  bsdf: false,
 }
+
+export const defaultRayPathDisplayLimit = 500
+
+export type ReceiverHeatmap3dMode = 'off' | 'physical' | 'xray'
+export type ReceiverHeatmap3dScaleMode = 'auto' | 'compare' | 'customize'
+export type ReceiverHeatmap3dInterpolation = 'pixel' | 'smooth'
 
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
@@ -197,11 +206,13 @@ export interface WorkspaceSnapshot {
   faceColorOverrides: FaceDisplayColor[]
   materialAssignments: MaterialAssignment[]
   customOpticalProfiles: SavedOpticalProfile[]
+  bsdfAssets?: BsdfAsset[]
   transformRules: ComponentTransformRule[]
   roiScopes: RoiScope[]
   roiScopeSequence: number
   roiBoxSelectionArmed: boolean
   emitterFaceSelectionArmed: boolean
+  emitterSelectionTarget: 'surface' | 'body'
   /** True while the Material editor's "Face 지정" picker is armed - every
    *  viewer click toggles that face into/out of `selectedFaceIds` instead of
    *  replacing the selection, so several faces can be gathered before the
@@ -224,6 +235,15 @@ export interface WorkspaceSnapshot {
   activeRayTraceJobId: string | null
   restoredRayTraceResult: RayTraceResult | null
   rayPathDisplayFilters: RayPathDisplayFilters
+  /** Maximum number of already-stored paths drawn in the 3D Viewer.
+   *  This is a display-only preference and never invalidates trace results. */
+  rayPathDisplayLimit: number
+  receiverHeatmap3dMode: ReceiverHeatmap3dMode
+  receiverHeatmap3dOpacity: number
+  receiverHeatmap3dScaleMode: ReceiverHeatmap3dScaleMode
+  receiverHeatmap3dCustomMinNit: number
+  receiverHeatmap3dCustomMaxNit: number
+  receiverHeatmap3dInterpolation: ReceiverHeatmap3dInterpolation
   highlightedRayPathSelection: {
     runId: string
     pathIndices: number[]
@@ -241,6 +261,7 @@ export type WorkspaceProjectState = Pick<
   | 'faceColorOverrides'
   | 'materialAssignments'
   | 'customOpticalProfiles'
+  | 'bsdfAssets'
   | 'transformRules'
   | 'roiScopes'
   | 'roiScopeSequence'
@@ -288,6 +309,7 @@ export interface WorkspaceActions {
   upsertMaterialAssignment(assignment: MaterialAssignment): void
   removeMaterialAssignment(assignmentId: string): void
   addCustomOpticalProfile(profile: SavedOpticalProfile): void
+  addBsdfAsset(asset: BsdfAsset): void
   removeCustomOpticalProfile(profileId: string): void
   upsertTransformRule(rule: ComponentTransformRule): void
   setTransformRuleEnabled(ruleId: string, enabled: boolean): void
@@ -299,6 +321,7 @@ export interface WorkspaceActions {
   clearRoiScopes(): void
   setRoiBoxSelectionArmed(armed: boolean): void
   setEmitterFaceSelectionArmed(armed: boolean): void
+  setEmitterSelectionTarget(target: 'surface' | 'body'): void
   setMaterialFacePickArmed(armed: boolean): void
   setPivotPickArmed(armed: boolean): void
   setPivotPickPoint(point: Vector3Value | null): void
@@ -324,6 +347,14 @@ export interface WorkspaceActions {
   ): void
   setRayPathDisplayFilters(
     filters: Partial<RayPathDisplayFilters>,
+  ): void
+  setRayPathDisplayLimit(limit: number): void
+  setReceiverHeatmap3dMode(mode: ReceiverHeatmap3dMode): void
+  setReceiverHeatmap3dOpacity(opacity: number): void
+  setReceiverHeatmap3dScaleMode(mode: ReceiverHeatmap3dScaleMode): void
+  setReceiverHeatmap3dCustomScale(minNit: number, maxNit: number): void
+  setReceiverHeatmap3dInterpolation(
+    interpolation: ReceiverHeatmap3dInterpolation,
   ): void
   setHighlightedRayPathSelection(selection: {
     runId: string
@@ -351,6 +382,9 @@ function normalizeEmitter(emitter: EmitterSpec): EmitterSpec {
   return {
     ...emitter,
     face_indices: normalizeIds(emitter.face_indices),
+    ...(emitter.source_component_ids
+      ? { source_component_ids: normalizeIds(emitter.source_component_ids) }
+      : {}),
     ...(emitter.source_face_indices
       ? { source_face_indices: normalizeIds(emitter.source_face_indices) }
       : {}),
@@ -530,7 +564,7 @@ function normalizeRayTraceConfig(
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,
-      Math.min(5000, Math.trunc(config.max_stored_paths || 0)),
+      Math.min(50_000, Math.trunc(config.max_stored_paths || 0)),
     ),
     auto_convergence: Boolean(config.auto_convergence),
     convergence_target_percent: Math.max(
@@ -675,6 +709,7 @@ function normalizeProjectState(
     customOpticalProfiles: structuredClone(
       projectState.customOpticalProfiles ?? [],
     ),
+    bsdfAssets: structuredClone(projectState.bsdfAssets ?? []),
     transformRules: projectState.transformRules
       .map(normalizeTransformRule)
       .filter(
@@ -710,6 +745,7 @@ function projectStateFromSnapshot(
     faceColorOverrides: state.faceColorOverrides,
     materialAssignments: state.materialAssignments,
     customOpticalProfiles: state.customOpticalProfiles,
+    bsdfAssets: state.bsdfAssets ?? [],
     transformRules: state.transformRules,
     roiScopes: state.roiScopes,
     roiScopeSequence: state.roiScopeSequence,
@@ -738,6 +774,7 @@ function restoredSceneState(projectState: WorkspaceProjectState) {
     selectionKind: null,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    emitterSelectionTarget: 'surface' as const,
     materialFacePickArmed: false,
     pivotPickArmed: false,
     pivotPickPoint: null,
@@ -973,11 +1010,13 @@ function createSceneSnapshot(): Omit<
     faceColorOverrides: [],
     materialAssignments: [],
     customOpticalProfiles: [],
+    bsdfAssets: [],
     transformRules: [],
     roiScopes: [],
     roiScopeSequence: 0,
     roiBoxSelectionArmed: false,
     emitterFaceSelectionArmed: false,
+    emitterSelectionTarget: 'surface' as const,
     materialFacePickArmed: false,
     pivotPickArmed: false,
     pivotPickPoint: null,
@@ -993,6 +1032,13 @@ function createSceneSnapshot(): Omit<
     activeRayTraceJobId: null,
     restoredRayTraceResult: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
+    rayPathDisplayLimit: defaultRayPathDisplayLimit,
+    receiverHeatmap3dMode: 'off',
+    receiverHeatmap3dOpacity: 0.82,
+    receiverHeatmap3dScaleMode: 'auto',
+    receiverHeatmap3dCustomMinNit: 0,
+    receiverHeatmap3dCustomMaxNit: 10,
+    receiverHeatmap3dInterpolation: 'pixel',
     highlightedRayPathSelection: null,
   }
 }
@@ -1565,6 +1611,10 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ),
         }))
       },
+      addBsdfAsset: (asset) => {
+        if (!isBsdfAsset(asset)) throw new Error('Invalid BSDF asset')
+        set((state) => ({ bsdfAssets: [...(state.bsdfAssets ?? []).filter((item) => item.id !== asset.id), structuredClone(asset)] }))
+      },
       upsertTransformRule: (rule) => {
         const normalized = normalizeTransformRule(rule)
         set((state) => ({
@@ -1654,6 +1704,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       setEmitterFaceSelectionArmed: (emitterFaceSelectionArmed) => {
         set({ emitterFaceSelectionArmed })
+      },
+      setEmitterSelectionTarget: (emitterSelectionTarget) => {
+        set({ emitterSelectionTarget })
       },
       setMaterialFacePickArmed: (materialFacePickArmed) => {
         set({ materialFacePickArmed })
@@ -1831,6 +1884,42 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           },
         }))
       },
+      setRayPathDisplayLimit: (limit) => {
+        set({
+          rayPathDisplayLimit: Math.max(
+            0,
+            Math.min(50_000, Math.trunc(Number.isFinite(limit) ? limit : 0)),
+          ),
+        })
+      },
+      setReceiverHeatmap3dMode: (receiverHeatmap3dMode) => {
+        set({ receiverHeatmap3dMode })
+      },
+      setReceiverHeatmap3dOpacity: (opacity) => {
+        set({
+          receiverHeatmap3dOpacity: Math.max(
+            0.05,
+            Math.min(1, Number.isFinite(opacity) ? opacity : 0.82),
+          ),
+        })
+      },
+      setReceiverHeatmap3dScaleMode: (receiverHeatmap3dScaleMode) => {
+        set({ receiverHeatmap3dScaleMode })
+      },
+      setReceiverHeatmap3dCustomScale: (minNit, maxNit) => {
+        const minimum = Math.max(0, Number.isFinite(minNit) ? minNit : 0)
+        const maximum = Math.max(
+          minimum + 1e-9,
+          Number.isFinite(maxNit) ? maxNit : minimum + 1,
+        )
+        set({
+          receiverHeatmap3dCustomMinNit: minimum,
+          receiverHeatmap3dCustomMaxNit: maximum,
+        })
+      },
+      setReceiverHeatmap3dInterpolation: (receiverHeatmap3dInterpolation) => {
+        set({ receiverHeatmap3dInterpolation })
+      },
       setHighlightedRayPathSelection: (selection) => {
         set({
           highlightedRayPathSelection: selection
@@ -1847,6 +1936,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           selectionKind: null,
           roiBoxSelectionArmed: false,
           emitterFaceSelectionArmed: false,
+          emitterSelectionTarget: 'surface' as const,
           materialFacePickArmed: false,
           pivotPickArmed: false,
           pivotPickPoint: null,
@@ -1867,6 +1957,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set((state) => ({
           ...createSceneSnapshot(),
           customOpticalProfiles: state.customOpticalProfiles,
+          bsdfAssets: state.bsdfAssets ?? [],
         }))
       },
       resetWorkspace: () => {
@@ -1906,12 +1997,15 @@ export const workspaceSelectors = {
     state.materialAssignments,
   customOpticalProfiles: (state: WorkspaceStore) =>
     state.customOpticalProfiles ?? [],
+  bsdfAssets: (state: WorkspaceStore) => state.bsdfAssets ?? emptyBsdfAssets,
   transformRules: (state: WorkspaceStore) => state.transformRules,
   roiScopes: (state: WorkspaceStore) => state.roiScopes,
   roiBoxSelectionArmed: (state: WorkspaceStore) =>
     state.roiBoxSelectionArmed,
   emitterFaceSelectionArmed: (state: WorkspaceStore) =>
     state.emitterFaceSelectionArmed ?? false,
+  emitterSelectionTarget: (state: WorkspaceStore) =>
+    state.emitterSelectionTarget ?? 'surface',
   materialFacePickArmed: (state: WorkspaceStore) =>
     state.materialFacePickArmed ?? false,
   pivotPickArmed: (state: WorkspaceStore) =>
@@ -1939,6 +2033,20 @@ export const workspaceSelectors = {
     state.restoredRayTraceResult ?? null,
   rayPathDisplayFilters: (state: WorkspaceStore) =>
     state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
+  rayPathDisplayLimit: (state: WorkspaceStore) =>
+    state.rayPathDisplayLimit ?? defaultRayPathDisplayLimit,
+  receiverHeatmap3dMode: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dMode ?? 'off',
+  receiverHeatmap3dOpacity: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dOpacity ?? 0.82,
+  receiverHeatmap3dScaleMode: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dScaleMode ?? 'auto',
+  receiverHeatmap3dCustomMinNit: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dCustomMinNit ?? 0,
+  receiverHeatmap3dCustomMaxNit: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dCustomMaxNit ?? 10,
+  receiverHeatmap3dInterpolation: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dInterpolation ?? 'pixel',
   highlightedRayPathSelection: (state: WorkspaceStore) =>
     state.highlightedRayPathSelection ?? null,
   actions: (state: WorkspaceStore) => state.actions,

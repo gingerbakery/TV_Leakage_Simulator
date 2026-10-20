@@ -13,7 +13,7 @@ import struct
 from typing import Any
 
 
-CONTRACT = "discrete_exact_strict_float64_v1"
+CONTRACT = "discrete_exact_strict_float64_v2"
 DEFAULT_ABSOLUTE_TOLERANCE = 1e-12
 DEFAULT_RELATIVE_TOLERANCE = 1e-12
 DEFAULT_MAX_ULP_DISTANCE = 8
@@ -46,8 +46,9 @@ class SemanticParityReport:
 
 
 def _ordered_float64_bits(value: float) -> int:
-    signed = struct.unpack(">q", struct.pack(">d", float(value)))[0]
-    return 0x8000000000000000 - signed if signed < 0 else signed
+    bits = struct.unpack(">Q", struct.pack(">d", float(value)))[0]
+    magnitude = bits & 0x7FFFFFFFFFFFFFFF
+    return -magnitude if bits & 0x8000000000000000 else magnitude
 
 
 def _ulp_distance(left: float, right: float) -> int:

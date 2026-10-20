@@ -6,6 +6,7 @@ from dataclasses import dataclass, fields
 import hashlib
 import importlib
 import math
+import os
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -14,7 +15,13 @@ import warnings
 import numpy as np
 
 from . import gpu_cuda_intersection as cuda_backend
+from . import gpu_cuda_transfer as fixed_transfer
 from . import native_cpu_ordered_reducer as reducer
+from . import gpu_cuda_summary_partitions as partitions
+from . import gpu_cuda_receiver_moments as receiver_moments
+from . import gpu_cuda_receiver_flux as receiver_flux_reducer
+from . import gpu_cuda_emitted_flux as emitted_flux_reducer
+from . import gpu_cuda_receiver_grid as receiver_grid_reducer
 
 
 PROVIDER_CONTRACT = "strict_float64_gpu_summary_accumulator_v1"
@@ -148,6 +155,10 @@ class GpuSummaryDeviceEvents:
     terminal_received_power: Any
     stochastic_primary: Any
     overflow_flags: Any
+    terminal_depth_histogram: Any = None
+    receiver_hits_present: Optional[bool] = None
+    emissions_present: Optional[bool] = None
+    receiver_power_uniform: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +173,20 @@ class GpuSummaryAccumulatorExecution:
     output_bytes: int
     reused_device_state: bool
     provider_contract: str = PROVIDER_CONTRACT
+    accumulation_contract: str = "global_fp64_atomic_summary_v1"
+    partition_count: int = 1
+    partition_workspace_bytes: int = 0
+    receiver_moment_contract: str = 'global_fp64_atomic_receiver_moments_v1'
+    receiver_moment_workspace_bytes: int = 0
+    receiver_flux_contract: str = 'global_fp64_atomic_receiver_flux_v1'
+    receiver_flux_workspace_bytes: int = 0
+    receiver_hit_hint_used: bool = False
+    receiver_reduction_skipped: bool = False
+    emitted_flux_contract: str = 'global_fp64_atomic_emitted_flux_v1'
+    emitted_flux_workspace_bytes: int = 0
+    receiver_uniform_kernel_used: bool = False
+    receiver_grid_contract: str = 'global_fp64_atomic_receiver_grid_v1'
+    receiver_grid_workspace_bytes: int = 0
 
 
 @dataclass(slots=True)
@@ -179,6 +204,15 @@ class GpuSummaryAccumulatorSession:
     receiver_touch_ordinals: Any = None
     chunk_counts: Any = None
     last_state_digest: Optional[str] = None
+    device_transfer: Any = None
+    host_transfer: Optional[np.ndarray] = None
+    transfer_layout: Optional[dict[str, tuple[int, int, np.dtype, tuple[int, ...]]]] = None
+    transient_offset: int = 0
+    static_transfer: Any = None
+    partition_workspace: Optional[partitions.PartitionWorkspace] = None
+    receiver_flux_workspace: Optional[receiver_flux_reducer.ReceiverFluxWorkspace] = None
+    emitted_flux_workspace: Optional[emitted_flux_reducer.EmittedFluxWorkspace] = None
+    receiver_grid_workspace: Optional[receiver_grid_reducer.ReceiverGridWorkspace] = None
 
 
 _NUMERIC_STATE_FIELDS = tuple(
@@ -196,6 +230,23 @@ _STATE_LOCK = threading.RLock()
 _KERNEL: Optional[Callable[..., None]] = None
 _PROFILE_FACE_KERNEL: Optional[Callable[..., None]] = None
 _KERNEL_COMPILED = False
+_PARTITION_KERNELS = None
+_PARTITION_COMPILED = False
+_GRID_KERNEL_MODE: Optional[str] = None
+
+
+def _select_grid_kernel_mode(mode):
+    global _GRID_KERNEL_MODE, _KERNEL, _PROFILE_FACE_KERNEL, _KERNEL_COMPILED, _PARTITION_KERNELS, _PARTITION_COMPILED
+    if mode not in ('ordered', 'atomic'):
+        raise ValueError('GPU Receiver grids must be ordered or atomic')
+    with _STATE_LOCK:
+        if _GRID_KERNEL_MODE != mode:
+            _KERNEL = None
+            _PROFILE_FACE_KERNEL = None
+            _KERNEL_COMPILED = False
+            _PARTITION_KERNELS = None
+            _PARTITION_COMPILED = False
+            _GRID_KERNEL_MODE = mode
 
 
 def _state_digest(state: reducer.OrderedSummaryAccumulator) -> str:
@@ -205,7 +256,8 @@ def _state_digest(state: reducer.OrderedSummaryAccumulator) -> str:
         digest.update(field.name.encode("ascii"))
         digest.update(values.dtype.str.encode("ascii"))
         digest.update(np.asarray(values.shape, dtype=np.int64).tobytes())
-        digest.update(memoryview(values).cast("B"))
+        if values.size:
+            digest.update(memoryview(values).cast("B"))
     return digest.hexdigest()
 
 
@@ -218,6 +270,7 @@ def _layout_key(request: GpuSummaryAccumulatorRequest) -> tuple[int, ...]:
         int(request.grid_offsets[-1]),
         request.max_depth,
         *tuple(int(getattr(state, name).size) for name in _NUMERIC_STATE_FIELDS),
+        emitted_flux_reducer.uniform_metadata_words(request.max_depth + 1),
     )
 
 
@@ -231,6 +284,9 @@ def _initialize_session(
             "initialize",
             "gpu_summary_cuda_runtime_not_initialized",
         )
+    transfer_mode = os.environ.get('LEAKAGE_GPU_STATIC_TRANSFER', 'packed')
+    if transfer_mode not in ('packed', 'legacy'):
+        raise GpuSummaryAccumulatorError('input_validation', 'gpu_summary_static_transfer_mode_invalid')
     key = _layout_key(request)
     request_digest = _state_digest(request.state)
     if session.layout_key == key and session.device_state is not None:
@@ -242,44 +298,45 @@ def _initialize_session(
         return True, 0.0, 0
     started = time.perf_counter()
     try:
-        session.device_state = {
-            name: cuda.to_device(getattr(request.state, name))
-            for name in _NUMERIC_STATE_FIELDS
-        }
-        session.device_face_profile_slots = cuda.to_device(
-            request.face_profile_slots
-        )
-        session.device_profile_unassigned = cuda.to_device(
-            request.profile_unassigned.astype(np.uint8)
-        )
-        session.device_receiver_columns = cuda.to_device(
-            request.receiver_columns
-        )
-        session.device_grid_offsets = cuda.to_device(request.grid_offsets)
         profile_count = len(request.profile_unassigned)
         depth_count = request.max_depth + 1
         receiver_depth_count = len(request.receiver_columns) * depth_count
-        session.profile_touch_ordinals = cuda.device_array(
-            profile_count,
-            dtype=np.int64,
-        )
-        session.profile_touch_faces = cuda.device_array(
-            profile_count,
-            dtype=np.int64,
-        )
-        session.reflection_touch_ordinals = cuda.device_array(
-            depth_count,
-            dtype=np.int64,
-        )
-        session.contribution_touch_ordinals = cuda.device_array(
-            depth_count,
-            dtype=np.int64,
-        )
-        session.receiver_touch_ordinals = cuda.device_array(
-            receiver_depth_count,
-            dtype=np.int64,
-        )
-        session.chunk_counts = cuda.device_array(5, dtype=np.int64)
+        arrays = {name: getattr(request.state, name) for name in _NUMERIC_STATE_FIELDS}
+        session.transient_offset = sum(values.nbytes for values in arrays.values())
+        arrays.update({
+            "profile_touch_ordinals": np.full(profile_count, _TOUCH_SENTINEL, dtype=np.int64),
+            "profile_touch_faces": np.full(profile_count, -1, dtype=np.int64),
+            "reflection_touch_ordinals": np.full(depth_count, _TOUCH_SENTINEL, dtype=np.int64),
+            "contribution_touch_ordinals": np.full(depth_count, _TOUCH_SENTINEL, dtype=np.int64),
+            "receiver_touch_ordinals": np.full(receiver_depth_count, _TOUCH_SENTINEL, dtype=np.int64),
+            "chunk_counts": np.zeros(5 + emitted_flux_reducer.uniform_metadata_words(depth_count), dtype=np.int64),
+        })
+        session.host_transfer = np.empty(sum(values.nbytes for values in arrays.values()), dtype=np.uint8)
+        session.transfer_layout = {}
+        offset = 0
+        for name, values in arrays.items():
+            end = offset + values.nbytes
+            session.transfer_layout[name] = (offset, end, values.dtype, values.shape)
+            session.host_transfer[offset:end] = values.reshape(-1).view(np.uint8)
+            offset = end
+        session.device_transfer = cuda.to_device(session.host_transfer)
+        device_arrays = fixed_transfer.create_device_views(session.device_transfer, session.transfer_layout)
+        session.device_state = {name: device_arrays[name] for name in _NUMERIC_STATE_FIELDS}
+        for name in arrays.keys() - session.device_state.keys():
+            setattr(session, name, device_arrays[name])
+        static_arrays = {
+            'device_face_profile_slots': request.face_profile_slots,
+            'device_profile_unassigned': request.profile_unassigned.astype(np.uint8),
+            'device_receiver_columns': request.receiver_columns,
+            'device_grid_offsets': request.grid_offsets,
+        }
+        session.static_transfer = None
+        if transfer_mode == 'packed':
+            session.static_transfer, static_views = fixed_transfer.upload_aligned_arrays(cuda, static_arrays)
+        else:
+            static_views = {name: cuda.to_device(values) for name, values in static_arrays.items()}
+        for name, values in static_views.items():
+            setattr(session, name, values)
         cuda.synchronize()
     except Exception as exc:
         raise GpuSummaryAccumulatorError(
@@ -287,26 +344,41 @@ def _initialize_session(
             "gpu_summary_accumulator_allocation_failed",
         ) from exc
     session.layout_key = key
+    session.partition_workspace = None
     session.last_state_digest = request_digest
-    input_bytes = sum(
-        int(getattr(request.state, name).nbytes) for name in _NUMERIC_STATE_FIELDS
-    )
-    input_bytes += (
-        request.face_profile_slots.nbytes
-        + request.profile_unassigned.nbytes
-        + request.receiver_columns.nbytes
-        + request.grid_offsets.nbytes
-    )
+    input_bytes = int(session.host_transfer.nbytes)
+    input_bytes += int(session.static_transfer.nbytes) if session.static_transfer is not None else sum(
+        values.nbytes for values in static_arrays.values())
     return False, time.perf_counter() - started, input_bytes
 
 
-def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
+def _packed_host_view(session: GpuSummaryAccumulatorSession, name: str) -> np.ndarray:
+    assert session.host_transfer is not None and session.transfer_layout is not None
+    start, end, dtype, shape = session.transfer_layout[name]
+    return session.host_transfer[start:end].view(dtype).reshape(shape)
+
+
+def _make_kernels(*, partitioned=False) -> tuple[Callable[..., None], Callable[..., None]]:
     cuda = cuda_backend._CUDA
     if cuda is None:
         raise GpuSummaryAccumulatorError(
             "initialize",
             "gpu_summary_cuda_runtime_not_initialized",
         )
+
+    ordered_grids = os.environ.get('LEAKAGE_GPU_RECEIVER_GRIDS', 'atomic') == 'ordered'
+    libdevice = importlib.import_module('numba.cuda.libdevice')
+
+    @cuda.jit(device=True, inline=True)
+    def record_uniform_emission(counts, group, encoded_bits, invalid):
+        address = 5 + group * 3
+        if invalid:
+            cuda.atomic.max(counts, address + 1, 1)
+        elif counts[address + 1] == 0:
+            previous = cuda.atomic.cas(counts, address, np.int64(0), encoded_bits)
+            if previous != 0 and previous != encoded_bits:
+                cuda.atomic.max(counts, address + 1, 1)
+        cuda.atomic.add(counts, address + 2, 1)
 
     @cuda.jit
     def accumulate_kernel(
@@ -360,10 +432,31 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
         contribution_touch_ordinals,
         receiver_touch_ordinals,
         chunk_counts,
+        terminal_depth_histogram,
+        ordered_moments,
+        ordered_emissions,
     ):
         primary_slot = cuda.grid(1)
         if primary_slot >= ray_count:
             return
+        if partitioned:
+            partition = cuda.blockIdx.x % optical_counts.shape[0]
+            optical_counts = optical_counts[partition]
+            profile_hit_counts = profile_hit_counts[partition]
+            reflection_counts = reflection_counts[partition]
+            reflection_lobe_counts = reflection_lobe_counts[partition]
+            reflection_depth_counts = reflection_depth_counts[partition]
+            contribution_receiver_counts = contribution_receiver_counts[partition]
+            contribution_lobe_counts = contribution_lobe_counts[partition]
+            contribution_depth_counts = contribution_depth_counts[partition]
+            receiver_counts = receiver_counts[partition]
+            receiver_depth_counts = receiver_depth_counts[partition]
+            grid_hit_counts = grid_hit_counts[partition]
+            profile_touch_ordinals = profile_touch_ordinals[partition]
+            reflection_touch_ordinals = reflection_touch_ordinals[partition]
+            contribution_touch_ordinals = contribution_touch_ordinals[partition]
+            receiver_touch_ordinals = receiver_touch_ordinals[partition]
+            chunk_counts = chunk_counts[partition]
         if overflow_flags[primary_slot] != 0:
             cuda.atomic.max(chunk_counts, 4, 1)
             return
@@ -377,6 +470,8 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
         ):
             cuda.atomic.max(chunk_counts, 4, 2)
             return
+        if terminal_depth_histogram.shape[0] > 0:
+            cuda.atomic.add(terminal_depth_histogram, terminal_depth_value, 1)
         cuda.atomic.max(
             reflection_counts,
             reducer.REF_MAX_OBSERVED_DEPTH,
@@ -386,11 +481,12 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
             cuda.atomic.add(chunk_counts, 3, 1)
 
         event_count = 0
-        for depth in range(depth_count):
+        expected_event_count = terminal_depth_value
+        if terminal_code == reducer.TERMINAL_BLOCKED:
+            expected_event_count += 1
+        for depth in range(expected_event_count):
             face_index = event_faces[primary_slot, depth]
-            if face_index < 0:
-                break
-            if face_index >= face_profile_slots.shape[0]:
+            if face_index < 0 or face_index >= face_profile_slots.shape[0]:
                 cuda.atomic.max(chunk_counts, 4, 3)
                 return
             event_count += 1
@@ -528,6 +624,12 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
             lobe = event_lobes[primary_slot, depth]
             next_depth = depth + 1
             emitted_power = event_emitted_power[primary_slot, depth]
+            if ordered_emissions and chunk_counts.shape[0] > 5:
+                power_bits = libdevice.double_as_longlong(emitted_power)
+                invalid_power = power_bits < 0 or not math.isfinite(emitted_power)
+                encoded_bits = np.int64(0) if invalid_power else power_bits + np.int64(1)
+                record_uniform_emission(chunk_counts, lobe, encoded_bits, invalid_power)
+                record_uniform_emission(chunk_counts, reducer.LOBE_COUNT + next_depth, encoded_bits, invalid_power)
             cuda.atomic.add(
                 reflection_counts,
                 reducer.REF_EMITTED_COUNT,
@@ -538,17 +640,15 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
                 (lobe, reducer.OUTCOME_EMITTED),
                 1,
             )
-            cuda.atomic.add(reflection_lobe_flux, (lobe, 0), emitted_power)
+            if not ordered_emissions:
+                cuda.atomic.add(reflection_lobe_flux, (lobe, 0), emitted_power)
             cuda.atomic.add(
                 reflection_depth_counts,
                 (next_depth, reducer.REF_DEPTH_EMITTED),
                 1,
             )
-            cuda.atomic.add(
-                reflection_depth_flux,
-                (next_depth, 0),
-                emitted_power,
-            )
+            if not ordered_emissions:
+                cuda.atomic.add(reflection_depth_flux, (next_depth, 0), emitted_power)
             cuda.atomic.min(
                 reflection_touch_ordinals,
                 next_depth,
@@ -559,21 +659,15 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
                 (lobe, reducer.OUTCOME_EMITTED),
                 1,
             )
-            cuda.atomic.add(
-                contribution_lobe_flux,
-                (lobe, reducer.OUTCOME_EMITTED),
-                emitted_power,
-            )
+            if not ordered_emissions:
+                cuda.atomic.add(contribution_lobe_flux, (lobe, reducer.OUTCOME_EMITTED), emitted_power)
             cuda.atomic.add(
                 contribution_depth_counts,
                 (next_depth, reducer.CONTRIBUTION_DEPTH_EMITTED),
                 1,
             )
-            cuda.atomic.add(
-                contribution_depth_flux,
-                (next_depth, reducer.CONTRIBUTION_DEPTH_EMITTED),
-                emitted_power,
-            )
+            if not ordered_emissions:
+                cuda.atomic.add(contribution_depth_flux, (next_depth, reducer.CONTRIBUTION_DEPTH_EMITTED), emitted_power)
             cuda.atomic.min(
                 contribution_touch_ordinals,
                 next_depth,
@@ -610,14 +704,16 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
             received_power = terminal_received_power[primary_slot]
             received_square = received_power * received_power
             cuda.atomic.add(chunk_counts, 0, 1)
-            cuda.atomic.add(grid_flux, grid_index, received_power)
-            cuda.atomic.add(grid_flux_squared, grid_index, received_square)
+            if not ordered_grids:
+                cuda.atomic.add(grid_flux, grid_index, received_power)
+                cuda.atomic.add(grid_flux_squared, grid_index, received_square)
+            if not ordered_moments:
+                cuda.atomic.add(
+                    grid_flux_squared_totals,
+                    receiver_index,
+                    received_square,
+                )
             cuda.atomic.add(grid_hit_counts, receiver_index, 1)
-            cuda.atomic.add(
-                grid_flux_squared_totals,
-                receiver_index,
-                received_square,
-            )
             receiver_code = receiver_index * depth_count + terminal_depth_value
             cuda.atomic.min(
                 receiver_touch_ordinals,
@@ -629,62 +725,68 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
                 (receiver_index, terminal_depth_value),
                 1,
             )
-            cuda.atomic.add(
-                receiver_depth_flux,
-                (receiver_index, terminal_depth_value),
-                received_power,
-            )
+            if not ordered_moments:
+                cuda.atomic.add(
+                    receiver_depth_flux,
+                    (receiver_index, terminal_depth_value),
+                    received_power,
+                )
             cuda.atomic.add(
                 receiver_counts,
                 (receiver_index, reducer.RECEIVER_TOTAL),
                 1,
             )
-            cuda.atomic.add(
-                receiver_flux,
-                (receiver_index, reducer.RECEIVER_TOTAL),
-                received_power,
-            )
+            if not ordered_moments:
+                cuda.atomic.add(
+                    receiver_flux,
+                    (receiver_index, reducer.RECEIVER_TOTAL),
+                    received_power,
+                )
             if terminal_depth_value == 0:
                 cuda.atomic.add(
                     reflection_counts,
                     reducer.REF_DIRECT_RECEIVER_HIT_COUNT,
                     1,
                 )
-                cuda.atomic.add(
-                    reflection_flux,
-                    reducer.REF_DIRECT_RECEIVER_FLUX,
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        reflection_flux,
+                        reducer.REF_DIRECT_RECEIVER_FLUX,
+                        received_power,
+                    )
                 cuda.atomic.add(
                     contribution_receiver_counts,
                     reducer.CONTRIBUTION_DIRECT_RECEIVER,
                     1,
                 )
-                cuda.atomic.add(
-                    contribution_receiver_flux,
-                    reducer.CONTRIBUTION_DIRECT_RECEIVER,
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        contribution_receiver_flux,
+                        reducer.CONTRIBUTION_DIRECT_RECEIVER,
+                        received_power,
+                    )
                 cuda.atomic.add(
                     receiver_counts,
                     (receiver_index, reducer.RECEIVER_DIRECT),
                     1,
                 )
-                cuda.atomic.add(
-                    receiver_flux,
-                    (receiver_index, reducer.RECEIVER_DIRECT),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        receiver_flux,
+                        (receiver_index, reducer.RECEIVER_DIRECT),
+                        received_power,
+                    )
                 cuda.atomic.add(
                     contribution_depth_counts,
                     (0, reducer.CONTRIBUTION_DEPTH_RECEIVER),
                     1,
                 )
-                cuda.atomic.add(
-                    contribution_depth_flux,
-                    (0, reducer.CONTRIBUTION_DEPTH_RECEIVER),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        contribution_depth_flux,
+                        (0, reducer.CONTRIBUTION_DEPTH_RECEIVER),
+                        received_power,
+                    )
                 terminal_ordinal = primary_slot * (depth_count + 1) + depth_count
                 cuda.atomic.min(
                     contribution_touch_ordinals,
@@ -701,82 +803,90 @@ def _make_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
                     reducer.REF_RECEIVER_HIT_COUNT,
                     1,
                 )
-                cuda.atomic.add(
-                    reflection_flux,
-                    reducer.REF_REFLECTED_RECEIVER_FLUX,
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        reflection_flux,
+                        reducer.REF_REFLECTED_RECEIVER_FLUX,
+                        received_power,
+                    )
                 cuda.atomic.add(
                     reflection_lobe_counts,
                     (previous_lobe, reducer.OUTCOME_RECEIVER),
                     1,
                 )
-                cuda.atomic.add(
-                    reflection_lobe_flux,
-                    (previous_lobe, 1),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        reflection_lobe_flux,
+                        (previous_lobe, 1),
+                        received_power,
+                    )
                 cuda.atomic.add(
                     reflection_depth_counts,
                     (terminal_depth_value, reducer.REF_DEPTH_RECEIVER),
                     1,
                 )
-                cuda.atomic.add(
-                    reflection_depth_flux,
-                    (terminal_depth_value, 1),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        reflection_depth_flux,
+                        (terminal_depth_value, 1),
+                        received_power,
+                    )
                 cuda.atomic.add(
                     contribution_receiver_counts,
                     reducer.CONTRIBUTION_REFLECTED_RECEIVER,
                     1,
                 )
-                cuda.atomic.add(
-                    contribution_receiver_flux,
-                    reducer.CONTRIBUTION_REFLECTED_RECEIVER,
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        contribution_receiver_flux,
+                        reducer.CONTRIBUTION_REFLECTED_RECEIVER,
+                        received_power,
+                    )
                 cuda.atomic.add(
                     contribution_lobe_counts,
                     (previous_lobe, reducer.OUTCOME_RECEIVER),
                     1,
                 )
-                cuda.atomic.add(
-                    contribution_lobe_flux,
-                    (previous_lobe, reducer.OUTCOME_RECEIVER),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        contribution_lobe_flux,
+                        (previous_lobe, reducer.OUTCOME_RECEIVER),
+                        received_power,
+                    )
                 cuda.atomic.add(
                     contribution_depth_counts,
                     (terminal_depth_value, reducer.CONTRIBUTION_DEPTH_RECEIVER),
                     1,
                 )
-                cuda.atomic.add(
-                    contribution_depth_flux,
-                    (terminal_depth_value, reducer.CONTRIBUTION_DEPTH_RECEIVER),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        contribution_depth_flux,
+                        (terminal_depth_value, reducer.CONTRIBUTION_DEPTH_RECEIVER),
+                        received_power,
+                    )
                 cuda.atomic.add(
                     receiver_counts,
                     (receiver_index, reducer.RECEIVER_REFLECTED),
                     1,
                 )
-                cuda.atomic.add(
-                    receiver_flux,
-                    (receiver_index, reducer.RECEIVER_REFLECTED),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        receiver_flux,
+                        (receiver_index, reducer.RECEIVER_REFLECTED),
+                        received_power,
+                    )
                 receiver_field = reducer.RECEIVER_SPECULAR + previous_lobe
                 cuda.atomic.add(
                     receiver_counts,
                     (receiver_index, receiver_field),
                     1,
                 )
-                cuda.atomic.add(
-                    receiver_flux,
-                    (receiver_index, receiver_field),
-                    received_power,
-                )
+                if not ordered_moments:
+                    cuda.atomic.add(
+                        receiver_flux,
+                        (receiver_index, receiver_field),
+                        received_power,
+                    )
         else:
             cuda.atomic.add(chunk_counts, 2, 1)
             if (
@@ -863,6 +973,16 @@ def _ensure_kernels() -> tuple[Callable[..., None], Callable[..., None]]:
     return _KERNEL, _PROFILE_FACE_KERNEL
 
 
+def _ensure_partitioned_kernels():
+    global _PARTITION_KERNELS
+    with _STATE_LOCK:
+        if _PARTITION_KERNELS is None:
+            accumulate, profile = _make_kernels(partitioned=True)
+            reset, merge = partitions.make_merge_kernels(cuda_backend._CUDA)
+            _PARTITION_KERNELS = accumulate, profile, reset, merge
+    return _PARTITION_KERNELS
+
+
 def _readonly(values: np.ndarray, dtype: Any) -> np.ndarray:
     result = np.array(values, dtype=dtype, order="C", copy=True)
     result.setflags(write=False)
@@ -892,6 +1012,8 @@ def accumulate_resident_summary_gpu_cuda(
         raise ValueError("GPU summary events must not be empty")
     if events.depth_count != request.max_depth + 1:
         raise ValueError("GPU summary depth count is inconsistent")
+    grid_mode = os.environ.get('LEAKAGE_GPU_RECEIVER_GRIDS', 'atomic')
+    _select_grid_kernel_mode(grid_mode)
     cuda = cuda_backend._CUDA
     if cuda is None:
         raise GpuSummaryAccumulatorError(
@@ -899,28 +1021,60 @@ def accumulate_resident_summary_gpu_cuda(
             "gpu_summary_cuda_runtime_not_initialized",
         )
     reused, upload_sec, input_bytes = _initialize_session(session, request)
+    moment_mode = os.environ.get('LEAKAGE_GPU_RECEIVER_MOMENTS', 'ordered')
+    if moment_mode not in ('ordered', 'atomic'):
+        raise ValueError('GPU Receiver moments must be ordered or atomic')
+    ordered_moments = moment_mode == 'ordered' and bool(len(request.receiver_columns))
+    emitted_mode = os.environ.get('LEAKAGE_GPU_EMITTED_FLUX', emitted_flux_reducer.DEFAULT_MODE)
+    if emitted_mode not in ('ordered', 'atomic'):
+        raise ValueError('GPU emitted flux mode must be ordered or atomic')
+    ordered_emissions = emitted_mode == 'ordered'
+    if events.emissions_present is not None and not isinstance(events.emissions_present, bool):
+        raise GpuSummaryAccumulatorError('input_validation', 'gpu_summary_emission_hint_invalid')
+    emission_reduction_needed = ordered_emissions and request.max_depth > 0 and events.emissions_present is not False
+    if emission_reduction_needed:
+        session.emitted_flux_workspace = emitted_flux_reducer.ensure_workspace(cuda,
+            session.emitted_flux_workspace, events.ray_count, min(events.event_status.shape[1], events.depth_count), request.max_depth + 1)
+    if events.receiver_hits_present is not None and not isinstance(events.receiver_hits_present, bool):
+        raise GpuSummaryAccumulatorError('input_validation', 'gpu_summary_receiver_hit_hint_invalid')
+    hit_hint_used = ordered_moments and events.receiver_hits_present is not None and os.environ.get('LEAKAGE_GPU_RECEIVER_HIT_PROBE', 'auto') != 'off'
+    receiver_reduction_needed = ordered_moments and not (hit_hint_used and events.receiver_hits_present is False)
+    ordered_grids = grid_mode == 'ordered'
+    grid_reduction_needed = ordered_grids and bool(len(request.receiver_columns)) and events.receiver_hits_present is not False
+    if grid_reduction_needed:
+        session.receiver_grid_workspace = receiver_grid_reducer.ensure_workspace(cuda,
+            session.receiver_grid_workspace, events.ray_count, session.device_state['grid_flux_lumen'].size)
+    if receiver_reduction_needed:
+        session.receiver_flux_workspace = receiver_flux_reducer.ensure_workspace(
+            cuda, session.receiver_flux_workspace, events.ray_count,
+            len(request.receiver_columns), request.max_depth + 1,
+        )
     assert session.device_state is not None
     profile_count = len(request.profile_unassigned)
     depth_count = request.max_depth + 1
     receiver_depth_count = len(request.receiver_columns) * depth_count
     reset_started = time.perf_counter()
+    partition_count = partitions.choose_count(session.device_state, events.ray_count,
+        extra_words=max(0, session.chunk_counts.size - 5))
     try:
-        session.profile_touch_ordinals.copy_to_device(
-            np.full(profile_count, _TOUCH_SENTINEL, dtype=np.int64)
-        )
-        session.profile_touch_faces.copy_to_device(
-            np.full(profile_count, -1, dtype=np.int64)
-        )
-        session.reflection_touch_ordinals.copy_to_device(
-            np.full(depth_count, _TOUCH_SENTINEL, dtype=np.int64)
-        )
-        session.contribution_touch_ordinals.copy_to_device(
-            np.full(depth_count, _TOUCH_SENTINEL, dtype=np.int64)
-        )
-        session.receiver_touch_ordinals.copy_to_device(
-            np.full(receiver_depth_count, _TOUCH_SENTINEL, dtype=np.int64)
-        )
-        session.chunk_counts.copy_to_device(np.zeros(5, dtype=np.int64))
+        if partition_count > 1 and (
+            session.partition_workspace is None
+            or session.partition_workspace.count != partition_count
+        ):
+            session.partition_workspace = partitions.create_workspace(
+                cuda, session.device_state, session.transfer_layout, partition_count,
+            )
+            workspace = session.partition_workspace
+            input_bytes += workspace.metadata.nbytes + workspace.sentinel_ranges.nbytes
+        if reused:
+            for name in ("profile_touch_ordinals", "reflection_touch_ordinals",
+                         "contribution_touch_ordinals", "receiver_touch_ordinals"):
+                _packed_host_view(session, name).fill(_TOUCH_SENTINEL)
+            _packed_host_view(session, "profile_touch_faces").fill(-1)
+            _packed_host_view(session, "chunk_counts").fill(0)
+            transient = session.host_transfer[session.transient_offset:]
+            session.device_transfer[session.transient_offset:].copy_to_device(transient)
+            input_bytes += transient.nbytes
         cuda.synchronize()
     except Exception as exc:
         raise GpuSummaryAccumulatorError(
@@ -928,11 +1082,23 @@ def accumulate_resident_summary_gpu_cuda(
             "gpu_summary_accumulator_reset_failed",
         ) from exc
     state_upload_sec = upload_sec + time.perf_counter() - reset_started
-    kernel, profile_kernel = _ensure_kernels()
-    global _KERNEL_COMPILED
-    was_compiled = _KERNEL_COMPILED
+    reset_kernel = merge_kernel = None
+    if partition_count > 1:
+        kernel, profile_kernel, reset_kernel, merge_kernel = _ensure_partitioned_kernels()
+    else:
+        kernel, profile_kernel = _ensure_kernels()
+    global _KERNEL_COMPILED, _PARTITION_COMPILED
+    was_compiled = _PARTITION_COMPILED if partition_count > 1 else _KERNEL_COMPILED
     kernel_started = time.perf_counter()
     state = session.device_state
+    kernel_arrays = dict(state)
+    for name in (
+        "profile_touch_ordinals", "reflection_touch_ordinals",
+        "contribution_touch_ordinals", "receiver_touch_ordinals", "chunk_counts",
+    ):
+        kernel_arrays[name] = getattr(session, name)
+    if partition_count > 1:
+        kernel_arrays.update(session.partition_workspace.arrays)
     try:
         block_count = (
             events.ray_count + THREADS_PER_BLOCK - 1
@@ -945,6 +1111,12 @@ def accumulate_resident_summary_gpu_cuda(
             performance_warning = Warning
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", performance_warning)
+            if grid_reduction_needed:
+                receiver_grid_reducer.snapshot_device_grid(cuda, session.receiver_grid_workspace, state)
+            if reset_kernel is not None:
+                workspace = session.partition_workspace
+                reset_blocks = (workspace.storage.size + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
+                reset_kernel[reset_blocks, THREADS_PER_BLOCK](workspace.storage, workspace.sentinel_ranges)
             kernel[block_count, THREADS_PER_BLOCK](
                 events.ray_count,
                 events.depth_count,
@@ -967,36 +1139,48 @@ def accumulate_resident_summary_gpu_cuda(
                 session.device_profile_unassigned,
                 session.device_receiver_columns,
                 session.device_grid_offsets,
-                state["optical_counts"],
-                state["profile_hit_counts"],
-                state["profile_incoming_flux_lumen"],
-                state["profile_reflected_flux_lumen"],
-                state["reflection_counts"],
-                state["reflection_flux_lumen"],
-                state["reflection_lobe_counts"],
-                state["reflection_lobe_flux_lumen"],
-                state["reflection_depth_counts"],
-                state["reflection_depth_flux_lumen"],
-                state["contribution_receiver_counts"],
-                state["contribution_receiver_flux_lumen"],
-                state["contribution_lobe_counts"],
-                state["contribution_lobe_flux_lumen"],
-                state["contribution_depth_counts"],
-                state["contribution_depth_flux_lumen"],
-                state["receiver_counts"],
-                state["receiver_flux_lumen"],
-                state["receiver_depth_counts"],
-                state["receiver_depth_flux_lumen"],
-                state["grid_flux_lumen"],
-                state["grid_flux_squared_lumen2"],
-                state["grid_hit_counts"],
-                state["grid_flux_squared_totals_lumen2"],
-                session.profile_touch_ordinals,
-                session.reflection_touch_ordinals,
-                session.contribution_touch_ordinals,
-                session.receiver_touch_ordinals,
-                session.chunk_counts,
+                kernel_arrays["optical_counts"],
+                kernel_arrays["profile_hit_counts"],
+                kernel_arrays["profile_incoming_flux_lumen"],
+                kernel_arrays["profile_reflected_flux_lumen"],
+                kernel_arrays["reflection_counts"],
+                kernel_arrays["reflection_flux_lumen"],
+                kernel_arrays["reflection_lobe_counts"],
+                kernel_arrays["reflection_lobe_flux_lumen"],
+                kernel_arrays["reflection_depth_counts"],
+                kernel_arrays["reflection_depth_flux_lumen"],
+                kernel_arrays["contribution_receiver_counts"],
+                kernel_arrays["contribution_receiver_flux_lumen"],
+                kernel_arrays["contribution_lobe_counts"],
+                kernel_arrays["contribution_lobe_flux_lumen"],
+                kernel_arrays["contribution_depth_counts"],
+                kernel_arrays["contribution_depth_flux_lumen"],
+                kernel_arrays["receiver_counts"],
+                kernel_arrays["receiver_flux_lumen"],
+                kernel_arrays["receiver_depth_counts"],
+                kernel_arrays["receiver_depth_flux_lumen"],
+                kernel_arrays["grid_flux_lumen"],
+                kernel_arrays["grid_flux_squared_lumen2"],
+                kernel_arrays["grid_hit_counts"],
+                kernel_arrays["grid_flux_squared_totals_lumen2"],
+                kernel_arrays["profile_touch_ordinals"],
+                kernel_arrays["reflection_touch_ordinals"],
+                kernel_arrays["contribution_touch_ordinals"],
+                kernel_arrays["receiver_touch_ordinals"],
+                kernel_arrays["chunk_counts"],
+                events.terminal_depth_histogram
+                if events.terminal_depth_histogram is not None
+                else session.chunk_counts[:0],
+                ordered_moments,
+                ordered_emissions,
             )
+            if merge_kernel is not None:
+                workspace = session.partition_workspace
+                merge_blocks = (workspace.logical_words + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
+                merge_kernel[merge_blocks, THREADS_PER_BLOCK](
+                    workspace.logical_words, workspace.count, workspace.metadata,
+                    workspace.storage, session.device_transfer.view(np.int64),
+                )
             if profile_count:
                 profile_blocks = (
                     profile_count + THREADS_PER_BLOCK - 1
@@ -1007,49 +1191,57 @@ def accumulate_resident_summary_gpu_cuda(
                     session.profile_touch_ordinals,
                     session.profile_touch_faces,
                 )
+            if grid_reduction_needed:
+                try:
+                    receiver_grid_reducer.accumulate_device_ordered_grid(cuda, session.receiver_grid_workspace, events, session)
+                except Exception as exc:
+                    raise GpuSummaryAccumulatorError('execute', 'gpu_summary_ordered_receiver_grid_failed') from exc
+            if emission_reduction_needed:
+                try:
+                    emitted_flux_reducer.accumulate_device_ordered_emissions(
+                        cuda, session.emitted_flux_workspace, events, state, session.chunk_counts)
+                except Exception as exc:
+                    raise GpuSummaryAccumulatorError('execute', 'gpu_summary_ordered_emitted_flux_failed') from exc
+            if receiver_reduction_needed:
+                try:
+                    receiver_flux_reducer.accumulate_device_ordered_flux(
+                        cuda, session.receiver_flux_workspace, events, state, session.chunk_counts,
+                    )
+                except Exception as exc:
+                    raise GpuSummaryAccumulatorError(
+                        'execute', 'gpu_summary_ordered_receiver_flux_failed',
+                    ) from exc
         cuda.synchronize()
+    except GpuSummaryAccumulatorError:
+        raise
     except Exception as exc:
         raise GpuSummaryAccumulatorError(
             "execute",
             "gpu_summary_accumulator_kernel_failed",
         ) from exc
     kernel_elapsed = time.perf_counter() - kernel_started
-    _KERNEL_COMPILED = True
+    if partition_count > 1:
+        _PARTITION_COMPILED = True
+    else:
+        _KERNEL_COMPILED = True
 
     download_started = time.perf_counter()
     try:
+        session.device_transfer.copy_to_host(session.host_transfer)
         host_numeric = {
             name: np.array(
-                device_values.copy_to_host(),
+                _packed_host_view(session, name),
                 copy=True,
                 order="C",
             )
-            for name, device_values in state.items()
+            for name in state
         }
-        profile_ordinals = np.ascontiguousarray(
-            session.profile_touch_ordinals.copy_to_host(),
-            dtype=np.int64,
-        )
-        profile_faces = np.ascontiguousarray(
-            session.profile_touch_faces.copy_to_host(),
-            dtype=np.int64,
-        )
-        reflection_ordinals = np.ascontiguousarray(
-            session.reflection_touch_ordinals.copy_to_host(),
-            dtype=np.int64,
-        )
-        contribution_ordinals = np.ascontiguousarray(
-            session.contribution_touch_ordinals.copy_to_host(),
-            dtype=np.int64,
-        )
-        receiver_ordinals = np.ascontiguousarray(
-            session.receiver_touch_ordinals.copy_to_host(),
-            dtype=np.int64,
-        )
-        chunk_counts = np.ascontiguousarray(
-            session.chunk_counts.copy_to_host(),
-            dtype=np.int64,
-        )
+        profile_ordinals = np.array(_packed_host_view(session, "profile_touch_ordinals"), copy=True)
+        profile_faces = np.array(_packed_host_view(session, "profile_touch_faces"), copy=True)
+        reflection_ordinals = np.array(_packed_host_view(session, "reflection_touch_ordinals"), copy=True)
+        contribution_ordinals = np.array(_packed_host_view(session, "contribution_touch_ordinals"), copy=True)
+        receiver_ordinals = np.array(_packed_host_view(session, "receiver_touch_ordinals"), copy=True)
+        chunk_counts = np.array(_packed_host_view(session, "chunk_counts"), copy=True)
     except Exception as exc:
         raise GpuSummaryAccumulatorError(
             "result_validation",
@@ -1061,6 +1253,11 @@ def accumulate_resident_summary_gpu_cuda(
             "result_validation",
             f"gpu_summary_accumulator_invalid_event_{int(chunk_counts[4])}",
         )
+    if events.receiver_hits_present is not None and bool(chunk_counts[0] > 0) != events.receiver_hits_present:
+        raise GpuSummaryAccumulatorError('result_validation', 'gpu_summary_receiver_hit_hint_mismatch')
+    emission_count = int(host_numeric['reflection_counts'][reducer.REF_EMITTED_COUNT] - request.state.reflection_counts[reducer.REF_EMITTED_COUNT])
+    if events.emissions_present is not None and bool(emission_count > 0) != events.emissions_present:
+        raise GpuSummaryAccumulatorError('result_validation', 'gpu_summary_emission_hint_mismatch')
 
     profile_touch_slots = _touch_vector(
         profile_ordinals,
@@ -1189,15 +1386,32 @@ def accumulate_resident_summary_gpu_cuda(
         input_bytes=input_bytes,
         output_bytes=output_bytes,
         reused_device_state=reused,
+        accumulation_contract=(partitions.CONTRACT if partition_count > 1 else "global_fp64_atomic_summary_v1"),
+        partition_count=partition_count,
+        partition_workspace_bytes=(session.partition_workspace.nbytes if partition_count > 1 else 0),
+        receiver_moment_contract=(receiver_moments.CONTRACT if ordered_moments else 'global_fp64_atomic_receiver_moments_v1'),
+        receiver_moment_workspace_bytes=0,
+        receiver_flux_contract=(receiver_flux_reducer.CONTRACT if ordered_moments else 'global_fp64_atomic_receiver_flux_v1'),
+        receiver_flux_workspace_bytes=(session.receiver_flux_workspace.nbytes if ordered_moments and session.receiver_flux_workspace is not None else 0),
+        receiver_hit_hint_used=hit_hint_used,
+        receiver_reduction_skipped=bool(ordered_moments and not receiver_reduction_needed),
+        emitted_flux_contract=(emitted_flux_reducer.CONTRACT if ordered_emissions else 'global_fp64_atomic_emitted_flux_v1'),
+        emitted_flux_workspace_bytes=(session.emitted_flux_workspace.nbytes if session.emitted_flux_workspace is not None else 0),
+        receiver_uniform_kernel_used=bool(receiver_reduction_needed and events.receiver_power_uniform),
+        receiver_grid_contract=(receiver_grid_reducer.CONTRACT if ordered_grids else 'global_fp64_atomic_receiver_grid_v1'),
+        receiver_grid_workspace_bytes=(session.receiver_grid_workspace.nbytes if session.receiver_grid_workspace is not None else 0),
     )
 
 
 def reset_gpu_summary_accumulator_for_tests() -> None:
-    global _KERNEL, _PROFILE_FACE_KERNEL, _KERNEL_COMPILED
+    global _KERNEL, _PROFILE_FACE_KERNEL, _KERNEL_COMPILED, _PARTITION_KERNELS, _PARTITION_COMPILED, _GRID_KERNEL_MODE
     with _STATE_LOCK:
         _KERNEL = None
         _PROFILE_FACE_KERNEL = None
         _KERNEL_COMPILED = False
+        _PARTITION_KERNELS = None
+        _PARTITION_COMPILED = False
+        _GRID_KERNEL_MODE = None
 
 
 __all__ = [

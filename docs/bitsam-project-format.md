@@ -35,6 +35,7 @@
 - Ray tracing 설정
 - Ray path 표시 필터
 - Component/Face 색상, 사용자 광학 프로파일
+- 지원되는 LT ASCII BSDF 원본 텍스트·파싱 데이터와 연결 ID (`workspace.bsdfAssets`)
 - 선택적 마지막 분석 결과: Receiver grid, 지표, Stored paths
 
 ## 저장되지 않는 항목
@@ -45,7 +46,15 @@
 - 편집 중인 Preview와 팝업 상태
 - 실행 중인 Ray tracing Job ID
 
-로컬 절대 경로를 저장하지 않으므로 사내 경로 정보가 프로젝트 파일에 포함되지 않는다.
+CAD의 임시 절대 경로는 저장하지 않는다. BSDF 원본 텍스트는 그대로 보관하므로,
+원본 master에 기록된 파일 경로·주석도 포함된다.
+
+BSDF 자산 또는 연결이 있는 저장 파일은 내부 설정 스키마를
+`bitsam-project.v1-bsdf1`로 표시한다. 이 확장을 모르는 예전 빌드는 파일을 거부하므로
+BSDF를 무시하고 기존 광학 값으로 계산하는 상황을 방지한다. BSDF가 없는 파일은
+기존 `bitsam-project.v1`을 유지하며, 새 빌드는 기존 파일도 계속 읽는다.
+BSDF 자산의 `transport`에는 계산 모델, 선택 파장, 입사각 끝값 정책을 보관한다.
+실제 반사 전용 CPU 계산의 [지원 범위](bsdf-transport-validation.md)를 참고한다.
 
 ## 저장과 불러오기
 

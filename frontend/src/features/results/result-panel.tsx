@@ -5,6 +5,7 @@ import {
   BarChart3,
   Eye,
   FlaskConical,
+  Grid3X3,
   Route,
 } from 'lucide-react'
 
@@ -38,6 +39,7 @@ const allFilters = (visible: boolean): RayPathDisplayFilters => ({
   specular: visible,
   lambertian: visible,
   gaussian: visible,
+  bsdf: visible,
 })
 
 export function ResultPanel({
@@ -49,6 +51,27 @@ export function ResultPanel({
   const [ltValidationOpen, setLtValidationOpen] = useState(false)
   const filters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
+  )
+  const displayLimit = useWorkspaceStore(
+    workspaceSelectors.rayPathDisplayLimit,
+  )
+  const heatmap3dMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dMode,
+  )
+  const heatmap3dOpacity = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dOpacity,
+  )
+  const heatmap3dScaleMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dScaleMode,
+  )
+  const heatmap3dCustomMinNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMinNit,
+  )
+  const heatmap3dCustomMaxNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMaxNit,
+  )
+  const heatmap3dInterpolation = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dInterpolation,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const result =
@@ -63,6 +86,7 @@ export function ResultPanel({
       count + Number(isRayPathVisible(path, filters)),
     0,
   )
+  const displayedPathCount = Math.min(displayLimit, visiblePathCount)
   const hitRatio =
     result && result.total_rays > 0
       ? result.receiver_hit_count / result.total_rays
@@ -169,6 +193,123 @@ export function ResultPanel({
       <section className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+            <Grid3X3 className="size-3.5" />
+            Receiver Heatmap 3D
+            <HelpTooltip label="Receiver Heatmap 3D 도움말">
+              계산된 Receiver Heatmap을 실제 3D Receiver Plane 위에
+              표시합니다. Physical은 CAD에 가리고, X-ray는 CAD 앞에
+              표시됩니다.
+            </HelpTooltip>
+          </div>
+          <Badge variant="outline">
+            {result?.receiver_grids.length ?? 0}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          {(['off', 'physical', 'xray'] as const).map((mode) => (
+            <Button
+              key={mode}
+              size="xs"
+              variant={heatmap3dMode === mode ? 'default' : 'outline'}
+              disabled={!result || result.receiver_grids.length === 0}
+              aria-label={`3D Heatmap ${mode === 'off' ? 'OFF' : mode === 'physical' ? 'Physical' : 'X-ray'}`}
+              aria-pressed={heatmap3dMode === mode}
+              onClick={() => actions.setReceiverHeatmap3dMode(mode)}
+            >
+              {mode === 'off' ? 'OFF' : mode === 'physical' ? 'Physical' : 'X-ray'}
+            </Button>
+          ))}
+        </div>
+        {heatmap3dMode !== 'off' ? (
+          <div className="space-y-2 rounded-lg border border-border bg-background/35 p-2">
+            <div className="grid grid-cols-3 gap-1">
+              {(['auto', 'compare', 'customize'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  size="xs"
+                  variant={heatmap3dScaleMode === mode ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap scale ${mode}`}
+                  aria-pressed={heatmap3dScaleMode === mode}
+                  onClick={() => actions.setReceiverHeatmap3dScaleMode(mode)}
+                >
+                  {mode === 'auto' ? 'Auto' : mode === 'compare' ? 'Compare' : 'Customize'}
+                </Button>
+              ))}
+            </div>
+            {heatmap3dScaleMode === 'customize' ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span>Min nit</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={heatmap3dCustomMinNit}
+                    onChange={(event) =>
+                      actions.setReceiverHeatmap3dCustomScale(
+                        Number(event.currentTarget.value),
+                        heatmap3dCustomMaxNit,
+                      )
+                    }
+                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-right text-sm"
+                  />
+                </label>
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span>Max nit</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={heatmap3dCustomMaxNit}
+                    onChange={(event) =>
+                      actions.setReceiverHeatmap3dCustomScale(
+                        heatmap3dCustomMinNit,
+                        Number(event.currentTarget.value),
+                      )
+                    }
+                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-right text-sm"
+                  />
+                </label>
+              </div>
+            ) : null}
+            <label className="block space-y-1 text-xs text-muted-foreground">
+              <span>Opacity · {Math.round(heatmap3dOpacity * 100)}%</span>
+              <input
+                type="range"
+                min={5}
+                max={100}
+                step={1}
+                value={Math.round(heatmap3dOpacity * 100)}
+                onChange={(event) =>
+                  actions.setReceiverHeatmap3dOpacity(
+                    Number(event.currentTarget.value) / 100,
+                  )
+                }
+                className="w-full accent-primary"
+                aria-label="3D Heatmap opacity"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-1">
+              {(['pixel', 'smooth'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  size="xs"
+                  variant={heatmap3dInterpolation === mode ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap ${mode}`}
+                  aria-pressed={heatmap3dInterpolation === mode}
+                  onClick={() => actions.setReceiverHeatmap3dInterpolation(mode)}
+                >
+                  {mode === 'pixel' ? 'Pixel' : 'Smooth'}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-2 border-t border-border pt-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
             <Route className="size-3.5" />
             3D Ray path 표시
             <HelpTooltip label="3D Ray path 표시 도움말">
@@ -180,6 +321,45 @@ export function ResultPanel({
           <Badge variant="outline">
             {visiblePathCount}/{paths.length}
           </Badge>
+        </div>
+        <div className="rounded-lg border border-border bg-background/35 p-2">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <label htmlFor="ray-path-display-limit" className="text-sm font-medium">
+              표시 경로 수 · 현재 {displayedPathCount.toLocaleString()}
+            </label>
+            <input
+              id="ray-path-display-limit"
+              type="number"
+              min={0}
+              max={Math.max(paths.length, 0)}
+              step={100}
+              value={Math.min(displayLimit, paths.length)}
+              disabled={!result || paths.length === 0}
+              onChange={(event) =>
+                actions.setRayPathDisplayLimit(
+                  Math.min(paths.length, Number(event.currentTarget.value) || 0),
+                )
+              }
+              className="h-7 w-24 rounded-md border border-input bg-background px-2 text-right text-sm"
+            />
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(paths.length, 1)}
+            step={paths.length > 5_000 ? 100 : paths.length > 1_000 ? 50 : 10}
+            value={Math.min(displayLimit, paths.length)}
+            disabled={!result || paths.length === 0}
+            onChange={(event) =>
+              actions.setRayPathDisplayLimit(Number(event.currentTarget.value))
+            }
+            className="w-full accent-primary"
+            aria-label="3D Viewer 표시 경로 수"
+          />
+          <div className="mt-1 flex justify-between text-xs text-muted-foreground">
+            <span>0</span>
+            <span>저장 {paths.length.toLocaleString()}</span>
+          </div>
         </div>
         <div className="space-y-1">
           {rayPathFilterOrder.map((filter, index) => {
@@ -255,7 +435,8 @@ export function ResultPanel({
           </Button>
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          필터 변경은 재계산 없이 Viewer overlay에 즉시 반영됩니다.
+          표시 수와 필터는 재계산 없이 Viewer overlay에 즉시 반영됩니다.
+          표시는 필터에 맞는 저장 경로 전체에서 균등하게 선택됩니다.
         </p>
       </section>
     </div>
