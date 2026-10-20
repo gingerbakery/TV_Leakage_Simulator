@@ -8,7 +8,7 @@ import random
 from .types import OpticalProfile, Vec3
 
 
-REFLECTION_LOBES = ("specular", "lambertian", "gaussian")
+REFLECTION_LOBES = ("specular", "lambertian", "gaussian", "bsdf")
 _TAU = 2.0 * math.pi
 
 
@@ -37,6 +37,11 @@ def effective_surface_reflectance(
     incidence that a constant coefficient misses. Rough finishes retain a
     smaller sheen term; glossy finishes retain nearly the full Fresnel rise.
     """
+    if profile.bsdf_asset_id:
+        model = getattr(profile, "_bsdf_transport", None)
+        if model is None:
+            raise ValueError("BSDF asset is not compiled; analytic fallback is not allowed")
+        return model.reflectance(incoming, normal)
     if profile.reflectance <= 0.0:
         return 0.0
     if not angle_dependent:
@@ -74,6 +79,13 @@ def sample_reflection_direction(
     normal: Vec3,
     profile: OpticalProfile,
 ) -> Optional[ReflectionSample]:
+    if profile.bsdf_asset_id:
+        model = getattr(profile, "_bsdf_transport", None)
+        if model is None:
+            raise ValueError("BSDF asset is not compiled; analytic fallback is not allowed")
+        if model.reflectance(incoming, normal) <= 0:
+            return None
+        return ReflectionSample(direction=model.sample_direction(rng, incoming, normal), lobe="bsdf")
     if profile.scatter_model == "none" or profile.reflectance <= 0.0:
         return None
 

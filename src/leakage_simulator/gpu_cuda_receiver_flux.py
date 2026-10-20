@@ -11,6 +11,7 @@ from . import gpu_cuda_receiver_moments as moments
 from . import native_cpu_ordered_reducer as reducer
 
 CONTRACT = 'device_primary_ordered_receiver_flux_moments_v1'
+GLOBAL_DEPTH_OFFSET = 2 + reducer.LOBE_COUNT
 _LOCK = threading.Lock()
 _KERNELS = None
 _UNIFORM_KERNELS = None
@@ -34,7 +35,7 @@ class ReceiverFluxWorkspace:
 def workspace_layout(count, receivers, depths):
     if count < 0 or receivers < 0 or depths < 1:
         raise ValueError('Receiver flux workspace dimensions are invalid')
-    groups = receivers * (reducer.RECEIVER_FIELD_SIZE + depths) + 5 + depths
+    groups = receivers * (reducer.RECEIVER_FIELD_SIZE + depths) + GLOBAL_DEPTH_OFFSET + depths
     width = 128
     limit = max(moments.METADATA_SLOT_LIMIT, groups)
     while groups * ((count + width - 1) // width) > limit:
@@ -106,12 +107,12 @@ def make_kernels(cuda, *, scalar_only=False):
             source = field
             initial = reflection_flux[field]
             companion = contribution_receiver_flux[field]
-        elif field < 5:
+        elif field < GLOBAL_DEPTH_OFFSET:
             source = reducer.RECEIVER_SPECULAR + field - 2
             initial = reflection_lobe_flux[field - 2, 1]
             companion = contribution_lobe_flux[field - 2, reducer.OUTCOME_RECEIVER]
         else:
-            depth = field - 5
+            depth = field - GLOBAL_DEPTH_OFFSET
             source = reducer.RECEIVER_FIELD_SIZE + depth
             initial = reflection_depth_flux[depth, 1]
             companion = contribution_depth_flux[depth, reducer.CONTRIBUTION_DEPTH_RECEIVER]
@@ -122,7 +123,7 @@ def make_kernels(cuda, *, scalar_only=False):
             source_initial = receiver_depth_flux[0, source - reducer.RECEIVER_FIELD_SIZE]
         if not same_bits(companion, source_initial):
             return group
-        if field == 5 or same_bits(initial, source_initial):
+        if field == GLOBAL_DEPTH_OFFSET or same_bits(initial, source_initial):
             return source
         return group
 
@@ -143,11 +144,11 @@ def make_kernels(cuda, *, scalar_only=False):
             if field < 2:
                 reflection_flux[field] = total
                 contribution_receiver_flux[field] = companion
-            elif field < 5:
+            elif field < GLOBAL_DEPTH_OFFSET:
                 reflection_lobe_flux[field - 2, 1] = total
                 contribution_lobe_flux[field - 2, reducer.OUTCOME_RECEIVER] = companion
             else:
-                depth = field - 5
+                depth = field - GLOBAL_DEPTH_OFFSET
                 if depth > 0:
                     reflection_depth_flux[depth, 1] = total
                 contribution_depth_flux[depth, reducer.CONTRIBUTION_DEPTH_RECEIVER] = companion
@@ -165,9 +166,9 @@ def make_kernels(cuda, *, scalar_only=False):
         field = group - receiver_count * stride
         if field < 2:
             return contribution_receiver_counts[field] > 0
-        if field < 5:
+        if field < GLOBAL_DEPTH_OFFSET:
             return reflection_lobe_counts[field - 2, reducer.OUTCOME_RECEIVER] > 0
-        return contribution_depth_counts[field - 5, reducer.CONTRIBUTION_DEPTH_RECEIVER] > 0
+        return contribution_depth_counts[field - GLOBAL_DEPTH_OFFSET, reducer.CONTRIBUTION_DEPTH_RECEIVER] > 0
 
     @cuda.jit(device=True, inline=True)
     def matches(group, receiver_count, depth_count, primary, kinds, receivers, depths, lobes):
@@ -194,9 +195,9 @@ def make_kernels(cuda, *, scalar_only=False):
             return depth == 0
         if field == 1:
             return depth > 0
-        if field < 5:
+        if field < GLOBAL_DEPTH_OFFSET:
             return depth > 0 and lobes[primary, depth - 1] == field - 2
-        return depth == field - 5
+        return depth == field - GLOBAL_DEPTH_OFFSET
 
     @cuda.jit(fastmath=False)
     def classify(count, receiver_count, depth_count, tile_width, tile_count, kinds, receivers,
@@ -279,11 +280,11 @@ def make_kernels(cuda, *, scalar_only=False):
         elif field < 2:
             total = reflection_flux[field]
             companion = contribution_receiver_flux[field]
-        elif field < 5:
+        elif field < GLOBAL_DEPTH_OFFSET:
             total = reflection_lobe_flux[field - 2, 1]
             companion = contribution_lobe_flux[field - 2, reducer.OUTCOME_RECEIVER]
         else:
-            depth = field - 5
+            depth = field - GLOBAL_DEPTH_OFFSET
             if depth > 0:
                 total = reflection_depth_flux[depth, 1]
             companion = contribution_depth_flux[depth, reducer.CONTRIBUTION_DEPTH_RECEIVER]

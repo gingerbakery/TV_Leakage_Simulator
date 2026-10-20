@@ -212,11 +212,11 @@ def make_accumulator(cuda, matches, group_has_hits, write_totals, repeat_identic
             elif field < 2:
                 total = reflection_flux[field]
                 companion = contribution_receiver_flux[field]
-            elif field < 5:
+            elif field < flux.GLOBAL_DEPTH_OFFSET:
                 total = reflection_lobe_flux[field - 2, 1]
                 companion = contribution_lobe_flux[field - 2, reducer.OUTCOME_RECEIVER]
             else:
-                depth = field - 5
+                depth = field - flux.GLOBAL_DEPTH_OFFSET
                 if depth > 0:
                     total = reflection_depth_flux[depth, 1]
                 companion = contribution_depth_flux[depth, reducer.CONTRIBUTION_DEPTH_RECEIVER]

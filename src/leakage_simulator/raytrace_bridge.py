@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import math
 
+from .bsdf_guard import validate_bsdf_request
 from .geometry import TriangleMesh
 from .raytracer import DirectRayTraceInput
 from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayTraceConfig, ReceiverSpec, Vec3
@@ -108,6 +109,7 @@ def build_direct_trace_input(
     prepared_geometry: Optional[PreparedTraceGeometry] = None,
     geometry_cache_hit: bool = False,
 ) -> DirectRayTraceInput:
+    validate_bsdf_request(request_payload)
     geometry = prepared_geometry or build_prepared_trace_geometry(
         scene_mesh,
         request_payload,
@@ -157,6 +159,7 @@ def build_direct_trace_input(
         project_name=str(request_payload.get("project_name") or "TV-Leakage-Direct"),
         optical_assignments=optical_assignments,
         geometry_cache_hit=geometry_cache_hit,
+        bsdf_assets=request_payload.get("bsdf_assets", []),
     )
 
 

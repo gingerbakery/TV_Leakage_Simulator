@@ -23,10 +23,12 @@ from test_perf4e_bounce_mis import _build_reflected_case, _semantic_payload
 
 class ReceiverFluxLayoutTests(unittest.TestCase):
     def test_workspace_metadata_scales_with_outputs_not_primary_depth_product(self):
+        self.assertEqual(reducer.LOBE_COUNT, 4)
+        self.assertEqual(reducer.RECEIVER_FIELD_SIZE, 7)
         for count in (0, 19, 8192, 65536):
             for receivers, depths in ((1, 3), (2, 1001), (1024, 1001)):
                 groups, width, tiles = flux.workspace_layout(count, receivers, depths)
-                self.assertEqual(groups, receivers * (6 + depths) + 5 + depths)
+                self.assertEqual(groups, receivers * (reducer.RECEIVER_FIELD_SIZE + depths) + 2 + reducer.LOBE_COUNT + depths)
                 self.assertEqual(tiles, (count + width - 1) // width)
                 self.assertLessEqual(groups * tiles, max(131072, groups))
         for dimensions in ((-1, 1, 1), (1, -1, 1), (1, 1, 0)):
@@ -48,21 +50,30 @@ class ReceiverFluxGpuTests(unittest.TestCase):
             with self.subTest(receivers=receivers, zero_initial=zero_initial):
                 self.assert_packet_sums(receivers, zero_initial)
 
-    def assert_packet_sums(self, receiver_count, zero_initial, packet_counts=None):
+    def test_bsdf_only_global_and_receiver_sums_preserve_alias_contract(self):
+        for receivers, zero_initial, alias_initial in ((2, True, False), (2, False, False),
+                (1, True, False), (1, False, False), (1, False, True)):
+            with self.subTest(receivers=receivers, zero_initial=zero_initial, alias_initial=alias_initial):
+                self.assert_packet_sums(receivers, zero_initial, bsdf_only=True, alias_initial=alias_initial)
+
+    def assert_packet_sums(self, receiver_count, zero_initial, packet_counts=None, *, bsdf_only=False, alias_initial=False):
         cuda = gpu._CUDA
         rng = np.random.default_rng(4719)
         shapes = {
-            'receiver_flux_lumen': (receiver_count, 6), 'receiver_depth_flux_lumen': (receiver_count, 5),
+            'receiver_flux_lumen': (receiver_count, reducer.RECEIVER_FIELD_SIZE), 'receiver_depth_flux_lumen': (receiver_count, 5),
             'reflection_flux_lumen': (2,), 'contribution_receiver_flux_lumen': (2,),
-            'reflection_lobe_flux_lumen': (3, 2), 'contribution_lobe_flux_lumen': (3, 5),
+            'reflection_lobe_flux_lumen': (reducer.LOBE_COUNT, 2), 'contribution_lobe_flux_lumen': (reducer.LOBE_COUNT, 5),
             'reflection_depth_flux_lumen': (5, 2), 'contribution_depth_flux_lumen': (5, 7),
             'grid_flux_squared_totals_lumen2': (receiver_count,),
         }
         expected = {name: np.zeros(shape) if zero_initial else rng.random(shape) * 0.01 for name, shape in shapes.items()}
+        if alias_initial:
+            for values in expected.values():
+                values.fill(0.125)
         state = {name: cuda.to_device(values) for name, values in expected.items()}
         counters = {name: np.zeros(shape, dtype=np.int64) for name, shape in {
-            'receiver_counts': (receiver_count, 6), 'receiver_depth_counts': (receiver_count, 5),
-            'contribution_receiver_counts': (2,), 'reflection_lobe_counts': (3, 5),
+            'receiver_counts': (receiver_count, reducer.RECEIVER_FIELD_SIZE), 'receiver_depth_counts': (receiver_count, 5),
+            'contribution_receiver_counts': (2,), 'reflection_lobe_counts': (reducer.LOBE_COUNT, 5),
             'contribution_depth_counts': (5, 7),
         }.items()}
         workspace = None
@@ -73,7 +84,10 @@ class ReceiverFluxGpuTests(unittest.TestCase):
             receivers = rng.integers(0, receiver_count, count, dtype=np.int32)
             receivers[kinds != reducer.TERMINAL_RECEIVER] = -1
             depths = rng.integers(0, 5, count, dtype=np.int16)
-            lobes = rng.integers(0, 3, (count, 5), dtype=np.int8)
+            lobes = rng.integers(0, reducer.LOBE_COUNT, (count, 5), dtype=np.int8)
+            if bsdf_only:
+                depths.fill(1)
+                lobes.fill(reducer.LOBE_BSDF)
             powers = rng.random(count) * np.exp2(rng.integers(-40, -3, count))
             powers[:128] = 0.125
             powers[kinds != reducer.TERMINAL_RECEIVER] = np.nan

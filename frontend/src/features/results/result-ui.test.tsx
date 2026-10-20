@@ -957,12 +957,12 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('2/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([true, true, false, false, false, false])
+    ).toEqual([true, true, false, false, false, false, false])
     fireEvent.click(screen.getByRole('button', { name: 'All off' }))
     expect(screen.getByText('0/2')).not.toBeNull()
     expect(
       Object.values(workspaceStore.getState().rayPathDisplayFilters),
-    ).toEqual([false, false, false, false, false, false])
+    ).toEqual([false, false, false, false, false, false, false])
 
     fireEvent.click(
       screen.getByRole('button', { name: '분석 결과 보기' }),
@@ -1355,6 +1355,15 @@ describe('Step 11 result UI', () => {
       pathIndices: [0],
       label: 'Stored Path #1',
     })
+    fireEvent.click(screen.getByRole('button', {
+      name: '선택 경로 숨기기',
+    }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Direct to Receiver/ }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }))
+    expect(workspaceStore.getState().highlightedRayPathSelection).toBeNull()
+    expect(screen.queryByText('Selected-area ray contribution')).toBeNull()
     expect(onOpenChange).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset view' }))

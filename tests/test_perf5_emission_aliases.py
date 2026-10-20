@@ -35,7 +35,7 @@ def selector_case():
     encoded = np.float64(0.25).view(np.int64) + 1
     for group in (1, reducer.LOBE_COUNT + 1):
         metadata[5 + 3 * group:8 + 3 * group] = encoded, 1, count
-    outputs = [np.ones(shape, dtype=np.float64) for shape in ((3, 2), (depths, 2), (3, 5), (depths, 7))]
+    outputs = [np.ones(shape, dtype=np.float64) for shape in ((reducer.LOBE_COUNT, 2), (depths, 2), (reducer.LOBE_COUNT, 5), (depths, 7))]
     return count, records, depths, metadata, *outputs
 
 
@@ -49,10 +49,11 @@ def selector_cases():
         if style == 'missing':
             data[3] = metadata[:5]
         elif style in ('multiple_lobes', 'multiple_depths', 'bad_depth'):
-            group = {'multiple_lobes': 2, 'multiple_depths': 5, 'bad_depth': 3}[style]
+            group = {'multiple_lobes': 2, 'multiple_depths': reducer.LOBE_COUNT + 2,
+                'bad_depth': reducer.LOBE_COUNT}[style]
             metadata[5 + group * 3:8 + group * 3] = metadata[8:11]
         elif style == 'unequal_counts':
-            metadata[5 + 3 * 4 + 2] -= 1
+            metadata[5 + 3 * (reducer.LOBE_COUNT + 1) + 2] -= 1
         elif style == 'negative_count':
             metadata[10] = -1
         elif style == 'invalid_flag':
@@ -85,7 +86,7 @@ class EmissionAliasCpuTests(unittest.TestCase):
         arguments = list(selector_case())
         metadata = arguments[3]
         metadata[5 + 3 * 2:8 + 3 * 2] = metadata[8:11]
-        metadata[5 + 3 * 5:8 + 3 * 5] = metadata[8:11]
+        metadata[5 + 3 * (reducer.LOBE_COUNT + 2):8 + 3 * (reducer.LOBE_COUNT + 2)] = metadata[8:11]
         self.assertEqual(alias_from_metadata(*arguments), (-1, -1))
 
 
@@ -113,7 +114,7 @@ class EmissionAliasGpuTests(EmittedFluxGpuTests):
         for mode in ('varying', 'ties', 'different_reflection', 'different_contribution', 'metadata_off'):
             for initial in (0.0, 1.0):
                 metadata = selector_case()[3]
-                outputs = [generator.random(shape) for shape in ((3, 2), (depths, 2), (3, 5), (depths, 7))]
+                outputs = [generator.random(shape) for shape in ((reducer.LOBE_COUNT, 2), (depths, 2), (reducer.LOBE_COUNT, 5), (depths, 7))]
                 outputs[0][1, 0] = outputs[1][1, 0] = initial
                 outputs[2][1, reducer.OUTCOME_EMITTED] = outputs[3][1, reducer.CONTRIBUTION_DEPTH_EMITTED] = initial
                 if mode == 'different_reflection':
@@ -135,7 +136,7 @@ class EmissionAliasGpuTests(EmittedFluxGpuTests):
                 status[:, 0] = reducer.STATUS_EMITTED
                 emitted = np.full((count, records), np.nan, order='F')
                 emitted[:, 0] = power
-                lobe_counts = np.zeros((3, 5), dtype=np.int64)
+                lobe_counts = np.zeros((reducer.LOBE_COUNT, 5), dtype=np.int64)
                 depth_counts = np.zeros((depths, 5), dtype=np.int64)
                 lobe_counts[1, reducer.OUTCOME_EMITTED] = count
                 depth_counts[1, reducer.REF_DEPTH_EMITTED] = count

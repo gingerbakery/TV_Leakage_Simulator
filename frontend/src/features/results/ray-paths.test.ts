@@ -51,6 +51,13 @@ const reflectedMissPath = [
 ]
 
 describe('ray path visualization', () => {
+  it('displays a BSDF reflected escape path in its own group', () => {
+    const path = [hit([0,0,1], 'emitter', 'direct'), hit([0,0,0], 'surface', 'bsdf'), hit([1,0,1], 'escaped', 'bsdf')]
+    const visualization = buildRayPathVisualization([path], { ...defaultRayPathDisplayFilters, bsdf: true })
+    expect(visualization.visiblePathCount).toBe(1)
+    expect(visualization.groups.bsdf).toEqual([[[0,0,0],[1,0,1]]])
+    expect(visualization.groups.gaussian).toHaveLength(0)
+  })
   it('separates direct and reflected Receiver paths', () => {
     expect(receiverPathFilter(directReceiverPath)).toBe(
       'receiver_direct',
@@ -77,11 +84,34 @@ describe('ray path visualization', () => {
     expect(visualization).toMatchObject({
       totalPathCount: 3,
       visiblePathCount: 3,
+      renderedPathCount: 3,
     })
     expect(visualization.groups.receiver_direct).toHaveLength(1)
     expect(visualization.groups.receiver_reflected).toHaveLength(2)
     expect(visualization.groups.direct).toHaveLength(1)
     expect(visualization.groups.gaussian).toHaveLength(1)
+  })
+
+  it('applies the display limit after filtering and samples across all stored paths', () => {
+    const hidden = Array.from({ length: 5 }, () => reflectedMissPath)
+    const receiverPaths = Array.from({ length: 5 }, (_, index) => [
+      hit([index, 0, 0], 'emitter', 'direct'),
+      hit([index, 0, 10], 'receiver', 'direct'),
+    ])
+    const visualization = buildRayPathVisualization(
+      [...hidden, ...receiverPaths],
+      defaultRayPathDisplayFilters,
+      2,
+    )
+
+    expect(visualization).toMatchObject({
+      totalPathCount: 10,
+      visiblePathCount: 5,
+      renderedPathCount: 2,
+    })
+    expect(visualization.groups.receiver_direct).toHaveLength(2)
+    expect(visualization.groups.receiver_direct[0]?.[0]).toEqual([0, 0, 0])
+    expect(visualization.groups.receiver_direct[1]?.[0]).toEqual([4, 0, 0])
   })
 
   it('shows only Receiver-reaching paths by default', () => {

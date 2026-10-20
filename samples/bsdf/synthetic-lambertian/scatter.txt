@@ -1,0 +1,6 @@
+# Synthetic relative BRDF = 1; absolute reflectance comes from rt.txt.
+# Columns: longitude 0,90,180,270,360. Rows: latitude 90,45,0.
+SphereMesh: 5 3 0 0 360 90
+1 1 1 1 1
+1 1 1 1 1
+1 1 1 1 1

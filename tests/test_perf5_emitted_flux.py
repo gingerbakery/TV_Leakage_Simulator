@@ -28,7 +28,7 @@ class EmittedFluxLayoutTests(unittest.TestCase):
     def test_metadata_is_bounded_by_output_groups_not_the_full_tape(self):
         for count, records, depths in ((0, 1, 1), (65536, 11, 11), (2048, 1001, 1001), (65536, 32, 1001)):
             groups, width, tiles = flux.workspace_layout(count, records, depths)
-            self.assertEqual(groups, 3 + depths)
+            self.assertEqual(groups, reducer.LOBE_COUNT + depths)
             self.assertEqual(groups, flux.workspace_layout(count * 16, records, depths)[0])
             self.assertEqual(tiles, (count * records + width - 1) // width)
         for dimensions in ((-1, 1, 1), (1, 0, 1), (1, 3, 2)):
@@ -58,18 +58,18 @@ class EmittedFluxGpuTests(unittest.TestCase):
     def assert_packets(self, records, depths, zero_initial, packet_counts=None):
         cuda = gpu._CUDA
         rng = np.random.default_rng(4871)
-        shapes = {'reflection_lobe_flux_lumen': (3, 2), 'reflection_depth_flux_lumen': (depths, 2),
-            'contribution_lobe_flux_lumen': (3, 5), 'contribution_depth_flux_lumen': (depths, 7)}
+        shapes = {'reflection_lobe_flux_lumen': (reducer.LOBE_COUNT, 2), 'reflection_depth_flux_lumen': (depths, 2),
+            'contribution_lobe_flux_lumen': (reducer.LOBE_COUNT, 5), 'contribution_depth_flux_lumen': (depths, 7)}
         expected = {name: np.zeros(shape) if zero_initial else rng.random(shape) * 0.01 for name, shape in shapes.items()}
         state = {name: cuda.to_device(values) for name, values in expected.items()}
-        lobe_counts = np.zeros((3, 5), dtype=np.int64)
+        lobe_counts = np.zeros((reducer.LOBE_COUNT, 5), dtype=np.int64)
         depth_counts = np.zeros((depths, 5), dtype=np.int64)
         workspace = None
         for count, empty in packet_counts or ((193, False), (19, True), (317, False), (19, False)):
             kinds = np.full(count, reducer.TERMINAL_ESCAPED, dtype=np.int8)
             terminal_depths = rng.integers(0, records, count, dtype=np.int16)
             status = np.zeros((count, records), dtype=np.uint16, order='F')
-            lobes = rng.integers(0, 3, (count, records), dtype=np.int8)
+            lobes = rng.integers(0, reducer.LOBE_COUNT, (count, records), dtype=np.int8)
             emitted = np.full((count, records), np.nan, order='F')
             if empty:
                 terminal_depths.fill(0)
@@ -97,7 +97,7 @@ class EmittedFluxGpuTests(unittest.TestCase):
                 terminal_depth=cuda.to_device(terminal_depths), event_status=cuda.to_device(status),
                 event_lobes=cuda.to_device(lobes), event_emitted_power=cuda.to_device(emitted))
             workspace = flux.ensure_workspace(cuda, workspace, count, records, depths)
-            self.assertEqual(workspace.nbytes, (3 + depths) * 24)
+            self.assertEqual(workspace.nbytes, (reducer.LOBE_COUNT + depths) * 24)
             flux.accumulate_device_ordered_emissions(cuda, workspace, events, state,
                 cuda.to_device(np.asarray([0, surfaces, count, 0, 0], dtype=np.int64)))
             cuda.synchronize()
@@ -128,14 +128,14 @@ class EmittedFluxGpuTests(unittest.TestCase):
                 ('quantized', 1000, 1), ('ties', 0, 2), ('uniform', 0, 0)):
             with self.subTest(mode=mode, exponent=exponent):
                 scale = np.ldexp(1.0, exponent)
-                shapes = {'reflection_lobe_flux_lumen': (3, 2), 'reflection_depth_flux_lumen': (3, 2),
-                    'contribution_lobe_flux_lumen': (3, 5), 'contribution_depth_flux_lumen': (3, 7)}
+                shapes = {'reflection_lobe_flux_lumen': (reducer.LOBE_COUNT, 2), 'reflection_depth_flux_lumen': (3, 2),
+                    'contribution_lobe_flux_lumen': (reducer.LOBE_COUNT, 5), 'contribution_depth_flux_lumen': (3, 7)}
                 expected = {name: np.full(shape, scale) if mode == 'ties' else scale * rng.uniform(1.0, 1.5, shape)
                     for name, shape in shapes.items()}
                 state = {name: cuda.to_device(values) for name, values in expected.items()}
                 status = np.zeros((count, records), dtype=np.uint16, order='F')
                 status[:, :2] = reducer.STATUS_EMITTED
-                lobes = (np.arange(count * records).reshape(count, records) + np.arange(count)[:, None]) % 3
+                lobes = (np.arange(count * records).reshape(count, records) + np.arange(count)[:, None]) % reducer.LOBE_COUNT
                 lobes = lobes.astype(np.int8)
                 emitted = np.full((count, records), np.nan, order='F')
                 if mode == 'quantized':
@@ -144,7 +144,7 @@ class EmittedFluxGpuTests(unittest.TestCase):
                     emitted[:, :2] = np.spacing(scale) * (rng.integers(0, 8, (count, 2)) + 0.5)
                 else:
                     emitted[:, :2] = scale / 64
-                lobe_counts = np.zeros((3, 5), dtype=np.int64)
+                lobe_counts = np.zeros((reducer.LOBE_COUNT, 5), dtype=np.int64)
                 depth_counts = np.zeros((3, 5), dtype=np.int64)
                 for primary in range(count):
                     for depth in range(2):

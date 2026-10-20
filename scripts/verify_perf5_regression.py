@@ -17,6 +17,7 @@ from benchmark_perf5_cpu import source_hashes
 from leakage_simulator import gpu_cuda_intersection as gpu
 
 MODULES = (
+    'test_perf5_bsdf_integration',
     'test_perf5_warp_ordered_fold',
     'test_perf5_emitted_flux',
     'test_perf5_receiver_hit_probe',
@@ -91,7 +92,7 @@ def test_hashes():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--modules', nargs='+', default=MODULES)
-    parser.add_argument('--expected-tests', type=int, default=573)
+    parser.add_argument('--expected-tests', type=int, default=580)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     preflight = gpu.preflight_gpu_cuda(refresh=True)

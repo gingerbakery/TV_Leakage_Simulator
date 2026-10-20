@@ -11,6 +11,7 @@ import type {
   Vec3,
 } from '@/api'
 import { resolveAssignmentProfile } from '@/features/materials/optical-profile'
+import { bsdfTransportProblem, type BsdfAsset } from '@/features/materials/bsdf-asset'
 import type {
   ComponentTransformRule,
   MaterialAssignment,
@@ -30,6 +31,7 @@ export interface RayTraceRequestSource {
   emitters: EmitterSpec[]
   receivers: ReceiverSpec[]
   materialAssignments: MaterialAssignment[]
+  bsdfAssets?: BsdfAsset[]
   transformRules: ComponentTransformRule[]
   excludedComponentIds: number[]
   deletedComponentIds: number[]
@@ -1084,6 +1086,7 @@ export function buildRayTraceRequest({
   roiScopes,
   config,
   auxiliaryBlockers = [],
+  bsdfAssets = [],
 }: RayTraceRequestSource): RayTraceRequest {
   const enabledEmitters = emitters.filter((emitter) => emitter.enabled)
   const enabledReceivers = receivers.filter((receiver) => receiver.enabled)
@@ -1092,6 +1095,19 @@ export function buildRayTraceRequest({
     0,
   )
   const optical = buildOpticalPayload(materialAssignments)
+  const referenced = new Set(optical.profiles.map((profile) => profile.bsdf_asset_id).filter(Boolean))
+  const assets = [...referenced].map((id) => {
+    const asset = bsdfAssets.find((item) => item.id === id)
+    if (!asset) throw new Error(`연결된 BSDF 파일이 없습니다: ${id}`)
+    const problem = bsdfTransportProblem(asset)
+    if (problem) throw new Error(problem)
+    return asset
+  })
+  if (assets.length && (
+      (config.primary_sampling_strategy ?? 'source') !== 'source' ||
+      (config.bounce_sampling_strategy ?? 'source') !== 'source')) {
+    throw new Error('BSDF 표 계산은 Source sampling을 선택해야 합니다. Receiver MIS는 아직 지원하지 않습니다.')
+  }
   const deleted = new Set(deletedComponentIds)
   const roiFaces = activeRoiFaces(roiScopes, deleted)
   const roiClipBoxes = activeRoiClipBoxes(roiScopes)
@@ -1110,6 +1126,7 @@ export function buildRayTraceRequest({
     emitters: enabledEmitters,
     receivers: enabledReceivers,
     optical_profiles: optical.profiles,
+    ...(assets.length ? { bsdf_assets: assets } : {}),
     optical_assignments: optical.assignments,
     transform_rules: transformRules
       .filter(

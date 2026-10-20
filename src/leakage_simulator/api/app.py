@@ -19,6 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from leakage_simulator.bitsam_package import MAX_PACKAGE_BYTES, MEDIA_TYPE as PROJECT_MEDIA_TYPE
+from leakage_simulator.bsdf_import import (
+    MAX_REQUEST_BYTES as MAX_BSDF_REQUEST_BYTES,
+    BsdfImportError,
+    import_lt_ascii_bsdf,
+)
 
 from leakage_simulator.scene_binary import (
     MEDIA_TYPE,
@@ -95,6 +100,22 @@ def create_app(
     @application.get("/_ping", response_class=PlainTextResponse)
     def ping() -> str:
         return "pong"
+
+    @application.post("/api/bsdf/import", response_class=JSONResponse)
+    async def import_bsdf(request: Request) -> Any:
+        """Validate selected companion files without reading any embedded path."""
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_BSDF_REQUEST_BYTES:
+                return _error(413, "BSDF import request exceeds the size limit")
+            content.extend(chunk)
+        try:
+            payload = json.loads(content)
+            return await run_in_threadpool(import_lt_ascii_bsdf, payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _error(400, "BSDF import requires UTF-8 JSON with selected text files")
+        except BsdfImportError as exc:
+            return _error(400, str(exc))
 
     @application.get(
         "/api/gpu-cuda/status",

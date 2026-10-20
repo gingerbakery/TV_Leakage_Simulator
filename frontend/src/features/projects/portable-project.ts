@@ -6,6 +6,7 @@ import {
   bitsamDownloadFileName,
   compareBitsamProjectScene,
   parseBitsamProject,
+  projectSchemaVersion,
   type BitsamProject,
 } from './bitsam-project'
 
@@ -27,7 +28,7 @@ export function createPortableProjectClient(options: HttpClientOptions = {}) {
   return {
     exportProject(sceneToken: string, project: BitsamProject) {
       return http.requestJson<PackageExport>('/api/projects/export', {
-        method: 'POST', json: { scene_token: sceneToken, project },
+        method: 'POST', json: { scene_token: sceneToken, project: { ...project, schema_version: projectSchemaVersion(project.workspace) } },
       })
     },
     importProject(file: File) {

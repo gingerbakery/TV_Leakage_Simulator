@@ -15,6 +15,7 @@ from .scene_binary import HEADER, MAGIC, VERSION, iter_scene_binary, prepare_sce
 
 
 PACKAGE_SCHEMA = "bitsam-project.v2"
+SETTINGS_SCHEMAS = {"bitsam-project.v1", "bitsam-project.v1-bsdf1"}
 CACHE_CONTRACT = "bitsam-lossless-scene.v1"
 MEDIA_TYPE = "application/vnd.bitsam+zip"
 MAX_PACKAGE_BYTES = 8 * 1024**3
@@ -89,10 +90,18 @@ def write_package(
     scene: dict[str, Any],
     trace_mesh: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if project.get("schema_version") != "bitsam-project.v1":
+    if project.get("schema_version") not in SETTINGS_SCHEMAS:
         raise ValueError("Unsupported BITSAM settings version")
     if not isinstance(project.get("workspace"), dict):
         raise ValueError("BITSAM workspace is missing")
+    workspace = project["workspace"]
+    has_bsdf = bool(workspace.get("bsdfAssets")) or any(
+        isinstance(item, dict) and bool(item.get("bsdfAssetId"))
+        for key in ("materialAssignments", "customOpticalProfiles")
+        for item in (workspace.get(key) or [])
+    )
+    if has_bsdf and project["schema_version"] != "bitsam-project.v1-bsdf1":
+        raise ValueError("BSDF assets/references require bitsam-project.v1-bsdf1 to prevent older builds from ignoring them")
     if source.suffix.lower() not in SOURCE_SUFFIXES or not source.is_file():
         raise ValueError("Original CAD is unavailable. Import the CAD once before saving.")
     source_entry = "cad/original" + source.suffix.lower()

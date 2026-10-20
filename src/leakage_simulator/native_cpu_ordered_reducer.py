@@ -18,7 +18,8 @@ CONTRACT_VERSION = "ordered_summary_reducer_v1"
 LOBE_SPECULAR = 0
 LOBE_LAMBERTIAN = 1
 LOBE_GAUSSIAN = 2
-LOBE_COUNT = 3
+LOBE_BSDF = 3
+LOBE_COUNT = 4
 
 TERMINAL_RECEIVER = 1
 TERMINAL_ESCAPED = 2
@@ -86,7 +87,8 @@ RECEIVER_TOTAL = 2
 RECEIVER_SPECULAR = 3
 RECEIVER_LAMBERTIAN = 4
 RECEIVER_GAUSSIAN = 5
-RECEIVER_FIELD_SIZE = 6
+RECEIVER_BSDF = 6
+RECEIVER_FIELD_SIZE = 7
 
 OPTICAL_SURFACE_HIT_COUNT = 0
 OPTICAL_UNASSIGNED_SURFACE_HIT_COUNT = 1
@@ -362,7 +364,7 @@ class OrderedSummaryBatch:
         emitted = (self.status_flags & np.uint16(STATUS_EMITTED)) != 0
         if (
             np.any(self.lobe_codes[emitted] < LOBE_SPECULAR)
-            or np.any(self.lobe_codes[emitted] > LOBE_GAUSSIAN)
+            or np.any(self.lobe_codes[emitted] > LOBE_BSDF)
             or np.any(self.lobe_codes[~emitted] != -1)
         ):
             raise ValueError("lobe_codes violates the emitted-status contract")

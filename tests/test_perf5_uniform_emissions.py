@@ -43,14 +43,14 @@ def cycle_samples():
         if sample % 5 == 0:
             initial = 0.0
         sequences.append((powers, initial, int(generator.integers(0, 1025))))
-    metadata = np.zeros((len(sequences), 41), dtype=np.int64)
+    metadata = np.zeros((len(sequences), 5 + 3 * (reducer.LOBE_COUNT + 9)), dtype=np.int64)
     initials = np.asarray([initial for _, initial, _ in sequences])
     lengths = np.asarray([len(powers) for powers, _, _ in sequences], dtype=np.int64)
     repetitions = np.asarray([count for _, _, count in sequences], dtype=np.int64)
     expected = initials.copy()
     for index, (powers, initial, count) in enumerate(sequences):
         for depth, value in enumerate(powers, 1):
-            metadata[index, 5 + 3 * (3 + depth)] = struct.unpack('<q', struct.pack('<d', value))[0] + 1
+            metadata[index, 5 + 3 * (reducer.LOBE_COUNT + depth)] = struct.unpack('<q', struct.pack('<d', value))[0] + 1
         total = initial
         for repeat in range(count):
             for value in powers:
@@ -65,7 +65,7 @@ class UniformEmissionLayoutTests(unittest.TestCase):
             os.environ.pop('LEAKAGE_GPU_EMITTED_FLUX', None)
             os.environ.pop('LEAKAGE_GPU_EMITTED_UNIFORM', None)
             self.assertEqual(flux.DEFAULT_MODE, 'ordered')
-            self.assertEqual(flux.uniform_metadata_words(11), 42)
+            self.assertEqual(flux.uniform_metadata_words(11), 3 * (reducer.LOBE_COUNT + 11))
 
     def test_metadata_requires_explicit_ordered_mode_and_output_group_budget(self):
         for mode in ('atomic', 'ordered'):
@@ -73,7 +73,7 @@ class UniformEmissionLayoutTests(unittest.TestCase):
                 with patch.dict(os.environ, {'LEAKAGE_GPU_EMITTED_FLUX': mode,
                         'LEAKAGE_GPU_EMITTED_UNIFORM': uniform}):
                     for depths in (1, 11, 1001):
-                        expected = 3 * (3 + depths) if mode == 'ordered' and uniform == 'auto' else 0
+                        expected = 3 * (reducer.LOBE_COUNT + depths) if mode == 'ordered' and uniform == 'auto' else 0
                         self.assertEqual(flux.uniform_metadata_words(depths), expected)
         with patch.dict(os.environ, {'LEAKAGE_GPU_EMITTED_UNIFORM': 'invalid'}):
             with self.assertRaises(ValueError):
@@ -196,23 +196,23 @@ class UniformEmissionIntegrationTests(baseline.EmittedFluxGpuTests):
         emitted = np.full((count, records), np.nan, order='F')
         emitted[:, :4] = powers
         lobes = np.zeros((count, records), dtype=np.int8, order='F')
-        shapes = {'reflection_lobe_flux_lumen': (3, 2), 'reflection_depth_flux_lumen': (5, 2),
-            'contribution_lobe_flux_lumen': (3, 5), 'contribution_depth_flux_lumen': (5, 7)}
+        shapes = {'reflection_lobe_flux_lumen': (reducer.LOBE_COUNT, 2), 'reflection_depth_flux_lumen': (5, 2),
+            'contribution_lobe_flux_lumen': (reducer.LOBE_COUNT, 5), 'contribution_depth_flux_lumen': (5, 7)}
         expected = {name: np.full(shape, 0.01 if name.startswith('reflection') else 0.07)
             for name, shape in shapes.items()}
         state = {name: cuda.to_device(values) for name, values in expected.items()}
-        metadata = np.zeros((8, 3), dtype=np.int64)
+        metadata = np.zeros((reducer.LOBE_COUNT + 5, 3), dtype=np.int64)
         bits = np.asarray(powers).view(np.int64)
         metadata[0] = (bits.max() + 1, int(bits.min() != bits.max()), count * 4)
         for depth, power in enumerate(powers, 1):
-            metadata[3 + depth] = (bits[depth - 1] + 1, 0, count)
+            metadata[reducer.LOBE_COUNT + depth] = (bits[depth - 1] + 1, 0, count)
         for primary in range(count):
             for depth, power in enumerate(powers, 1):
                 expected['reflection_lobe_flux_lumen'][0, 0] += power
                 expected['contribution_lobe_flux_lumen'][0, reducer.OUTCOME_EMITTED] += power
                 expected['reflection_depth_flux_lumen'][depth, 0] += power
                 expected['contribution_depth_flux_lumen'][depth, reducer.CONTRIBUTION_DEPTH_EMITTED] += power
-        lobe_counts = np.zeros((3, 5), dtype=np.int64)
+        lobe_counts = np.zeros((reducer.LOBE_COUNT, 5), dtype=np.int64)
         lobe_counts[0, reducer.OUTCOME_EMITTED] = count * 4
         depth_counts = np.zeros((5, 5), dtype=np.int64)
         depth_counts[1:, reducer.REF_DEPTH_EMITTED] = count
@@ -242,17 +242,17 @@ class UniformEmissionIntegrationTests(baseline.EmittedFluxGpuTests):
                 ((2.0 ** 900, 2.0 ** 900), 0.0), ((2.0 ** 1023, 2.0 ** 1023), 0.0),
                 ((0.0, 0.0), -0.0)):
             with self.subTest(powers=powers, initial=initial):
-                shapes = {'reflection_lobe_flux_lumen': (3, 2), 'reflection_depth_flux_lumen': (3, 2),
-                    'contribution_lobe_flux_lumen': (3, 5), 'contribution_depth_flux_lumen': (3, 7)}
+                shapes = {'reflection_lobe_flux_lumen': (reducer.LOBE_COUNT, 2), 'reflection_depth_flux_lumen': (3, 2),
+                    'contribution_lobe_flux_lumen': (reducer.LOBE_COUNT, 5), 'contribution_depth_flux_lumen': (3, 7)}
                 expected = {name: np.full(shape, initial) for name, shape in shapes.items()}
                 state = {name: cuda.to_device(values) for name, values in expected.items()}
                 status = np.zeros((count, records), dtype=np.uint16, order='F')
                 status[:, :2] = reducer.STATUS_EMITTED
-                lobes = np.broadcast_to((np.arange(count) % 3)[:, None], (count, records)).astype(np.int8).copy(order='F')
+                lobes = np.broadcast_to((np.arange(count) % reducer.LOBE_COUNT)[:, None], (count, records)).astype(np.int8).copy(order='F')
                 emitted = np.full((count, records), np.nan, order='F')
                 emitted[:, :2] = powers
-                metadata = np.zeros((6, 3), dtype=np.int64)
-                lobe_counts = np.zeros((3, 5), dtype=np.int64)
+                metadata = np.zeros((reducer.LOBE_COUNT + 3, 3), dtype=np.int64)
+                lobe_counts = np.zeros((reducer.LOBE_COUNT, 5), dtype=np.int64)
                 depth_counts = np.zeros((3, 5), dtype=np.int64)
                 for primary in range(count):
                     for depth in range(2):
@@ -264,9 +264,9 @@ class UniformEmissionIntegrationTests(baseline.EmittedFluxGpuTests):
                         expected['contribution_depth_flux_lumen'][depth + 1, reducer.CONTRIBUTION_DEPTH_EMITTED] += value
                         lobe_counts[lobe, reducer.OUTCOME_EMITTED] += 1
                         depth_counts[depth + 1, reducer.REF_DEPTH_EMITTED] += 1
-                for group in range(6):
-                    values = emitted[:, :2][lobes[:, :2] == group] if group < 3 else (
-                        emitted[:, group - 4] if group > 3 else np.empty(0))
+                for group in range(reducer.LOBE_COUNT + 3):
+                    values = emitted[:, :2][lobes[:, :2] == group] if group < reducer.LOBE_COUNT else (
+                        emitted[:, group - reducer.LOBE_COUNT - 1] if group > reducer.LOBE_COUNT else np.empty(0))
                     if values.size:
                         bits = np.asarray(values).view(np.int64)
                         metadata[group] = (bits.max() + 1, int(bits.min() != bits.max()), bits.size)

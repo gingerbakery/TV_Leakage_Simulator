@@ -112,7 +112,10 @@ class ResolvedOpticalFaces(Sequence[ResolvedOpticalProperty]):
         columns = (
             np.asarray([profile.reflectance for profile in profiles], dtype=np.float64),
             np.asarray([profile.roughness for profile in profiles], dtype=np.float64),
-            scatter_encoder(profile.scatter_model for profile in profiles),
+            scatter_encoder(
+                "bsdf" if profile.bsdf_asset_id else profile.scatter_model
+                for profile in profiles
+            ),
             np.asarray([profile.specular_ratio for profile in profiles], dtype=np.float64),
             np.asarray([profile.gaussian_sigma_deg for profile in profiles], dtype=np.float64),
         )

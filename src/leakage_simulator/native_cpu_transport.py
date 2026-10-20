@@ -57,6 +57,7 @@ class NativeCpuTransportExecution:
 
 def _make_kernel(intersect_kernel, plan_kernel, *, compact=False):
     numba = importlib.import_module('numba')
+    bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt = counter.PackedBsdf.empty().arrays()
     intersect_kernel = numba.njit(
         nogil=True, fastmath=False, inline='always',
     )(intersect_kernel.py_func)
@@ -100,6 +101,7 @@ def _make_kernel(intersect_kernel, plan_kernel, *, compact=False):
         profile_scatter = np.empty(1, dtype=np.int8)
         profile_specular = np.empty(1, dtype=np.float64)
         profile_sigma = np.empty(1, dtype=np.float64)
+        bsdf_indices = np.full(1, -1, dtype=np.int64)
         keys = np.empty(1, dtype=np.uint64)
         supported = np.empty(1, dtype=np.bool_)
         planned_reflected = np.empty(1, dtype=np.float64)
@@ -226,6 +228,7 @@ def _make_kernel(intersect_kernel, plan_kernel, *, compact=False):
                         current_directions, surface_normals, current_power,
                         profile_reflectance, profile_roughness, profile_scatter,
                         profile_specular, profile_sigma, keys, surface_points,
+                        bsdf_indices, bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
                     ),
                     (
                         depth, max_depth, min_energy, termination_mode,
@@ -364,6 +367,8 @@ def trace_native_cpu_transport(
         raise ValueError('native CPU transport requires valid aligned ray state')
     if len(face_tables) != 5 or any(values.shape != (len(mesh.faces),) for values in face_tables):
         raise ValueError('native CPU transport requires complete face tables')
+    if np.any(face_tables[2] == counter.SCATTER_BSDF):
+        raise ValueError('BSDF surfaces require the table-aware counter wavefront planner')
     scene = mesh.prepare_native_cpu_scene()
     intersect_kernel, intersection_jit = intersection._ensure_kernel(scene)
     global _KERNEL, _COMPACT_KERNEL

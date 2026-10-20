@@ -18,6 +18,8 @@ from . import native_cpu_transport
 from . import native_cpu_sampling
 from . import gpu_cuda_pair_scene as pair_scene_backend
 from .primary_prefetch import PrimaryPrefetchStats, managed_primary_prefetch, prefetch_primary_batches
+from .bsdf_guard import bind_bsdf_profiles
+from .bsdf_packed import pack_bsdf_profiles, PackedBsdf, PACKED_CONTRACT
 from .termination import emitter_termination_config, termination_summary
 from .geometry import (
     HitRecord,
@@ -69,9 +71,11 @@ from .gpu_cuda_summary_accumulator import (
 )
 from .native_cpu_wavefront import (
     LOBE_GAUSSIAN as NATIVE_WAVEFRONT_LOBE_GAUSSIAN,
+    LOBE_BSDF as NATIVE_WAVEFRONT_LOBE_BSDF,
     LOBE_LAMBERTIAN as NATIVE_WAVEFRONT_LOBE_LAMBERTIAN,
     LOBE_SPECULAR as NATIVE_WAVEFRONT_LOBE_SPECULAR,
     SCATTER_NONE as NATIVE_WAVEFRONT_SCATTER_NONE,
+    SCATTER_BSDF as NATIVE_WAVEFRONT_SCATTER_BSDF,
     SCATTER_SPECULAR as NATIVE_WAVEFRONT_SCATTER_SPECULAR,
     STATUS_ATTEMPTED as NATIVE_WAVEFRONT_STATUS_ATTEMPTED,
     STATUS_BELOW_ENERGY as NATIVE_WAVEFRONT_STATUS_BELOW_ENERGY,
@@ -113,6 +117,7 @@ from .wavefront_event_tape import (
     bounded_wavefront_batch_size,
     EVENT_TAPE_CONTRACT as WAVEFRONT_EVENT_TAPE_CONTRACT,
     LOBE_GAUSSIAN as TAPE_LOBE_GAUSSIAN,
+    LOBE_BSDF as TAPE_LOBE_BSDF,
     LOBE_LAMBERTIAN as TAPE_LOBE_LAMBERTIAN,
     LOBE_NONE as TAPE_LOBE_NONE,
     LOBE_SPECULAR as TAPE_LOBE_SPECULAR,
@@ -122,6 +127,7 @@ from .wavefront_event_tape import (
     PrimaryMajorEventTapeBuilder,
     RAY_KIND_DIRECT as TAPE_RAY_KIND_DIRECT,
     RAY_KIND_GAUSSIAN as TAPE_RAY_KIND_GAUSSIAN,
+    RAY_KIND_BSDF as TAPE_RAY_KIND_BSDF,
     RAY_KIND_LAMBERTIAN as TAPE_RAY_KIND_LAMBERTIAN,
     RAY_KIND_SPECULAR as TAPE_RAY_KIND_SPECULAR,
     STATE_LAYOUT as WAVEFRONT_STATE_LAYOUT,
@@ -177,6 +183,7 @@ class DirectRayTraceInput:
     project_name: str = "TV-Leakage-RT2C"
     optical_assignments: List[OpticalAssignment] = field(default_factory=list)
     geometry_cache_hit: bool = False
+    bsdf_assets: List[Dict] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -1381,6 +1388,8 @@ class _WavefrontPlannerStats:
     counter_face_tables_prepared: bool = False
     face_specular_ratio: Optional[np.ndarray] = None
     face_gaussian_sigma_deg: Optional[np.ndarray] = None
+    bsdf_packed: Optional[PackedBsdf] = None
+    bsdf_face_ids: Optional[np.ndarray] = None
 
     @property
     def native_requested(self) -> bool:
@@ -1422,7 +1431,7 @@ class _WavefrontPlannerStats:
                 dtype=np.float64,
             )
             scatter = palette_tables[2] if palette_tables is not None else scatter_codes_from_names(
-                resolved.profile.scatter_model
+                ("bsdf" if resolved.profile.bsdf_asset_id else resolved.profile.scatter_model)
                 for resolved in resolved_optical_by_face
             )
             reflectance.setflags(write=False)
@@ -2143,6 +2152,28 @@ def run_direct_ray_trace(
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
 ) -> RayTraceResult:
+    bound_profiles, bsdf_models = bind_bsdf_profiles(
+        trace_input.optical_profiles, trace_input.bsdf_assets, trace_input.config,
+    )
+    trace_input = replace(trace_input, optical_profiles=bound_profiles)
+    bsdf_legacy_reference = bool(bsdf_models and (
+        intersection_dispatch == "scalar" or wavefront_pipeline == "object_reference"
+        or wavefront_rng == "per_primary_seeded_v1"
+    ))
+    if bsdf_legacy_reference:
+        # Explicit scalar diagnostics retain the independent CPU reference;
+        # native analytic-only planners must never silently replace the table.
+        if trace_input.config.compute_backend == "gpu_cuda" or intersection_provider == "gpu_cuda" or wavefront_residency == "gpu_resident":
+            raise ValueError("BSDF scalar diagnostics require CPU; use the automatic batch pipeline for CUDA")
+        if wavefront_pipeline == "soa_event_tape" or wavefront_rng == "counter_rng_v2":
+            raise ValueError("BSDF transport does not support native event-tape/counter-RNG overrides")
+        intersection_dispatch = "scalar"
+        intersection_provider = "python_cpu"
+        wavefront_pipeline = "object_reference"
+        wavefront_planner = wavefront_reducer = "python_cpu"
+        wavefront_rng = "per_primary_seeded_v1"
+        wavefront_reducer_commit = "per_tape"
+        wavefront_residency = "host_roundtrip"
     if intersection_dispatch not in {"auto", "scalar", "batch"}:
         raise ValueError("intersection_dispatch must be auto, scalar, or batch")
     if intersection_provider not in {
@@ -3261,6 +3292,15 @@ def run_direct_ray_trace(
             gpu_compute_requested,
         )
     )
+    if compute_execution_state == "gpu_active" and gpu_resident_stats.fallback_count:
+        # Intersections may still use CUDA after resident transport fails.
+        # Do not present CPU reflection planning as full resident GPU success.
+        compute_execution_state = "gpu_mixed"
+        compute_execution_reason = gpu_resident_stats.fallback_reason
+    if (bsdf_models and compute_execution_state == "gpu_active"
+            and gpu_resident_stats.success_count == 0):
+        compute_execution_state = "gpu_mixed"
+        compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
     metrics["_performance_summary"] = {
         "backend": "python_numpy_cpu",
         "execution_path": (
@@ -3338,6 +3378,13 @@ def run_direct_ray_trace(
         ),
         "receiver_flux_contract": RECEIVER_FLUX_CONTRACT,
         "monte_carlo_contract": monte_carlo_contract,
+        "bsdf_transport": [dict(model.metadata(),
+            execution=("cpu_reference" if bsdf_legacy_reference else "cpu_gpu_deterministic_batch"),
+            packed_contract=(None if bsdf_legacy_reference else PACKED_CONTRACT),
+            resident_gpu_batches=gpu_resident_stats.success_count,
+            resident_fallback_batches=gpu_resident_stats.fallback_count,
+            compute_execution_state=compute_execution_state,
+        ) for model in bsdf_models.values()],
         "acceleration_policy": (
             "gpu_cuda_auto_v1" if gpu_compute_requested else "cpu_compatible_v1"
         ),
@@ -3985,6 +4032,7 @@ def _native_wavefront_reflection_decision(
             NATIVE_WAVEFRONT_LOBE_SPECULAR: "specular",
             NATIVE_WAVEFRONT_LOBE_LAMBERTIAN: "lambertian",
             NATIVE_WAVEFRONT_LOBE_GAUSSIAN: "gaussian",
+            NATIVE_WAVEFRONT_LOBE_BSDF: "bsdf",
         }
         try:
             lobe = lobe_by_code[lobe_code]
@@ -4007,6 +4055,7 @@ _TAPE_RAY_KIND_BY_NAME = {
     "specular": TAPE_RAY_KIND_SPECULAR,
     "lambertian": TAPE_RAY_KIND_LAMBERTIAN,
     "gaussian": TAPE_RAY_KIND_GAUSSIAN,
+    "bsdf": TAPE_RAY_KIND_BSDF,
 }
 _TAPE_RAY_KIND_NAMES = {
     value: key for key, value in _TAPE_RAY_KIND_BY_NAME.items()
@@ -4015,6 +4064,7 @@ _TAPE_LOBE_BY_NAME = {
     "specular": TAPE_LOBE_SPECULAR,
     "lambertian": TAPE_LOBE_LAMBERTIAN,
     "gaussian": TAPE_LOBE_GAUSSIAN,
+    "bsdf": TAPE_LOBE_BSDF,
 }
 _TAPE_LOBE_NAMES = {value: key for key, value in _TAPE_LOBE_BY_NAME.items()}
 
@@ -4171,7 +4221,7 @@ def _plan_counter_wavefront_rows(
             dtype=np.float64,
         )
         face_scatter = scatter_codes_from_names(
-            profile.scatter_model for profile in row_profiles
+            ("bsdf" if profile.bsdf_asset_id else profile.scatter_model) for profile in row_profiles
         )
         face_specular_ratio = np.asarray(
             [profile.specular_ratio for profile in row_profiles],
@@ -4191,6 +4241,10 @@ def _plan_counter_wavefront_rows(
             face_gaussian_sigma,
         ) = face_tables
         profile_rows_are_gathered = False
+    if planner_stats.bsdf_packed is None:
+        planner_stats.bsdf_packed, planner_stats.bsdf_face_ids = pack_bsdf_profiles(
+            [resolved.profile for resolved in resolved_optical_by_face]
+        )
     prepare_started = time.perf_counter()
     try:
         batch = CounterWavefrontPlanInput(
@@ -4219,6 +4273,8 @@ def _plan_counter_wavefront_rows(
                 else face_gaussian_sigma[hit_faces]
             ),
             rng_keys,
+            bsdf=planner_stats.bsdf_packed,
+            bsdf_indices=planner_stats.bsdf_face_ids[hit_faces],
             depth=depth,
             max_depth=config.max_depth,
             min_energy=config.min_energy,
@@ -5194,7 +5250,7 @@ def _reduce_wavefront_event_tape_python_ordered(
     return receiver_hit_count, surface_hit_count, terminated_ray_count
 
 
-_ORDERED_REDUCER_LOBES = ("specular", "lambertian", "gaussian")
+_ORDERED_REDUCER_LOBES = ("specular", "lambertian", "gaussian", "bsdf")
 _ORDERED_REFLECTION_COUNT_FIELDS = (
     "max_observed_depth",
     "surface_hit_count",
@@ -5527,6 +5583,7 @@ def _prepare_ordered_summary_accumulator(
             receiver_entry["lobes"]["specular"]["hit_count"],
             receiver_entry["lobes"]["lambertian"]["hit_count"],
             receiver_entry["lobes"]["gaussian"]["hit_count"],
+            receiver_entry["lobes"]["bsdf"]["hit_count"],
         )
         receiver_flux[receiver_index] = (
             receiver_entry["direct"]["flux_lumen"],
@@ -5535,6 +5592,7 @@ def _prepare_ordered_summary_accumulator(
             receiver_entry["lobes"]["specular"]["flux_lumen"],
             receiver_entry["lobes"]["lambertian"]["flux_lumen"],
             receiver_entry["lobes"]["gaussian"]["flux_lumen"],
+            receiver_entry["lobes"]["bsdf"]["flux_lumen"],
         )
         for depth_key, depth_entry in receiver_entry["depths"].items():
             depth = int(depth_key)
@@ -5682,6 +5740,7 @@ def _stage_ordered_summary_result(
         entry["potential_reflected_flux_lumen"] = float(
             state.profile_reflected_flux_lumen[profile_slot]
         )
+        _update_bsdf_optical_metadata(entry, resolved.profile)
     staged_optical_summary = {
         "surface_hit_count": int(
             state.optical_counts[
@@ -5880,6 +5939,7 @@ def _stage_ordered_summary_result(
             receiver_entry["lobes"]["specular"],
             receiver_entry["lobes"]["lambertian"],
             receiver_entry["lobes"]["gaussian"],
+            receiver_entry["lobes"]["bsdf"],
         )
         for field_index, entry in enumerate(receiver_fields):
             entry["hit_count"] = int(
@@ -7388,6 +7448,9 @@ def _try_fused_cpu_transport(
         tables = planner_stats.prepare_counter_face_tables(resolved_optical_by_face)
         if tables is None:
             return None
+        if np.any(tables[2] == NATIVE_WAVEFRONT_SCATTER_BSDF):
+            wavefront_summary["cpu_transport_selection_reason"] = "bsdf_counter_wavefront"
+            return None
         execution = native_cpu_transport.trace_native_cpu_transport(
             mesh, origins, directions, powers, source_faces, reflection_seeds,
             tables, receivers, config, include_paths=include_paths,
@@ -7794,6 +7857,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
                         TAPE_LOBE_SPECULAR,
                         TAPE_LOBE_LAMBERTIAN,
                         TAPE_LOBE_GAUSSIAN,
+                        TAPE_LOBE_BSDF,
                     ],
                     dtype=np.int8,
                 )
@@ -7838,6 +7902,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
                         TAPE_RAY_KIND_SPECULAR,
                         TAPE_RAY_KIND_LAMBERTIAN,
                         TAPE_RAY_KIND_GAUSSIAN,
+                        TAPE_RAY_KIND_BSDF,
                     ],
                     dtype=np.int8,
                 )
@@ -8728,7 +8793,7 @@ def _empty_reflection_summary(config: RayTraceConfig) -> Dict:
                 "continued_count": 0,
                 "escaped_count": 0,
             }
-            for lobe in ("specular", "lambertian", "gaussian")
+            for lobe in ("specular", "lambertian", "gaussian", "bsdf")
         },
     }
 
@@ -8814,7 +8879,7 @@ def _empty_receiver_contribution(receiver_id: str) -> Dict:
         "total": _empty_count_flux(),
         "lobes": {
             lobe: _empty_count_flux()
-            for lobe in ("specular", "lambertian", "gaussian")
+            for lobe in ("specular", "lambertian", "gaussian", "bsdf")
         },
         "depths": {},
     }
@@ -8847,7 +8912,7 @@ def _empty_surface_contribution(
         "escaped_flux_lumen": 0.0,
         "lobes": {
             lobe: _empty_lobe_contribution()
-            for lobe in ("specular", "lambertian", "gaussian")
+            for lobe in ("specular", "lambertian", "gaussian", "bsdf")
         },
         "depths": {},
     }
@@ -8869,7 +8934,7 @@ def _empty_contribution_summary(
         },
         lobes={
             lobe: _empty_lobe_contribution()
-            for lobe in ("specular", "lambertian", "gaussian")
+            for lobe in ("specular", "lambertian", "gaussian", "bsdf")
         },
     )
 
@@ -9306,8 +9371,11 @@ def _surface_ray_hit(
         depth=depth,
         event_type="surface",
         optical_profile_id=optical_profile.profile_id if optical_profile is not None else None,
-        reflectance=optical_profile.reflectance if optical_profile is not None else None,
-        scatter_model=optical_profile.scatter_model if optical_profile is not None else None,
+        reflectance=(None
+                     if optical_profile is not None and optical_profile.bsdf_asset_id
+                     else optical_profile.reflectance if optical_profile is not None else None),
+        scatter_model=("bsdf" if optical_profile is not None and optical_profile.bsdf_asset_id
+                       else optical_profile.scatter_model if optical_profile is not None else None),
         optical_assignment_source=optical_source,
         ray_kind=ray_kind,
     )
@@ -9341,6 +9409,18 @@ def _record_optical_summary(
     entry["hit_count"] += 1
     entry["incoming_flux_lumen"] += incoming_power_lumen
     entry["potential_reflected_flux_lumen"] += reflected_power_lumen
+    _update_bsdf_optical_metadata(entry, profile)
+
+
+def _update_bsdf_optical_metadata(entry: Dict, profile: OpticalProfile) -> None:
+    if profile.bsdf_asset_id:
+        entry["scatter_model"] = "bsdf"
+        entry["bsdf_asset_id"] = profile.bsdf_asset_id
+        entry["reflectance_basis"] = "incident_flux_weighted_RT"
+        entry["reflectance"] = (entry["potential_reflected_flux_lumen"] / entry["incoming_flux_lumen"]
+                                if entry["incoming_flux_lumen"] > 0 else 0.)
+        entry["specular_ratio"] = None
+        entry["diffuse_ratio"] = None
 
 
 def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
@@ -9446,9 +9526,11 @@ def _build_gpu_resident_wavefront_context(
         resolved_optical_by_face.numeric_tables(scatter_codes_from_names)
         if isinstance(resolved_optical_by_face, ResolvedOpticalFaces) else None
     )
+    bsdf, bsdf_ids = pack_bsdf_profiles([resolved.profile for resolved in resolved_optical_by_face])
     scene, pair_prepare_sec, _ = pair_scene_backend.prepare_pair_scene(mesh)
     context = GpuResidentWavefrontContext(
         scene=scene,
+        bsdf=bsdf, bsdf_indices=bsdf_ids,
         triangle_normals=mesh.prepared_triangle_normals(),
         face_reflectance=palette_tables[0] if palette_tables is not None else np.asarray(
             [resolved.profile.reflectance for resolved in resolved_optical_by_face],
@@ -9459,7 +9541,7 @@ def _build_gpu_resident_wavefront_context(
             dtype=np.float64,
         ),
         face_scatter=palette_tables[2] if palette_tables is not None else scatter_codes_from_names(
-            resolved.profile.scatter_model
+            ("bsdf" if resolved.profile.bsdf_asset_id else resolved.profile.scatter_model)
             for resolved in resolved_optical_by_face
         ),
         face_specular_ratio=palette_tables[3] if palette_tables is not None else np.asarray(

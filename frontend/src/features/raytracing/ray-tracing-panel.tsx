@@ -90,7 +90,7 @@ interface RayTracingPanelProps {
   onEditRequestHandled?(): void
 }
 
-type EmitterCreationMode = 'face' | 'datum_plane'
+type EmitterCreationMode = 'face' | 'body' | 'datum_plane'
 type ReceiverCreationMode = 'datum_plane' | 'current_view'
 type FaceEmitterGrouping = 'combined' | 'per_cad_face'
 type ArrayPowerBasis = 'total_array' | 'per_led'
@@ -231,6 +231,7 @@ function EmitterDialog({
   scene,
   roiScopes,
   selectedFaceIds,
+  selectedComponentIds,
   existingIds,
   existingGroupIds,
   initialEmitter,
@@ -243,6 +244,7 @@ function EmitterDialog({
   scene?: ScenePayload
   roiScopes: RoiScope[]
   selectedFaceIds: number[]
+  selectedComponentIds: number[]
   existingIds: string[]
   existingGroupIds: string[]
   initialEmitter?: EmitterSpec | null
@@ -284,6 +286,9 @@ function EmitterDialog({
   )
   const emitterFaceSelectionArmed = useWorkspaceStore(
     workspaceSelectors.emitterFaceSelectionArmed,
+  )
+  const emitterSelectionTarget = useWorkspaceStore(
+    workspaceSelectors.emitterSelectionTarget,
   )
 
   useEffect(() => {
@@ -338,6 +343,8 @@ function EmitterDialog({
     setArrayPowerBasis(groupPowerBasis)
     if (mode === 'face' && initialEmitter) {
       actions.setSelectedFaceIds(initialSourceFaceIds)
+    } else if (mode === 'body' && initialEmitter) {
+      actions.setSelectedComponentIds(initialEmitter.source_component_ids ?? [])
     } else if (mode === 'datum_plane') {
       actions.setSelectedFaceIds(initialSourceFaceIds)
     }
@@ -371,7 +378,8 @@ function EmitterDialog({
     actions.setDatumFacePickArmed(false)
   }, [actions, open])
 
-  const emitterFaceIds = selectedFaceIds
+  const emitterFaceIds = mode === 'face' ? selectedFaceIds : []
+  const emitterBodyComponentIds = mode === 'body' ? selectedComponentIds : []
   const activeRoiClipBoxes = useMemo(
     () => roiScopes.flatMap((scope) =>
       scope.active && scope.clipBox ? [scope.clipBox] : [],
@@ -434,6 +442,11 @@ function EmitterDialog({
   const emitterAreaMm2 =
     mode === 'datum_plane'
       ? Math.max(0, width) * Math.max(0, height)
+      : mode === 'body'
+        ? emitterBodyComponentIds.reduce((sum, componentId) =>
+            sum + (scene?.components.find(
+              (component) => component.component_id === componentId,
+            )?.area_mm2 ?? 0), 0)
       : emitterFaceIds.reduce(
           (sum, faceId) =>
             sum + (scene?.mesh.face_areas_mm2[faceId] ?? 0),
@@ -443,13 +456,23 @@ function EmitterDialog({
   const luminanceTotalFlux =
     luminancePowerDensity * emitterAreaMm2 * 1e-6
   const canApply =
-    (mode === 'datum_plane' || emitterFaceIds.length > 0)
+    (mode === 'datum_plane' ||
+      (mode === 'face' && emitterFaceIds.length > 0) ||
+      (mode === 'body' && emitterBodyComponentIds.length > 0))
     && (!aim.enabled || isEmitterAimValid(aim))
   const previewEmitter = useMemo(() => {
     if (!open) return null
     const previewId = initialEmitter?.emitter_id ?? '__placement_preview_emitter__'
     if (mode === 'face') return {
       ...createFaceEmitter(previewId, emitterFaceIds),
+      aim,
+      normal_flip: normalFlip,
+      emission_direction: emissionDirection,
+      enabled: initialEmitter?.enabled ?? true,
+    }
+    if (mode === 'body') return {
+      ...createFaceEmitter(previewId, []),
+      source_component_ids: emitterBodyComponentIds,
       aim,
       normal_flip: normalFlip,
       emission_direction: emissionDirection,
@@ -473,6 +496,7 @@ function EmitterDialog({
   }, [
     aim,
     emitterFaceIds,
+    emitterBodyComponentIds,
     center,
     height,
     initialEmitter,
@@ -503,7 +527,7 @@ function EmitterDialog({
       emitterRayCount: number,
       baseEmitter: EmitterSpec | null = initialEmitter ?? null,
     ): EmitterSpec => {
-      const emitter = mode === 'face'
+      const emitter = mode === 'face' || mode === 'body'
         ? createFaceEmitter(emitterId, faceIds)
         : createDatumEmitter(emitterId, center, rotation)
       const localCenter = mode === 'face' && scene
@@ -548,7 +572,9 @@ function EmitterDialog({
               width_mm: Math.max(0.001, width),
               height_mm: Math.max(0.001, height),
             }
-          : {}),
+          : mode === 'body'
+            ? { source_component_ids: emitterBodyComponentIds }
+            : {}),
         power_mode: powerMode,
         power_lumen: emitterPower,
         power_density_lm_per_m2: Math.max(0, powerDensity),
@@ -567,26 +593,35 @@ function EmitterDialog({
       ? initialEmitterGroup
       : null
     if (groupToUpdate) {
-      const areas = groupToUpdate.map((member) => member.face_indices.reduce(
+      // Copy Setup deliberately clears source CAD face IDs because tessellation
+      // IDs are not portable between models. Rebuild the array membership from
+      // the surfaces currently selected in the target Scene. This also lets an
+      // existing per-face array be reassigned without deleting it first.
+      const selectedGroups = emitterCadFaceGroups
+      const areas = selectedGroups.map((faceIds) => faceIds.reduce(
         (sum, faceId) => sum + (scene?.mesh.face_areas_mm2[faceId] ?? 0),
         0,
       ))
       const rayWeights = powerMode === 'total' ? areas.map(() => 1) : areas
       const rayCounts = distributeIntegerBudget(rayCount, rayWeights)
-      const updated = groupToUpdate.map((member, index) => {
+      const allocatedIds = [...existingIds]
+      const updated = selectedGroups.map((faceIds, index) => {
+        const member = groupToUpdate[index] ?? null
+        const emitterId = member?.emitter_id ?? nextSpecId('emitter', allocatedIds)
+        if (!member) allocatedIds.push(emitterId)
         const emitterPower = powerMode === 'total' && arrayPowerBasis === 'total_array'
-          ? Math.max(0, power) / groupToUpdate.length
+          ? Math.max(0, power) / selectedGroups.length
           : Math.max(0, power)
         return {
           ...buildEmitter(
-            member.emitter_id,
-            member.face_indices,
+            emitterId,
+            faceIds,
             emitterPower,
             rayCounts[index],
-            member,
+            member ?? groupToUpdate[0],
           ),
-          array_group_id: member.array_group_id,
-          array_index: member.array_index ?? index,
+          array_group_id: groupToUpdate[0].array_group_id,
+          array_index: index,
           array_power_basis: arrayPowerBasis,
         }
       })
@@ -651,11 +686,15 @@ function EmitterDialog({
           ? `Edit ${rayObjectDisplayName('emitter', initialEmitter.emitter_id)}`
           : mode === 'face'
             ? 'CAD Surface Emitter'
+            : mode === 'body'
+              ? 'CAD Body Emitter'
             : 'Datum Plane Emitter'
       }
       help={
         mode === 'face'
           ? '현재 Viewer에서 선택한 triangle face를 실제 발광면으로 등록합니다.'
+          : mode === 'body'
+            ? '현재 Viewer에서 선택한 Component Body 전체 표면을 하나의 발광체로 등록합니다.'
           : 'CAD가 없는 공간에 좌표와 회전으로 가상 사각 발광면을 배치합니다.'
       }
       size="lg"
@@ -672,17 +711,37 @@ function EmitterDialog({
       }
     >
       <div className="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
-        {mode === 'face' ? (
+        {mode === 'face' || mode === 'body' ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="text-sm font-semibold">
-              {initialEmitter ? 'Emitter faces' : 'Selected faces'}
-              {emitterCadFaceCount > 0
-                ? ` · CAD 면 ${emitterCadFaceCount}개`
-                : ''}
+              {mode === 'body'
+                ? `${initialEmitter ? 'Emitter Body' : 'Selected Body'} · Component ${emitterBodyComponentIds.length}개`
+                : `${initialEmitter ? 'Emitter faces' : 'Selected faces'}${emitterCadFaceCount > 0 ? ` · CAD 면 ${emitterCadFaceCount}개` : ''}`}
             </div>
-            {initialEmitterGroup && initialEmitterGroup.length > 1 ? (
-              <div className="mt-2 rounded-lg border border-border bg-background/55 px-3 py-2 text-xs text-muted-foreground">
-                LED {initialEmitterGroup.length}개 · 공통 광학 설정을 일괄 수정합니다.
+            {mode === 'body' ? (
+              <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50/65 p-2.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  aria-pressed={emitterFaceSelectionArmed && emitterSelectionTarget === 'body'}
+                  className="w-full"
+                  onClick={() => {
+                    const armed = emitterFaceSelectionArmed && emitterSelectionTarget === 'body'
+                    actions.setEmitterSelectionTarget('body')
+                    actions.setEmitterFaceSelectionArmed(!armed)
+                  }}
+                >
+                  {emitterFaceSelectionArmed && emitterSelectionTarget === 'body'
+                    ? 'Body 선택 모드 종료'
+                    : '뷰어에서 CAD Body 선택'}
+                </Button>
+                <div className="mt-2 text-xs font-medium text-muted-foreground">
+                  {emitterFaceSelectionArmed && emitterSelectionTarget === 'body'
+                    ? '클릭 추가 · Shift+클릭 해제'
+                    : emitterBodyComponentIds.length > 0
+                      ? `Component ${emitterBodyComponentIds.length}개 선택 완료`
+                      : '버튼을 누르고 Viewer에서 Body를 선택하세요'}
+                </div>
               </div>
             ) : (
               <div className="mt-2">
@@ -696,12 +755,18 @@ function EmitterDialog({
                       actions.setEmitterFaceSelectionArmed(false)
                       return
                     }
+                    actions.setEmitterSelectionTarget('surface')
                     actions.setEmitterFaceSelectionArmed(true)
                   }}
                 />
+                {initialEmitterGroup && initialEmitterGroup.length > 1 ? (
+                  <div className="mt-2 rounded-lg border border-border bg-background/55 px-3 py-2 text-xs text-muted-foreground">
+                    기존 LED {initialEmitterGroup.length}개 · 선택한 CAD Face 기준으로 배열을 다시 구성합니다.
+                  </div>
+                ) : null}
               </div>
             )}
-            {!initialEmitter && emitterCadFaceCount > 1 ? (
+            {mode === 'face' && !initialEmitter && emitterCadFaceCount > 1 ? (
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className={fieldLabelClassName}>
                   <span>Emitter grouping</span>
@@ -1623,8 +1688,12 @@ export function RayTracingPanel({
   const selectedFaceIds = useWorkspaceStore(
     workspaceSelectors.selectedFaceIds,
   )
+  const selectedComponentIds = useWorkspaceStore(
+    workspaceSelectors.selectedComponentIds,
+  )
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)
+  const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
   const materialAssignments = useWorkspaceStore(
     workspaceSelectors.materialAssignments,
   )
@@ -1844,6 +1913,7 @@ export function RayTracingPanel({
         })),
         receivers,
         materialAssignments,
+        bsdfAssets,
         transformRules,
         excludedComponentIds,
         deletedComponentIds,
@@ -1925,7 +1995,7 @@ export function RayTracingPanel({
       )
       return false
     }
-  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, bsdfAssets, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
@@ -2076,7 +2146,7 @@ export function RayTracingPanel({
           </div>
           <Badge variant="outline">{emitters.length}</Badge>
         </div>
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
           <Button
             variant="outline"
             size="sm"
@@ -2087,6 +2157,7 @@ export function RayTracingPanel({
               setEditingEmitterGroupId(null)
               actions.setSelectedFaceIds([])
               actions.setSelectedComponentIds([])
+              actions.setEmitterSelectionTarget('surface')
               actions.setEmitterFaceSelectionArmed(true)
               setEmitterMode('face')
             }}
@@ -2097,12 +2168,31 @@ export function RayTracingPanel({
           <Button
             variant="outline"
             size="sm"
+            aria-label="Add CAD Body Emitter"
+            disabled={!scene || isRunning}
+            onClick={() => {
+              setEditingEmitterId(null)
+              setEditingEmitterGroupId(null)
+              actions.setSelectedFaceIds([])
+              actions.setSelectedComponentIds([])
+              actions.setEmitterSelectionTarget('body')
+              actions.setEmitterFaceSelectionArmed(true)
+              setEmitterMode('body')
+            }}
+          >
+            <Plus />
+            CAD Body
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             aria-label="Add Datum Plane Emitter"
             disabled={!scene || isRunning}
             onClick={() => {
               setEditingEmitterId(null)
               setEditingEmitterGroupId(null)
               actions.setEmitterFaceSelectionArmed(false)
+              actions.setEmitterSelectionTarget('surface')
               setEmitterMode('datum_plane')
             }}
           >
@@ -2131,7 +2221,11 @@ export function RayTracingPanel({
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-semibold">{rayObjectDisplayName('emitter', emitter.emitter_id)}</div>
                       <div className="text-xs text-muted-foreground">
-                        {emitter.emitter_type === 'face' ? 'CAD Surface' : `${emitter.width_mm} × ${emitter.height_mm} mm`}
+                        {emitter.emitter_type === 'face'
+                          ? emitter.source_component_ids?.length
+                            ? `CAD Body · ${emitter.source_component_ids.length}`
+                            : 'CAD Surface'
+                          : `${emitter.width_mm} × ${emitter.height_mm} mm`}
                         {' · '}{emitter.ray_count.toLocaleString()} Rays
                       </div>
                     </div>
@@ -2932,13 +3026,16 @@ export function RayTracingPanel({
         mode={
           editingEmitter
             ? editingEmitter.emitter_type === 'face'
-              ? 'face'
+              ? editingEmitter.source_component_ids?.length
+                ? 'body'
+                : 'face'
               : 'datum_plane'
             : emitterMode ?? 'face'
         }
         scene={scene}
         roiScopes={roiScopes}
         selectedFaceIds={selectedFaceIds}
+        selectedComponentIds={selectedComponentIds}
         existingIds={emitters.map((emitter) => emitter.emitter_id)}
         existingGroupIds={emitters.flatMap((emitter) => emitter.array_group_id ? [emitter.array_group_id] : [])}
         initialEmitter={editingEmitter}
@@ -2946,6 +3043,7 @@ export function RayTracingPanel({
         onOpenChange={(open) => {
           if (!open) {
             actions.setEmitterFaceSelectionArmed(false)
+            actions.setEmitterSelectionTarget('surface')
             actions.setSelectedFaceIds([])
             actions.setSelectedComponentIds([])
             setEmitterMode(null)
@@ -2955,6 +3053,14 @@ export function RayTracingPanel({
         }}
         onApply={(nextEmitters) => {
           nextEmitters.forEach((emitter) => actions.upsertEmitter(emitter))
+          if (editingEmitterGroup?.length) {
+            const retainedIds = new Set(nextEmitters.map((emitter) => emitter.emitter_id))
+            editingEmitterGroup.forEach((emitter) => {
+              if (!retainedIds.has(emitter.emitter_id)) {
+                actions.removeEmitter(emitter.emitter_id)
+              }
+            })
+          }
           actions.setSelectedFaceIds([])
           actions.setSelectedComponentIds([])
         }}

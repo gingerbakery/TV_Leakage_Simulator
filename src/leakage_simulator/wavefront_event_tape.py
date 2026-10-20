@@ -26,11 +26,13 @@ LOBE_NONE = -1
 LOBE_SPECULAR = 0
 LOBE_LAMBERTIAN = 1
 LOBE_GAUSSIAN = 2
+LOBE_BSDF = 3
 
 RAY_KIND_DIRECT = 0
 RAY_KIND_SPECULAR = 1
 RAY_KIND_LAMBERTIAN = 2
 RAY_KIND_GAUSSIAN = 3
+RAY_KIND_BSDF = 4
 
 TERMINAL_NONE = 0
 TERMINAL_RECEIVER = 1
@@ -508,7 +510,7 @@ class PrimaryMajorEventTape:
         if not np.all(_VALID_STATUS_LOOKUP[self.status_flags]):
             raise ValueError("surface event status is not a valid planner outcome")
         emitted = (self.status_flags & STATUS_EMITTED) != 0
-        if np.any(emitted & ((self.lobe_codes < LOBE_SPECULAR) | (self.lobe_codes > LOBE_GAUSSIAN))):
+        if np.any(emitted & ((self.lobe_codes < LOBE_SPECULAR) | (self.lobe_codes > LOBE_BSDF))):
             raise ValueError("emitted events require a known lobe")
         if np.any((~emitted) & (self.lobe_codes != LOBE_NONE)):
             raise ValueError("non-emitted events must use LOBE_NONE")
@@ -522,13 +524,13 @@ class PrimaryMajorEventTape:
             raise ValueError("every primary ray must have one terminal kind")
         valid_ray_kinds = (
             (self.incoming_ray_kind_codes >= RAY_KIND_DIRECT)
-            & (self.incoming_ray_kind_codes <= RAY_KIND_GAUSSIAN)
+            & (self.incoming_ray_kind_codes <= RAY_KIND_BSDF)
         )
         if not np.all(valid_ray_kinds):
             raise ValueError("surface events contain an unknown incoming ray kind")
         if not np.all(
             (self.terminal_ray_kind_codes >= RAY_KIND_DIRECT)
-            & (self.terminal_ray_kind_codes <= RAY_KIND_GAUSSIAN)
+            & (self.terminal_ray_kind_codes <= RAY_KIND_BSDF)
         ):
             raise ValueError("terminals contain an unknown ray kind")
         if np.any(self.terminal_depths < 0):

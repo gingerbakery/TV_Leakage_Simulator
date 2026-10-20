@@ -35,10 +35,10 @@ export function OpticalProfilePreview({ profile, label = 'Compiled optical previ
   </section>
 }
 
-export function CompiledPreview({ baseMaterialId, surfaceId, opticalOverride }: {
-  baseMaterialId: string; surfaceId: string; opticalOverride?: OpticalValueOverride; compact?: boolean
+export function CompiledPreview({ baseMaterialId, surfaceId, opticalOverride, label }: {
+  baseMaterialId: string; surfaceId: string; opticalOverride?: OpticalValueOverride; compact?: boolean; label?: string
 }) {
-  return <OpticalProfilePreview profile={resolveOpticalProfile(baseMaterialId, surfaceId, opticalOverride)} />
+  return <OpticalProfilePreview profile={resolveOpticalProfile(baseMaterialId, surfaceId, opticalOverride)} label={label} />
 }
 
 export function OpticalValueEditor({ value, onChange }: {

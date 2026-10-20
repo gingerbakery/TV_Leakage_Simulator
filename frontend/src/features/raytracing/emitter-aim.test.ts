@@ -8,11 +8,32 @@ import {
   parseBitsamProject,
   serializeBitsamProject,
 } from '@/features/projects/bitsam-project'
-import { createEmitterAimOverlay } from '@/features/viewer/emitter-aim-overlay'
+import {
+  bodyEmitterDirectionFrames,
+  createEmitterAimOverlay,
+} from '@/features/viewer/emitter-aim-overlay'
 import { createEmitterAim, emitterAimBoundary, emitterSphereDirection, isEmitterAimValid, setEmitterAimMode } from './emitter-aim'
 import { createDatumEmitter, planeAxesFromRotation, rotationFromPlaneAxes } from './ray-tracing-model'
 
 describe('Emitter Aim geometry and persistence', () => {
+  it('provides representative authored-normal arrows for a CAD Body emitter', () => {
+    const scene = createSceneFixture()
+    scene.mesh.face_normals = [
+      [-1, 0, 0], [1, 0, 0], [0, -1, 0],
+      [0, 1, 0], [0, 0, -1],
+    ]
+    scene.components[0].face_indices = [0, 1, 2, 3, 4]
+    const frames = bodyEmitterDirectionFrames(scene, scene.components[0])
+    expect(frames).toHaveLength(5)
+    expect(frames.map((frame) => frame.normal)).toEqual([
+      [-1, 0, 0], [1, 0, 0],
+      [0, -1, 0], [0, 1, 0],
+      [0, 0, -1],
+    ])
+    expect(frames[0].center).toEqual(scene.mesh.face_centroids[0])
+    expect(frames[1].center).toEqual(scene.mesh.face_centroids[1])
+  })
+
   it.each([
     ['area', 'lambertian'], ['area', 'gaussian'],
     ['sphere', 'lambertian'], ['sphere', 'gaussian'],
