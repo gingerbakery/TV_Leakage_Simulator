@@ -15,6 +15,7 @@ sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'tests')]
 from test_perf3c_counter_wavefront_planner import _counter_batch
 from leakage_simulator import native_cpu_ordered_reducer as reducer
 from leakage_simulator import raytracer
+from leakage_simulator.native_cpu_wavefront import SCATTER_BSDF
 
 
 def readonly(values, dtype):
@@ -135,7 +136,9 @@ class CpuPreparationTests(unittest.TestCase):
         for code in range(5):
             actual = replace(batch, scatter_models=np.full(65, code, dtype=np.int8))
             self.assertTrue(np.all(actual.scatter_models == code))
-        for code in (-128, -1, 5, 127):
+        with self.assertRaisesRegex(ValueError, 'BSDF material indices'):
+            replace(batch, scatter_models=np.full(65, SCATTER_BSDF, dtype=np.int8))
+        for code in (-128, -1, SCATTER_BSDF + 1, 127):
             values = np.array(batch.scatter_models, copy=True)
             values[-1] = code
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, 'unknown value'):

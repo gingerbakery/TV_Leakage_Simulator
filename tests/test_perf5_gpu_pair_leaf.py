@@ -41,7 +41,12 @@ class PairLeafLayoutTests(unittest.TestCase):
                     start = int(scene.node_start[node])
                     self.assertGreaterEqual(start, len(original.ordered_faces))
                     self.assertLessEqual(start + count, 2 * len(original.ordered_faces))
-                    found.extend(scene.ordered_faces[start:start + count].tolist())
+                    face_indices = scene.ordered_faces[start:start + count].tolist()
+                    found.extend(face_indices)
+                    for face_index in face_indices:
+                        triangle = mesh._prepared_triangles[face_index]
+                        self.assertTrue(np.all(scene.node_bounds_min[node] <= triangle.bounds_min))
+                        self.assertTrue(np.all(scene.node_bounds_max[node] >= triangle.bounds_max))
                 else:
                     pending.extend((int(scene.node_left[node]), int(scene.node_right[node])))
             self.assertEqual(len(visited), len(scene.node_count) - root)

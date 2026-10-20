@@ -76,12 +76,22 @@ def leaf_builder(leaf_size):
         and ast.unparse(node.test) == 'len(indices) == 1']
     if len(matches) != 1:
         raise ValueError('Exactly one pair leaf cutoff is required')
-    counts = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
-        and len(node.targets) == 1 and ast.unparse(node.targets[0]) == 'nodes[address][5]']
-    if len(counts) != 1:
-        raise ValueError('Exactly one pair leaf face count is required')
-    counts[0].value = ast.Call(func=ast.Name(id='len', ctx=ast.Load()),
-        args=[ast.Name(id='indices', ctx=ast.Load())], keywords=[])
+    leaf = matches[0]
+    expected = ast.parse('''
+triangle = triangles[indices[0]]
+nodes.append([triangle.bounds_min, triangle.bounds_max, -1, -1, len(ordered), 1])
+ordered.extend(indices)
+return address
+''').body
+    if [ast.dump(statement) for statement in leaf.body] != [ast.dump(statement) for statement in expected]:
+        raise ValueError('The pair leaf initialization contract changed')
+    leaf.body = ast.parse('''
+lower = tuple(min(triangles[index].bounds_min[axis] for index in indices) for axis in range(3))
+upper = tuple(max(triangles[index].bounds_max[axis] for index in indices) for axis in range(3))
+nodes.append([lower, upper, -1, -1, len(ordered), len(indices)])
+ordered.extend(indices)
+return address
+''').body
     matches[0].test = ast.Compare(left=ast.Call(func=ast.Name(id='len', ctx=ast.Load()),
         args=[ast.Name(id='indices', ctx=ast.Load())], keywords=[]),
         ops=[ast.LtE()], comparators=[ast.Constant(value=leaf_size)])

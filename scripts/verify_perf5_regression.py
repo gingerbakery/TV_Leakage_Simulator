@@ -11,7 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'scripts'), str(ROOT / 'tests')]
+sys.path[:0] = [str(ROOT), str(ROOT / 'src'), str(ROOT / 'scripts'), str(ROOT / 'tests')]
 
 from benchmark_perf5_cpu import source_hashes
 from leakage_simulator import gpu_cuda_intersection as gpu
