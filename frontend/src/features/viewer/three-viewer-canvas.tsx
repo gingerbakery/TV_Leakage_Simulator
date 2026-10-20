@@ -82,6 +82,7 @@ import {
   receiverHeatmap3dCommonPeak,
   receiverHeatmap3dRgba,
 } from '@/features/results/receiver-heatmap-3d'
+import { receiverConeLuminanceMultiplier } from '@/features/results/receiver-heatmap'
 import {
   findBaseMaterial,
   findSurfaceProperty,
@@ -829,6 +830,8 @@ function createReceiverHeatmapOverlay(
   mode: 'physical' | 'xray',
   opacity: number,
   interpolation: 'pixel' | 'smooth',
+  luminanceMultiplier: number,
+  colorMode: 'color' | 'mono',
   clippingPlane: Plane | null,
 ): Mesh<BufferGeometry, MeshBasicMaterial> | null {
   if (!receiver.u_axis || !receiver.v_axis) return null
@@ -838,6 +841,7 @@ function createReceiverHeatmapOverlay(
     grid,
     result.config.k_abs,
     result.config.k_brdf,
+    luminanceMultiplier,
   )
   if (values.length !== columns * rows) return null
 
@@ -847,7 +851,7 @@ function createReceiverHeatmapOverlay(
   const context = canvas.getContext('2d')
   if (!context) return null
   const image = context.createImageData(columns, rows)
-  image.data.set(receiverHeatmap3dRgba(values, scale))
+  image.data.set(receiverHeatmap3dRgba(values, scale, colorMode))
   context.putImageData(image, 0, 0)
 
   const texture = new CanvasTexture(canvas)
@@ -1946,6 +1950,12 @@ export function ThreeViewerCanvas({
   )
   const receiverHeatmap3dInterpolation = useWorkspaceStore(
     workspaceSelectors.receiverHeatmap3dInterpolation,
+  )
+  const receiverHeatmap3dBasis = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dBasis,
+  )
+  const receiverHeatmap3dColorMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dColorMode,
   )
   const highlightedRayPathSelection = useWorkspaceStore(
     workspaceSelectors.highlightedRayPathSelection,
@@ -4576,6 +4586,12 @@ export function ThreeViewerCanvas({
       )
       receiverPlane.userData.rayObjectKind = 'receiver'
       receiverPlane.userData.rayObjectId = receiver.receiver_id
+      if (sectionView.enabled) {
+        setObjectClippingPlane(
+          receiverPlane,
+          sectionClippingPlaneRef.current,
+        )
+      }
       runtime.placementRoot.add(receiverPlane)
     }
 
@@ -5191,6 +5207,7 @@ export function ThreeViewerCanvas({
     selectedComponentIds,
     selectedFaceIds,
     selectionKind,
+    sectionView.enabled,
     surfaceOpacity,
     transformRules,
     cadModelVisible,
@@ -5207,6 +5224,9 @@ export function ThreeViewerCanvas({
       runtime.roiBoundsMarker,
       runtime.receiverHeatmapRoot,
       runtime.rayPathRoot,
+      ...runtime.placementRoot.children.filter(
+        (object) => object.userData.rayObjectKind === 'receiver',
+      ),
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
     if (!sectionView.enabled) {
@@ -5409,12 +5429,16 @@ export function ThreeViewerCanvas({
     for (const receiver of rayTraceResult.receivers) {
       const grid = grids.get(receiver.receiver_id)
       if (!grid) continue
-      const values = receiverGridLuminanceValues(
+      const luminanceMultiplier =
+        receiverHeatmap3dBasis === 'cone'
+          ? receiverConeLuminanceMultiplier(receiver.acceptance_angle_deg)
+          : 1
+      const surfaceValues = receiverGridLuminanceValues(
         grid,
         rayTraceResult.config.k_abs,
         rayTraceResult.config.k_brdf,
       )
-      const localPeak = values.reduce(
+      const localPeak = surfaceValues.reduce(
         (peak, value) => Math.max(peak, value),
         0,
       )
@@ -5441,6 +5465,8 @@ export function ThreeViewerCanvas({
         receiverHeatmap3dMode,
         receiverHeatmap3dOpacity,
         receiverHeatmap3dInterpolation,
+        luminanceMultiplier,
+        receiverHeatmap3dColorMode,
         sectionView.enabled ? sectionClippingPlaneRef.current : null,
       )
       if (!overlay) continue
@@ -5455,6 +5481,8 @@ export function ThreeViewerCanvas({
     rayTraceResult,
     receiverHeatmap3dCustomMaxNit,
     receiverHeatmap3dCustomMinNit,
+    receiverHeatmap3dBasis,
+    receiverHeatmap3dColorMode,
     receiverHeatmap3dInterpolation,
     receiverHeatmap3dMode,
     receiverHeatmap3dOpacity,

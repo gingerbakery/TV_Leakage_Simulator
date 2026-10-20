@@ -21,6 +21,8 @@ export type {
   RayPathDisplayFilter,
   RayPathDisplayFilters,
   ReceiverHeatmap3dInterpolation,
+  ReceiverHeatmap3dBasis,
+  ReceiverHeatmap3dColorMode,
   ReceiverHeatmap3dMode,
   ReceiverHeatmap3dScaleMode,
   DatumFacePickResult,

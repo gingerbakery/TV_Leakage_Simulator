@@ -52,6 +52,14 @@ export const initialReceiverHeatmapViewport: ReceiverHeatmapViewport = {
   zoom: 1,
 }
 
+export function receiverConeLuminanceMultiplier(
+  acceptanceAngleDeg: number,
+): number {
+  const halfAngleDeg = Math.min(90, Math.max(0.1, acceptanceAngleDeg))
+  const sine = Math.sin((halfAngleDeg * Math.PI) / 180)
+  return 1 / Math.max(sine * sine, 1e-12)
+}
+
 const heatmapColorStops: ReadonlyArray<
   readonly [position: number, color: ReceiverHeatmapColor]
 > = [
