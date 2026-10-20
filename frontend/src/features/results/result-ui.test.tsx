@@ -970,6 +970,37 @@ describe('Step 11 result UI', () => {
     expect(onOpenAnalysis).toHaveBeenCalledOnce()
   })
 
+  it('projects an existing Receiver Heatmap in 3D without retracing', () => {
+    render(
+      <AppProviders>
+        <ResultPanel
+          result={createRayTraceResultFixture()}
+          onOpenAnalysis={vi.fn()}
+        />
+      </AppProviders>,
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap Physical' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dMode).toBe('physical')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap scale compare' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dScaleMode).toBe('compare')
+
+    fireEvent.change(screen.getByRole('slider', { name: '3D Heatmap opacity' }), {
+      target: { value: '65' },
+    })
+    expect(workspaceStore.getState().receiverHeatmap3dOpacity).toBe(0.65)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '3D Heatmap smooth' }),
+    )
+    expect(workspaceStore.getState().receiverHeatmap3dInterpolation).toBe('smooth')
+  })
+
   it('reopens restored results and toggles stored rays without a live job', () => {
     const onOpenAnalysis = vi.fn()
     render(

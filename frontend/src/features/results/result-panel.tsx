@@ -3,6 +3,7 @@ import {
   Activity,
   BarChart3,
   Eye,
+  Grid3X3,
   Route,
 } from 'lucide-react'
 
@@ -47,6 +48,24 @@ export function ResultPanel({
   )
   const displayLimit = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayLimit,
+  )
+  const heatmap3dMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dMode,
+  )
+  const heatmap3dOpacity = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dOpacity,
+  )
+  const heatmap3dScaleMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dScaleMode,
+  )
+  const heatmap3dCustomMinNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMinNit,
+  )
+  const heatmap3dCustomMaxNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMaxNit,
+  )
+  const heatmap3dInterpolation = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dInterpolation,
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const result =
@@ -155,6 +174,123 @@ export function ResultPanel({
             Ray Tracing을 실행하거나 결과가 저장된 프로젝트를 열면
             결과와 저장 경로가 표시됩니다.
           </p>
+        ) : null}
+      </section>
+
+      <section className="space-y-2 border-t border-border pt-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+            <Grid3X3 className="size-3.5" />
+            Receiver Heatmap 3D
+            <HelpTooltip label="Receiver Heatmap 3D 도움말">
+              계산된 Receiver Heatmap을 실제 3D Receiver Plane 위에
+              표시합니다. Physical은 CAD에 가리고, X-ray는 CAD 앞에
+              표시됩니다.
+            </HelpTooltip>
+          </div>
+          <Badge variant="outline">
+            {result?.receiver_grids.length ?? 0}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          {(['off', 'physical', 'xray'] as const).map((mode) => (
+            <Button
+              key={mode}
+              size="xs"
+              variant={heatmap3dMode === mode ? 'default' : 'outline'}
+              disabled={!result || result.receiver_grids.length === 0}
+              aria-label={`3D Heatmap ${mode === 'off' ? 'OFF' : mode === 'physical' ? 'Physical' : 'X-ray'}`}
+              aria-pressed={heatmap3dMode === mode}
+              onClick={() => actions.setReceiverHeatmap3dMode(mode)}
+            >
+              {mode === 'off' ? 'OFF' : mode === 'physical' ? 'Physical' : 'X-ray'}
+            </Button>
+          ))}
+        </div>
+        {heatmap3dMode !== 'off' ? (
+          <div className="space-y-2 rounded-lg border border-border bg-background/35 p-2">
+            <div className="grid grid-cols-3 gap-1">
+              {(['auto', 'compare', 'customize'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  size="xs"
+                  variant={heatmap3dScaleMode === mode ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap scale ${mode}`}
+                  aria-pressed={heatmap3dScaleMode === mode}
+                  onClick={() => actions.setReceiverHeatmap3dScaleMode(mode)}
+                >
+                  {mode === 'auto' ? 'Auto' : mode === 'compare' ? 'Compare' : 'Customize'}
+                </Button>
+              ))}
+            </div>
+            {heatmap3dScaleMode === 'customize' ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span>Min nit</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={heatmap3dCustomMinNit}
+                    onChange={(event) =>
+                      actions.setReceiverHeatmap3dCustomScale(
+                        Number(event.currentTarget.value),
+                        heatmap3dCustomMaxNit,
+                      )
+                    }
+                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-right text-sm"
+                  />
+                </label>
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span>Max nit</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={heatmap3dCustomMaxNit}
+                    onChange={(event) =>
+                      actions.setReceiverHeatmap3dCustomScale(
+                        heatmap3dCustomMinNit,
+                        Number(event.currentTarget.value),
+                      )
+                    }
+                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-right text-sm"
+                  />
+                </label>
+              </div>
+            ) : null}
+            <label className="block space-y-1 text-xs text-muted-foreground">
+              <span>Opacity · {Math.round(heatmap3dOpacity * 100)}%</span>
+              <input
+                type="range"
+                min={5}
+                max={100}
+                step={1}
+                value={Math.round(heatmap3dOpacity * 100)}
+                onChange={(event) =>
+                  actions.setReceiverHeatmap3dOpacity(
+                    Number(event.currentTarget.value) / 100,
+                  )
+                }
+                className="w-full accent-primary"
+                aria-label="3D Heatmap opacity"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-1">
+              {(['pixel', 'smooth'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  size="xs"
+                  variant={heatmap3dInterpolation === mode ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap ${mode}`}
+                  aria-pressed={heatmap3dInterpolation === mode}
+                  onClick={() => actions.setReceiverHeatmap3dInterpolation(mode)}
+                >
+                  {mode === 'pixel' ? 'Pixel' : 'Smooth'}
+                </Button>
+              ))}
+            </div>
+          </div>
         ) : null}
       </section>
 

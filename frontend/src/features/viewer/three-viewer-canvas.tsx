@@ -16,6 +16,7 @@ import {
   Float32BufferAttribute,
   Group,
   HemisphereLight,
+  LinearFilter,
   LineBasicMaterial,
   LineSegments,
   MathUtils,
@@ -24,6 +25,7 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   MOUSE,
+  NearestFilter,
   OrthographicCamera,
   Plane,
   PlaneGeometry,
@@ -49,6 +51,8 @@ import {
 import type {
   EmitterSpec,
   RayTraceResult,
+  ReceiverGrid,
+  ReceiverSpec,
   SceneComponent,
   ScenePayload,
   SectionCapResponse,
@@ -73,6 +77,11 @@ import {
   rayPathFilterOrder,
   rayPathStyles,
 } from '@/features/results/ray-paths'
+import {
+  receiverGridLuminanceValues,
+  receiverHeatmap3dCommonPeak,
+  receiverHeatmap3dRgba,
+} from '@/features/results/receiver-heatmap-3d'
 import {
   findBaseMaterial,
   findSurfaceProperty,
@@ -224,6 +233,7 @@ interface ViewerRuntime {
   pivotMarkerRoot: Group
   placementRoot: Group
   rayPathRoot: Group
+  receiverHeatmapRoot: Group
   raycaster: Raycaster
   renderer: WebGLRenderer
   restoreRenderQuality: (() => void) | null
@@ -364,6 +374,8 @@ function disposeMaterial(material: Material | Material[]): void {
 function disposeObject(object: Object3D): void {
   object.traverse((child) => {
     if (child instanceof Mesh || child instanceof LineSegments || child instanceof Points) {
+      const ownedTexture = child.userData.ownedTexture as CanvasTexture | undefined
+      ownedTexture?.dispose()
       if (child.userData.sharedGeometry !== true) {
         child.geometry.dispose()
       }
@@ -807,6 +819,85 @@ function createPlacementPlane(
     root.add(xArrow, yArrow, xLabel, yLabel)
   }
   return root
+}
+
+function createReceiverHeatmapOverlay(
+  receiver: ReceiverSpec,
+  grid: ReceiverGrid,
+  result: RayTraceResult,
+  scale: { minNit: number; maxNit: number },
+  mode: 'physical' | 'xray',
+  opacity: number,
+  interpolation: 'pixel' | 'smooth',
+  clippingPlane: Plane | null,
+): Mesh<BufferGeometry, MeshBasicMaterial> | null {
+  if (!receiver.u_axis || !receiver.v_axis) return null
+  const columns = Math.max(1, Math.trunc(grid.resolution[0]))
+  const rows = Math.max(1, Math.trunc(grid.resolution[1]))
+  const values = receiverGridLuminanceValues(
+    grid,
+    result.config.k_abs,
+    result.config.k_brdf,
+  )
+  if (values.length !== columns * rows) return null
+
+  const canvas = document.createElement('canvas')
+  canvas.width = columns
+  canvas.height = rows
+  const context = canvas.getContext('2d')
+  if (!context) return null
+  const image = context.createImageData(columns, rows)
+  image.data.set(receiverHeatmap3dRgba(values, scale))
+  context.putImageData(image, 0, 0)
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.generateMipmaps = false
+  texture.magFilter = interpolation === 'pixel' ? NearestFilter : LinearFilter
+  texture.minFilter = interpolation === 'pixel' ? NearestFilter : LinearFilter
+
+  const center = new Vector3(...receiver.center)
+  const uAxis = new Vector3(...receiver.u_axis).normalize()
+  const vAxis = new Vector3(...receiver.v_axis).normalize()
+  const halfU = uAxis.clone().multiplyScalar(receiver.width_mm / 2)
+  const halfV = vAxis.clone().multiplyScalar(receiver.height_mm / 2)
+  const corners = [
+    center.clone().sub(halfU).sub(halfV),
+    center.clone().add(halfU).sub(halfV),
+    center.clone().add(halfU).add(halfV),
+    center.clone().sub(halfU).add(halfV),
+  ]
+  const geometry = new BufferGeometry()
+  geometry.setFromPoints([
+    corners[0], corners[1], corners[2],
+    corners[0], corners[2], corners[3],
+  ])
+  geometry.setAttribute('uv', new Float32BufferAttribute([
+    0, 0, 1, 0, 1, 1,
+    0, 0, 1, 1, 0, 1,
+  ], 2))
+  const xray = mode === 'xray'
+  const material = new MeshBasicMaterial({
+    map: texture,
+    color: 0xffffff,
+    side: DoubleSide,
+    transparent: true,
+    opacity,
+    depthTest: !xray,
+    depthWrite: false,
+    toneMapped: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -8,
+    polygonOffsetUnits: -8,
+    clippingPlanes: clippingPlane ? [clippingPlane] : null,
+  })
+  const overlay = new Mesh(geometry, material)
+  overlay.name = `receiver-heatmap-3d-${receiver.receiver_id}`
+  overlay.renderOrder = xray ? 180 : 76
+  overlay.userData.ownedTexture = texture
+  overlay.userData.rayObjectKind = 'receiver'
+  overlay.userData.rayObjectId = receiver.receiver_id
+  return overlay
 }
 
 function createDirectionArrow(
@@ -1838,6 +1929,24 @@ export function ThreeViewerCanvas({
   const rayPathDisplayLimit = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayLimit,
   )
+  const receiverHeatmap3dMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dMode,
+  )
+  const receiverHeatmap3dOpacity = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dOpacity,
+  )
+  const receiverHeatmap3dScaleMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dScaleMode,
+  )
+  const receiverHeatmap3dCustomMinNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMinNit,
+  )
+  const receiverHeatmap3dCustomMaxNit = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dCustomMaxNit,
+  )
+  const receiverHeatmap3dInterpolation = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dInterpolation,
+  )
   const highlightedRayPathSelection = useWorkspaceStore(
     workspaceSelectors.highlightedRayPathSelection,
   )
@@ -2070,6 +2179,8 @@ export function ThreeViewerCanvas({
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
     rayPathRoot.name = 'ray-path-overlay-root'
+    const receiverHeatmapRoot = new Group()
+    receiverHeatmapRoot.name = 'receiver-heatmap-3d-root'
     const sectionRoot = new Group()
     sectionRoot.name = 'viewer-section-plane-root'
     const roiPreviewRoot = new Group()
@@ -2092,6 +2203,7 @@ export function ThreeViewerCanvas({
       roiBoundsMarker,
       pivotMarkerRoot,
       placementRoot,
+      receiverHeatmapRoot,
       rayPathRoot,
       sectionRoot,
     )
@@ -2144,6 +2256,7 @@ export function ThreeViewerCanvas({
       pivotMarkerRoot,
       placementRoot,
       rayPathRoot,
+      receiverHeatmapRoot,
       raycaster: new Raycaster(),
       renderer,
       restoreRenderQuality: null,
@@ -5092,6 +5205,7 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot,
       runtime.roiSelectionRoot,
       runtime.roiBoundsMarker,
+      runtime.receiverHeatmapRoot,
       runtime.rayPathRoot,
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
@@ -5280,6 +5394,73 @@ export function ThreeViewerCanvas({
     },
     [],
   )
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.receiverHeatmapRoot)
+    if (!rayTraceResult || receiverHeatmap3dMode === 'off') return
+
+    const grids = new Map(
+      rayTraceResult.receiver_grids.map((grid) => [grid.receiver_id, grid]),
+    )
+    const commonPeak = receiverHeatmap3dCommonPeak(rayTraceResult)
+    let displayedCount = 0
+    for (const receiver of rayTraceResult.receivers) {
+      const grid = grids.get(receiver.receiver_id)
+      if (!grid) continue
+      const values = receiverGridLuminanceValues(
+        grid,
+        rayTraceResult.config.k_abs,
+        rayTraceResult.config.k_brdf,
+      )
+      const localPeak = values.reduce(
+        (peak, value) => Math.max(peak, value),
+        0,
+      )
+      const scale =
+        receiverHeatmap3dScaleMode === 'customize'
+          ? {
+              minNit: receiverHeatmap3dCustomMinNit,
+              maxNit: receiverHeatmap3dCustomMaxNit,
+            }
+          : {
+              minNit: 0,
+              maxNit: Math.max(
+                receiverHeatmap3dScaleMode === 'compare'
+                  ? commonPeak
+                  : localPeak,
+                1e-12,
+              ),
+            }
+      const overlay = createReceiverHeatmapOverlay(
+        receiver,
+        grid,
+        rayTraceResult,
+        scale,
+        receiverHeatmap3dMode,
+        receiverHeatmap3dOpacity,
+        receiverHeatmap3dInterpolation,
+        sectionView.enabled ? sectionClippingPlaneRef.current : null,
+      )
+      if (!overlay) continue
+      runtime.receiverHeatmapRoot.add(overlay)
+      displayedCount += 1
+    }
+    onStatusMessage(
+      `Receiver Heatmap 3D · ${displayedCount}/${rayTraceResult.receiver_grids.length} displayed`,
+    )
+  }, [
+    onStatusMessage,
+    rayTraceResult,
+    receiverHeatmap3dCustomMaxNit,
+    receiverHeatmap3dCustomMinNit,
+    receiverHeatmap3dInterpolation,
+    receiverHeatmap3dMode,
+    receiverHeatmap3dOpacity,
+    receiverHeatmap3dScaleMode,
+    sectionView.enabled,
+  ])
 
   useEffect(() => {
     const runtime = runtimeRef.current

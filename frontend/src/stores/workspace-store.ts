@@ -187,6 +187,10 @@ export const defaultRayPathDisplayFilters: RayPathDisplayFilters = {
 
 export const defaultRayPathDisplayLimit = 500
 
+export type ReceiverHeatmap3dMode = 'off' | 'physical' | 'xray'
+export type ReceiverHeatmap3dScaleMode = 'auto' | 'compare' | 'customize'
+export type ReceiverHeatmap3dInterpolation = 'pixel' | 'smooth'
+
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
   cadCases: CadCase[]
@@ -234,6 +238,12 @@ export interface WorkspaceSnapshot {
   /** Maximum number of already-stored paths drawn in the 3D Viewer.
    *  This is a display-only preference and never invalidates trace results. */
   rayPathDisplayLimit: number
+  receiverHeatmap3dMode: ReceiverHeatmap3dMode
+  receiverHeatmap3dOpacity: number
+  receiverHeatmap3dScaleMode: ReceiverHeatmap3dScaleMode
+  receiverHeatmap3dCustomMinNit: number
+  receiverHeatmap3dCustomMaxNit: number
+  receiverHeatmap3dInterpolation: ReceiverHeatmap3dInterpolation
   highlightedRayPathSelection: {
     runId: string
     pathIndices: number[]
@@ -339,6 +349,13 @@ export interface WorkspaceActions {
     filters: Partial<RayPathDisplayFilters>,
   ): void
   setRayPathDisplayLimit(limit: number): void
+  setReceiverHeatmap3dMode(mode: ReceiverHeatmap3dMode): void
+  setReceiverHeatmap3dOpacity(opacity: number): void
+  setReceiverHeatmap3dScaleMode(mode: ReceiverHeatmap3dScaleMode): void
+  setReceiverHeatmap3dCustomScale(minNit: number, maxNit: number): void
+  setReceiverHeatmap3dInterpolation(
+    interpolation: ReceiverHeatmap3dInterpolation,
+  ): void
   setHighlightedRayPathSelection(selection: {
     runId: string
     pathIndices: number[]
@@ -1016,6 +1033,12 @@ function createSceneSnapshot(): Omit<
     restoredRayTraceResult: null,
     rayPathDisplayFilters: { ...defaultRayPathDisplayFilters },
     rayPathDisplayLimit: defaultRayPathDisplayLimit,
+    receiverHeatmap3dMode: 'off',
+    receiverHeatmap3dOpacity: 0.82,
+    receiverHeatmap3dScaleMode: 'auto',
+    receiverHeatmap3dCustomMinNit: 0,
+    receiverHeatmap3dCustomMaxNit: 10,
+    receiverHeatmap3dInterpolation: 'pixel',
     highlightedRayPathSelection: null,
   }
 }
@@ -1869,6 +1892,34 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ),
         })
       },
+      setReceiverHeatmap3dMode: (receiverHeatmap3dMode) => {
+        set({ receiverHeatmap3dMode })
+      },
+      setReceiverHeatmap3dOpacity: (opacity) => {
+        set({
+          receiverHeatmap3dOpacity: Math.max(
+            0.05,
+            Math.min(1, Number.isFinite(opacity) ? opacity : 0.82),
+          ),
+        })
+      },
+      setReceiverHeatmap3dScaleMode: (receiverHeatmap3dScaleMode) => {
+        set({ receiverHeatmap3dScaleMode })
+      },
+      setReceiverHeatmap3dCustomScale: (minNit, maxNit) => {
+        const minimum = Math.max(0, Number.isFinite(minNit) ? minNit : 0)
+        const maximum = Math.max(
+          minimum + 1e-9,
+          Number.isFinite(maxNit) ? maxNit : minimum + 1,
+        )
+        set({
+          receiverHeatmap3dCustomMinNit: minimum,
+          receiverHeatmap3dCustomMaxNit: maximum,
+        })
+      },
+      setReceiverHeatmap3dInterpolation: (receiverHeatmap3dInterpolation) => {
+        set({ receiverHeatmap3dInterpolation })
+      },
       setHighlightedRayPathSelection: (selection) => {
         set({
           highlightedRayPathSelection: selection
@@ -1984,6 +2035,18 @@ export const workspaceSelectors = {
     state.rayPathDisplayFilters ?? defaultRayPathDisplayFilters,
   rayPathDisplayLimit: (state: WorkspaceStore) =>
     state.rayPathDisplayLimit ?? defaultRayPathDisplayLimit,
+  receiverHeatmap3dMode: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dMode ?? 'off',
+  receiverHeatmap3dOpacity: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dOpacity ?? 0.82,
+  receiverHeatmap3dScaleMode: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dScaleMode ?? 'auto',
+  receiverHeatmap3dCustomMinNit: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dCustomMinNit ?? 0,
+  receiverHeatmap3dCustomMaxNit: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dCustomMaxNit ?? 10,
+  receiverHeatmap3dInterpolation: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dInterpolation ?? 'pixel',
   highlightedRayPathSelection: (state: WorkspaceStore) =>
     state.highlightedRayPathSelection ?? null,
   actions: (state: WorkspaceStore) => state.actions,
