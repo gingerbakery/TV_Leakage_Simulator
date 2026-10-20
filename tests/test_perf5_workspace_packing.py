@@ -290,13 +290,15 @@ class WorkspacePackingCpuTests(unittest.TestCase):
             context = context_for_workspace()
             context._device_lock = threading.Lock()
             context._device_bindings = None
+            context.bsdf = resident.PackedBsdf.empty()
             for name in resident._DeviceBindings.__dataclass_fields__:
-                if name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer'):
+                if name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer', 'bsdf_arrays'):
                     continue
                 shape = (2, 3) if name in ('triangle_normals', 'receiver_centers', 'receiver_normals',
                     'receiver_u_axes', 'receiver_v_axes') else (2,)
-                dtype = np.int8 if name == 'face_scatter' else np.int32 if name in ('receiver_columns', 'receiver_rows') else np.float64
+                dtype = np.int8 if name == 'face_scatter' else np.int64 if name in ('receiver_columns', 'receiver_rows', 'bsdf_indices') else np.float64
                 setattr(context, name, np.full(shape, marker, dtype=dtype))
+            context.bsdf_indices.fill(-1)
             return context
         first_context, second_context = bindings_context(1), bindings_context(2)
         with patch.dict(os.environ, {'LEAKAGE_GPU_STATIC_TRANSFER': 'packed'}):
@@ -307,7 +309,7 @@ class WorkspacePackingCpuTests(unittest.TestCase):
         self.assertTrue(reused)
         self.assertIs(first_workspace, second_workspace)
         self.assertFalse(binding_reused)
-        self.assertEqual(len(self.cuda.uploads), 2)
+        self.assertEqual(len(self.cuda.uploads), 2 * (1 + len(first_context.bsdf.arrays())))
         self.assertIsNot(first_bindings, second_bindings)
         for name in ('face_reflectance', 'receiver_centers', 'receiver_rows'):
             self.assertTrue(np.all(getattr(first_bindings, name) == 1))

@@ -108,7 +108,19 @@ class BsdfAccelerationIntegrationTests(unittest.TestCase):
             self.assertEqual(imported['project']['analysis_result'], json.loads(json.dumps(result)))
             self.assertEqual(imported['project']['workspace']['bsdfAssets'], [asset])
             loaded_scene = restored.load_scene(imported['cad']['path'])
-            request['scene_token'] = loaded_scene['metadata']['scene_token']
+            workspace = imported['project']['workspace']
+            request = {
+                'scene_token': loaded_scene['metadata']['scene_token'],
+                'emitters': workspace['emitters'],
+                'receivers': workspace['receivers'],
+                'config': workspace['rayTraceConfig'],
+                'bsdf_assets': workspace['bsdfAssets'],
+                'optical_profiles': [
+                    {'profile_id': assignment['surfaceId'], 'reflectance': 0,
+                        'scatter_model': 'none', 'bsdf_asset_id': assignment['bsdfAssetId']}
+                    for assignment in workspace['materialAssignments']
+                ],
+            }
             repeated = restored.run_raytrace_direct(request)
             self.assertEqual(repeated['receiver_grids'], result['receiver_grids'])
             request['receivers'][0]['width_mm'] = 10

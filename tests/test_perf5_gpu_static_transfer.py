@@ -42,16 +42,18 @@ class ArrayCuda:
 
 
 def binding_context(face_count=9, receiver_count=3):
-    values = {'_device_lock': threading.Lock(), '_device_bindings': None}
+    values = {'_device_lock': threading.Lock(), '_device_bindings': None, 'bsdf': resident.PackedBsdf.empty()}
     for name in resident._DeviceBindings.__dataclass_fields__:
-        if name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer'):
+        if name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer', 'bsdf_arrays'):
             continue
         count = receiver_count if name.startswith('receiver_') else face_count
         dtype = np.int8 if name == 'face_scatter' else np.int64 if name in (
-            'receiver_columns', 'receiver_rows') else np.float64
+            'receiver_columns', 'receiver_rows', 'bsdf_indices') else np.float64
         shape = (count, 3) if name in ('triangle_normals', 'receiver_centers',
             'receiver_normals', 'receiver_u_axes', 'receiver_v_axes') else (count,)
         values[name] = np.arange(int(np.prod(shape)), dtype=dtype).reshape(shape)
+        if name == 'bsdf_indices':
+            values[name].fill(-1)
         values[name].setflags(write=False)
     return SimpleNamespace(**values)
 
@@ -88,20 +90,23 @@ class StaticTransferTests(unittest.TestCase):
             transfer.upload_aligned_arrays(fake, {'invalid': np.asarray([object()], dtype=object)})
         self.assertEqual(fake.uploads, [])
 
-    def test_bindings_use_one_upload_and_context_reuse_uses_none(self):
+    def test_bindings_use_one_packed_upload_plus_bsdf_tables_and_reuse_uses_none(self):
         context = binding_context()
         fake = ArrayCuda()
         with patch.object(gpu, '_CUDA', fake), patch.dict(os.environ, {'LEAKAGE_GPU_STATIC_TRANSFER': 'packed'}):
             bindings, reused = resident._ensure_device_bindings(context, SimpleNamespace(device_id=0))
             self.assertFalse(reused)
-            self.assertEqual(len(fake.uploads), 1)
+            self.assertEqual(len(fake.uploads), 1 + len(context.bsdf.arrays()))
             again, reused = resident._ensure_device_bindings(context, SimpleNamespace(device_id=0))
             self.assertTrue(reused)
             self.assertIs(again, bindings)
-            self.assertEqual(len(fake.uploads), 1)
+            self.assertEqual(len(fake.uploads), 1 + len(context.bsdf.arrays()))
         for name in vars(context):
-            if not name.startswith('_'):
+            if not name.startswith('_') and name != 'bsdf':
                 self.assertEqual(getattr(bindings, name).tobytes(), getattr(context, name).tobytes())
+        for actual, expected in zip(bindings.bsdf_arrays, context.bsdf.arrays(), strict=True):
+            self.assertEqual(actual.dtype, expected.dtype)
+            self.assertEqual(actual.tobytes(), expected.tobytes())
 
     def test_legacy_and_packed_bindings_are_exact_and_reedited_context_is_fresh(self):
         results = []
@@ -111,10 +116,13 @@ class StaticTransferTests(unittest.TestCase):
             with patch.object(gpu, '_CUDA', fake), patch.dict(os.environ, {'LEAKAGE_GPU_STATIC_TRANSFER': mode}):
                 bindings, _ = resident._ensure_device_bindings(context, SimpleNamespace(device_id=0))
             results.append(bindings)
-            self.assertEqual(len(fake.uploads), 17 if mode == 'legacy' else 1)
+            self.assertEqual(len(fake.uploads), (18 if mode == 'legacy' else 1) + len(context.bsdf.arrays()))
         for name in vars(context):
-            if not name.startswith('_'):
+            if not name.startswith('_') and name != 'bsdf':
                 self.assertEqual(getattr(results[0], name).tobytes(), getattr(results[1], name).tobytes())
+        for first, second in zip(results[0].bsdf_arrays, results[1].bsdf_arrays, strict=True):
+            self.assertEqual(first.dtype, second.dtype)
+            self.assertEqual(first.tobytes(), second.tobytes())
         first = binding_context()
         second = binding_context()
         second.face_reflectance = np.full(9, 0.99, dtype=np.float64)
@@ -122,7 +130,7 @@ class StaticTransferTests(unittest.TestCase):
         with patch.object(gpu, '_CUDA', fake), patch.dict(os.environ, {'LEAKAGE_GPU_STATIC_TRANSFER': 'packed'}):
             before, _ = resident._ensure_device_bindings(first, SimpleNamespace(device_id=0))
             after, _ = resident._ensure_device_bindings(second, SimpleNamespace(device_id=0))
-        self.assertEqual(len(fake.uploads), 2)
+        self.assertEqual(len(fake.uploads), 2 * (1 + len(context.bsdf.arrays())))
         self.assertEqual(before.face_reflectance.tobytes(), first.face_reflectance.tobytes())
         self.assertEqual(after.face_reflectance.tobytes(), second.face_reflectance.tobytes())
 
@@ -201,7 +209,7 @@ class StaticTransferGpuTests(unittest.TestCase):
             result, reused = original_bindings(context, capability)
             if result.packed_transfer is not None:
                 for field in fields(result):
-                    if field.name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer'):
+                    if field.name in ('context_identity', 'device_id', 'upload_sec', 'packed_transfer', 'bsdf_arrays'):
                         continue
                     view = getattr(result, field.name)
                     expected = getattr(context, field.name)
@@ -209,6 +217,9 @@ class StaticTransferGpuTests(unittest.TestCase):
                     self.assertEqual(view.copy_to_host().tobytes(), expected.tobytes())
                     self.assertEqual(view.device_ctypes_pointer.value % expected.dtype.alignment, 0)
                     self.assertEqual(view.device_ctypes_pointer.value % 256, 0)
+                for view, expected in zip(result.bsdf_arrays, context.bsdf.arrays(), strict=True):
+                    self.assertEqual(view.dtype, expected.dtype)
+                    self.assertEqual(view.copy_to_host().tobytes(), expected.tobytes())
                 checked.append('bindings')
             return result, reused
         def accumulate(events, request, session):

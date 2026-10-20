@@ -2,12 +2,56 @@ import { describe, expect, it, vi } from 'vitest'
 import { createApiClient } from '@/api'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createWorkspaceStore, type MaterialAssignment } from '@/stores'
 import { createBitsamProject, parseBitsamProject, serializeBitsamProject } from '@/features/projects/bitsam-project'
 import { buildRayTraceRequest } from '@/features/raytracing/ray-tracing-model'
 import { isBsdfAsset } from './bsdf-asset'
 
 describe('portable BSDF foundation', () => {
+  it.each(['cpu', 'gpu_cuda'] as const)('rebuilds the %s request only from restored project settings', (backend) => {
+    const original = createWorkspaceStore()
+    const actions = original.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'source.step' })
+    const asset = createBsdfFixture()
+    asset.transport = { model: 'isotropic_no_shift', wavelengthNm: 550, aoiExtrapolation: 'clamp' }
+    actions.addBsdfAsset(asset)
+    actions.upsertMaterialAssignment({ assignmentId: 'surface', componentId: 1,
+      targetType: 'faces', faceIds: [0, 1], baseMaterialId: 'pc_black',
+      surfaceId: 'matte_black_resin', profileId: '', bsdfAssetId: asset.id, enabled: true })
+    const result = createRayTraceResultFixture()
+    result.emitters.forEach(actions.upsertEmitter)
+    result.receivers.forEach(actions.upsertReceiver)
+    actions.setRayTraceConfig({ ...original.getState().rayTraceConfig, compute_backend: backend,
+      primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
+    const scene = createSceneFixture()
+    const requestFromStore = (store: ReturnType<typeof createWorkspaceStore>) => {
+      const state = store.getState()
+      return buildRayTraceRequest({ scene, projectName: 'restored', emitters: state.emitters,
+        receivers: state.receivers, materialAssignments: state.materialAssignments,
+        transformRules: state.transformRules, excludedComponentIds: state.excludedComponentIds,
+        deletedComponentIds: state.deletedComponentIds, roiScopes: state.roiScopes,
+        config: state.rayTraceConfig, bsdfAssets: state.bsdfAssets })
+    }
+    const before = requestFromStore(original)
+    const project = parseBitsamProject(serializeBitsamProject(
+      createBitsamProject(scene, original.getState(), new Date(), result),
+    ))
+    const restored = createWorkspaceStore()
+    restored.getState().actions.addCadCase({ path: 'restored/original.step', displayName: 'source.step' })
+    restored.getState().actions.restoreProjectState(project.workspace)
+    expect(requestFromStore(restored)).toEqual(before)
+    expect(project.analysis_result).toEqual(result)
+    const receiver = restored.getState().receivers[0]
+    restored.getState().actions.upsertReceiver({ ...receiver, width_mm: 10 })
+    const changed = requestFromStore(restored)
+    expect(changed.receivers[0].width_mm).toBe(10)
+    expect(changed.optical_profiles).toEqual(before.optical_profiles)
+    expect(changed.optical_assignments).toEqual(before.optical_assignments)
+    expect(changed.bsdf_assets).toEqual(before.bsdf_assets)
+    expect(changed.config.compute_backend).toBe(backend)
+  })
+
   it('validates transport options and corrupt grids independently of the readiness flag', () => {
     const asset = createBsdfFixture()
     expect(isBsdfAsset(asset)).toBe(true)
