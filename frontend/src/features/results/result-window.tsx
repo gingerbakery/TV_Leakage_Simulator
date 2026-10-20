@@ -2070,13 +2070,18 @@ function ReceiverHeatmap({
             <Stat label="Area" value={`${formatMetric(regionAnalysis.areaMm2)} mm²`} />
             <Stat label="Receiver Flux" value={`${formatMetric(regionAnalysis.selectedFlux)} lm`} />
             <Stat label="Flux share" value={`${formatMetric(regionAnalysis.fluxRatio * 100, 1)}%`} />
-            <Stat label="Stored Paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help="선택 영역에 도달한 대표 저장 경로 수입니다. 전체 Ray가 아니라 경로 원인을 확인하기 위해 저장된 진단용 표본입니다." />
+            <Stat label="Stored Paths" value={regionAnalysis.matchingPathCount.toLocaleString()} help={`선택 영역의 면적과 Flux는 전체 Receiver Grid 기준입니다. Component와 경로 순서는 저장된 진단 표본만 사용합니다. Component는 경로당 한 번씩 집계하며, 여러 Component를 지난 경로는 중복 귀속되어 Flux 비율 합계가 100%를 넘을 수 있습니다. 현재 ${storedPaths.length.toLocaleString()} / 설정 ${Math.max(0, maxStoredPaths).toLocaleString()} 경로가 저장되었습니다. 표본이 부족하면 Max stored paths를 늘린 후 다시 해석하세요.`} />
           </div>
           <div className="mt-3 rounded-md border border-border bg-background/35 p-2">
             <div className="flex items-center justify-between gap-3">
-              <label htmlFor={`${grid.receiver_id}-contribution-ray-limit`} className="text-sm font-semibold">
-                3D 강조 Ray 수
-              </label>
+              <div className="flex items-center gap-1.5">
+                <label htmlFor={`${grid.receiver_id}-contribution-ray-limit`} className="text-sm font-semibold">
+                  3D 강조 Ray 수
+                </label>
+                <HelpTooltip label="3D 강조 Ray 수 설명">
+                  저장된 분석 경로의 통계는 유지하고, 3D Viewer의 주황색 강조 개수만 변경합니다.
+                </HelpTooltip>
+              </div>
               <span className="font-mono text-sm">
                 {(highlightedSelection?.runId === runId
                   ? highlightedSelection.pathIndices.length
@@ -2105,9 +2110,6 @@ function ReceiverHeatmap({
               onChange={(event) => updateContributionRayDisplayLimit(Number(event.currentTarget.value))}
               className="mt-1 w-full accent-orange-500"
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              저장된 분석 경로의 통계는 유지하고, 3D Viewer의 주황색 강조 개수만 변경합니다.
-            </p>
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
@@ -2238,9 +2240,6 @@ function ReceiverHeatmap({
               </div>
             </div>
           </details>
-          <p className="popup-guide mt-2 text-xs leading-4 text-muted-foreground">
-            선택 영역의 면적과 Flux는 전체 Receiver Grid를 기준으로 계산합니다. Component는 첫 반사점이 아니라 해당 경로가 지나간 모든 Component를 경로당 한 번씩 집계합니다. Component Flux 비율은 경로 관여율이므로 여러 Component를 통과한 경로가 중복 귀속되어 합계가 100%를 넘을 수 있습니다. 경로 순서는 Stored paths만 사용하며 반사 경로의 원인을 확인하기 위한 진단값입니다. 현재 전체 {storedPaths.length.toLocaleString()} / 설정 {Math.max(0, maxStoredPaths).toLocaleString()} 경로가 저장되었습니다. 선택 영역에 1개만 나오면 Run Options의 Max stored paths를 늘린 후 다시 Tracing해야 합니다.
-          </p>
         </details>
       ) : interactionMode === 'region' ? (
         <p className="mt-2 rounded-md border border-dashed border-orange-300/50 p-2 text-center text-xs text-muted-foreground">

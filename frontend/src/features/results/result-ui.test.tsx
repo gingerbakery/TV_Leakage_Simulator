@@ -1331,6 +1331,8 @@ describe('Step 11 result UI', () => {
     expect(screen.getByRole('slider', {
       name: 'Contribution 3D highlight ray count',
     })).not.toBeNull()
+    expect(screen.getByRole('button', { name: '3D 강조 Ray 수 설명' })).not.toBeNull()
+    expect(screen.queryByText('저장된 분석 경로의 통계는 유지하고, 3D Viewer의 주황색 강조 개수만 변경합니다.')).toBeNull()
     expect(screen.getAllByText('Renamed chassis').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/% Flux/).length).toBeGreaterThan(0)
     expect(screen.getByTestId('receiver_001-analysis-region')).not.toBeNull()
