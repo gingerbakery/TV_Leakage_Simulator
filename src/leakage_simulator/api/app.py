@@ -55,6 +55,8 @@ def create_app(
         openapi_url="/api/openapi.json",
     )
     application.state.api_runtime = api_runtime
+    from leakage_simulator.lt_validation.routes import router as lt_validation_router
+    application.include_router(lt_validation_router)
     frontend_dist = api_runtime.root / "frontend" / "dist"
     frontend_index = frontend_dist / "index.html"
     frontend_assets = frontend_dist / "assets"

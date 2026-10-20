@@ -91,6 +91,7 @@ interface WorkflowSidebarProps {
   autoConvergenceCancelToken?: number
   onRayObjectEditRequestHandled?(): void
   onOpenRayTraceResult(): void
+  onOpenLtValidation?(): void
   onEditMaterial(request: ComponentEditorRequest): void
   onEditTransform(request: ComponentEditorRequest): void
   onDeleteComponent(request: ComponentEditorRequest): void
@@ -270,6 +271,7 @@ export function WorkflowSidebar({
   autoConvergenceCancelToken = 0,
   onRayObjectEditRequestHandled,
   onOpenRayTraceResult,
+  onOpenLtValidation,
   onEditMaterial,
   onEditTransform,
   onDeleteComponent,
@@ -424,6 +426,7 @@ export function WorkflowSidebar({
           job={rayTraceJob}
           result={rayTraceResult}
           onOpenAnalysis={onOpenRayTraceResult}
+          onOpenLtValidation={onOpenLtValidation}
         />
       )
     }

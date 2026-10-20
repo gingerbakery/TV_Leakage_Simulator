@@ -1,14 +1,17 @@
 import type { RayTraceJob, RayTraceResult } from '@/api'
+import { useState } from 'react'
 import {
   Activity,
   BarChart3,
   Eye,
+  FlaskConical,
   Route,
 } from 'lucide-react'
 
 import { HelpTooltip } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { LtValidationDialog } from '@/features/lt-validation'
 import {
   useWorkspaceStore,
   workspaceSelectors,
@@ -25,6 +28,7 @@ interface ResultPanelProps {
   job?: RayTraceJob
   result?: RayTraceResult | null
   onOpenAnalysis(): void
+  onOpenLtValidation?(): void
 }
 
 const allFilters = (visible: boolean): RayPathDisplayFilters => ({
@@ -40,7 +44,9 @@ export function ResultPanel({
   job,
   result: suppliedResult,
   onOpenAnalysis,
+  onOpenLtValidation,
 }: ResultPanelProps) {
+  const [ltValidationOpen, setLtValidationOpen] = useState(false)
   const filters = useWorkspaceStore(
     workspaceSelectors.rayPathDisplayFilters,
   )
@@ -64,6 +70,13 @@ export function ResultPanel({
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-1">
+        <Button className="flex-1" variant="outline" onClick={onOpenLtValidation ?? (() => setLtValidationOpen(true))}>
+          <FlaskConical />LT 검증
+        </Button>
+        <HelpTooltip label="LT 검증 도움말">.bitsam과 LightTools의 원시 수광 결과를 별도 Case로 비교합니다. CAD나 현재 해석 결과 없이 열 수 있습니다.</HelpTooltip>
+      </div>
+      {!onOpenLtValidation ? <LtValidationDialog open={ltValidationOpen} onOpenChange={setLtValidationOpen} /> : null}
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">

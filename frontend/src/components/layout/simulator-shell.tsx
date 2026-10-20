@@ -41,6 +41,7 @@ import { Button } from '@/components/ui/button'
 import type { ComponentEditorRequest } from '@/features/components'
 import { getComponentDisplayName } from '@/features/components'
 import { MaterialEditorDialog } from '@/features/materials'
+import { LtValidationDialog } from '@/features/lt-validation'
 import { SurfacePropertyDialog } from '@/features/materials/surface-property-dialog'
 import {
   bitsamDownloadFileName,
@@ -135,6 +136,7 @@ export function SimulatorShell() {
   const [viewerCameraFrame, setViewerCameraFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [rayTraceResultOpen, setRayTraceResultOpen] = useState(false)
+  const [ltValidationOpen, setLtValidationOpen] = useState(false)
   const [autoConvergenceCancelToken, setAutoConvergenceCancelToken] =
     useState(0)
   const [displayedRayTraceResult, setDisplayedRayTraceResult] =
@@ -973,6 +975,7 @@ export function SimulatorShell() {
           onOpenRayTraceResult={() => {
             if (displayedRayTraceResult) setRayTraceResultOpen(true)
           }}
+          onOpenLtValidation={() => setLtValidationOpen(true)}
           onEditMaterial={(request) =>
             openComponentDialog('material', request)
           }
@@ -1061,6 +1064,8 @@ export function SimulatorShell() {
           }}
         />
       </div>
+
+      <LtValidationDialog open={ltValidationOpen} onOpenChange={setLtValidationOpen} />
 
       <AppDialog
         open={copySetupOpen}
