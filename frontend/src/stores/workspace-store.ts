@@ -190,6 +190,8 @@ export const defaultRayPathDisplayLimit = 500
 export type ReceiverHeatmap3dMode = 'off' | 'physical' | 'xray'
 export type ReceiverHeatmap3dScaleMode = 'auto' | 'compare' | 'customize'
 export type ReceiverHeatmap3dInterpolation = 'pixel' | 'smooth'
+export type ReceiverHeatmap3dBasis = 'surface' | 'cone'
+export type ReceiverHeatmap3dColorMode = 'color' | 'mono'
 
 export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
@@ -244,6 +246,8 @@ export interface WorkspaceSnapshot {
   receiverHeatmap3dCustomMinNit: number
   receiverHeatmap3dCustomMaxNit: number
   receiverHeatmap3dInterpolation: ReceiverHeatmap3dInterpolation
+  receiverHeatmap3dBasis: ReceiverHeatmap3dBasis
+  receiverHeatmap3dColorMode: ReceiverHeatmap3dColorMode
   highlightedRayPathSelection: {
     runId: string
     pathIndices: number[]
@@ -356,6 +360,8 @@ export interface WorkspaceActions {
   setReceiverHeatmap3dInterpolation(
     interpolation: ReceiverHeatmap3dInterpolation,
   ): void
+  setReceiverHeatmap3dBasis(basis: ReceiverHeatmap3dBasis): void
+  setReceiverHeatmap3dColorMode(colorMode: ReceiverHeatmap3dColorMode): void
   setHighlightedRayPathSelection(selection: {
     runId: string
     pathIndices: number[]
@@ -1039,6 +1045,8 @@ function createSceneSnapshot(): Omit<
     receiverHeatmap3dCustomMinNit: 0,
     receiverHeatmap3dCustomMaxNit: 10,
     receiverHeatmap3dInterpolation: 'pixel',
+    receiverHeatmap3dBasis: 'surface',
+    receiverHeatmap3dColorMode: 'color',
     highlightedRayPathSelection: null,
   }
 }
@@ -1920,6 +1928,12 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       setReceiverHeatmap3dInterpolation: (receiverHeatmap3dInterpolation) => {
         set({ receiverHeatmap3dInterpolation })
       },
+      setReceiverHeatmap3dBasis: (receiverHeatmap3dBasis) => {
+        set({ receiverHeatmap3dBasis })
+      },
+      setReceiverHeatmap3dColorMode: (receiverHeatmap3dColorMode) => {
+        set({ receiverHeatmap3dColorMode })
+      },
       setHighlightedRayPathSelection: (selection) => {
         set({
           highlightedRayPathSelection: selection
@@ -2047,6 +2061,10 @@ export const workspaceSelectors = {
     state.receiverHeatmap3dCustomMaxNit ?? 10,
   receiverHeatmap3dInterpolation: (state: WorkspaceStore) =>
     state.receiverHeatmap3dInterpolation ?? 'pixel',
+  receiverHeatmap3dBasis: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dBasis ?? 'surface',
+  receiverHeatmap3dColorMode: (state: WorkspaceStore) =>
+    state.receiverHeatmap3dColorMode ?? 'color',
   highlightedRayPathSelection: (state: WorkspaceStore) =>
     state.highlightedRayPathSelection ?? null,
   actions: (state: WorkspaceStore) => state.actions,

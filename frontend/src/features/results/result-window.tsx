@@ -48,6 +48,7 @@ import {
   initialReceiverHeatmapViewport,
   receiverAxisTicksForRange,
   receiverHeatmapColor,
+  receiverConeLuminanceMultiplier,
   receiverHeatmapDisplayValues,
   receiverHeatmapLayout,
   receiverHeatmapPeakPosition,
@@ -589,7 +590,9 @@ function analysisExcelSheets(
       const metrics = objectValue(item.result.metrics, receiver.receiver_id)
       const areas = receiverLightAreas(item.result, receiver.receiver_id)
       const peak = receiverHeatmapPeakPosition(grid, receiver.width_mm, receiver.height_mm)
-      const coneMultiplier = coneLuminanceMultiplier(receiver.acceptance_angle_deg)
+      const coneMultiplier = receiverConeLuminanceMultiplier(
+        receiver.acceptance_angle_deg,
+      )
       return [[
         item.name,
         item.cad_name,
@@ -925,12 +928,6 @@ function numeric(value: unknown): number {
   return Number.isFinite(Number(value)) ? Number(value) : 0
 }
 
-function coneLuminanceMultiplier(acceptanceAngleDeg: number): number {
-  const halfAngleDeg = Math.min(90, Math.max(0.1, acceptanceAngleDeg))
-  const sine = Math.sin(halfAngleDeg * Math.PI / 180)
-  return 1 / Math.max(sine * sine, 1e-12)
-}
-
 function objectValue(
   source: Record<string, unknown>,
   key: string,
@@ -1200,7 +1197,7 @@ function ReceiverHeatmap({
     setDisplayScale((current) => Math.min(current, maximumDisplayScale))
   }, [maximumDisplayScale])
 
-  const coneMultiplier = coneLuminanceMultiplier(receiver.acceptance_angle_deg)
+  const coneMultiplier = receiverConeLuminanceMultiplier(receiver.acceptance_angle_deg)
   // Keep one fixed display scale while switching the calculation basis.
   // Cone luminance is a uniform angular normalization of the same accepted
   // flux grid; rescaling both the values and Auto maximum would make the
@@ -2128,7 +2125,15 @@ function ReceiverHeatmap({
                   1,
                 )}%)
               </div>
-              <div className="mt-2 text-sm font-semibold">Top Components</div>
+              <div className="mt-2 flex items-center gap-1 text-sm font-semibold">
+                Top Components
+                <HelpTooltip label="Top Components coverage 설명">
+                  선택 영역에 도달한 저장 경로가 해당 Component를 한 번이라도
+                  지나갔는지를 광속 기준으로 나타낸 coverage입니다. 한 경로가
+                  여러 Component를 지나면 각 Component에 중복 집계되므로
+                  합계는 100%가 아닐 수 있습니다.
+                </HelpTooltip>
+              </div>
               <div className="mt-1 space-y-1">
                 {regionAnalysis.components.length > 0 ? regionAnalysis.components.map(([id, value]) => {
                   const label = `Component · ${componentNames.get(id) ?? `Component ${id}`}`
@@ -2150,7 +2155,7 @@ function ReceiverHeatmap({
                             ? value.flux / regionAnalysis.matchingStoredFlux * 100
                             : 0,
                           1,
-                        )}% Flux
+                        )}% coverage
                       </span>
                     </button>
                   )
@@ -3563,7 +3568,7 @@ export function RayTraceResultWindow({
                   receiver.receiver_id,
                 )
                 const currentPeakNit = numeric(values.peak_nit_est)
-                const coneMultiplier = coneLuminanceMultiplier(
+                const coneMultiplier = receiverConeLuminanceMultiplier(
                   receiver.acceptance_angle_deg,
                 )
                 const conePeakNit = typeof values.cone_peak_nit_est === 'number'

@@ -67,6 +67,12 @@ export function ResultPanel({
   const heatmap3dInterpolation = useWorkspaceStore(
     workspaceSelectors.receiverHeatmap3dInterpolation,
   )
+  const heatmap3dBasis = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dBasis,
+  )
+  const heatmap3dColorMode = useWorkspaceStore(
+    workspaceSelectors.receiverHeatmap3dColorMode,
+  )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const result =
     suppliedResult !== undefined
@@ -185,7 +191,8 @@ export function ResultPanel({
             <HelpTooltip label="Receiver Heatmap 3D 도움말">
               계산된 Receiver Heatmap을 실제 3D Receiver Plane 위에
               표시합니다. Physical은 CAD에 가리고, X-ray는 CAD 앞에
-              표시됩니다.
+              표시됩니다. Existing과 View Cone은 Result Report와 같은
+              휘도 환산 기준을 사용합니다.
             </HelpTooltip>
           </div>
           <Badge variant="outline">
@@ -209,6 +216,34 @@ export function ResultPanel({
         </div>
         {heatmap3dMode !== 'off' ? (
           <div className="space-y-2 rounded-lg border border-border bg-background/35 p-2">
+            <div className="grid grid-cols-2 gap-1">
+              {(['surface', 'cone'] as const).map((basis) => (
+                <Button
+                  key={basis}
+                  size="xs"
+                  variant={heatmap3dBasis === basis ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap basis ${basis === 'surface' ? 'Existing' : 'View Cone'}`}
+                  aria-pressed={heatmap3dBasis === basis}
+                  onClick={() => actions.setReceiverHeatmap3dBasis(basis)}
+                >
+                  {basis === 'surface' ? 'Existing' : 'View Cone'}
+                </Button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {(['color', 'mono'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  size="xs"
+                  variant={heatmap3dColorMode === mode ? 'secondary' : 'outline'}
+                  aria-label={`3D Heatmap color ${mode === 'color' ? 'Color' : 'Mono'}`}
+                  aria-pressed={heatmap3dColorMode === mode}
+                  onClick={() => actions.setReceiverHeatmap3dColorMode(mode)}
+                >
+                  {mode === 'color' ? 'Color' : 'Mono'}
+                </Button>
+              ))}
+            </div>
             <div className="grid grid-cols-3 gap-1">
               {(['auto', 'compare', 'customize'] as const).map((mode) => (
                 <Button
