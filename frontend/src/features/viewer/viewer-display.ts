@@ -11,6 +11,7 @@ export type AxisCameraPreset =
 export type DisplayCameraPreset =
   | 'Fit'
   | 'Iso'
+  | '-Iso'
   | AxisCameraPreset
 
 type AxisVector = readonly [number, number, number]
@@ -55,6 +56,13 @@ export const ISO_CAMERA_AXES = {
   // Balanced ISO: +Y is vertical while +X and +Z project symmetrically
   // down-right/down-left, keeping the three axes close to 120 degrees apart.
   direction: [1, 1, 1] as AxisVector,
+  up: [0, 1, 0] as AxisVector,
+}
+
+export const REVERSE_ISO_CAMERA_AXES = {
+  // Exact opposite of the front ISO direction while retaining +Y as the
+  // screen-up reference for a stable rear isometric view.
+  direction: [-1, -1, -1] as AxisVector,
   up: [0, 1, 0] as AxisVector,
 }
 
@@ -103,7 +111,9 @@ export function cameraFovForPreset(
   currentFov: number,
 ): number {
   if (preset === 'Fit') return currentFov
-  if (preset === 'Iso') return DEFAULT_CAMERA_FOV_DEGREES
+  if (preset === 'Iso' || preset === '-Iso') {
+    return DEFAULT_CAMERA_FOV_DEGREES
+  }
   return AXIS_CAMERA_FOV_DEGREES
 }
 

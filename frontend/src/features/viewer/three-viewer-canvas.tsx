@@ -142,6 +142,7 @@ import {
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
   ISO_CAMERA_AXES,
+  REVERSE_ISO_CAMERA_AXES,
   resolveComponentColor,
   surfaceOpacityFromTransparency,
   type AxisCameraPreset,
@@ -789,6 +790,7 @@ function createPlacementPlane(
     normalLength,
     directionColor,
     bothSides,
+    !alwaysVisible,
   )
   if (showLocalAxes) {
     // Keep Receiver X/Y clearly readable while still slightly shorter than
@@ -801,6 +803,7 @@ function createPlacementPlane(
       uAxis,
       axisLength,
       0xef4444,
+      !alwaysVisible,
     )
     const yArrow = createDirectionArrow(
       `${name}-y-positive`,
@@ -808,9 +811,10 @@ function createPlacementPlane(
       vAxis,
       axisLength,
       0x22c55e,
+      !alwaysVisible,
     )
-    const xLabel = createAxisLabel('X+', '#ef4444', false)
-    const yLabel = createAxisLabel('Y+', '#22c55e', false)
+    const xLabel = createAxisLabel('X+', '#ef4444', !alwaysVisible)
+    const yLabel = createAxisLabel('Y+', '#22c55e', !alwaysVisible)
     xLabel.position.copy(center).addScaledVector(uAxis, axisLength * 0.78)
     yLabel.position.copy(center).addScaledVector(vAxis, axisLength * 0.78)
     xLabel.scale.multiplyScalar(0.88)
@@ -910,6 +914,7 @@ function createDirectionArrow(
   normal: Vector3,
   normalLength: number,
   color: number,
+  depthTest = false,
 ): Group {
   const root = new Group()
   root.name = name
@@ -959,7 +964,7 @@ function createDirectionArrow(
       color,
       transparent: false,
       opacity: 1,
-      depthTest: false,
+      depthTest,
       depthWrite: false,
       toneMapped: false,
     }),
@@ -973,7 +978,7 @@ function createDirectionArrow(
   const up = new Vector3(0, 1, 0)
   const solidMaterial = new MeshBasicMaterial({
     color,
-    depthTest: false,
+    depthTest,
     depthWrite: false,
     toneMapped: false,
   })
@@ -1006,8 +1011,16 @@ function addEmitterDirectionArrows(
   length: number,
   color: number,
   bothSides: boolean,
+  depthTest = false,
 ): void {
-  root.add(createDirectionArrow(`${name}-direction`, center, normal, length, color))
+  root.add(createDirectionArrow(
+    `${name}-direction`,
+    center,
+    normal,
+    length,
+    color,
+    depthTest,
+  ))
   if (bothSides) {
     root.add(createDirectionArrow(
       `${name}-reverse-direction`,
@@ -1015,6 +1028,7 @@ function addEmitterDirectionArrows(
       normal.clone().multiplyScalar(-1),
       length,
       color,
+      depthTest,
     ))
   }
 }
@@ -1522,6 +1536,9 @@ function fitCamera(
     }
   } else if (preset === 'Iso') {
     runtime.camera.up.set(...ISO_CAMERA_AXES.up)
+  } else if (preset === '-Iso') {
+    direction.set(...REVERSE_ISO_CAMERA_AXES.direction)
+    runtime.camera.up.set(...REVERSE_ISO_CAMERA_AXES.up)
   } else {
     const config = roiCameraPresetConfig[preset]
     direction.copy(config.direction)
@@ -4581,7 +4598,7 @@ export function ThreeViewerCanvas({
         receiver.normal_flip,
         false,
         receiver === placementPreviewReceiver ? 0.34 : 0.14,
-        receiver === placementPreviewReceiver,
+        false,
         true,
       )
       receiverPlane.userData.rayObjectKind = 'receiver'

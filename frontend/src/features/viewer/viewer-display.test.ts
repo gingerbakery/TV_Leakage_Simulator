@@ -6,6 +6,7 @@ import {
   DEFAULT_CAMERA_FOV_DEGREES,
   getAxisCameraPresetAxes,
   ISO_CAMERA_AXES,
+  REVERSE_ISO_CAMERA_AXES,
   resolveComponentColor,
   resolveComponentColorHex,
   surfaceOpacityFromTransparency,
@@ -27,6 +28,10 @@ describe('viewer display settings', () => {
   it('uses the requested front-oriented ISO and opposite axis views', () => {
     expect(ISO_CAMERA_AXES).toEqual({
       direction: [1, 1, 1],
+      up: [0, 1, 0],
+    })
+    expect(REVERSE_ISO_CAMERA_AXES).toEqual({
+      direction: [-1, -1, -1],
       up: [0, 1, 0],
     })
     expect(getAxisCameraPresetAxes('-XY')).toEqual({
@@ -53,6 +58,9 @@ describe('viewer display settings', () => {
     }
     expect(
       cameraFovForPreset('Iso', AXIS_CAMERA_FOV_DEGREES),
+    ).toBe(DEFAULT_CAMERA_FOV_DEGREES)
+    expect(
+      cameraFovForPreset('-Iso', AXIS_CAMERA_FOV_DEGREES),
     ).toBe(DEFAULT_CAMERA_FOV_DEGREES)
     expect(
       cameraFovForPreset('Fit', AXIS_CAMERA_FOV_DEGREES),

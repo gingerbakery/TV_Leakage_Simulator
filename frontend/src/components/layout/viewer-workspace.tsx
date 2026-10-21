@@ -58,6 +58,7 @@ import {
 const cameraPresets: ViewerCameraPreset[] = [
   'Fit',
   'Iso',
+  '-Iso',
   'XY',
   '-XY',
   'YZ',
@@ -443,7 +444,11 @@ export function ViewerWorkspace({
                   {preset === 'Fit' ? (
                     <Maximize2 aria-hidden="true" />
                   ) : null}
-                  {preset}
+                  {preset === 'Iso'
+                    ? 'ISO'
+                    : preset === '-Iso'
+                      ? '-ISO'
+                      : preset}
                 </Button>
               ))}
             </div>

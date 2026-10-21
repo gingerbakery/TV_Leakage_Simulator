@@ -32,6 +32,7 @@ describe('ViewerWorkspace display controls', () => {
     expect(cameraPresets.className).toContain('min-[390px]:flex')
     expect(renderModes.className).toContain('max-w-full')
     expect(renderModes.className).toContain('flex-wrap')
+    expect(screen.getByRole('button', { name: '-ISO' })).toBeTruthy()
   })
 
   it('enables surface transparency only for surface render modes', () => {
