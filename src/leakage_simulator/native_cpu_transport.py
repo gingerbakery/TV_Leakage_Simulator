@@ -11,6 +11,7 @@ import numpy as np
 from . import native_cpu_counter_wavefront as counter
 from . import native_cpu_intersection as intersection
 from .cpu_parallel import run_cpu_ranges
+from .receiver_binning import receiver_bin_index
 from .wavefront_event_tape import (
     EVENT_TAPE_CONTRACT,
     MAX_BATCH_EVENT_SLOTS,
@@ -57,6 +58,7 @@ class NativeCpuTransportExecution:
 
 def _make_kernel(intersect_kernel, plan_kernel, *, compact=False):
     numba = importlib.import_module('numba')
+    receiver_bin = numba.njit(nogil=True, fastmath=False, inline='always')(receiver_bin_index)
     bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt = counter.PackedBsdf.empty().arrays()
     intersect_kernel = numba.njit(
         nogil=True, fastmath=False, inline='always',
@@ -183,8 +185,18 @@ def _make_kernel(intersect_kernel, plan_kernel, *, compact=False):
                         continue
                     best_distance = distance
                     best_receiver = receiver
-                    best_column = min(grid_columns[receiver] - 1, max(0, int((u_value + half_widths[receiver]) * inverse_widths[receiver] * grid_columns[receiver])))
-                    best_row = min(grid_rows[receiver] - 1, max(0, int((v_value + half_heights[receiver]) * inverse_heights[receiver] * grid_rows[receiver])))
+                    coordinate_scale = (
+                        abs(distance) + abs(origin_x) + abs(origin_y) + abs(origin_z)
+                        + abs(receiver_centers[receiver, 0])
+                        + abs(receiver_centers[receiver, 1])
+                        + abs(receiver_centers[receiver, 2])
+                    )
+                    best_column = receiver_bin(
+                        u_value, half_widths[receiver], inverse_widths[receiver], grid_columns[receiver], coordinate_scale,
+                    )
+                    best_row = receiver_bin(
+                        v_value, half_heights[receiver], inverse_heights[receiver], grid_rows[receiver], coordinate_scale,
+                    )
                 maximum_t[0] = best_distance
                 intersect_kernel(
                     current_origins, current_directions, minimum_t, maximum_t,

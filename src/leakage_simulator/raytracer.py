@@ -21,6 +21,7 @@ from .primary_prefetch import PrimaryPrefetchStats, managed_primary_prefetch, pr
 from .bsdf_guard import bind_bsdf_profiles
 from .bsdf_packed import pack_bsdf_profiles, PackedBsdf, PACKED_CONTRACT
 from .termination import emitter_termination_config, termination_summary
+from .receiver_binning import CONTRACT as RECEIVER_BIN_CONTRACT, receiver_bin_index, receiver_bin_indices
 from .geometry import (
     HitRecord,
     RayBatch as IntersectionRayBatch,
@@ -3302,6 +3303,7 @@ def run_direct_ray_trace(
         compute_execution_state = "gpu_mixed"
         compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
     metrics["_performance_summary"] = {
+        "receiver_bin_assignment_contract": RECEIVER_BIN_CONTRACT,
         "backend": "python_numpy_cpu",
         "execution_path": (
             (
@@ -4543,23 +4545,16 @@ def _find_first_receiver_hits_numeric(
         u_values = u_values[valid]
         v_values = v_values[valid]
         acceptance_cosine = acceptance_cosine[valid]
-        columns = np.clip(
-            (
-                (u_values + frame.half_width)
-                * frame.inverse_width
-                * frame.columns
-            ).astype(np.int64),
-            0,
-            frame.columns - 1,
+        coordinate_scale = (
+            np.abs(candidate_t) + np.abs(origin_x[candidate_indices])
+            + np.abs(origin_y[candidate_indices]) + np.abs(origin_z[candidate_indices])
+            + abs(center_x) + abs(center_y) + abs(center_z)
         )
-        rows = np.clip(
-            (
-                (v_values + frame.half_height)
-                * frame.inverse_height
-                * frame.rows
-            ).astype(np.int64),
-            0,
-            frame.rows - 1,
+        columns = receiver_bin_indices(
+            u_values, frame.half_width, frame.inverse_width, frame.columns, coordinate_scale,
+        )
+        rows = receiver_bin_indices(
+            v_values, frame.half_height, frame.inverse_height, frame.rows, coordinate_scale,
         )
         best_distance[candidate_indices] = candidate_t
         best_receiver[candidate_indices] = receiver_index
@@ -9883,19 +9878,15 @@ def _find_first_receiver_hit(
         )
         if cos_accept < frame.minimum_acceptance_cosine:
             continue
-        col = min(
-            frame.columns - 1,
-            max(
-                0,
-                int((u + frame.half_width) * frame.inverse_width * frame.columns),
-            ),
+        coordinate_scale = (
+            abs(t) + abs(origin_x) + abs(origin_y) + abs(origin_z)
+            + abs(center_x) + abs(center_y) + abs(center_z)
         )
-        row = min(
-            frame.rows - 1,
-            max(
-                0,
-                int((v + frame.half_height) * frame.inverse_height * frame.rows),
-            ),
+        col = receiver_bin_index(
+            u, frame.half_width, frame.inverse_width, frame.columns, coordinate_scale,
+        )
+        row = receiver_bin_index(
+            v, frame.half_height, frame.inverse_height, frame.rows, coordinate_scale,
         )
         # Geometric plane intersection already accounts for projected-area
         # incidence. Acceptance cosine is a gate, not a second power weight.

@@ -33,6 +33,7 @@ from . import gpu_cuda_intersection as cuda_backend
 from . import gpu_cuda_transfer as fixed_transfer
 from . import gpu_cuda_pair_scene as pair_scene_backend
 from . import gpu_cuda_pair_bvh as pair_intersector
+from .receiver_binning import receiver_bin_index
 from .bsdf_packed import PackedBsdf, validate_bsdf_indices, make_bsdf_functions
 from .gpu_cuda_summary_accumulator import (
     GpuSummaryAccumulatorExecution,
@@ -888,6 +889,7 @@ def _make_kernel(*, _intersector_factory=None) -> Callable[..., None]:
     if presence_mode not in ('scalar', 'warp'):
         raise GpuResidentWavefrontProviderError('input_validation', 'gpu_resident_presence_flag_mode_invalid')
     mark_presence = _make_presence_marker(cuda, presence_mode == 'warp')
+    receiver_bin = cuda.jit(device=True, inline=True, fastmath=False)(receiver_bin_index)
 
     @cuda.jit(device=True, inline=True)
     def normalize(x_value, y_value, z_value):
@@ -1670,24 +1672,18 @@ def _make_kernel(*, _intersector_factory=None) -> Callable[..., None]:
                     < receiver_minimum_cosines[receiver_index]
                 ):
                     continue
-                column = int(
-                    (local_u + receiver_half_widths[receiver_index])
-                    * receiver_inverse_widths[receiver_index]
-                    * receiver_columns[receiver_index]
+                coordinate_scale = (
+                    abs(distance) + abs(origin_x) + abs(origin_y) + abs(origin_z)
+                    + abs(center_x) + abs(center_y) + abs(center_z)
                 )
-                row = int(
-                    (local_v + receiver_half_heights[receiver_index])
-                    * receiver_inverse_heights[receiver_index]
-                    * receiver_rows[receiver_index]
+                column = receiver_bin(
+                    local_u, receiver_half_widths[receiver_index],
+                    receiver_inverse_widths[receiver_index], receiver_columns[receiver_index], coordinate_scale,
                 )
-                if column < 0:
-                    column = 0
-                elif column >= receiver_columns[receiver_index]:
-                    column = receiver_columns[receiver_index] - 1
-                if row < 0:
-                    row = 0
-                elif row >= receiver_rows[receiver_index]:
-                    row = receiver_rows[receiver_index] - 1
+                row = receiver_bin(
+                    local_v, receiver_half_heights[receiver_index],
+                    receiver_inverse_heights[receiver_index], receiver_rows[receiver_index], coordinate_scale,
+                )
                 best_receiver_distance = distance
                 best_receiver = receiver_index
                 best_receiver_row = row
