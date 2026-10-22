@@ -31,7 +31,7 @@ describe('viewer display settings', () => {
       up: [0, 1, 0],
     })
     expect(REVERSE_ISO_CAMERA_AXES).toEqual({
-      direction: [-1, -1, -1],
+      direction: [-1, 1, -1],
       up: [0, 1, 0],
     })
     expect(getAxisCameraPresetAxes('-XY')).toEqual({

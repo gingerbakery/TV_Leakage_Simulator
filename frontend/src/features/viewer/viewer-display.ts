@@ -60,9 +60,9 @@ export const ISO_CAMERA_AXES = {
 }
 
 export const REVERSE_ISO_CAMERA_AXES = {
-  // Exact opposite of the front ISO direction while retaining +Y as the
-  // screen-up reference for a stable rear isometric view.
-  direction: [-1, -1, -1] as AxisVector,
+  // Rear ISO mirrors the front ISO around the global Y axis: +Y stays fixed
+  // while the horizontal X/Z viewing directions are reversed.
+  direction: [-1, 1, -1] as AxisVector,
   up: [0, 1, 0] as AxisVector,
 }
 

@@ -7,7 +7,7 @@ import { receiverHeatmapColor } from './receiver-heatmap'
 afterEach(() => vi.restoreAllMocks())
 
 describe('Excel Receiver Heatmap images', () => {
-  it('creates separate labeled images for every Case and Receiver with local +Y at the top', () => {
+  it('combines Existing and View Cone maps per Case and Receiver with local +Y at the top', () => {
     const colors: string[] = []
     let color = ''
     const context = new Proxy({}, {
@@ -24,8 +24,19 @@ describe('Excel Receiver Heatmap images', () => {
     expect(sheets).toHaveLength(2)
     expect(sheets[0].rows[1].slice(0, 3)).toEqual(['A', 'Main receiver', 'a.step'])
     expect(sheets[1].rows[1][0]).toBe('B')
-    expect(sheets[0].images![0]).toMatchObject({ width: 800, height: 600, row: 5 })
+    expect(sheets[0].images).toHaveLength(1)
+    expect(sheets[0].images![0]).toMatchObject({ width: 1600, height: 600, row: 5 })
     expect(sheets[0].images![0].png).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))
+    expect(sheets[0].rows[2]).toEqual([
+      'Scale mode',
+      'Minimum (nit)',
+      'Maximum (nit)',
+      'Existing Peak (nit)',
+      'View Cone Peak (nit)',
+    ])
+    expect(Number(sheets[0].rows[3][4])).toBeGreaterThanOrEqual(
+      Number(sheets[0].rows[3][3]),
+    )
     // Source row 1 (positive local Y) is drawn first, not row 0.
     expect(colors[1]).toBe(`rgb(${receiverHeatmapColor(Math.sqrt(0.003 / 0.004)).join(',')})`)
     const custom = resultExcelImageSheets(cases, { mode: 'customize', minNit: 2, maxNit: 20 })
