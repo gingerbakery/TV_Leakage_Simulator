@@ -8,10 +8,12 @@ import {
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 
 import {
+  cadCaseRayTraceSetupHash,
   createWorkspaceStore,
   defaultRayPathDisplayFilters,
   defaultRayTraceConfig,
   maxReflectionDepth,
+  snapshotCadCasesForRayTrace,
   type WorkspaceProjectState,
 } from './workspace-store'
 
@@ -56,6 +58,25 @@ describe('workspace store', () => {
     actions.removeAccessoryCad(caseId, accessory.accessoryId)
     expect(store.getState().cadCases[0].accessoryCads).toEqual([])
   })
+
+  it('restores Accessory CAD identity and visibility from a Workspace package', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'main.step', displayName: 'main.step' })
+    const caseId = store.getState().activeCadCaseId!
+    actions.restoreCadCaseAccessories(caseId, [{
+      accessoryId: 'saved-shield',
+      cad: { path: 'restored/shield.step', displayName: 'Shield.step' },
+      visible: false,
+    }])
+
+    expect(store.getState().cadCases[0].accessoryCads).toEqual([{
+      accessoryId: 'saved-shield',
+      cad: { path: 'restored/shield.step', displayName: 'Shield.step' },
+      visible: false,
+    }])
+  })
+
   it('keeps editable Case names and captions exactly as entered', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions
@@ -159,6 +180,253 @@ describe('workspace store', () => {
       ray_count: 5_000,
       max_depth: 2,
     })
+  })
+
+  it('captures immutable batch snapshots including unsaved active Case edits', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.addAccessoryCad(caseA, {
+      path: 'board.step',
+      displayName: 'board.step',
+    })
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      ray_count: 44_000,
+      max_depth: 8,
+    })
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      ray_count: 77_000,
+      max_depth: 11,
+    })
+
+    const snapshots = snapshotCadCasesForRayTrace(
+      store.getState(),
+      [caseB, caseA, caseB],
+    )
+
+    expect(snapshots.map((item) => item.caseId)).toEqual([caseB, caseA])
+    expect(snapshots[0].workspaceState.rayTraceConfig).toMatchObject({
+      ray_count: 77_000,
+      max_depth: 11,
+    })
+    expect(snapshots[1].workspaceState.rayTraceConfig).toMatchObject({
+      ray_count: 44_000,
+      max_depth: 8,
+    })
+    expect(snapshots[1].accessoryCads[0].cad.path).toBe('board.step')
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      ray_count: 1,
+    })
+    expect(snapshots[0].workspaceState.rayTraceConfig.ray_count).toBe(77_000)
+  })
+
+  it('uses a stable analysis-only setup hash', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case.step', displayName: 'case.step' })
+    const snapshot = snapshotCadCasesForRayTrace(
+      store.getState(),
+      [store.getState().activeCadCaseId!],
+    )[0]
+    const original = snapshot.setupHash
+
+    actions.setHiddenComponentIds([3])
+    actions.setComponentColor(3, '#123456')
+    const displayOnly = snapshotCadCasesForRayTrace(
+      store.getState(),
+      [snapshot.caseId],
+    )[0]
+    expect(displayOnly.setupHash).toBe(original)
+
+    const changed = structuredClone(displayOnly.workspaceState)
+    changed.rayTraceConfig.max_depth += 1
+    expect(
+      cadCaseRayTraceSetupHash(
+        displayOnly.cad,
+        displayOnly.accessoryCads,
+        changed,
+      ),
+    ).not.toBe(original)
+  })
+
+  it('invalidates results only when enabled Leak Preview constraints affect tracing', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'preview.step', displayName: 'preview.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const result = createRayTraceResultFixture()
+    const preview = structuredClone(
+      store.getState().cadCases[0].leakPreviewState!,
+    )
+    preview.blockers = [{
+      id: 'rib', label: 'Rib', enabled: true,
+      baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+      widthMm: 10, heightMm: 10, offsetMm: 0, depthMm: 1, reverse: false,
+    }]
+
+    actions.setActiveCadCaseResult(result)
+    actions.setCadCaseLeakPreviewState(caseId, preview)
+    expect(store.getState().cadCases[0].latestResult?.run_id).toBe(result.run_id)
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      apply_preview_blockers: true,
+    })
+    actions.setActiveCadCaseResult(result)
+    actions.setCadCaseLeakPreviewState(caseId, {
+      ...preview,
+      blockers: [{ ...preview.blockers[0], widthMm: 12 }],
+    })
+    expect(store.getState().cadCases[0].latestResult).toBeNull()
+  })
+
+  it('stores a batch job and result against an inactive Case and rejects stale results', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.upsertReceiver(createRayTraceResultFixture().receivers[0])
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+    const [snapshotA, snapshotB] = snapshotCadCasesForRayTrace(
+      store.getState(),
+      [caseA, caseB],
+    )
+
+    actions.setCadCaseRayTraceJob(caseA, 'batch-job-a')
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseA)?.batchJobId,
+    ).toBe('batch-job-a')
+    expect(store.getState().activeCadCaseId).toBe(caseB)
+    expect(store.getState().activeRayTraceJobId).toBeNull()
+    actions.setActiveCadCase(caseA)
+    expect(store.getState().activeRayTraceJobId).toBeNull()
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseA)?.batchJobId,
+    ).toBe('batch-job-a')
+    actions.setActiveCadCase(caseB)
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseA)?.batchJobId,
+    ).toBe('batch-job-a')
+    expect(
+      actions.validateCadCaseRayTraceSetup(caseA, snapshotA.setupHash),
+    ).toBe('current')
+
+    const result = createRayTraceResultFixture()
+    expect(
+      actions.setCadCaseRayTraceResult(caseA, result, snapshotA.setupHash),
+    ).toBe('saved')
+    expect(store.getState().activeCadCaseId).toBe(caseB)
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseA)?.latestResult?.run_id,
+    ).toBe(result.run_id)
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseA)?.batchJobId,
+    ).toBeNull()
+
+    actions.setRayTraceConfig({
+      ...store.getState().rayTraceConfig,
+      max_depth: store.getState().rayTraceConfig.max_depth + 1,
+    })
+    const staleResult = structuredClone(result)
+    staleResult.run_id = 'stale-run'
+    actions.setCadCaseRayTraceJob(caseB, 'batch-job-b')
+    expect(
+      actions.validateCadCaseRayTraceSetup(caseB, snapshotB.setupHash),
+    ).toBe('stale')
+    expect(
+      actions.setCadCaseRayTraceResult(caseB, staleResult, snapshotB.setupHash),
+    ).toBe('stale')
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseB)?.latestResult,
+    ).toBeNull()
+    expect(
+      store.getState().cadCases.find((item) => item.caseId === caseB)?.batchJobId,
+    ).toBeNull()
+  })
+
+  it('detaches an active Case from older single-run sources when Batch saves a result', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = store.getState().activeCadCaseId!
+    const oldResult = createRayTraceResultFixture()
+    oldResult.run_id = 'old-single-run'
+    actions.upsertReceiver(oldResult.receivers[0])
+    actions.setActiveRayTraceJobId('old-single-job')
+    actions.setActiveCadCaseResult(oldResult)
+    actions.setRestoredRayTraceResult(oldResult)
+    const [snapshot] = snapshotCadCasesForRayTrace(
+      store.getState(),
+      [caseId],
+    )
+    const batchResult = structuredClone(oldResult)
+    batchResult.run_id = 'new-batch-run'
+
+    expect(actions.setCadCaseRayTraceResult(
+      caseId,
+      batchResult,
+      snapshot.setupHash,
+    )).toBe('saved')
+
+    const state = store.getState()
+    const restoredCase = state.cadCases.find((item) => item.caseId === caseId)
+    expect(restoredCase?.latestJobId).toBeNull()
+    expect(restoredCase?.latestResult?.run_id).toBe('new-batch-run')
+    expect(state.activeRayTraceJobId).toBeNull()
+    expect(state.restoredRayTraceResult).toBeNull()
+  })
+
+  it('keeps Case topology locked during execution and clears only the expected single job', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = store.getState().activeCadCaseId!
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = store.getState().activeCadCaseId!
+
+    actions.setSingleRayTraceRun({ caseId: caseB, jobId: 'segment-1' })
+    actions.setActiveCadCase(caseA)
+    actions.setCadCaseVisible(caseA, true)
+    actions.removeCadCase(caseA)
+    actions.addCadCase({ path: 'blocked.step', displayName: 'blocked.step' })
+    actions.addAccessoryCad(caseB, {
+      path: 'blocked-accessory.step',
+      displayName: 'blocked-accessory.step',
+    })
+
+    expect(store.getState()).toMatchObject({
+      activeCadCaseId: caseB,
+      singleRayTraceRun: { caseId: caseB, jobId: 'segment-1' },
+    })
+    expect(store.getState().cadCases.map((item) => item.caseId)).toEqual([
+      caseA,
+      caseB,
+    ])
+    expect(store.getState().cadCases[1].accessoryCads).toEqual([])
+
+    // A late terminal event from the previous convergence segment must not
+    // clear ownership after the next segment has already started.
+    actions.setSingleRayTraceRun({ caseId: caseB, jobId: 'segment-2' })
+    actions.clearSingleRayTraceRun('segment-1')
+    expect(store.getState().singleRayTraceRun?.jobId).toBe('segment-2')
+    actions.clearSingleRayTraceRun('segment-2')
+    expect(store.getState().singleRayTraceRun).toBeNull()
+
+    actions.setBatchRayTraceActive(true)
+    actions.setActiveCadCase(caseA)
+    actions.removeCadCase(caseA)
+    actions.addCadCase({ path: 'also-blocked.step', displayName: 'also-blocked.step' })
+    expect(store.getState().activeCadCaseId).toBe(caseB)
+    expect(store.getState().cadCases).toHaveLength(2)
+    actions.setBatchRayTraceActive(false)
   })
 
   it('stores lightweight Component matching metadata with its CAD Case', () => {

@@ -11,6 +11,7 @@ import type {
   SceneComponentMatchMetadata,
   OpticalProfile,
 } from '@/api'
+import type { LeakPreviewProjectState } from '@/features/leak-preview/leak-preview-model'
 
 export interface ActiveCad {
   path: string
@@ -32,9 +33,13 @@ export interface CadCase {
   note?: string
   workspaceState?: WorkspaceProjectState
   latestJobId?: string | null
+  /** Transient Batch job tracking; never drives the single-run query/panel. */
+  batchJobId?: string | null
   latestResult?: RayTraceResult | null
   componentMatchMetadata?: SceneComponentMatchMetadata[]
   accessoryCads: AccessoryCad[]
+  /** Case-owned precision-preview inputs used by Batch and project restore. */
+  leakPreviewState?: LeakPreviewProjectState
 }
 
 export interface CopySetupTarget {
@@ -197,6 +202,12 @@ export interface WorkspaceSnapshot {
   activeCad: ActiveCad | null
   cadCases: CadCase[]
   activeCadCaseId: string | null
+  /** Transient owner of the one allowed non-Batch Ray Tracing execution. */
+  singleRayTraceRun: {
+    caseId: string
+    jobId: string | null
+  } | null
+  batchRayTraceActive: boolean
   selectedFaceIds: number[]
   selectedComponentIds: number[]
   selectionKind: 'component' | 'faces' | 'roi_cap' | null
@@ -275,10 +286,27 @@ export type WorkspaceProjectState = Pick<
   | 'rayPathDisplayFilters'
 >
 
+export interface CadCaseRayTraceSnapshot {
+  caseId: string
+  order: number
+  name: string
+  note: string
+  cad: ActiveCad
+  accessoryCads: AccessoryCad[]
+  leakPreviewState?: LeakPreviewProjectState
+  workspaceState: WorkspaceProjectState
+  setupHash: string
+}
+
+export type CadCaseResultStoreOutcome = 'saved' | 'stale' | 'missing'
+export type CadCaseSetupValidationOutcome = 'current' | 'stale' | 'missing'
+
 export interface WorkspaceActions {
+  replaceWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void
   setActiveCad(cad: ActiveCad | null): void
   addCadCase(cad: ActiveCad): void
   addAccessoryCad(caseId: string, cad: ActiveCad): void
+  restoreCadCaseAccessories(caseId: string, accessories: AccessoryCad[]): void
   setAccessoryCadVisible(caseId: string, accessoryId: string, visible: boolean): void
   removeAccessoryCad(caseId: string, accessoryId: string): void
   setActiveCadCase(caseId: string): void
@@ -288,7 +316,26 @@ export interface WorkspaceActions {
     caseId: string,
     metadata: SceneComponentMatchMetadata[],
   ): void
+  setCadCaseLeakPreviewState(
+    caseId: string,
+    state: LeakPreviewProjectState | undefined,
+  ): void
   setActiveCadCaseResult(result: RayTraceResult): void
+  setSingleRayTraceRun(
+    run: { caseId: string; jobId: string | null } | null,
+  ): void
+  clearSingleRayTraceRun(expectedJobId: string): void
+  setBatchRayTraceActive(active: boolean): void
+  setCadCaseRayTraceJob(caseId: string, jobId: string | null): void
+  validateCadCaseRayTraceSetup(
+    caseId: string,
+    expectedSetupHash: string,
+  ): CadCaseSetupValidationOutcome
+  setCadCaseRayTraceResult(
+    caseId: string,
+    result: RayTraceResult,
+    expectedSetupHash: string,
+  ): CadCaseResultStoreOutcome
   removeCadCaseReceiverResult(caseId: string, receiverId: string): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
   copyActiveSetupToCases(targets: Iterable<CopySetupTarget>): void
@@ -523,6 +570,22 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
   receiver_importance_fraction: 0.5,
   bounce_sampling_strategy: 'source',
   bounce_receiver_importance_fraction: 0.5,
+}
+
+function blankLeakPreviewProjectState(): LeakPreviewProjectState {
+  return {
+    sourceMode: 'face',
+    sourceFaceIds: [],
+    sourceComponentIds: [],
+    sourceBodyFaceCount: 0,
+    quality: 'balanced',
+    directions: ['pos_z'],
+    visualizationVisible: true,
+    ignoreAreasVisible: true,
+    blockersVisible: true,
+    ignoreAreas: [],
+    blockers: [],
+  }
 }
 
 export const maxReflectionDepth = 1000
@@ -768,8 +831,163 @@ function blankProjectState(): WorkspaceProjectState {
     activeCad: null,
     cadCases: [],
     activeCadCaseId: null,
+    singleRayTraceRun: null,
+    batchRayTraceActive: false,
     ...blank,
   })
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null'
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`
+  }
+  return `{${Object.entries(value)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+    .join(',')}}`
+}
+
+function fnv1a64(value: string): string {
+  let hash = 0xcbf29ce484222325n
+  const prime = 0x100000001b3n
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * prime)
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+
+/** Ordered CAD sources used by the backend composite-scene contract. */
+export function cadCaseRayTraceSourcePaths(
+  snapshot: Pick<CadCaseRayTraceSnapshot, 'cad' | 'accessoryCads'>,
+): string[] {
+  return [
+    snapshot.cad.path,
+    ...snapshot.accessoryCads
+      .filter((accessory) => accessory.visible)
+      .map((accessory) => accessory.cad.path),
+  ]
+}
+
+/**
+ * Stable identity of inputs that can change a Ray Tracing result. Display-only
+ * Case state is intentionally excluded so hiding a component or recoloring the
+ * Viewer while a long run is active does not invalidate a valid result.
+ */
+function effectiveLeakPreviewTraceInputs(
+  leakPreviewState: LeakPreviewProjectState | undefined,
+  rayTraceConfig: RayTraceConfigRequest,
+) {
+  if (
+    !rayTraceConfig.apply_preview_blockers &&
+    !rayTraceConfig.apply_allowed_areas
+  ) return null
+  if (!leakPreviewState) return { missing: true }
+  return {
+    blockers: rayTraceConfig.apply_preview_blockers
+      ? leakPreviewState.blockers
+          .filter((item) => item.enabled)
+          .map((item) => ({
+            id: item.id,
+            baseCenter: item.baseCenter,
+            uAxis: item.uAxis,
+            vAxis: item.vAxis,
+            normal: item.normal,
+            widthMm: item.widthMm,
+            heightMm: item.heightMm,
+            offsetMm: item.offsetMm,
+            depthMm: item.depthMm,
+            reverse: item.reverse,
+          }))
+      : [],
+    ignoreAreas: rayTraceConfig.apply_allowed_areas
+      ? leakPreviewState.ignoreAreas
+          .filter((item) => item.enabled)
+          .map((item) => ({ id: item.id, regions: item.regions }))
+      : [],
+  }
+}
+
+export function cadCaseRayTraceSetupHash(
+  cad: ActiveCad,
+  accessoryCads: AccessoryCad[],
+  workspaceState: WorkspaceProjectState,
+  leakPreviewState?: LeakPreviewProjectState,
+): string {
+  const normalized = normalizeProjectState(workspaceState)
+  const leakPreviewTraceInputs = effectiveLeakPreviewTraceInputs(
+    leakPreviewState,
+    normalized.rayTraceConfig,
+  )
+  const canonical = stableJson({
+    contract: 'cad-case-raytrace-setup.v1',
+    sourcePaths: cadCaseRayTraceSourcePaths({ cad, accessoryCads }),
+    excludedComponentIds: normalized.excludedComponentIds,
+    deletedComponentIds: normalized.deletedComponentIds,
+    materialAssignments: normalized.materialAssignments,
+    bsdfAssets: normalized.bsdfAssets ?? [],
+    transformRules: normalized.transformRules,
+    roiScopes: normalized.roiScopes,
+    emitters: normalized.emitters,
+    receivers: normalized.receivers,
+    rayTraceConfig: normalized.rayTraceConfig,
+    leakPreviewTraceInputs,
+  })
+  return `cad-case-raytrace-setup.v1:${canonical.length}:${fnv1a64(canonical)}`
+}
+
+function effectiveCadCaseProjectState(
+  state: WorkspaceSnapshot,
+  cadCase: CadCase,
+): WorkspaceProjectState {
+  return normalizeProjectState(
+    cadCase.caseId === state.activeCadCaseId
+      ? projectStateFromSnapshot(state)
+      : cadCase.workspaceState ?? blankProjectState(),
+  )
+}
+
+/** Capture immutable, execution-ready Case inputs without changing the active Case. */
+export function snapshotCadCasesForRayTrace(
+  state: WorkspaceSnapshot,
+  caseIds: Iterable<string>,
+): CadCaseRayTraceSnapshot[] {
+  const byId = new Map(state.cadCases.map((item) => [item.caseId, item]))
+  const seen = new Set<string>()
+  const snapshots: CadCaseRayTraceSnapshot[] = []
+  for (const caseId of caseIds) {
+    if (seen.has(caseId)) continue
+    seen.add(caseId)
+    const cadCase = byId.get(caseId)
+    if (!cadCase) continue
+    const workspaceState = effectiveCadCaseProjectState(state, cadCase)
+    const accessoryCads = structuredClone(cadCase.accessoryCads ?? [])
+    const leakPreviewState = cadCase.leakPreviewState
+      ? structuredClone(cadCase.leakPreviewState)
+      : undefined
+    const cad = structuredClone(cadCase.cad)
+    snapshots.push({
+      caseId: cadCase.caseId,
+      order: cadCase.order,
+      name: cadCase.name || `CASE ${String(cadCase.order).padStart(2, '0')}`,
+      note: cadCase.note ?? '',
+      cad,
+      accessoryCads,
+      leakPreviewState,
+      workspaceState: structuredClone(workspaceState),
+      setupHash: cadCaseRayTraceSetupHash(
+        cad,
+        accessoryCads,
+        workspaceState,
+        leakPreviewState,
+      ),
+    })
+  }
+  return snapshots
 }
 
 function restoredSceneState(projectState: WorkspaceProjectState) {
@@ -1002,7 +1220,11 @@ function samePlacementPreview(
 
 function createSceneSnapshot(): Omit<
   WorkspaceSnapshot,
-  'activeCad' | 'cadCases' | 'activeCadCaseId'
+  | 'activeCad'
+  | 'cadCases'
+  | 'activeCadCaseId'
+  | 'singleRayTraceRun'
+  | 'batchRayTraceActive'
 > {
   return {
     selectedFaceIds: [],
@@ -1056,14 +1278,23 @@ function createWorkspaceSnapshot(): WorkspaceSnapshot {
     activeCad: null,
     cadCases: [],
     activeCadCaseId: null,
+    singleRayTraceRun: null,
+    batchRayTraceActive: false,
     ...createSceneSnapshot(),
   }
 }
 
 export function createWorkspaceStore(): WorkspaceStoreApi {
-  return createStore<WorkspaceStore>()((set) => ({
+  return createStore<WorkspaceStore>()((set, get) => ({
     ...createWorkspaceSnapshot(),
     actions: {
+      replaceWorkspaceSnapshot: (snapshot) => {
+        set({
+          ...structuredClone(snapshot),
+          singleRayTraceRun: null,
+          batchRayTraceActive: false,
+        })
+      },
       setActiveCad: (activeCad) => {
         set({
           activeCad,
@@ -1072,6 +1303,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       addCadCase: (cad) => {
         set((state) => {
+          if (state.singleRayTraceRun || state.batchRayTraceActive) return state
           // The upload service intentionally reuses one content-addressed
           // CAD path for identical files. Importing that path again must
           // still create an independent analysis Case with its own setup and
@@ -1084,6 +1316,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             workspaceState: blankProjectState(),
             latestResult: null,
             accessoryCads: [],
+            leakPreviewState: blankLeakPreviewProjectState(),
           }
           const savedCases = state.cadCases.map((item) =>
             item.caseId === state.activeCadCaseId
@@ -1106,7 +1339,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         })
       },
       addAccessoryCad: (caseId, cad) => {
-        set((state) => ({
+        set((state) => state.singleRayTraceRun || state.batchRayTraceActive
+          ? state
+          : ({
           cadCases: state.cadCases.map((item) => item.caseId === caseId
             ? { ...item, latestJobId: null, latestResult: null, accessoryCads: [
                 ...(item.accessoryCads ?? []),
@@ -1121,8 +1356,29 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           } : {}),
         }))
       },
-      setAccessoryCadVisible: (caseId, accessoryId, visible) => {
+      restoreCadCaseAccessories: (caseId, accessories) => {
+        const restored = structuredClone(accessories)
         set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? {
+                ...item,
+                latestJobId: null,
+                latestResult: null,
+                accessoryCads: restored,
+              }
+            : item),
+          ...(state.activeCadCaseId === caseId ? {
+            activeRayTraceJobId: null,
+            restoredRayTraceResult: null,
+            selectedFaceIds: [],
+            selectedComponentIds: [],
+          } : {}),
+        }))
+      },
+      setAccessoryCadVisible: (caseId, accessoryId, visible) => {
+        set((state) => state.singleRayTraceRun || state.batchRayTraceActive
+          ? state
+          : ({
           cadCases: state.cadCases.map((item) => item.caseId === caseId
             ? { ...item, latestJobId: null, latestResult: null,
                 accessoryCads: (item.accessoryCads ?? []).map((accessory) =>
@@ -1137,7 +1393,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         }))
       },
       removeAccessoryCad: (caseId, accessoryId) => {
-        set((state) => ({
+        set((state) => state.singleRayTraceRun || state.batchRayTraceActive
+          ? state
+          : ({
           cadCases: state.cadCases.map((item) => item.caseId === caseId
             ? { ...item, latestJobId: null, latestResult: null,
                 accessoryCads: (item.accessoryCads ?? []).filter((accessory) => accessory.accessoryId !== accessoryId) }
@@ -1152,6 +1410,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       setActiveCadCase: (caseId) => {
         set((state) => {
+          if (state.singleRayTraceRun || state.batchRayTraceActive) return state
           const target = state.cadCases.find(
             (item) => item.caseId === caseId,
           )
@@ -1176,6 +1435,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       setCadCaseVisible: (caseId, visible) => {
         set((state) => {
+          if (state.singleRayTraceRun || state.batchRayTraceActive) return state
           const target = state.cadCases.find((item) => item.caseId === caseId)
           if (!target) return state
           if (!visible) {
@@ -1213,6 +1473,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       removeCadCase: (caseId) => {
         set((state) => {
+          if (state.singleRayTraceRun || state.batchRayTraceActive) return state
           const removedIndex = state.cadCases.findIndex(
             (item) => item.caseId === caseId,
           )
@@ -1263,6 +1524,46 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ),
         }))
       },
+      setCadCaseLeakPreviewState: (caseId, leakPreviewState) => {
+        set((state) => {
+          const target = state.cadCases.find((item) => item.caseId === caseId)
+          if (!target) return state
+          const next = leakPreviewState
+            ? structuredClone(leakPreviewState)
+            : undefined
+          if (sameSerializableValue(target.leakPreviewState, next)) return state
+          const workspaceState = effectiveCadCaseProjectState(state, target)
+          const traceInputsChanged = !sameSerializableValue(
+            effectiveLeakPreviewTraceInputs(
+              target.leakPreviewState,
+              workspaceState.rayTraceConfig,
+            ),
+            effectiveLeakPreviewTraceInputs(
+              next,
+              workspaceState.rayTraceConfig,
+            ),
+          )
+          return {
+            cadCases: state.cadCases.map((item) =>
+              item.caseId === caseId
+                ? {
+                    ...item,
+                    leakPreviewState: next,
+                    ...(traceInputsChanged
+                      ? { latestJobId: null, latestResult: null }
+                      : {}),
+                  }
+                : item,
+            ),
+            ...(traceInputsChanged && state.activeCadCaseId === caseId
+              ? {
+                  activeRayTraceJobId: null,
+                  restoredRayTraceResult: null,
+                }
+              : {}),
+          }
+        })
+      },
       setActiveCadCaseResult: (result) => {
         set((state) => ({
           cadCases: state.cadCases.map((item) =>
@@ -1279,6 +1580,95 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               : item,
           ),
         }))
+      },
+      setSingleRayTraceRun: (singleRayTraceRun) => {
+        set({
+          singleRayTraceRun: singleRayTraceRun
+            ? { ...singleRayTraceRun }
+            : null,
+        })
+      },
+      clearSingleRayTraceRun: (expectedJobId) => {
+        set((state) =>
+          state.singleRayTraceRun?.jobId === expectedJobId
+            ? { singleRayTraceRun: null }
+            : state,
+        )
+      },
+      setBatchRayTraceActive: (batchRayTraceActive) => {
+        set({ batchRayTraceActive })
+      },
+      setCadCaseRayTraceJob: (caseId, jobId) => {
+        set((state) => ({
+          cadCases: state.cadCases.map((item) =>
+            item.caseId === caseId
+              ? { ...item, batchJobId: jobId }
+              : item,
+          ),
+        }))
+      },
+      validateCadCaseRayTraceSetup: (caseId, expectedSetupHash) => {
+        const state = get()
+        const target = state.cadCases.find((item) => item.caseId === caseId)
+        if (!target) return 'missing'
+        const workspaceState = effectiveCadCaseProjectState(state, target)
+        return cadCaseRayTraceSetupHash(
+          target.cad,
+          target.accessoryCads ?? [],
+          workspaceState,
+          target.leakPreviewState,
+        ) === expectedSetupHash
+          ? 'current'
+          : 'stale'
+      },
+      setCadCaseRayTraceResult: (caseId, result, expectedSetupHash) => {
+        let outcome: CadCaseResultStoreOutcome = 'missing'
+        set((state) => {
+          const target = state.cadCases.find((item) => item.caseId === caseId)
+          if (!target) return state
+          const workspaceState = effectiveCadCaseProjectState(state, target)
+          const currentHash = cadCaseRayTraceSetupHash(
+            target.cad,
+            target.accessoryCads ?? [],
+            workspaceState,
+            target.leakPreviewState,
+          )
+          if (currentHash !== expectedSetupHash) {
+            outcome = 'stale'
+            return {
+              cadCases: state.cadCases.map((item) =>
+                item.caseId === caseId
+                  ? { ...item, batchJobId: null }
+                  : item,
+              ),
+            }
+          }
+          outcome = 'saved'
+          return {
+            cadCases: state.cadCases.map((item) =>
+              item.caseId === caseId
+                ? {
+                    ...item,
+                    workspaceState: structuredClone(workspaceState),
+                    latestJobId: null,
+                    batchJobId: null,
+                    latestResult: mergeRayTraceReceiverResults(
+                      item.latestResult,
+                      result,
+                      workspaceState.receivers,
+                    ),
+                  }
+                : item,
+            ),
+            ...(state.activeCadCaseId === caseId
+              ? {
+                  activeRayTraceJobId: null,
+                  restoredRayTraceResult: null,
+                }
+              : {}),
+          }
+        })
+        return outcome
       },
       removeCadCaseReceiverResult: (caseId, receiverId) => {
         set((state) => ({
@@ -1993,6 +2383,8 @@ export const workspaceSelectors = {
   activeCad: (state: WorkspaceStore) => state.activeCad,
   cadCases: (state: WorkspaceStore) => state.cadCases,
   activeCadCaseId: (state: WorkspaceStore) => state.activeCadCaseId,
+  singleRayTraceRun: (state: WorkspaceStore) => state.singleRayTraceRun,
+  batchRayTraceActive: (state: WorkspaceStore) => state.batchRayTraceActive,
   selectedFaceIds: (state: WorkspaceStore) => state.selectedFaceIds,
   selectionKind: (state: WorkspaceStore) => state.selectionKind,
   selectedComponentIds: (state: WorkspaceStore) =>

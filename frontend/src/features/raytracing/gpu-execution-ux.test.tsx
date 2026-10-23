@@ -39,6 +39,10 @@ const readyStatus = {
 
 function setupRayObjects(kind: 'datum' | 'face' | 'polygon' = 'datum') {
   const actions = workspaceStore.getState().actions
+  actions.addCadCase({
+    path: `gpu-${kind}.step`,
+    displayName: `gpu-${kind}.step`,
+  })
   const datum = createDatumEmitter(
     'emitter_001',
     [0, 0, 0],

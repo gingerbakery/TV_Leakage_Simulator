@@ -97,10 +97,17 @@ class LtProductionIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "synthetic.bitsam"
-            for schema in ("bitsam-project.v1", "bitsam-project.v1-bsdf1", "bitsam-project.v99"):
+            for schema in (
+                "bitsam-project.v1",
+                "bitsam-project.v1-bsdf1",
+                "bitsam-project.v1-preview1",
+                "bitsam-project.v99",
+            ):
                 with self.subTest(schema=schema):
                     project = saved_fixture()
                     project["schema_version"] = schema
+                    if schema == "bitsam-project.v1-preview1":
+                        project["leak_preview"] = {"blockers": [], "ignoreAreas": []}
                     path.write_text(json.dumps(project), encoding="utf-8")
                     if schema.endswith("v99"):
                         with self.assertRaises(ValueError):

@@ -2,6 +2,13 @@
 
 현재 CAD가 열린 상태의 Save는 원본 CAD를 포함하는 **V2 패키지**를 생성한다. 새 저장 방식과 제한 사항은 [BITSAM V2](bitsam-portable-v2.md)를 참고한다. 아래는 기존 JSON V1 및 V2 내부 `project.json`의 설정 구조 설명이다.
 
+두 개 이상의 CAD Case가 열려 있거나 한 Case에 Accessory CAD가 있으면 Save는
+`bitsam-workspace.v1` Workspace 패키지를 생성한다. 이 파일은 모든 Case의 V2 패키지, Case
+순서·이름·메모, 활성 Case, Accessory CAD 원본과 표시 상태를 한 번에
+보존한다. Load 시 현재 작업을 교체하기 전에 확인하고, 전체 검증이 끝난
+경우에만 Workspace를 복원한다. 상세 구조와 호환성 계약은
+[BITSAM V2 프로젝트와 Workspace 패키지](bitsam-portable-v2.md)를 참고한다.
+
 ## 목적
 
 - TV Leakage Simulator에서 구성한 분석 조건을 저장하고 다시 불러오기 위한 전용 프로젝트 파일이다.
@@ -33,6 +40,7 @@
 - Component/Face별 Transform rule
 - Emitter와 Receiver 정의
 - Ray tracing 설정
+- Case별 Leak Preview 입력과 정밀 해석용 차광 구조·허용 영역
 - Ray path 표시 필터
 - Component/Face 색상, 사용자 광학 프로파일
 - 지원되는 LT ASCII BSDF 원본 텍스트·파싱 데이터와 연결 ID (`workspace.bsdfAssets`)
@@ -43,7 +51,7 @@
 - 원본 STEP/STP/X_T CAD 파일
 - 서버가 생성한 임시 업로드 경로
 - 현재 선택한 면 또는 부품
-- 편집 중인 Preview와 팝업 상태
+- 실행 중인 Leak Preview 결과·샘플 점·선택 제스처와 팝업 상태
 - 실행 중인 Ray tracing Job ID
 
 CAD의 임시 절대 경로는 저장하지 않는다. BSDF 원본 텍스트는 그대로 보관하므로,
@@ -55,6 +63,11 @@ BSDF를 무시하고 기존 광학 값으로 계산하는 상황을 방지한다
 기존 `bitsam-project.v1`을 유지하며, 새 빌드는 기존 파일도 계속 읽는다.
 BSDF 자산의 `transport`에는 계산 모델, 선택 파장, 입사각 끝값 정책을 보관한다.
 실제 반사 전용 CPU 계산의 [지원 범위](bsdf-transport-validation.md)를 참고한다.
+
+Leak Preview 조건을 포함한 파일은 내부 설정 스키마를
+`bitsam-project.v1-preview1`로 표시한다. 이 스키마는 BSDF 자산도 함께 담을 수
+있다. 구버전이 Ray Tracing 적용 플래그만 읽고 실제 차광 구조·허용 영역을
+누락하는 일을 막기 위해, 이 확장을 모르는 빌드는 파일을 거부한다.
 
 ## 저장과 불러오기
 

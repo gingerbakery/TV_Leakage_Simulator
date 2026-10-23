@@ -16,7 +16,14 @@ import {
   type RayTraceResult,
 } from '@/api'
 import { useQueryClient } from '@tanstack/react-query'
-import { isPortableProject, loadPortableProject, savePortableProject } from '@/features/projects/portable-project'
+import {
+  isPortableProject,
+  loadPortableBundle,
+  savePortableProject,
+  savePortableWorkspace,
+  type PortableWorkspaceRestore,
+  type PortableWorkspaceSaveCase,
+} from '@/features/projects/portable-project'
 import { ProjectFileDialog, type ProjectFileNotice } from '@/features/projects/project-file-dialog'
 import {
   Box,
@@ -57,13 +64,19 @@ import {
   matchSetupComponents,
   sceneComponentMatchMetadata,
 } from '@/features/projects/copy-analysis-setup'
-import type {
-  RayObjectEditRequest,
-  ViewerCameraFrame,
+import {
+  BatchRayTracingDialog,
+  useBatchRayTracingManager,
+  type RayObjectEditRequest,
+  type ViewerCameraFrame,
 } from '@/features/raytracing'
 import { TransformEditorDialog } from '@/features/transforms'
 import { receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
 import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-preview-geometry'
+import {
+  leakPreviewStore,
+  snapshotLeakPreviewProjectState,
+} from '@/features/leak-preview'
 import {
   groupRoiFacesByComponent,
   resolveFacesInRoiBox,
@@ -71,10 +84,13 @@ import {
 } from '@/features/roi'
 import {
   mergeRayTraceReceiverResults,
+  createWorkspaceStore,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,
+  type CadCase,
   type CopySetupTarget,
+  type WorkspaceSnapshot,
 } from '@/stores'
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
@@ -108,8 +124,30 @@ function clampWorkflowSidebarWidth(
   )
 }
 
+function workspaceSnapshotForCase(
+  state: WorkspaceSnapshot,
+  cadCase: CadCase,
+): WorkspaceSnapshot {
+  if (cadCase.caseId === state.activeCadCaseId) return state
+  return {
+    ...state,
+    ...(cadCase.workspaceState ?? {}),
+    activeCad: cadCase.cad,
+    activeCadCaseId: cadCase.caseId,
+  }
+}
+
+function workspaceProjectName(cases: CadCase[]): string {
+  const first = cases[0]
+  const source = first?.name || first?.cad.displayName || 'leakage-workspace'
+  const extension = source.lastIndexOf('.')
+  const base = (extension > 0 ? source.slice(0, extension) : source).trim()
+  return cases.length > 1 ? `${base || 'leakage'}-workspace` : base
+}
+
 export function SimulatorShell() {
   const queryClient = useQueryClient()
+  const batchRayTracing = useBatchRayTracingManager()
   const [projectProgress, setProjectProgress] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     window.localStorage.getItem('tv-leakage-theme') === 'dark'
@@ -161,8 +199,12 @@ export function SimulatorShell() {
   const [copySetupProgress, setCopySetupProgress] = useState('')
   const [pendingProject, setPendingProject] =
     useState<BitsamProject | null>(null)
+  const [pendingWorkspaceRestore, setPendingWorkspaceRestore] =
+    useState<File | null>(null)
   const [loadedProjectSource, setLoadedProjectSource] =
     useState<BitsamProject | null>(null)
+  const [loadedWorkspaceName, setLoadedWorkspaceName] =
+    useState<string | null>(null)
   const noticeReturnFocusRef = useRef<HTMLElement>(null)
   const projectFileReturnFocusRef = useRef<HTMLElement>(null)
   const componentReturnFocusRef = useRef<HTMLElement>(null)
@@ -203,6 +245,9 @@ export function SimulatorShell() {
     ?.accessoryCads?.filter((item) => item.visible).map((item) => item.cad.path) ?? []
   const activeCadCaseVisible =
     cadCases.find((item) => item.caseId === activeCadCaseId)?.visible ?? true
+  const requiresWorkspacePackage =
+    cadCases.length > 1 ||
+    cadCases.some((item) => (item.accessoryCads ?? []).length > 0)
   const nameOverrides = useWorkspaceStore(
     workspaceSelectors.componentNameOverrides,
   )
@@ -218,9 +263,17 @@ export function SimulatorShell() {
   const restoredRayTraceResult = useWorkspaceStore(
     workspaceSelectors.restoredRayTraceResult,
   )
+  const singleRayTraceRun = useWorkspaceStore(
+    workspaceSelectors.singleRayTraceRun,
+  )
   const sceneQuery = useSceneQuery(activeCad?.path ?? '', activeAccessoryPaths)
   const rayTraceJobQuery = useRayTraceJobQuery(activeRayTraceJobId)
   const rayTraceJob = rayTraceJobQuery.data
+  const trackedSingleRayTraceJobQuery = useRayTraceJobQuery(
+    singleRayTraceRun?.jobId ?? null,
+  )
+  const trackedSingleRayTraceJob = trackedSingleRayTraceJobQuery.data
+  const singleRayTraceRunning = singleRayTraceRun !== null
   const rawRayTraceResult =
     rayTraceJob?.status === 'completed'
       ? rayTraceJob.result
@@ -246,6 +299,50 @@ export function SimulatorShell() {
     (!activeCad ||
       activeCad.displayName.toLocaleLowerCase() ===
         loadedProjectSource.cad.display_name.toLocaleLowerCase())
+
+  useEffect(() => {
+    if (
+      !singleRayTraceRun?.jobId ||
+      trackedSingleRayTraceJob?.job_id !== singleRayTraceRun.jobId ||
+      !['completed', 'failed', 'cancelled'].includes(
+        trackedSingleRayTraceJob.status,
+      )
+    ) return
+    // Auto convergence owns the lock across all of its attached segments. The
+    // Ray Tracing panel clears that lock after deciding whether another
+    // segment is needed. A detached terminal job (for example, a retry whose
+    // result window was closed while start was in flight) no longer belongs to
+    // that chain and can release here after this tracker confirms termination.
+    if (
+      trackedSingleRayTraceJob.status === 'completed' &&
+      rayTraceConfig.auto_convergence &&
+      activeRayTraceJobId === singleRayTraceRun.jobId
+    ) return
+    actions.clearSingleRayTraceRun(singleRayTraceRun.jobId)
+  }, [
+    actions,
+    activeRayTraceJobId,
+    rayTraceConfig.auto_convergence,
+    singleRayTraceRun,
+    trackedSingleRayTraceJob,
+  ])
+
+  useEffect(() => {
+    if (!singleRayTraceRun?.jobId || !trackedSingleRayTraceJobQuery.isError) {
+      return
+    }
+    if (
+      workspaceStore.getState().singleRayTraceRun?.jobId !==
+      singleRayTraceRun.jobId
+    ) return
+    workspaceStore.getState().actions
+      .clearSingleRayTraceRun(singleRayTraceRun.jobId)
+    setNoticeDialog({
+      title: 'Ray Tracing 연결이 종료되었습니다',
+      description:
+        '서버에서 실행 상태를 더 이상 확인할 수 없어 실행 잠금을 해제했습니다. 결과를 확인한 뒤 필요하면 다시 실행해 주세요.',
+    })
+  }, [singleRayTraceRun, trackedSingleRayTraceJobQuery.isError])
 
   useEffect(() => {
     if (!scene || !activeCadCaseId) return
@@ -276,6 +373,9 @@ export function SimulatorShell() {
     if (previousCaseId === null || previousCaseId === activeCadCaseId) return
     const targetCase = cadCases.find(
       (item) => item.caseId === activeCadCaseId,
+    )
+    leakPreviewStore.getState().restoreProjectState(
+      targetCase?.leakPreviewState,
     )
     suppressedCaseJobIdRef.current = targetCase?.latestJobId ?? null
     suppressedCaseRunIdRef.current = targetCase?.latestResult?.run_id ?? null
@@ -445,6 +545,15 @@ export function SimulatorShell() {
     }
 
     actions.restoreProjectState(pendingProject.workspace)
+    if (activeCadCaseId) {
+      actions.setCadCaseLeakPreviewState(
+        activeCadCaseId,
+        pendingProject.leak_preview,
+      )
+    }
+    leakPreviewStore.getState().restoreProjectState(
+      pendingProject.leak_preview,
+    )
     actions.setRestoredRayTraceResult(
       pendingProject.analysis_result ?? null,
     )
@@ -477,6 +586,108 @@ export function SimulatorShell() {
     )
   }, [actions, activeCad, activeCadCaseId, pendingProject, scene])
 
+  const handleSaveWorkspace = async () => {
+    const snapshot = workspaceStore.getState()
+    if (!snapshot.activeCadCaseId || snapshot.cadCases.length === 0) {
+      openFeatureNotice(
+        '저장할 Case가 없습니다',
+        'CAD 모델을 불러온 뒤 Workspace를 저장해 주세요.',
+      )
+      return
+    }
+
+    const savedAt = new Date()
+    const cases: PortableWorkspaceSaveCase[] = []
+    for (let index = 0; index < snapshot.cadCases.length; index += 1) {
+      const item = snapshot.cadCases[index]
+      const accessoryPaths = (item.accessoryCads ?? [])
+        .filter((accessory) => accessory.visible)
+        .map((accessory) => accessory.cad.path)
+      setProjectProgress(
+        `Workspace 준비 중 · ${index + 1}/${snapshot.cadCases.length} · ${item.name || item.cad.displayName}`,
+      )
+      const caseScene = await apiClient.getScene(
+        item.cad.path,
+        undefined,
+        accessoryPaths,
+      )
+      if (item.caseId === snapshot.activeCadCaseId) {
+        queryClient.setQueryData(
+          apiQueryKeys.scene(item.cad.path, accessoryPaths),
+          caseScene,
+        )
+      }
+      const caseSnapshot = workspaceSnapshotForCase(snapshot, item)
+      const project = createBitsamProject(
+        caseScene,
+        caseSnapshot,
+        savedAt,
+        item.caseId === snapshot.activeCadCaseId
+          ? displayedRayTraceResult ?? item.latestResult
+          : item.latestResult,
+        item.caseId === snapshot.activeCadCaseId
+          ? snapshotLeakPreviewProjectState()
+          : item.leakPreviewState,
+      )
+      cases.push({
+        caseId: item.caseId,
+        order: item.order,
+        name: item.name,
+        note: item.note,
+        visible: item.visible,
+        cadPath: item.cad.path,
+        accessoryCads: structuredClone(item.accessoryCads ?? []),
+        project,
+      })
+    }
+
+    const name = loadedWorkspaceName?.trim() ||
+      workspaceProjectName(snapshot.cadCases)
+    const saved = await savePortableWorkspace(
+      name,
+      snapshot.activeCadCaseId,
+      cases,
+      setProjectProgress,
+    )
+    const activeCase = snapshot.cadCases.find(
+      (item) => item.caseId === snapshot.activeCadCaseId,
+    )
+    if (activeCase) {
+      const activeAccessoryPaths = (activeCase.accessoryCads ?? [])
+        .filter((accessory) => accessory.visible)
+        .map((accessory) => accessory.cad.path)
+      try {
+        const refreshedScene = await apiClient.getScene(
+          activeCase.cad.path,
+          undefined,
+          activeAccessoryPaths,
+        )
+        queryClient.setQueryData(
+          apiQueryKeys.scene(activeCase.cad.path, activeAccessoryPaths),
+          refreshedScene,
+        )
+      } catch {
+        void queryClient.invalidateQueries({
+          queryKey: apiQueryKeys.scene(
+            activeCase.cad.path,
+            activeAccessoryPaths,
+          ),
+          exact: true,
+        }).catch(() => undefined)
+      }
+    }
+    if (!saved.cancelled) {
+      setProjectFileNotice({
+        operation: 'save',
+        fileName: `${name}.bitsam`,
+        includesCad: true,
+        includesResult: cases.some((item) => !!item.project.analysis_result),
+        downloadStarted: !!saved.downloaded,
+        caseCount: saved.caseCount ?? cases.length,
+      })
+    }
+  }
+
   const handleSaveProject = async () => {
     if (document.activeElement instanceof HTMLElement) {
       projectFileReturnFocusRef.current = document.activeElement
@@ -490,18 +701,24 @@ export function SimulatorShell() {
     }
 
     try {
+      if (requiresWorkspacePackage) {
+        await handleSaveWorkspace()
+        return
+      }
       const project = activeCad && scene
         ? createBitsamProject(
             scene,
             workspaceStore.getState(),
             new Date(),
             displayedRayTraceResult,
+            snapshotLeakPreviewProjectState(),
           )
         : createBitsamProjectFromLoadedProject(
             loadedProjectSource!,
             workspaceStore.getState(),
             new Date(),
             displayedRayTraceResult,
+            snapshotLeakPreviewProjectState(),
           )
       if (activeCad && scene) {
         setProjectProgress('저장 위치 선택 중…')
@@ -536,6 +753,154 @@ export function SimulatorShell() {
     }
   }
 
+  const applyPortableWorkspace = (
+    restored: PortableWorkspaceRestore,
+    fileName: string,
+  ) => {
+    const sortedCases = [...restored.cases].sort(
+      (left, right) => left.order - right.order,
+    )
+    const activeRestoredCase =
+      sortedCases.find((item) => item.caseId === restored.activeCaseId) ??
+      sortedCases[0]
+    if (!activeRestoredCase) {
+      throw new Error('Workspace에 복원할 Case가 없습니다.')
+    }
+
+    // Build and validate the complete replacement in an isolated store first.
+    // The live Workspace is changed once, only after every Case was restored.
+    const stagedStore = createWorkspaceStore()
+    const stagedActions = stagedStore.getState().actions
+    const restoredCaseIds = new Map<string, string>()
+    for (const item of sortedCases) {
+      stagedActions.addCadCase(item.cad)
+      const newCaseId = stagedStore.getState().activeCadCaseId
+      if (!newCaseId) {
+        throw new Error(
+          `${item.name || item.cad.displayName} Case를 만들지 못했습니다.`,
+        )
+      }
+      restoredCaseIds.set(item.caseId, newCaseId)
+      stagedActions.restoreCadCaseAccessories(newCaseId, item.accessoryCads)
+      stagedActions.setCadCaseLeakPreviewState(
+        newCaseId,
+        item.project.leak_preview,
+      )
+      stagedActions.updateCadCaseMetadata(
+        newCaseId,
+        item.name ?? item.project.case_metadata?.name ?? '',
+        item.note ?? item.project.case_metadata?.note ?? '',
+      )
+      stagedActions.restoreProjectState(item.project.workspace)
+      stagedActions.setRestoredRayTraceResult(
+        item.project.analysis_result ?? null,
+      )
+      if (item.project.analysis_result) {
+        stagedActions.setActiveCadCaseResult(item.project.analysis_result)
+      }
+    }
+
+    const visibleRestoredCase = sortedCases.find((item) => item.visible)
+    const visibleCaseId = visibleRestoredCase
+      ? restoredCaseIds.get(visibleRestoredCase.caseId)
+      : null
+    const lastCaseId = restoredCaseIds.get(sortedCases.at(-1)!.caseId)
+    if (visibleCaseId) {
+      stagedActions.setCadCaseVisible(visibleCaseId, true)
+    } else if (lastCaseId) {
+      stagedActions.setCadCaseVisible(lastCaseId, false)
+    }
+
+    const activeCaseId = restoredCaseIds.get(activeRestoredCase.caseId)
+    if (activeCaseId) stagedActions.setActiveCadCase(activeCaseId)
+    const { actions: _stagedActions, ...stagedSnapshot } = stagedStore.getState()
+
+    for (const item of sortedCases) {
+      if (!item.scene) continue
+      const accessoryPaths = item.accessoryCads
+        .filter((accessory) => accessory.visible)
+        .map((accessory) => accessory.cad.path)
+      queryClient.setQueryData(
+        apiQueryKeys.scene(item.cad.path, accessoryPaths),
+        item.scene,
+      )
+    }
+
+    actions.replaceWorkspaceSnapshot(stagedSnapshot)
+    setPendingProject(null)
+    setLoadedWorkspaceName(restored.workspaceName?.trim() || null)
+    leakPreviewStore.getState().restoreProjectState(
+      activeRestoredCase.project.leak_preview,
+    )
+    const activeResult = activeRestoredCase.project.analysis_result ?? null
+    setLoadedProjectSource(activeRestoredCase.project)
+    setDisplayedRayTraceResult(activeResult)
+    setActiveSection(activeResult ? 'result' : 'model-import')
+    setProjectFileNotice({
+      operation: 'load',
+      fileName,
+      includesCad: true,
+      includesResult: restored.cases.some(
+        (item) => !!item.project.analysis_result,
+      ),
+      caseCount: restored.cases.length,
+      notes: restored.cases.some((item) => !item.traceCached)
+        ? ['일부 Case의 정밀 해석 형상은 첫 해석 시 준비합니다.']
+        : [],
+    })
+  }
+
+  const loadPortableFile = async (file: File) => {
+    const restored = await loadPortableBundle(file, setProjectProgress)
+    if ('cases' in restored) {
+      applyPortableWorkspace(restored, file.name)
+      return
+    }
+    queryClient.setQueryData(
+      apiQueryKeys.scene(restored.cad.path),
+      restored.scene,
+    )
+    setPendingProject(null)
+    setLoadedWorkspaceName(null)
+    actions.addCadCase(restored.cad)
+    const restoredCaseId = workspaceStore.getState().activeCadCaseId
+    if (restoredCaseId && restored.project.case_metadata) {
+      actions.updateCadCaseMetadata(
+        restoredCaseId,
+        restored.project.case_metadata.name ?? '',
+        restored.project.case_metadata.note ?? '',
+      )
+    }
+    if (restoredCaseId) {
+      actions.setCadCaseLeakPreviewState(
+        restoredCaseId,
+        restored.project.leak_preview,
+      )
+    }
+    actions.restoreProjectState(restored.project.workspace)
+    leakPreviewStore.getState().restoreProjectState(
+      restored.project.leak_preview,
+    )
+    actions.setRestoredRayTraceResult(restored.project.analysis_result ?? null)
+    if (restored.project.analysis_result) {
+      actions.setActiveCadCaseResult(restored.project.analysis_result)
+    }
+    setLoadedProjectSource(restored.project)
+    setDisplayedRayTraceResult(restored.project.analysis_result ?? null)
+    setActiveSection(
+      restored.project.analysis_result ? 'result' : 'model-import',
+    )
+    setProjectFileNotice({
+      operation: 'load',
+      fileName: file.name,
+      includesCad: true,
+      includesResult: !!restored.project.analysis_result,
+      notes: restored.traceCached
+        ? []
+        : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
+    })
+  }
+
   const handleLoadProject = async (
     event: ChangeEvent<HTMLInputElement>,
   ) => {
@@ -545,27 +910,11 @@ export function SimulatorShell() {
 
     try {
       if (await isPortableProject(file)) {
-        const restored = await loadPortableProject(file, setProjectProgress)
-        queryClient.setQueryData(apiQueryKeys.scene(restored.cad.path), restored.scene)
-        setPendingProject(null)
-        actions.addCadCase(restored.cad)
-        const restoredCaseId = workspaceStore.getState().activeCadCaseId
-        if (restoredCaseId && restored.project.case_metadata) {
-          actions.updateCadCaseMetadata(restoredCaseId, restored.project.case_metadata.name ?? '', restored.project.case_metadata.note ?? '')
+        if (cadCases.length > 0) {
+          setPendingWorkspaceRestore(file)
+          return
         }
-        actions.restoreProjectState(restored.project.workspace)
-        actions.setRestoredRayTraceResult(restored.project.analysis_result ?? null)
-        if (restored.project.analysis_result) actions.setActiveCadCaseResult(restored.project.analysis_result)
-        setLoadedProjectSource(restored.project)
-        setDisplayedRayTraceResult(restored.project.analysis_result ?? null)
-        setActiveSection(restored.project.analysis_result ? 'result' : 'model-import')
-        setProjectFileNotice({
-          operation: 'load',
-          fileName: file.name,
-          includesCad: true,
-          includesResult: !!restored.project.analysis_result,
-          notes: restored.traceCached ? [] : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
-        })
+        await loadPortableFile(file)
         return
       }
       const project = await readBitsamProjectFile(file)
@@ -855,24 +1204,34 @@ export function SimulatorShell() {
             size="sm"
             aria-label="Save BITSAM project"
             disabled={
-              !!projectProgress || rayTraceJob?.status === 'running' || rayTraceJob?.status === 'queued' ||
+              !!projectProgress || batchRayTracing.isRunning ||
+              singleRayTraceRunning ||
               ((!activeCad || !scene) && !canReuseLoadedProjectReference)
             }
             title={
               (activeCad && scene) || canReuseLoadedProjectReference
-                ? '현재 Case의 CAD·설정·결과를 .bitsam 파일 하나로 저장'
+                ? requiresWorkspacePackage
+                  ? `전체 Workspace ${cadCases.length}개 Case의 CAD·설정·결과를 .bitsam 파일 하나로 저장`
+                  : '현재 Case의 CAD·설정·결과를 .bitsam 파일 하나로 저장'
                 : 'CAD를 먼저 불러와 주세요'
             }
             onClick={handleSaveProject}
           >
             <Save data-icon="inline-start" />
-            <span className="hidden sm:inline">Save</span>
+            <span className="hidden sm:inline">
+              {requiresWorkspacePackage ? 'Save Workspace' : 'Save'}
+            </span>
           </Button>
           <Button
             variant="outline"
             size="sm"
             aria-label="Copy Setup"
-            disabled={!activeCadCaseId || cadCases.length < 2}
+            disabled={
+              batchRayTracing.isRunning ||
+              singleRayTraceRunning ||
+              !activeCadCaseId ||
+              cadCases.length < 2
+            }
             title="현재 Case의 해석 설정을 다른 Case로 복사"
             onClick={() => {
               setCopySetupTargetIds([])
@@ -886,7 +1245,10 @@ export function SimulatorShell() {
             variant="outline"
             size="sm"
             aria-label="Load BITSAM project"
-            disabled={!!projectProgress || rayTraceJob?.status === 'running' || rayTraceJob?.status === 'queued'}
+            disabled={
+              !!projectProgress || batchRayTracing.isRunning ||
+              singleRayTraceRunning
+            }
             title=".bitsam 시뮬레이션 파일 불러오기"
             onClick={(event) => {
               projectFileReturnFocusRef.current = event.currentTarget
@@ -968,6 +1330,15 @@ export function SimulatorShell() {
           rayTraceJob={rayTraceJob}
           rayTraceResult={displayedRayTraceResult}
           autoConvergenceCancelToken={autoConvergenceCancelToken}
+          batchRayTracingRunning={batchRayTracing.isRunning}
+          batchRayTracingProgress={batchRayTracing.state.progress}
+          onOpenBatchRayTracing={() =>
+            batchRayTracing.openDialog(
+              [...cadCases]
+                .sort((left, right) => left.order - right.order)
+                .map((item) => item.caseId),
+            )
+          }
           rayObjectEditRequest={rayObjectEditRequest}
           onRayObjectEditRequestHandled={() =>
             setRayObjectEditRequest(null)
@@ -1066,6 +1437,37 @@ export function SimulatorShell() {
       </div>
 
       <LtValidationDialog open={ltValidationOpen} onOpenChange={setLtValidationOpen} />
+
+      <BatchRayTracingDialog
+        manager={batchRayTracing}
+        singleRayTraceRunning={singleRayTraceRunning}
+      />
+
+      <ConfirmationDialog
+        open={pendingWorkspaceRestore !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingWorkspaceRestore(null)
+        }}
+        title="현재 Workspace를 교체할까요?"
+        description={`선택한 파일이 전체 Workspace이면 현재 ${cadCases.length}개 Case와 저장되지 않은 변경 사항을 교체합니다. 단일 Case 패키지이면 현재 Workspace에 새 Case로 추가합니다.`}
+        confirmLabel="Workspace 불러오기"
+        cancelLabel="취소"
+        destructive
+        returnFocusRef={projectFileReturnFocusRef}
+        onConfirm={() => {
+          const file = pendingWorkspaceRestore
+          if (!file) return
+          setPendingWorkspaceRestore(null)
+          void loadPortableFile(file).catch((error) => {
+            openFeatureNotice(
+              'BITSAM 프로젝트 불러오기 실패',
+              error instanceof Error
+                ? error.message
+                : '프로젝트를 복원하지 못했습니다.',
+            )
+          }).finally(() => setProjectProgress(''))
+        }}
+      />
 
       <AppDialog
         open={copySetupOpen}

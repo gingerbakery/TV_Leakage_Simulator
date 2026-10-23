@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { leakPreviewStore } from './leak-preview-store'
+import { workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
-  beforeEach(() => leakPreviewStore.getState().clear())
+  beforeEach(() => {
+    workspaceStore.getState().actions.resetWorkspace()
+    leakPreviewStore.getState().clear()
+  })
 
   it('keeps multiple dragged regions in one list item until selection is finished', () => {
     const state = leakPreviewStore.getState()
@@ -65,6 +69,31 @@ describe('leak preview Allowed Area groups', () => {
     })
   })
 
+  it('keeps constraints across a token refresh and clears them for a new CAD composition', () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'main.step', displayName: 'main.step' })
+    const caseId = workspaceStore.getState().activeCadCaseId!
+    leakPreviewStore.getState().ensureScene('scene-old')
+    leakPreviewStore.getState().addBlocker({
+      id: 'blocker-1', label: 'Main Board', enabled: true,
+      baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+      widthMm: 10, heightMm: 10, offsetMm: 0, depthMm: 1.5, reverse: false,
+    })
+
+    leakPreviewStore.getState().ensureScene('scene-refreshed')
+    expect(leakPreviewStore.getState().blockers).toHaveLength(1)
+    expect(workspaceStore.getState().cadCases[0].leakPreviewState?.blockers)
+      .toHaveLength(1)
+
+    actions.addAccessoryCad(caseId, {
+      path: 'board.step', displayName: 'board.step',
+    })
+    leakPreviewStore.getState().ensureScene('scene-composite')
+    expect(leakPreviewStore.getState().blockers).toEqual([])
+    expect(workspaceStore.getState().cadCases[0].leakPreviewState?.blockers)
+      .toEqual([])
+  })
+
   it('tracks blocker drag selection and clears it when the blocker is removed', () => {
     leakPreviewStore.getState().addBlocker({
       id: 'blocker-1', label: 'Main Board', enabled: true,
@@ -97,6 +126,39 @@ describe('leak preview Allowed Area groups', () => {
     expect(leakPreviewStore.getState()).toMatchObject({
       ignoreAreasVisible: true,
       blockersVisible: true,
+    })
+  })
+
+  it('persists precision-preview inputs against the active Case', () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseId = workspaceStore.getState().activeCadCaseId!
+
+    leakPreviewStore.getState().addBlocker({
+      id: 'saved-blocker', label: 'Saved blocker', enabled: true,
+      baseCenter: [1, 2, 3], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+      widthMm: 12, heightMm: 8, offsetMm: 0.5, depthMm: 1.2, reverse: false,
+    })
+    leakPreviewStore.getState().beginIgnoreAreaSelection()
+    leakPreviewStore.getState().addIgnoreAreaRegion({
+      plane: 'xy', xMin: 0, xMax: 2, yMin: 4, yMax: 6, zMin: 8, zMax: 9,
+    })
+    leakPreviewStore.getState().finishIgnoreAreaSelection()
+
+    const saved = workspaceStore.getState().cadCases.find(
+      (item) => item.caseId === caseId,
+    )?.leakPreviewState
+    expect(saved?.blockers[0].id).toBe('saved-blocker')
+    expect(saved?.ignoreAreas[0].regions).toHaveLength(1)
+
+    leakPreviewStore.getState().restoreProjectState(saved)
+    expect(leakPreviewStore.getState()).toMatchObject({
+      sceneToken: null,
+      blockers: [{ id: 'saved-blocker' }],
+      ignoreAreas: [{ regions: [{ plane: 'xy' }] }],
+      jobId: null,
+      points: [],
+      candidates: [],
     })
   })
 })

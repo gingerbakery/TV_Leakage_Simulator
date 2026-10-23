@@ -32,6 +32,7 @@ import * as portableProjects from '@/features/projects/portable-project'
 
 const apiHookState = vi.hoisted(() => ({
   rayTraceJob: undefined as unknown,
+  rayTraceJobErrors: new Set<string>(),
   scene: undefined as ReturnType<typeof createSceneFixture> | undefined,
 }))
 
@@ -44,9 +45,12 @@ vi.mock('@/api', async () => {
       error: null,
       isPending: false,
     }),
-    useRayTraceJobQuery: () => ({
+    useRayTraceJobQuery: (jobId: string | null) => ({
       data: apiHookState.rayTraceJob,
-      error: null,
+      error: jobId && apiHookState.rayTraceJobErrors.has(jobId)
+        ? new Error('polling disconnected')
+        : null,
+      isError: Boolean(jobId && apiHookState.rayTraceJobErrors.has(jobId)),
     }),
   }
 })
@@ -80,11 +84,60 @@ function renderShell() {
 afterEach(() => {
   cleanup()
   apiHookState.rayTraceJob = undefined
+  apiHookState.rayTraceJobErrors.clear()
   apiHookState.scene = undefined
   workspaceStore.getState().actions.resetWorkspace()
 })
 
 describe('SimulatorShell', () => {
+  it('releases a single-run lock and warns when job polling disconnects', async () => {
+    const actions = workspaceStore.getState().actions
+    act(() => {
+      actions.addCadCase({ path: 'polling.step', displayName: 'polling.step' })
+      actions.setSingleRayTraceRun({
+        caseId: workspaceStore.getState().activeCadCaseId!,
+        jobId: 'lost-job',
+      })
+      apiHookState.rayTraceJobErrors.add('lost-job')
+    })
+
+    renderShell()
+
+    await waitFor(() =>
+      expect(workspaceStore.getState().singleRayTraceRun).toBeNull(),
+    )
+    expect(await screen.findByRole('dialog', {
+      name: 'Ray Tracing 연결이 종료되었습니다',
+    })).not.toBeNull()
+    expect(screen.getByText(
+      /서버에서 실행 상태를 더 이상 확인할 수 없어 실행 잠금을 해제했습니다/,
+    )).not.toBeNull()
+  })
+
+  it('releases a detached auto-convergence retry only after its terminal status is observed', async () => {
+    const actions = workspaceStore.getState().actions
+    const completed = createCompletedRayTraceJobFixture()
+    completed.job_id = 'detached-auto-retry'
+    act(() => {
+      actions.addCadCase({ path: 'detached.step', displayName: 'detached.step' })
+      actions.setRayTraceConfig({
+        ...workspaceStore.getState().rayTraceConfig,
+        auto_convergence: true,
+      })
+      actions.setSingleRayTraceRun({
+        caseId: workspaceStore.getState().activeCadCaseId!,
+        jobId: completed.job_id,
+      })
+      apiHookState.rayTraceJob = completed
+    })
+
+    renderShell()
+
+    await waitFor(() =>
+      expect(workspaceStore.getState().singleRayTraceRun).toBeNull(),
+    )
+  })
+
   it('shows the compact save summary with the actual saved result', async () => {
     const scene = createSceneFixture()
     apiHookState.scene = scene
@@ -131,13 +184,19 @@ describe('SimulatorShell', () => {
     const result = createCompletedRayTraceJobFixture().result!
     const project = createBitsamProject(scene, savedStore.getState(), new Date(), result)
     project.workspace.faceColorOverrides = [{ componentId: 1, faceIds: [0, 1], color: '#ef4444' }]
-    const load = vi.spyOn(portableProjects, 'loadPortableProject').mockResolvedValueOnce({
+    const load = vi.spyOn(portableProjects, 'loadPortableBundle').mockResolvedValueOnce({
       project, scene, cad: { path: 'restored/original.step', displayName: 'original.step' }, traceCached: true,
     })
     try {
       renderShell()
       const file = new File([new Uint8Array([80, 75, 3, 4])], 'restored.bitsam')
       fireEvent.change(screen.getByLabelText('BITSAM project file'), { target: { files: [file] } })
+      const replaceDialog = await screen.findByRole('dialog', {
+        name: '현재 Workspace를 교체할까요?',
+      })
+      fireEvent.click(within(replaceDialog).getByRole('button', {
+        name: 'Workspace 불러오기',
+      }))
       const dialog = await screen.findByRole('dialog', { name: '불러오기 완료' })
       expect(within(dialog).getByText('restored.bitsam')).not.toBeNull()
       expect(within(dialog).getByText('CAD 모델 형상')).not.toBeNull()
@@ -167,6 +226,340 @@ describe('SimulatorShell', () => {
       fireEvent.click(screen.getByRole('button', { name: '분석 결과 보기' }))
       expect(await screen.findByRole('dialog', { name: 'Ray Tracing Analysis Result' })).not.toBeNull()
       expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  it('saves every CAD Case and hidden Accessory as one Workspace', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
+    const caseA = workspaceStore.getState().activeCadCaseId!
+    actions.updateCadCaseMetadata(caseA, 'Baseline', 'original')
+    actions.addAccessoryCad(caseA, {
+      path: 'hidden-board.step',
+      displayName: 'Hidden board.step',
+    })
+    const hiddenAccessory = workspaceStore.getState().cadCases[0]
+      .accessoryCads[0]
+    actions.setAccessoryCadVisible(
+      caseA,
+      hiddenAccessory.accessoryId,
+      false,
+    )
+    actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
+    const caseB = workspaceStore.getState().activeCadCaseId!
+    actions.updateCadCaseMetadata(caseB, 'Shield', 'variant')
+    const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(scene)
+    const save = vi.spyOn(
+      portableProjects,
+      'savePortableWorkspace',
+    ).mockResolvedValueOnce({
+      cancelled: false,
+      downloaded: false,
+      caseCount: 2,
+    })
+
+    try {
+      renderShell()
+      fireEvent.click(screen.getByRole('button', {
+        name: 'Save BITSAM project',
+      }))
+      await screen.findByRole('dialog', { name: '저장 완료' })
+
+      expect(save).toHaveBeenCalledOnce()
+      const [, activeCaseId, savedCases] = save.mock.calls[0]
+      expect(activeCaseId).toBe(caseB)
+      expect(savedCases.map((item) => item.name)).toEqual([
+        'Baseline',
+        'Shield',
+      ])
+      expect(savedCases[0].accessoryCads).toEqual([{
+        accessoryId: hiddenAccessory.accessoryId,
+        cad: {
+          path: 'hidden-board.step',
+          displayName: 'Hidden board.step',
+        },
+        visible: false,
+      }])
+      expect(getScene).toHaveBeenCalledWith('case-a.step', undefined, [])
+      expect(getScene).toHaveBeenCalledWith('case-b.step', undefined, [])
+    } finally {
+      getScene.mockRestore()
+      save.mockRestore()
+    }
+  })
+
+  it('uses a Workspace package for one Case when it has an Accessory CAD', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'main.step', displayName: 'main.step' })
+    const caseId = workspaceStore.getState().activeCadCaseId!
+    actions.addAccessoryCad(caseId, {
+      path: 'cover.step',
+      displayName: 'cover.step',
+    })
+    const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(scene)
+    const saveWorkspace = vi.spyOn(
+      portableProjects,
+      'savePortableWorkspace',
+    ).mockResolvedValueOnce({
+      cancelled: false,
+      downloaded: false,
+      caseCount: 1,
+    })
+    const saveProject = vi.spyOn(
+      portableProjects,
+      'savePortableProject',
+    )
+
+    try {
+      renderShell()
+      fireEvent.click(screen.getByRole('button', {
+        name: 'Save BITSAM project',
+      }))
+      await screen.findByRole('dialog', { name: '저장 완료' })
+
+      expect(saveWorkspace).toHaveBeenCalledOnce()
+      expect(saveWorkspace.mock.calls[0][2][0].accessoryCads).toHaveLength(1)
+      expect(saveProject).not.toHaveBeenCalled()
+    } finally {
+      getScene.mockRestore()
+      saveWorkspace.mockRestore()
+      saveProject.mockRestore()
+    }
+  })
+
+  it('replaces the current Workspace and restores every Case state', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const existingActions = workspaceStore.getState().actions
+    existingActions.addCadCase({
+      path: 'existing.step',
+      displayName: 'existing.step',
+    })
+
+    const firstStore = createWorkspaceStore()
+    firstStore.getState().actions.setActiveCad({
+      path: 'a.step',
+      displayName: 'a.step',
+    })
+    firstStore.getState().actions.setRayTraceConfig({
+      ...firstStore.getState().rayTraceConfig,
+      ray_count: 12_000,
+    })
+    const firstProject = createBitsamProject(scene, firstStore.getState())
+    const secondStore = createWorkspaceStore()
+    secondStore.getState().actions.setActiveCad({
+      path: 'b.step',
+      displayName: 'b.step',
+    })
+    secondStore.getState().actions.setRayTraceConfig({
+      ...secondStore.getState().rayTraceConfig,
+      ray_count: 34_000,
+    })
+    const result = createCompletedRayTraceJobFixture().result!
+    const secondProject = createBitsamProject(
+      scene,
+      secondStore.getState(),
+      new Date(),
+      result,
+    )
+    const load = vi.spyOn(
+      portableProjects,
+      'loadPortableBundle',
+    ).mockResolvedValueOnce({
+      scope: 'workspace',
+      activeCaseId: 'saved-b',
+      cases: [
+        {
+          caseId: 'saved-a',
+          order: 1,
+          name: 'Baseline',
+          note: 'first',
+          visible: false,
+          accessoryCads: [{
+            accessoryId: 'saved-hidden-board',
+            cad: {
+              path: 'restored/board.step',
+              displayName: 'Board.step',
+            },
+            visible: false,
+          }],
+          project: firstProject,
+          scene,
+          cad: { path: 'restored/a.step', displayName: 'a.step' },
+          traceCached: true,
+        },
+        {
+          caseId: 'saved-b',
+          order: 2,
+          name: 'Shield',
+          note: 'active',
+          visible: true,
+          accessoryCads: [],
+          project: secondProject,
+          scene,
+          cad: { path: 'restored/b.step', displayName: 'b.step' },
+          traceCached: true,
+        },
+      ],
+    })
+
+    try {
+      renderShell()
+      fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+        target: {
+          files: [new File(
+            [new Uint8Array([80, 75, 3, 4])],
+            'workspace.bitsam',
+          )],
+        },
+      })
+      const replaceDialog = await screen.findByRole('dialog', {
+        name: '현재 Workspace를 교체할까요?',
+      })
+      expect(load).not.toHaveBeenCalled()
+      expect(workspaceStore.getState().cadCases[0].cad.path).toBe(
+        'existing.step',
+      )
+      fireEvent.click(within(replaceDialog).getByRole('button', {
+        name: 'Workspace 불러오기',
+      }))
+      const dialog = await screen.findByRole('dialog', {
+        name: '불러오기 완료',
+      })
+      expect(within(dialog).getByText('전체 Workspace · 2개 Case')).not.toBeNull()
+
+      const restored = workspaceStore.getState()
+      expect(restored.cadCases).toHaveLength(2)
+      expect(restored.cadCases.map((item) => item.name)).toEqual([
+        'Baseline',
+        'Shield',
+      ])
+      expect(restored.cadCases[0].accessoryCads).toEqual([{
+        accessoryId: 'saved-hidden-board',
+        cad: {
+          path: 'restored/board.step',
+          displayName: 'Board.step',
+        },
+        visible: false,
+      }])
+      expect(restored.activeCad?.path).toBe('restored/b.step')
+      expect(restored.rayTraceConfig.ray_count).toBe(34_000)
+      expect(restored.restoredRayTraceResult?.run_id).toBe(result.run_id)
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  it('does not upload or disturb the current Workspace when package replacement is cancelled', async () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({
+      path: 'current.step',
+      displayName: 'current.step',
+    })
+    const load = vi.spyOn(portableProjects, 'loadPortableBundle')
+
+    try {
+      renderShell()
+      fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+        target: {
+          files: [new File(
+            [new Uint8Array([80, 75, 3, 4])],
+            'cancelled-workspace.bitsam',
+          )],
+        },
+      })
+      const replaceDialog = await screen.findByRole('dialog', {
+        name: '현재 Workspace를 교체할까요?',
+      })
+      fireEvent.click(within(replaceDialog).getByRole('button', {
+        name: '취소',
+      }))
+
+      await waitFor(() => expect(screen.queryByRole('dialog', {
+        name: '현재 Workspace를 교체할까요?',
+      })).toBeNull())
+      expect(load).not.toHaveBeenCalled()
+      expect(workspaceStore.getState().cadCases).toHaveLength(1)
+      expect(workspaceStore.getState().activeCad?.path).toBe('current.step')
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  it('restores the saved active and visible Case when it is not last', async () => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const firstStore = createWorkspaceStore()
+    firstStore.getState().actions.setActiveCad({
+      path: 'first.step',
+      displayName: 'first.step',
+    })
+    const secondStore = createWorkspaceStore()
+    secondStore.getState().actions.setActiveCad({
+      path: 'second.step',
+      displayName: 'second.step',
+    })
+    const load = vi.spyOn(
+      portableProjects,
+      'loadPortableBundle',
+    ).mockResolvedValueOnce({
+      scope: 'workspace',
+      activeCaseId: 'saved-first',
+      cases: [
+        {
+          caseId: 'saved-first',
+          order: 1,
+          name: 'First',
+          note: '',
+          visible: true,
+          accessoryCads: [],
+          project: createBitsamProject(scene, firstStore.getState()),
+          scene,
+          cad: { path: 'restored/first.step', displayName: 'first.step' },
+          traceCached: true,
+        },
+        {
+          caseId: 'saved-second',
+          order: 2,
+          name: 'Second',
+          note: '',
+          visible: false,
+          accessoryCads: [],
+          project: createBitsamProject(scene, secondStore.getState()),
+          scene,
+          cad: { path: 'restored/second.step', displayName: 'second.step' },
+          traceCached: true,
+        },
+      ],
+    })
+
+    try {
+      renderShell()
+      fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+        target: {
+          files: [new File(
+            [new Uint8Array([80, 75, 3, 4])],
+            'workspace.bitsam',
+          )],
+        },
+      })
+      await screen.findByRole('dialog', { name: '불러오기 완료' })
+
+      const restored = workspaceStore.getState()
+      expect(restored.activeCad?.path).toBe('restored/first.step')
+      expect(restored.cadCases.map((item) => ({
+        path: item.cad.path,
+        visible: item.visible,
+      }))).toEqual([
+        { path: 'restored/first.step', visible: true },
+        { path: 'restored/second.step', visible: false },
+      ])
     } finally {
       load.mockRestore()
     }
@@ -203,7 +596,7 @@ describe('SimulatorShell', () => {
       ]
       originalAssignments.forEach(savedActions.upsertMaterialAssignment)
       const originalProject = createBitsamProject(scene, savedStore.getState(), new Date(), oldResult)
-      const load = vi.spyOn(portableProjects, 'loadPortableProject').mockResolvedValueOnce({
+      const load = vi.spyOn(portableProjects, 'loadPortableBundle').mockResolvedValueOnce({
         project: originalProject, scene,
         cad: { path: 'restored/after.step', displayName: 'after.step' }, traceCached: true,
       })
@@ -269,7 +662,11 @@ describe('SimulatorShell', () => {
             apiHookState.rayTraceJob = undefined
             actions.addCadCase({ path: 'another.step', displayName: 'another.step' })
           })
-          act(() => actions.setActiveCadCase(editedCaseId))
+          const temporaryCaseId = workspaceStore.getState().activeCadCaseId!
+          act(() => {
+            actions.setActiveCadCase(editedCaseId)
+            actions.removeCadCase(temporaryCaseId)
+          })
         }
         fireEvent.click(screen.getByRole('button', { name: 'Save BITSAM project' }))
         const saved = await screen.findByRole('dialog', { name: '저장 완료' })
@@ -293,6 +690,12 @@ describe('SimulatorShell', () => {
         fireEvent.change(screen.getByLabelText('BITSAM project file'), {
           target: { files: [new File([new Uint8Array([80, 75, 3, 4])], 'edited.bitsam')] },
         })
+        const replaceDialog = await screen.findByRole('dialog', {
+          name: '현재 Workspace를 교체할까요?',
+        })
+        fireEvent.click(within(replaceDialog).getByRole('button', {
+          name: 'Workspace 불러오기',
+        }))
         await screen.findByRole('dialog', { name: '불러오기 완료' })
         const restoredState = workspaceStore.getState()
         expect(restoredState.materialAssignments).toEqual(editedAssignments)
@@ -304,6 +707,7 @@ describe('SimulatorShell', () => {
         save.mockRestore()
       }
     },
+    10_000,
   )
 
   it('uses the same completion dialog for a compatible legacy project', async () => {

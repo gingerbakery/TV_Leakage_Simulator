@@ -15,7 +15,11 @@ MAX_JSON_BYTES = 128 * 1024**2
 MAX_MANIFEST_BYTES = 1024**2
 MAX_CELLS = 1_000_000
 PACKAGE_SCHEMA = "bitsam-project.v2"
-SETTINGS_SCHEMAS = {"bitsam-project.v1", "bitsam-project.v1-bsdf1"}
+SETTINGS_SCHEMAS = {
+    "bitsam-project.v1",
+    "bitsam-project.v1-bsdf1",
+    "bitsam-project.v1-preview1",
+}
 CACHE_CONTRACT = "bitsam-lossless-scene.v1"
 
 

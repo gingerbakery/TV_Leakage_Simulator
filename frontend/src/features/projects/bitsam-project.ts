@@ -23,13 +23,25 @@ import type {
   WorkspaceSnapshot,
 } from '@/stores'
 import { isEmitterAimValid } from '@/features/raytracing/emitter-aim'
+import type {
+  LeakPreviewBlocker,
+  LeakPreviewIgnoreArea,
+  LeakPreviewProjectState,
+} from '@/features/leak-preview'
 
 export const bitsamFileExtension = '.bitsam'
 export const bitsamSchemaVersion = 'bitsam-project.v1'
 export const bitsamBsdfSchemaVersion = 'bitsam-project.v1-bsdf1'
+export const bitsamPreviewSchemaVersion = 'bitsam-project.v1-preview1'
 
 /** Older builds ignore BSDF references. A distinct schema makes them reject these projects. */
-export function projectSchemaVersion(workspace: WorkspaceProjectState) {
+export function projectSchemaVersion(
+  workspace: WorkspaceProjectState,
+  leakPreviewState?: LeakPreviewProjectState,
+) {
+  // Preview constraints change physical trace geometry. Older builds must
+  // reject, rather than silently run with the apply flag but no saved boxes.
+  if (leakPreviewState) return bitsamPreviewSchemaVersion
   return (workspace.bsdfAssets?.length || workspace.materialAssignments.some((item) => Boolean(item.bsdfAssetId)) ||
     workspace.customOpticalProfiles?.some((item) => Boolean(item.bsdfAssetId))) ? bitsamBsdfSchemaVersion : bitsamSchemaVersion
 }
@@ -53,13 +65,18 @@ export interface BitsamCadReference {
 
 export interface BitsamProject {
   format: typeof bitsamFormat
-  schema_version: typeof bitsamSchemaVersion | typeof bitsamBsdfSchemaVersion
+  schema_version:
+    | typeof bitsamSchemaVersion
+    | typeof bitsamBsdfSchemaVersion
+    | typeof bitsamPreviewSchemaVersion
   application_version: string
   saved_at: string
   project_name: string
   cad: BitsamCadReference
   case_metadata?: { name?: string; note?: string }
   workspace: WorkspaceProjectState
+  /** Case-scoped Leak Preview inputs; runtime preview samples are not saved. */
+  leak_preview?: LeakPreviewProjectState
   /** Last completed analysis, including receiver grids and stored ray paths. */
   analysis_result?: RayTraceResult | null
 }
@@ -293,6 +310,49 @@ function isRoiScope(value: unknown): value is RoiScope {
     isBoolean(value.active) &&
     (value.clipBox === undefined || isRoiClipBox(value.clipBox)) &&
     (value.point === undefined || isVector3Value(value.point))
+  )
+}
+
+function isLeakPreviewProjectState(
+  value: unknown,
+): value is LeakPreviewProjectState {
+  if (!isRecord(value)) return false
+  const isIgnoreArea = (item: unknown): item is LeakPreviewIgnoreArea =>
+    isRecord(item) &&
+    isString(item.id) &&
+    isString(item.label) &&
+    isArrayOf(item.regions, isRoiClipBox) &&
+    isBoolean(item.enabled)
+  const isBlocker = (item: unknown): item is LeakPreviewBlocker =>
+    isRecord(item) &&
+    isString(item.id) &&
+    isString(item.label) &&
+    isBoolean(item.enabled) &&
+    isVec3(item.baseCenter) &&
+    isVec3(item.uAxis) &&
+    isVec3(item.vAxis) &&
+    isVec3(item.normal) &&
+    isFiniteNumber(item.widthMm) &&
+    isFiniteNumber(item.heightMm) &&
+    isFiniteNumber(item.offsetMm) &&
+    isFiniteNumber(item.depthMm) &&
+    isBoolean(item.reverse)
+  return (
+    isOneOf(value.sourceMode, ['face', 'body']) &&
+    isIdArray(value.sourceFaceIds) &&
+    isIdArray(value.sourceComponentIds) &&
+    isSafeId(value.sourceBodyFaceCount) &&
+    isOneOf(value.quality, ['fast', 'balanced', 'deep']) &&
+    isArrayOf(value.directions, (direction): direction is
+      LeakPreviewProjectState['directions'][number] =>
+      isOneOf(direction, [
+        'pos_x', 'neg_x', 'pos_y', 'neg_y', 'pos_z', 'neg_z',
+      ])) &&
+    isBoolean(value.visualizationVisible) &&
+    isBoolean(value.ignoreAreasVisible) &&
+    isBoolean(value.blockersVisible) &&
+    isArrayOf(value.ignoreAreas, isIgnoreArea) &&
+    isArrayOf(value.blockers, isBlocker)
   )
 }
 
@@ -642,6 +702,7 @@ export function createBitsamProject(
   workspace: WorkspaceSnapshot,
   savedAt = new Date(),
   analysisResult?: RayTraceResult | null,
+  leakPreviewState?: LeakPreviewProjectState,
 ): BitsamProject {
   if (!workspace.activeCad) {
     throw new BitsamProjectError(
@@ -655,7 +716,7 @@ export function createBitsamProject(
   )
   return {
     format: bitsamFormat,
-    schema_version: projectSchemaVersion(workspace),
+    schema_version: projectSchemaVersion(workspace, leakPreviewState),
     application_version: applicationVersion,
     saved_at: savedAt.toISOString(),
     project_name:
@@ -667,6 +728,9 @@ export function createBitsamProject(
     },
     case_metadata: activeCase ? { name: activeCase.name, note: activeCase.note } : undefined,
     workspace: createWorkspaceProjectState(workspace),
+    leak_preview: leakPreviewState
+      ? structuredClone(leakPreviewState)
+      : undefined,
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
@@ -681,13 +745,17 @@ export function createBitsamProjectFromLoadedProject(
   workspace: WorkspaceSnapshot,
   savedAt = new Date(),
   analysisResult?: RayTraceResult | null,
+  leakPreviewState?: LeakPreviewProjectState,
 ): BitsamProject {
   const activeCase = workspace.cadCases.find(
     (item) => item.caseId === workspace.activeCadCaseId,
   )
   return {
     format: bitsamFormat,
-    schema_version: projectSchemaVersion(workspace),
+    schema_version: projectSchemaVersion(
+      workspace,
+      leakPreviewState ?? loadedProject.leak_preview,
+    ),
     application_version: applicationVersion,
     saved_at: savedAt.toISOString(),
     project_name: loadedProject.project_name,
@@ -696,6 +764,9 @@ export function createBitsamProjectFromLoadedProject(
       ? { name: activeCase.name, note: activeCase.note }
       : structuredClone(loadedProject.case_metadata),
     workspace: createWorkspaceProjectState(workspace),
+    leak_preview: leakPreviewState
+      ? structuredClone(leakPreviewState)
+      : structuredClone(loadedProject.leak_preview),
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
@@ -705,7 +776,13 @@ export function createBitsamProjectFromLoadedProject(
 export function serializeBitsamProject(
   project: BitsamProject,
 ): string {
-  return `${JSON.stringify({ ...project, schema_version: projectSchemaVersion(project.workspace) }, null, 2)}\n`
+  return `${JSON.stringify({
+    ...project,
+    schema_version: projectSchemaVersion(
+      project.workspace,
+      project.leak_preview,
+    ),
+  }, null, 2)}\n`
 }
 
 export function parseBitsamProject(source: string): BitsamProject {
@@ -728,7 +805,11 @@ export function parseBitsamProject(source: string): BitsamProject {
       'TV Leakage Simulator 프로젝트 파일이 아닙니다.',
     )
   }
-  if (parsed.schema_version !== bitsamSchemaVersion && parsed.schema_version !== bitsamBsdfSchemaVersion) {
+  if (
+    parsed.schema_version !== bitsamSchemaVersion &&
+    parsed.schema_version !== bitsamBsdfSchemaVersion &&
+    parsed.schema_version !== bitsamPreviewSchemaVersion
+  ) {
     throw new BitsamProjectError(
       `지원하지 않는 BITSAM 버전입니다: ${String(parsed.schema_version)}`,
     )
@@ -740,6 +821,8 @@ export function parseBitsamProject(source: string): BitsamProject {
     !isString(parsed.project_name) ||
     !isBitsamCadReference(parsed.cad) ||
     !isWorkspaceProjectState(parsed.workspace) ||
+    (parsed.leak_preview !== undefined &&
+      !isLeakPreviewProjectState(parsed.leak_preview)) ||
     (parsed.case_metadata !== undefined &&
       (!isRecord(parsed.case_metadata) ||
         (parsed.case_metadata.name !== undefined && !isString(parsed.case_metadata.name)) ||
@@ -755,6 +838,14 @@ export function parseBitsamProject(source: string): BitsamProject {
 
   if (parsed.schema_version === bitsamSchemaVersion && parsed.workspace.bsdfAssets?.length) {
     throw new BitsamProjectError('BSDF 데이터를 포함한 프로젝트에는 BSDF 확장 버전 표시가 필요합니다.')
+  }
+  if (
+    (parsed.schema_version === bitsamPreviewSchemaVersion) !==
+      (parsed.leak_preview !== undefined)
+  ) {
+    throw new BitsamProjectError(
+      'Leak Preview 조건과 프로젝트 버전 표시가 일치하지 않습니다.',
+    )
   }
   return structuredClone(parsed) as unknown as BitsamProject
 }

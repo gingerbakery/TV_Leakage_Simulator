@@ -17,6 +17,7 @@ import {
   Camera,
   CircleDot,
   Lightbulb,
+  ListChecks,
   LoaderCircle,
   Pencil,
   Play,
@@ -45,8 +46,10 @@ import { NumberInput } from '@/components/ui/number-input'
 import { cn } from '@/lib/utils'
 import {
   maxReflectionDepth,
+  snapshotCadCasesForRayTrace,
   useWorkspaceStore,
   workspaceSelectors,
+  workspaceStore,
   type RoiScope,
 } from '@/stores'
 import { roiClippedSurfaceCentroid } from '@/features/roi/roi-clipped-geometry'
@@ -87,6 +90,9 @@ interface RayTracingPanelProps {
   cameraFrame: ViewerCameraFrame | null
   editRequest?: RayObjectEditRequest | null
   autoConvergenceCancelToken?: number
+  batchRayTracingRunning?: boolean
+  batchRayTracingProgress?: number
+  onOpenBatchRayTracing?(): void
   onEditRequestHandled?(): void
 }
 
@@ -1653,6 +1659,9 @@ export function RayTracingPanel({
   cameraFrame,
   editRequest = null,
   autoConvergenceCancelToken = 0,
+  batchRayTracingRunning = false,
+  batchRayTracingProgress = 0,
+  onOpenBatchRayTracing,
   onEditRequestHandled,
 }: RayTracingPanelProps) {
   const accelerationStructureId = useId()
@@ -1672,6 +1681,10 @@ export function RayTracingPanel({
   const convergenceAggregateRef = useRef<RayTraceResult | null>(null)
   const handledConvergenceJobRef = useRef<string | null>(null)
   const autoRetryJobIdRef = useRef<string | null>(null)
+  const singleRunSetupRef = useRef<{
+    caseId: string
+    setupHash: string
+  } | null>(null)
   const autoRetryAbortControllerRef = useRef<AbortController | null>(null)
   const autoConvergenceCancelTokenRef = useRef(autoConvergenceCancelToken)
   const handledAutoConvergenceCancelTokenRef = useRef(
@@ -1713,7 +1726,17 @@ export function RayTracingPanel({
   const activeJobId = useWorkspaceStore(
     workspaceSelectors.activeRayTraceJobId,
   )
+  const activeCadCaseId = useWorkspaceStore(
+    workspaceSelectors.activeCadCaseId,
+  )
+  const singleRayTraceRun = useWorkspaceStore(
+    workspaceSelectors.singleRayTraceRun,
+  )
+  const batchRayTraceActive = useWorkspaceStore(
+    workspaceSelectors.batchRayTraceActive,
+  )
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
+  const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const queryClient = useQueryClient()
   const editingEmitter =
@@ -1815,7 +1838,10 @@ export function RayTracingPanel({
     enabledEmitterCount > 0 &&
     enabledReceiverCount > 0 &&
     gpuCudaReady &&
-    !isRunning
+    !isRunning &&
+    singleRayTraceRun === null &&
+    !batchRayTraceActive &&
+    !batchRayTracingRunning
 
   useEffect(() => {
     if (
@@ -1823,9 +1849,11 @@ export function RayTracingPanel({
       handledAutoConvergenceCancelTokenRef.current
     ) return
     handledAutoConvergenceCancelTokenRef.current = autoConvergenceCancelToken
+    const autoRetryStartPending =
+      autoRetryAbortControllerRef.current !== null
     const hadPendingAutoConvergence =
       autoConvergenceActiveRef.current ||
-      autoRetryAbortControllerRef.current !== null ||
+      autoRetryStartPending ||
       autoRetryJobIdRef.current !== null
     autoConvergenceActiveRef.current = false
     autoRetryAbortControllerRef.current?.abort()
@@ -1840,8 +1868,12 @@ export function RayTracingPanel({
         // reopen the report window after the user closes it.
         actions.setActiveRayTraceJobId(null)
       }
+    } else if (hadPendingAutoConvergence && !autoRetryStartPending) {
+      // The previous segment is already terminal and no retry owns the lock.
+      actions.setSingleRayTraceRun(null)
     }
     if (hadPendingAutoConvergence) {
+      singleRunSetupRef.current = null
       setAutoConvergenceStatus(
         '결과 창을 닫아 이후 Auto convergence 추가 실행을 취소했습니다.',
       )
@@ -1898,11 +1930,58 @@ export function RayTracingPanel({
     autoRetry = false,
     segmentIndex = 0,
   ) => {
+    const executionState = workspaceStore.getState()
+    const currentSingleRun = executionState.singleRayTraceRun
     if (
       !scene ||
+      !activeCadCaseId ||
+      executionState.batchRayTraceActive ||
+      (!autoRetry && currentSingleRun !== null) ||
+      (autoRetry && currentSingleRun?.caseId !== activeCadCaseId) ||
       !emitters.some((emitter) => emitter.enabled) ||
       !receivers.some((receiver) => receiver.enabled)
     ) return false
+    if (!autoRetry) {
+      const [snapshot] = snapshotCadCasesForRayTrace(
+        executionState,
+        [activeCadCaseId],
+      )
+      if (!snapshot) return false
+      singleRunSetupRef.current = {
+        caseId: snapshot.caseId,
+        setupHash: snapshot.setupHash,
+      }
+    } else {
+      const setup = singleRunSetupRef.current
+      const freshness = setup
+        ? executionState.actions.validateCadCaseRayTraceSetup(
+            setup.caseId,
+            setup.setupHash,
+          )
+        : 'missing'
+      if (
+        !setup ||
+        setup.caseId !== activeCadCaseId ||
+        freshness !== 'current'
+      ) {
+        autoConvergenceActiveRef.current = false
+        singleRunSetupRef.current = null
+        if (currentSingleRun?.jobId) {
+          actions.clearSingleRayTraceRun(currentSingleRun.jobId)
+        } else {
+          actions.setSingleRayTraceRun(null)
+        }
+        actions.setActiveRayTraceJobId(null)
+        setAutoConvergenceStatus(
+          '실행 중 Case 조건이 변경되어 추가 해석을 중단했습니다. 현재 조건으로 다시 실행해 주세요.',
+        )
+        return false
+      }
+    }
+    actions.setSingleRayTraceRun({
+      caseId: activeCadCaseId,
+      jobId: null,
+    })
     const requestForScene = (requestScene: ScenePayload) => {
       const request = buildRayTraceRequest({
         scene: requestScene,
@@ -1939,9 +2018,12 @@ export function RayTracingPanel({
       autoRetryAbortControllerRef.current = abortController
     }
     try {
+      // Once the request has been dispatched, aborting the HTTP response can
+      // lose the server-created job id and leave an orphan worker behind. Keep
+      // the start request alive, then use the returned id to stop it explicitly
+      // when the result window was closed while the response was in flight.
       const start = (requestScene: ScenePayload) => startMutation.mutateAsync({
         request: requestForScene(requestScene),
-        signal: abortController?.signal,
       })
       let startedJob: RayTraceJob
       try {
@@ -1970,6 +2052,10 @@ export function RayTracingPanel({
         startedJob = await start(refreshedScene)
         setAutoConvergenceStatus('CAD Scene 캐시 복구 완료 · Ray Tracing을 시작했습니다.')
       }
+      actions.setSingleRayTraceRun({
+        caseId: activeCadCaseId,
+        jobId: startedJob.job_id,
+      })
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
@@ -1988,16 +2074,27 @@ export function RayTracingPanel({
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
-      if (autoRetry && abortController?.signal.aborted) return false
+      if (autoRetry && abortController?.signal.aborted) {
+        actions.setSingleRayTraceRun(null)
+        singleRunSetupRef.current = null
+        return false
+      }
       autoConvergenceActiveRef.current = false
+      actions.setSingleRayTraceRun(null)
+      singleRunSetupRef.current = null
       setAutoConvergenceStatus(
         `Ray Tracing 실행을 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
       )
       return false
     }
-  }, [activeCad?.displayName, activeCad?.path, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, bsdfAssets, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
+  }, [activeCad?.displayName, activeCad?.path, activeCadCaseId, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, bsdfAssets, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
   const handleRun = async () => {
+    if (
+      batchRayTracingRunning ||
+      workspaceStore.getState().batchRayTraceActive ||
+      workspaceStore.getState().singleRayTraceRun !== null
+    ) return
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
     autoRetryJobIdRef.current = null
     autoRetryAbortControllerRef.current?.abort()
@@ -2018,6 +2115,25 @@ export function RayTracingPanel({
     if (!job || job.status !== 'completed' || !job.result) return
     if (handledConvergenceJobRef.current === job.job_id) return
     handledConvergenceJobRef.current = job.job_id
+    const runSetup = singleRunSetupRef.current
+    const freshness = runSetup
+      ? actions.validateCadCaseRayTraceSetup(
+          runSetup.caseId,
+          runSetup.setupHash,
+        )
+      : 'missing'
+    if (freshness !== 'current') {
+      autoConvergenceActiveRef.current = false
+      singleRunSetupRef.current = null
+      actions.clearSingleRayTraceRun(job.job_id)
+      actions.setActiveRayTraceJobId(null)
+      setAutoConvergenceStatus(
+        freshness === 'missing'
+          ? '실행 대상 Case를 찾을 수 없어 결과를 저장하지 않았습니다.'
+          : '실행 중 Case 조건이 변경되어 이전 조건의 결과를 저장하지 않았습니다. 현재 조건으로 다시 실행해 주세요.',
+      )
+      return
+    }
     if (autoRetryJobIdRef.current === job.job_id) {
       autoRetryJobIdRef.current = null
     }
@@ -2030,6 +2146,8 @@ export function RayTracingPanel({
         )
       } catch {
         autoConvergenceActiveRef.current = false
+        singleRunSetupRef.current = null
+        actions.clearSingleRayTraceRun(job.job_id)
         setAutoConvergenceStatus(
           'Receiver 또는 해석 설정이 실행 중 변경되어 누적을 중단했습니다.',
         )
@@ -2064,6 +2182,8 @@ export function RayTracingPanel({
     )
     if (!autoConvergenceActiveRef.current || converged) {
       autoConvergenceActiveRef.current = false
+      singleRunSetupRef.current = null
+      actions.clearSingleRayTraceRun(job.job_id)
       if (config.auto_convergence) {
         setAutoConvergenceStatus(
           converged
@@ -2077,6 +2197,8 @@ export function RayTracingPanel({
     const nextMultiplier = currentMultiplier * 2
     if (nextMultiplier > (config.max_convergence_multiplier ?? 8)) {
       autoConvergenceActiveRef.current = false
+      singleRunSetupRef.current = null
+      actions.clearSingleRayTraceRun(job.job_id)
       setAutoConvergenceStatus(
         `최대 Ray 배수 ${(config.max_convergence_multiplier ?? 8)}배에 도달하여 종료했습니다.`,
       )
@@ -2880,19 +3002,51 @@ export function RayTracingPanel({
               : 'Stop and analyze partial result'}
           </Button>
         ) : (
-          <Button
-            className="w-full"
-            disabled={!canRun}
-            title={
-              config.compute_backend === 'gpu_cuda' && !gpuCudaReady
-                ? 'GPU 준비 상태를 확인한 뒤 실행할 수 있습니다.'
-                : undefined
+          <div
+            className={
+              cadCases.length >= 2 && onOpenBatchRayTracing
+                ? 'grid grid-cols-2 gap-2'
+                : ''
             }
-            onClick={() => void handleRun()}
           >
-            <Play />
-            Run Ray Tracing
-          </Button>
+            <Button
+              className="w-full"
+              disabled={!canRun}
+              title={
+                batchRayTracingRunning
+                  ? 'Batch Ray Tracing이 실행 중입니다.'
+                  : config.compute_backend === 'gpu_cuda' && !gpuCudaReady
+                    ? 'GPU 준비 상태를 확인한 뒤 실행할 수 있습니다.'
+                    : undefined
+              }
+              onClick={() => void handleRun()}
+            >
+              <Play />
+              Run Ray Tracing
+            </Button>
+            {cadCases.length >= 2 && onOpenBatchRayTracing ? (
+              <Button
+                variant="outline"
+                aria-label="Batch Run"
+                disabled={singleRayTraceRun !== null}
+                title={
+                  singleRayTraceRun !== null
+                    ? '현재 단일 Ray Tracing이 끝난 뒤 실행할 수 있습니다.'
+                    : undefined
+                }
+                onClick={onOpenBatchRayTracing}
+              >
+                {batchRayTracingRunning ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <ListChecks />
+                )}
+                {batchRayTracingRunning
+                  ? `Batch ${Math.round(batchRayTracingProgress * 100)}%`
+                  : 'Batch Run'}
+              </Button>
+            ) : null}
+          </div>
         )}
         <p className="text-xs leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·

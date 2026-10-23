@@ -381,6 +381,208 @@ describe('RayTracingPanel Aim editing', () => {
 })
 
 describe('RayTracingPanel Auto convergence', () => {
+  it('discards a completed single run when its Case inputs changed in flight', async () => {
+    const result = createRayTraceResultFixture()
+    const actions = workspaceStore.getState().actions
+    act(() => {
+      actions.addCadCase({ path: 'stale.step', displayName: 'stale.step' })
+      actions.upsertEmitter(result.emitters[0])
+      actions.upsertReceiver(result.receivers[0])
+      actions.setRayTraceConfig({
+        ...result.config,
+        auto_convergence: false,
+      })
+    })
+    apiHookState.start.mockResolvedValueOnce({ job_id: 'stale-job' })
+    const view = render(
+      <AppProviders>
+        <RayTracingPanel scene={createSceneFixture()} cameraFrame={null} />
+      </AppProviders>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+    await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun)
+      .toMatchObject({ jobId: 'stale-job' }))
+
+    act(() => actions.setRayTraceConfig({
+      ...workspaceStore.getState().rayTraceConfig,
+      max_depth: workspaceStore.getState().rayTraceConfig.max_depth + 1,
+    }))
+    const completed = createCompletedRayTraceJobFixture()
+    completed.job_id = 'stale-job'
+    apiHookState.job = completed
+    view.rerender(
+      <AppProviders>
+        <RayTracingPanel scene={createSceneFixture()} cameraFrame={null} />
+      </AppProviders>,
+    )
+
+    await waitFor(() => expect(screen.getByText(
+      /이전 조건의 결과를 저장하지 않았습니다/,
+    )).not.toBeNull())
+    expect(workspaceStore.getState().singleRayTraceRun).toBeNull()
+    expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
+    expect(workspaceStore.getState().cadCases[0].latestResult).toBeNull()
+  })
+
+  it('keeps the execution lock while the next segment is starting', async () => {
+    const result = createRayTraceResultFixture()
+    const actions = workspaceStore.getState().actions
+    act(() => {
+      actions.addCadCase({ path: 'baseline.step', displayName: 'baseline.step' })
+      actions.addCadCase({ path: 'active.step', displayName: 'active.step' })
+      actions.upsertEmitter({ ...result.emitters[0], ray_count: 100 })
+      actions.upsertReceiver(result.receivers[0])
+      actions.setRayTraceConfig({
+        ...result.config,
+        auto_convergence: true,
+        convergence_target_percent: 5,
+        max_convergence_multiplier: 8,
+      })
+    })
+    const [baselineCase, activeCase] = workspaceStore.getState().cadCases
+    let resolveSecondSegment!: (value: { job_id: string }) => void
+    const secondSegment = new Promise<{ job_id: string }>((resolve) => {
+      resolveSecondSegment = resolve
+    })
+    apiHookState.start
+      .mockResolvedValueOnce({ job_id: 'segment-1' })
+      .mockImplementationOnce(() => secondSegment)
+
+    const view = render(
+      <AppProviders>
+        <RayTracingPanel scene={createSceneFixture()} cameraFrame={null} />
+      </AppProviders>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+    await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun)
+      .toEqual({ caseId: activeCase.caseId, jobId: 'segment-1' }))
+
+    const completed = createCompletedRayTraceJobFixture()
+    completed.job_id = 'segment-1'
+    completed.result.total_rays = 100
+    completed.total_rays = 100
+    completed.result.metrics.receiver_001 = {
+      ...(completed.result.metrics.receiver_001 as Record<string, unknown>),
+      hit_count: 100,
+      error_estimate_percent: 12,
+      peak_area_error_estimate_percent: 14,
+    }
+    apiHookState.job = completed
+    view.rerender(
+      <AppProviders>
+        <RayTracingPanel scene={createSceneFixture()} cameraFrame={null} />
+      </AppProviders>,
+    )
+
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(2))
+    expect(workspaceStore.getState().singleRayTraceRun).toEqual({
+      caseId: activeCase.caseId,
+      jobId: null,
+    })
+    act(() => {
+      actions.setActiveCadCase(baselineCase.caseId)
+      actions.addCadCase({ path: 'blocked.step', displayName: 'blocked.step' })
+    })
+    expect(workspaceStore.getState().activeCadCaseId).toBe(activeCase.caseId)
+    expect(workspaceStore.getState().cadCases).toHaveLength(2)
+
+    await act(async () => resolveSecondSegment({ job_id: 'segment-2' }))
+    await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun)
+      .toEqual({ caseId: activeCase.caseId, jobId: 'segment-2' }))
+  })
+
+  it('keeps a retry start response alive so a closed window can stop the created job by id', async () => {
+    const result = createRayTraceResultFixture()
+    const actions = workspaceStore.getState().actions
+    act(() => {
+      actions.addCadCase({ path: 'delayed-retry.step', displayName: 'delayed-retry.step' })
+      actions.upsertEmitter({ ...result.emitters[0], ray_count: 100 })
+      actions.upsertReceiver(result.receivers[0])
+      actions.setRayTraceConfig({
+        ...result.config,
+        auto_convergence: true,
+        convergence_target_percent: 5,
+        max_convergence_multiplier: 8,
+      })
+    })
+    const caseId = workspaceStore.getState().activeCadCaseId!
+    let resolveRetry!: (value: { job_id: string }) => void
+    const delayedRetry = new Promise<{ job_id: string }>((resolve) => {
+      resolveRetry = resolve
+    })
+    apiHookState.start
+      .mockResolvedValueOnce({ job_id: 'delayed-segment-1' })
+      .mockImplementationOnce(() => delayedRetry)
+
+    const { rerender } = render(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+          autoConvergenceCancelToken={0}
+        />
+      </AppProviders>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Run Ray Tracing' }))
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(1))
+
+    const completed = createCompletedRayTraceJobFixture()
+    completed.job_id = 'delayed-segment-1'
+    completed.result.total_rays = 100
+    completed.total_rays = 100
+    completed.result.metrics.receiver_001 = {
+      ...(completed.result.metrics.receiver_001 as Record<string, unknown>),
+      hit_count: 100,
+      error_estimate_percent: 12,
+      peak_area_error_estimate_percent: 14,
+    }
+    apiHookState.job = completed
+    rerender(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+          autoConvergenceCancelToken={0}
+        />
+      </AppProviders>,
+    )
+    await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(2))
+    expect(apiHookState.start.mock.calls[1][0]).not.toHaveProperty('signal')
+    expect(workspaceStore.getState().singleRayTraceRun).toEqual({
+      caseId,
+      jobId: null,
+    })
+
+    rerender(
+      <AppProviders>
+        <RayTracingPanel
+          scene={createSceneFixture()}
+          cameraFrame={null}
+          autoConvergenceCancelToken={1}
+        />
+      </AppProviders>,
+    )
+
+    // Closing the result window must not release the global lock while the
+    // start response (and therefore the server job id) is still in flight.
+    await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun)
+      .toEqual({ caseId, jobId: null }))
+    expect(apiHookState.stop).not.toHaveBeenCalled()
+
+    await act(async () => resolveRetry({ job_id: 'delayed-segment-2' }))
+    await waitFor(() => expect(apiHookState.stop).toHaveBeenCalledWith({
+      jobId: 'delayed-segment-2',
+    }))
+    expect(workspaceStore.getState().singleRayTraceRun).toEqual({
+      caseId,
+      jobId: 'delayed-segment-2',
+    })
+    expect(workspaceStore.getState().activeRayTraceJobId).toBe(
+      'delayed-segment-1',
+    )
+  })
+
   it('adds an independent segment when Flux converges but the pixel Peak is noisy', async () => {
     const result = createRayTraceResultFixture()
     act(() => {
@@ -489,6 +691,9 @@ describe('RayTracingPanel Auto convergence', () => {
         'job-auto-retry',
       ),
     )
+    expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe(
+      'job-auto-retry',
+    )
 
     rerender(
       <AppProviders>
@@ -506,6 +711,14 @@ describe('RayTracingPanel Auto convergence', () => {
       }),
     )
     expect(workspaceStore.getState().activeRayTraceJobId).toBeNull()
+    expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe(
+      'job-auto-retry',
+    )
+
+    // SimulatorShell releases the owner only after its independent tracker
+    // confirms that the backend job is terminal.
+    act(() => actions.clearSingleRayTraceRun('job-auto-retry'))
+    expect(workspaceStore.getState().singleRayTraceRun).toBeNull()
 
     apiHookState.job = undefined
     rerender(

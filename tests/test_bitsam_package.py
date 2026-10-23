@@ -84,6 +84,57 @@ class BitsamPackageTests(unittest.TestCase):
         self.assertEqual(scene["components"], self.scene["components"])
         self.assertEqual(json.loads((destination / "project.json").read_text(encoding="utf-8")), self.project)
 
+    def test_preview_settings_schema_round_trips_and_fails_closed(self):
+        preview = copy.deepcopy(self.project)
+        preview["schema_version"] = "bitsam-project.v1-preview1"
+        preview["leak_preview"] = {
+            "sourceMode": "face",
+            "sourceFaceIds": [],
+            "sourceComponentIds": [],
+            "sourceBodyFaceCount": 0,
+            "quality": "balanced",
+            "directions": ["pos_z"],
+            "visualizationVisible": True,
+            "ignoreAreasVisible": True,
+            "blockersVisible": True,
+            "ignoreAreas": [],
+            "blockers": [{
+                "id": "rib", "label": "Rib", "enabled": True,
+                "baseCenter": [0, 0, 0], "uAxis": [1, 0, 0],
+                "vAxis": [0, 1, 0], "normal": [0, 0, 1],
+                "widthMm": 10, "heightMm": 5, "offsetMm": 0,
+                "depthMm": 1, "reverse": False,
+            }],
+        }
+        write_package(
+            self.package, preview, self.source, self.scene, self.scene["mesh"],
+        )
+        restored = ApiRuntime(
+            self.root / "preview-restore", scene_loader=scene_fixture,
+        ).import_project(self.package)
+        self.assertEqual(restored["project"]["leak_preview"], preview["leak_preview"])
+
+        missing_payload = copy.deepcopy(preview)
+        missing_payload.pop("leak_preview")
+        with self.assertRaisesRegex(ValueError, "Leak Preview"):
+            write_package(
+                self.root / "missing-preview.bitsam",
+                missing_payload,
+                self.source,
+                self.scene,
+                self.scene["mesh"],
+            )
+        wrong_version = copy.deepcopy(preview)
+        wrong_version["schema_version"] = "bitsam-project.v1"
+        with self.assertRaisesRegex(ValueError, "Leak Preview"):
+            write_package(
+                self.root / "wrong-preview-version.bitsam",
+                wrong_version,
+                self.source,
+                self.scene,
+                self.scene["mesh"],
+            )
+
     def test_cached_restore_trace_repeat_and_settings_change(self):
         first = ApiRuntime(self.root / "before", scene_loader=scene_fixture)
         loaded = first.load_scene(str(self.source))
