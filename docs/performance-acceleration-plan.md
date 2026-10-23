@@ -1,5 +1,58 @@
 # Ray Tracing 성능 가속 계획
 
+## 2026-10-23 PERF-5E 중복 canonical pass 제거
+
+실험 adapter의 전체 기준 계산을 재검산과 공유해 중복 탐색을 제거했다.
+32쌍 수송 비교·108개 경계 기록·127회귀 및 memcheck를 통과했다. 실행 검증
+도구의 버전/장면/빈 GPU 입력 gate도 독립 검토에 따라 보강했다.
+
+단순히 후보 거리로 탐색 범위를 줄이면 기존 근접면 선택이 바뀌는 반례를
+CPU/GPU에서 확인하여 해당 shortcut은 채택하지 않았다. 전체 oracle는 필수이고
+제품 코드는 그대로다. 중복 행 감소는 제품 가속률이 아니다. 범위와 후속 gate는
+[공유 oracle 보고서](reports/2026-10-23_perf5e-shared-oracle.md)를 따른다.
+
+## 2026-10-23 PERF-5E device-buffer 재검산 연결
+
+OptiX 후보 분류·FP64 refinement·canonical replay·전체 oracle 비교를 재사용
+GPU workspace 안에서 연결했다. 108개 경계/반복 기록, 32개 해석 비교,
+112개 회귀와 memcheck를 통과했다. 독립 검토에서 찾은 감사기의 dtype 검증과
+enqueue 이후 예외 정리를 보강했다. 제품 `src/`, `frontend/`는 그대로다.
+
+이는 추가 제품 가속 채택이 아니다. 전체 oracle는 아직 필수이며 진단 수송
+harness에는 host 전송이 남는다. 전역 후보 누락 방지, 실제 resident 수송과
+성능 gate는 후속이다. [Device-buffer 검증 보고서](reports/2026-10-23_perf5e-device-replay.md)에
+근거, 독립 검토 범위와 Workspace/Batch 무변경 내역을 기록했다.
+
+## 2026-10-23 PERF-5E 선택적 재검산 후보
+
+Oracle 검사를 유지한 실험 경로에서 OptiX 후보를 선택적 재검산한 뒤 실제
+진단 수송에 사용했다. 32개 해석 비교와 108개 경계조건 기록에서 기존 결과를
+보존했다. TV 코너 후보 경로의 전체 BVH 재탐색은 19.62% 행으로 줄었지만,
+검증용 전체 oracle는 그대로이며 이 비율은 실행시간 가속률이 아니다.
+
+독립 검토에서 찾은 비교 함수의 배열 길이 결함을 수정하고 재실행했다.
+제품 `src/`, `frontend/`, Workspace/Batch/schema는 변경하지 않았다.
+전역 후보 누락 방지 계약과 상주형 수송의 실제 성능 gate를 통과하기 전에는
+제품 OptiX provider로 승격하지 않는다. 상세 조건과 한계는
+[선택적 재검산 보고서](reports/2026-10-23_perf5e-selective-replay.md)를 따른다.
+
+## 2026-10-23 Workspace 및 Batch 기준 PERF-5E 재개
+
+작업 기준은 `codex/ux-project-batch@373659d1`이다. 확인 당시 `origin/main`은
+`b3371b89`이며 Workspace/Batch 커밋은 아직 main에 병합되지 않았다.
+이전 main 폴더의 미채택 5D/5F 실험은 가져오지 않았다.
+
+OptiX 후보 탐색을 기존 CPU/CUDA 다회반사 계산 옆에서 관찰하는 독립 검증
+경로를 추가했다. 기준 결과를 바꾸지 않는 32개 비교와 저장·복원/API 검사를
+통과했지만, OptiX의 근접·경계 면 선택은 기존 경로와 다르므로 모든 질의에
+기존 정밀 판정이 여전히 필요하다. 제품 가속이나 OptiX 채택 완료가 아니다.
+
+다음은 후보 탐색의 보수성 및 면 선택 재확인 비용을 검증하고, 이득이 있을
+경우에만 상주형 수송에 연결하는 5E 후속 단계다. 실제 CAD 전체 시간 개선과
+작은 장면 회귀 기준을 통과하기 전에는 기본 provider를 바꾸지 않는다.
+이번 단계의 코드 범위, 결과와 UX 인수인계는
+[PERF-5E 재개 검증 보고서](reports/2026-10-23_perf5e-workspace-transport.md)를 따른다.
+
 ## 2026-10-19 PERF-5D 검증 보완 완료 범위
 
 독립 검토에서 발견한 ULP 부호 경계, 실제 후보 실행, 같은 모드 반복 판정,
