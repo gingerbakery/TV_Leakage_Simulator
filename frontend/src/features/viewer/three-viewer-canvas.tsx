@@ -129,8 +129,12 @@ import {
 } from './viewer-selection'
 import {
   viewerSectionAxisNormal,
+  viewerSectionAxisRange,
+  viewerSectionOffsetRatio,
   viewerSectionPlane,
+  viewerSectionPositionMm,
   type ViewerSectionAxis,
+  type ViewerSectionAxisRange,
 } from './section-view'
 import {
   screenBoxSamplePoints,
@@ -1908,6 +1912,8 @@ export function ThreeViewerCanvas({
   const sectionViewRef = useRef(sectionView)
   sectionViewRef.current = sectionView
   const sectionBoundsRef = useRef<Box3 | null>(null)
+  const [sectionAxisRangeMm, setSectionAxisRangeMm] =
+    useState<ViewerSectionAxisRange | null>(null)
   const sectionClippingPlaneRef = useRef(new Plane())
   const sectionSliderFrameRef = useRef<number | null>(null)
   const sectionSliderValueRef = useRef(0)
@@ -5249,6 +5255,7 @@ export function ThreeViewerCanvas({
     if (!sectionView.enabled) {
       for (const root of clippingRoots) setObjectClippingPlane(root, null)
       sectionBoundsRef.current = null
+      setSectionAxisRangeMm(null)
       clearGroup(runtime.sectionRoot)
       return
     }
@@ -5260,6 +5267,16 @@ export function ThreeViewerCanvas({
     const bounds = new Box3().setFromObject(visibleCadRoot)
     sectionBoundsRef.current = bounds.clone()
     const currentSection = sectionViewRef.current
+    const nextAxisRange = viewerSectionAxisRange(
+      bounds,
+      currentSection.axis,
+    )
+    setSectionAxisRangeMm((current) =>
+      current?.minMm === nextAxisRange?.minMm &&
+      current?.maxMm === nextAxisRange?.maxMm
+        ? current
+        : nextAxisRange,
+    )
     const definition = viewerSectionPlane(
       bounds,
       viewerSectionAxisNormal(currentSection.axis),
@@ -5442,8 +5459,15 @@ export function ThreeViewerCanvas({
       rayTraceResult.receiver_grids.map((grid) => [grid.receiver_id, grid]),
     )
     const commonPeak = receiverHeatmap3dCommonPeak(rayTraceResult)
+    const workspaceReceivers = new Map(
+      receivers.map((receiver) => [receiver.receiver_id, receiver]),
+    )
     let displayedCount = 0
     for (const receiver of rayTraceResult.receivers) {
+      const workspaceReceiver = workspaceReceivers.get(receiver.receiver_id)
+      if (receiver.enabled === false || workspaceReceiver?.enabled === false) {
+        continue
+      }
       const grid = grids.get(receiver.receiver_id)
       if (!grid) continue
       const luminanceMultiplier =
@@ -5504,6 +5528,7 @@ export function ThreeViewerCanvas({
     receiverHeatmap3dMode,
     receiverHeatmap3dOpacity,
     receiverHeatmap3dScaleMode,
+    receivers,
     sectionView.enabled,
   ])
 
@@ -5602,6 +5627,19 @@ export function ThreeViewerCanvas({
   const showFullViewPip =
     !roiBoxSelectionArmed &&
     roiScopes.some((scope) => scope.active && scope.clipBox)
+  const sectionPositionMm = sectionAxisRangeMm
+    ? viewerSectionPositionMm(sectionAxisRangeMm, sectionView.offsetRatio)
+    : 0
+
+  const setSectionOffsetRatio = (offsetRatio: number) => {
+    const clamped = Math.max(-1, Math.min(1, offsetRatio))
+    sectionSliderValueRef.current = clamped
+    if (sectionSliderFrameRef.current !== null) {
+      window.cancelAnimationFrame(sectionSliderFrameRef.current)
+      sectionSliderFrameRef.current = null
+    }
+    setSectionView((current) => ({ ...current, offsetRatio: clamped }))
+  }
 
   return (
     <div
@@ -5715,9 +5753,49 @@ export function ThreeViewerCanvas({
               )
             }}
           />
-          <span className="w-9 text-right font-mono text-muted-foreground">
-            {Math.round(sectionView.offsetRatio * 100)}%
-          </span>
+          <label className="flex items-center gap-1 font-mono text-muted-foreground">
+            <input
+              aria-label="Section position percent"
+              className="h-7 w-16 rounded border border-border bg-background px-1.5 text-right font-mono text-foreground"
+              type="number"
+              min={-100}
+              max={100}
+              step={0.1}
+              value={Number((sectionView.offsetRatio * 100).toFixed(1))}
+              onChange={(event) => {
+                const percent = Number(event.currentTarget.value)
+                if (Number.isFinite(percent)) {
+                  setSectionOffsetRatio(percent / 100)
+                }
+              }}
+            />
+            %
+          </label>
+          <label className="flex items-center gap-1 font-mono text-muted-foreground">
+            <input
+              aria-label={`Section ${sectionView.axis.toUpperCase()} position millimeters`}
+              className="h-7 w-20 rounded border border-border bg-background px-1.5 text-right font-mono text-foreground disabled:opacity-50"
+              type="number"
+              min={sectionAxisRangeMm?.minMm}
+              max={sectionAxisRangeMm?.maxMm}
+              step={0.1}
+              disabled={!sectionAxisRangeMm}
+              value={Number(sectionPositionMm.toFixed(3))}
+              onChange={(event) => {
+                if (!sectionAxisRangeMm) return
+                const positionMm = Number(event.currentTarget.value)
+                if (Number.isFinite(positionMm)) {
+                  setSectionOffsetRatio(
+                    viewerSectionOffsetRatio(
+                      sectionAxisRangeMm,
+                      positionMm,
+                    ),
+                  )
+                }
+              }}
+            />
+            mm
+          </label>
           <button
             type="button"
             aria-pressed={sectionView.reverse}

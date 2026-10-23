@@ -1,8 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { apiClient } from '@/api'
+import { HelpTooltip } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore, workspaceSelectors, workspaceStore } from '@/stores'
-import { bsdfAssetName, bsdfPreparationMessage, bsdfTransportProblem } from './bsdf-asset'
+import { bsdfAssetName, bsdfImportLimits, bsdfPreparationMessage, bsdfTransportProblem } from './bsdf-asset'
+
+const mib = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MiB`
 
 export function BsdfAssetPanel({ value, onChange, disabled = false }: {
   value: string
@@ -16,12 +19,29 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [imported, setImported] = useState('')
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const generation = useRef(0)
   useEffect(() => () => { generation.current += 1 }, [])
   const selected = assets.find((asset) => asset.id === value)
 
-  async function importFiles(files: FileList | null) {
+  function stageFiles(files: FileList | null) {
     if (!files?.length) return
+    setError(''); setImported('')
+    const merged = new Map(pendingFiles.map((file) => [file.name.toLocaleLowerCase(), file]))
+    Array.from(files).forEach((file) => merged.set(file.name.toLocaleLowerCase(), file))
+    const next = Array.from(merged.values())
+    const totalBytes = next.reduce((sum, file) => sum + file.size, 0)
+    if (next.length > bsdfImportLimits.maxFiles || next.some((file) => file.size > bsdfImportLimits.maxFileBytes) || totalBytes > bsdfImportLimits.maxTotalBytes) {
+      setError(`BSDF 파일 묶음은 총 ${mib(bsdfImportLimits.maxTotalBytes)} 이하, 각 파일 ${mib(bsdfImportLimits.maxFileBytes)} 이하, ${bsdfImportLimits.maxFiles}개 이하로 추가하세요.`)
+      if (input.current) input.current.value = ''
+      return
+    }
+    setPendingFiles(next)
+    if (input.current) input.current.value = ''
+  }
+
+  async function importFiles() {
+    if (!pendingFiles.length) return
     const ticket = ++generation.current
     let contextChanged = false
     const unsubscribe = workspaceStore.subscribe((state, previous) => {
@@ -29,10 +49,7 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
     })
     setBusy(true); setError(''); setImported('')
     try {
-      const inputs = Array.from(files)
-      if (inputs.length > 64 || inputs.some((file) => file.size > 2 * 1024 * 1024) || inputs.reduce((sum, file) => sum + file.size, 0) > 8 * 1024 * 1024) {
-        throw new Error('BSDF 파일 묶음은 총 8 MiB 이하, 각 파일 2 MiB 이하, 64개 이하로 선택하세요.')
-      }
+      const inputs = pendingFiles
       const sourceFiles = await Promise.all(inputs.map(async (file) => {
         let text: string
         try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await file.arrayBuffer()) }
@@ -45,6 +62,7 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
       const existing = workspaceStore.getState().bsdfAssets?.find((item) => item.id === asset.id)
       // Registering the same source bundle must not reset options on linked parts.
       actions.addBsdfAsset(existing ? { ...asset, transport: existing.transport, simulationReady: Boolean(existing.transport) } : asset)
+      setPendingFiles([])
       setImported(`${bsdfAssetName(asset)} 등록 완료. 아래 목록에서 선택하고 Apply를 눌러 연결하세요.`)
     } catch (cause) {
       if (ticket === generation.current) setError(cause instanceof Error ? cause.message : 'BSDF 파일을 읽지 못했습니다.')
@@ -59,14 +77,22 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
 
   return <section aria-label="BSDF data" className="space-y-2 rounded-lg border border-border bg-muted/20 p-3 text-xs">
     <div className="flex items-center justify-between gap-2">
-      <span className="font-semibold">BSDF 데이터</span>
+      <span className="flex items-center gap-1 font-semibold">BSDF 데이터
+        <HelpTooltip label="BSDF 파일 추가 도움말">파일 추가는 등록 전까지 누적됩니다. 같은 이름을 다시 추가하면 최신 파일로 교체됩니다.</HelpTooltip>
+      </span>
       <Button type="button" variant="outline" size="sm" disabled={busy || disabled} onClick={() => input.current?.click()}>
-        {busy ? '검증 중…' : 'LT ASCII 파일 등록'}
+        파일 추가
       </Button>
       <input ref={input} type="file" accept=".txt,.dat,.bsdf" multiple className="hidden" aria-label="Import LT ASCII BSDF files"
-        disabled={busy || disabled} onChange={(event) => { void importFiles(event.currentTarget.files) }} />
+        disabled={busy || disabled} onChange={(event) => stageFiles(event.currentTarget.files)} />
     </div>
-    <p className="text-muted-foreground">LT ASCII: master + 산란 표 + RT 파일을 함께 선택. 단일 .bsdf 형식은 아직 지원하지 않습니다.</p>
+    {pendingFiles.length ? <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-1.5">
+      <span>대기 {pendingFiles.length}개 · {mib(pendingFiles.reduce((sum, file) => sum + file.size, 0))}</span>
+      <span className="flex gap-1">
+        <Button type="button" variant="outline" size="sm" disabled={busy || disabled} onClick={() => { setPendingFiles([]); setError('') }}>비우기</Button>
+        <Button type="button" size="sm" disabled={busy || disabled} onClick={() => { void importFiles() }}>{busy ? '검증 중…' : '등록'}</Button>
+      </span>
+    </div> : null}
     <label htmlFor={id} className="block font-medium">연결할 BSDF</label>
     <select id={id} value={value} disabled={disabled} onChange={(event) => onChange(event.currentTarget.value)}
       className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm">

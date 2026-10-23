@@ -1,7 +1,13 @@
 import { Box3, Vector3 } from 'three'
 import { describe, expect, it } from 'vitest'
 
-import { viewerSectionAxisNormal, viewerSectionPlane } from './section-view'
+import {
+  viewerSectionAxisNormal,
+  viewerSectionAxisRange,
+  viewerSectionOffsetRatio,
+  viewerSectionPlane,
+  viewerSectionPositionMm,
+} from './section-view'
 
 describe('viewer section plane', () => {
   const bounds = new Box3(
@@ -32,5 +38,13 @@ describe('viewer section plane', () => {
     expect(viewerSectionAxisNormal('x').toArray()).toEqual([1, 0, 0])
     expect(viewerSectionAxisNormal('y').toArray()).toEqual([0, 1, 0])
     expect(viewerSectionAxisNormal('z').toArray()).toEqual([0, 0, 1])
+  })
+
+  it('converts between slider ratio and an absolute axis position in mm', () => {
+    const range = viewerSectionAxisRange(bounds, 'x')
+    expect(range).toEqual({ minMm: -10, maxMm: 10 })
+    expect(viewerSectionPositionMm(range!, 0.25)).toBe(2.5)
+    expect(viewerSectionOffsetRatio(range!, -5)).toBe(-0.5)
+    expect(viewerSectionOffsetRatio(range!, 50)).toBe(1)
   })
 })

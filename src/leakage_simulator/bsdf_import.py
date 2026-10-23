@@ -13,12 +13,12 @@ import re
 from typing import Any
 
 MAX_FILES = 64
-MAX_FILE_BYTES = 2 * 1024 * 1024
-MAX_TOTAL_BYTES = 8 * 1024 * 1024
+MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_REQUEST_BYTES = 2 * MAX_TOTAL_BYTES + 65536
 MAX_GRIDS = 128
 MAX_GRID_CELLS = 200_000
-MAX_TOTAL_CELLS = 400_000
+MAX_TOTAL_CELLS = 2_000_000
 MASTER_HEADER = "#UDOP AngGridMultiple 1.0"
 RT_HEADER = "DFAT Version 1.0"
 
@@ -211,7 +211,7 @@ def import_lt_ascii_bsdf(payload: Any) -> dict[str, Any]:
             _fail(f"{name}: UTF-8로 표현할 수 없는 텍스트입니다.")
         total_bytes += byte_size
         if byte_size > MAX_FILE_BYTES or total_bytes > MAX_TOTAL_BYTES:
-            _fail("BSDF 입력 한도는 파일당 2 MiB, 전체 8 MiB입니다.")
+            _fail("BSDF 입력 한도는 파일당 8 MiB, 전체 32 MiB입니다.")
         if name.casefold() in files:
             _fail(f"중복 파일명: {name}. 폴더가 다른 동명 파일도 구분해서 선택하세요.")
         files[name.casefold()] = {"name": name, "text": text}

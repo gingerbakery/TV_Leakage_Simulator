@@ -10,10 +10,45 @@ export interface ViewerSectionPlane {
   visualSize: number
 }
 
+export interface ViewerSectionAxisRange {
+  minMm: number
+  maxMm: number
+}
+
 export function viewerSectionAxisNormal(axis: ViewerSectionAxis): Vector3 {
   if (axis === 'x') return new Vector3(1, 0, 0)
   if (axis === 'y') return new Vector3(0, 1, 0)
   return new Vector3(0, 0, 1)
+}
+
+export function viewerSectionAxisRange(
+  bounds: Box3,
+  axis: ViewerSectionAxis,
+): ViewerSectionAxisRange | null {
+  if (bounds.isEmpty()) return null
+  const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2
+  return {
+    minMm: bounds.min.getComponent(axisIndex),
+    maxMm: bounds.max.getComponent(axisIndex),
+  }
+}
+
+export function viewerSectionPositionMm(
+  range: ViewerSectionAxisRange,
+  offsetRatio: number,
+): number {
+  const center = (range.minMm + range.maxMm) / 2
+  const halfSpan = Math.max((range.maxMm - range.minMm) / 2, 1e-9)
+  return center + Math.max(-1, Math.min(1, offsetRatio)) * halfSpan
+}
+
+export function viewerSectionOffsetRatio(
+  range: ViewerSectionAxisRange,
+  positionMm: number,
+): number {
+  const center = (range.minMm + range.maxMm) / 2
+  const halfSpan = Math.max((range.maxMm - range.minMm) / 2, 1e-9)
+  return Math.max(-1, Math.min(1, (positionMm - center) / halfSpan))
 }
 
 export function viewerSectionPlane(

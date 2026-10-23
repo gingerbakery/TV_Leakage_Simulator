@@ -33,6 +33,12 @@ export interface BsdfAsset {
 }
 
 export const emptyBsdfAssets: BsdfAsset[] = []
+export const bsdfImportLimits = {
+  maxFiles: 64,
+  maxFileBytes: 8 * 1024 * 1024,
+  maxTotalBytes: 32 * 1024 * 1024,
+  maxTotalCells: 2_000_000,
+} as const
 export const bsdfPreparationMessage = 'BSDF 계산 옵션에서 등방성 · No Shift와 파장을 설정하세요. 현재 반사 전용 CPU·NVIDIA GPU / source sampling을 지원합니다.'
 
 export function bsdfTransportProblem(asset: BsdfAsset): string | null {
@@ -54,15 +60,15 @@ const name = (value: unknown): value is string => typeof value === 'string' && v
 export function isBsdfAsset(value: unknown): value is BsdfAsset {
   if (!record(value) || typeof value.id !== 'string' || !/^bsdf-[0-9a-f]{64}$/.test(value.id) ||
       value.format !== 'lighttools-ascii-bsdf-v1' || value.parserVersion !== 1 || typeof value.simulationReady !== 'boolean' ||
-      !Array.isArray(value.files) || value.files.length < 3 || value.files.length > 64 ||
-      !value.files.every((file) => record(file) && name(file.name) && typeof file.text === 'string' && new TextEncoder().encode(file.text).length <= 2 * 1024 * 1024) ||
+      !Array.isArray(value.files) || value.files.length < 3 || value.files.length > bsdfImportLimits.maxFiles ||
+      !value.files.every((file) => record(file) && name(file.name) && typeof file.text === 'string' && new TextEncoder().encode(file.text).length <= bsdfImportLimits.maxFileBytes) ||
       !Array.isArray(value.warnings) || value.warnings.length > 1000 || !value.warnings.every((warning) => typeof warning === 'string') ||
       !record(value.data)) return false
   if (value.transport !== undefined && (!record(value.transport) || value.transport.model !== 'isotropic_no_shift' ||
       value.transport.aoiExtrapolation !== 'clamp' || !finite(value.transport.wavelengthNm) || value.transport.wavelengthNm <= 0)) return false
   const files = value.files as BsdfAsset['files']
   const fileNames = new Set(files.map((file) => file.name.toLowerCase()))
-  if (fileNames.size !== files.length || files.reduce((sum, file) => sum + new TextEncoder().encode(file.text).length, 0) > 8 * 1024 * 1024) return false
+  if (fileNames.size !== files.length || files.reduce((sum, file) => sum + new TextEncoder().encode(file.text).length, 0) > bsdfImportLimits.maxTotalBytes) return false
   const data = value.data
   if (data.symmetry !== 'unspecified' || data.meshFormat !== 'polar' || data.valueType !== 'bsdf_relative' ||
       !numbers(data.wavelengthsNm) || !data.wavelengthsNm.every((x) => x > 0) ||
@@ -79,7 +85,7 @@ export function isBsdfAsset(value: unknown): value is BsdfAsset {
     cells += grid.longitudesDeg.length * grid.latitudesDeg.length
     const longitude = grid.longitudesDeg
     const latitude = grid.latitudesDeg
-    return cells <= 400_000 && longitude.length * latitude.length <= 200_000 &&
+    return cells <= bsdfImportLimits.maxTotalCells && longitude.length * latitude.length <= 200_000 &&
       longitude.length >= 2 && latitude.length >= 2 &&
       longitude.every((x, index) => x >= 0 && x <= 360 && (index === 0 || x > longitude[index - 1])) &&
       latitude.every((x, index) => x >= 0 && x <= 90 && (index === 0 || x < latitude[index - 1])) &&
