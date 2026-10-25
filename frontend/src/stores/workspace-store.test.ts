@@ -1,3 +1,6 @@
+import { createBsdfFixture } from '@/test/bsdf-fixture'
+import { createSceneFixture } from '@/test/scene-fixture'
+import { createBitsamProject, parseBitsamProject, serializeBitsamProject } from '@/features/projects/bitsam-project'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -16,6 +19,74 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('shares BSDF and saved materials across all Case lifecycle paths while keeping assignments separate', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    const asset = createBsdfFixture()
+    const profile = { id: 'shared-material', name: 'Shared BSDF', baseMaterialId: 'pc_black',
+      surfaceId: 'matte_black_resin', bsdfAssetId: asset.id }
+    actions.addBsdfAsset(asset)
+    actions.addCustomOpticalProfile(profile)
+    actions.addCadCase({ path: 'case1.step', displayName: 'CASE1' })
+    const first = store.getState().activeCadCaseId!
+    actions.upsertMaterialAssignment({ assignmentId: 'case1-part', componentId: 1,
+      targetType: 'part', faceIds: [], ...profile, profileId: profile.id, enabled: true })
+    actions.addCadCase({ path: 'case2.step', displayName: 'CASE2' })
+    const second = store.getState().activeCadCaseId!
+    expect(store.getState().bsdfAssets).toEqual([asset])
+    expect(store.getState().customOpticalProfiles).toEqual([profile])
+    expect(store.getState().materialAssignments).toEqual([])
+    const updated = { ...asset, simulationReady: true,
+      transport: { model: 'isotropic_no_shift' as const, wavelengthNm: 550, aoiExtrapolation: 'clamp' as const } }
+    actions.addBsdfAsset(updated)
+    actions.addCustomOpticalProfile({ ...profile, name: 'Updated material' })
+    for (const item of store.getState().cadCases) {
+      expect(item.workspaceState?.bsdfAssets).toEqual([updated])
+      expect(item.workspaceState?.customOpticalProfiles[0].name).toBe('Updated material')
+    }
+    actions.setActiveCadCase(first)
+    expect(store.getState().materialAssignments[0].bsdfAssetId).toBe(asset.id)
+    expect(store.getState().bsdfAssets).toEqual([updated])
+    actions.removeCustomOpticalProfile(profile.id)
+    actions.setCadCaseVisible(second, true)
+    expect(store.getState().customOpticalProfiles).toEqual([])
+    expect(store.getState().materialAssignments).toEqual([])
+    actions.removeCadCase(second)
+    expect(store.getState().bsdfAssets).toEqual([updated])
+    actions.removeCadCase(first)
+    expect(store.getState().bsdfAssets).toEqual([updated])
+    actions.setActiveCad({ path: 'again.step', displayName: 'Again' })
+    expect(store.getState().bsdfAssets).toEqual([updated])
+    actions.resetWorkspace()
+    expect(store.getState().bsdfAssets).toEqual([])
+  })
+
+  it('merges imported project libraries and saves the full shared library from another Case', () => {
+    const source = createWorkspaceStore()
+    const asset = createBsdfFixture()
+    source.getState().actions.addCadCase({ path: 'source.step', displayName: 'Source' })
+    source.getState().actions.addBsdfAsset(asset)
+    const profile = { id: 'imported', name: 'Imported material', baseMaterialId: 'pc_black',
+      surfaceId: 'matte_black_resin', bsdfAssetId: asset.id }
+    source.getState().actions.addCustomOpticalProfile(profile)
+    const project = parseBitsamProject(serializeBitsamProject(createBitsamProject(createSceneFixture(), source.getState())))
+    const target = createWorkspaceStore()
+    const actions = target.getState().actions
+    actions.addCustomOpticalProfile({ ...profile, id: 'existing', name: 'Existing material' })
+    actions.addBsdfAsset({ ...asset, id: `bsdf-${'b'.repeat(64)}` })
+    actions.addCadCase({ path: 'target.step', displayName: 'Target' })
+    actions.restoreProjectState(project.workspace)
+    actions.addCadCase({ path: 'case2.step', displayName: 'CASE2' })
+    const saved = parseBitsamProject(serializeBitsamProject(createBitsamProject(createSceneFixture(), target.getState())))
+    expect(saved.workspace.customOpticalProfiles.map((item) => item.id)).toEqual(['existing', 'imported'])
+    expect(saved.workspace.bsdfAssets).toHaveLength(2)
+    expect(saved.workspace.materialAssignments).toEqual([])
+    // Loading a legacy/empty Case setup must not erase registered library entries.
+    actions.restoreProjectState({ ...project.workspace, bsdfAssets: [], customOpticalProfiles: [] })
+    expect(target.getState().bsdfAssets).toHaveLength(2)
+    expect(target.getState().customOpticalProfiles).toHaveLength(2)
+  })
+
   it('accepts up to 50,000 stored diagnostic paths', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions
@@ -357,6 +428,37 @@ describe('workspace store', () => {
     ])
     expect(savedResult?.receiver_grids).toHaveLength(1)
     expect(savedResult?.metrics[receiverTwo.receiver_id]).toBeUndefined()
+  })
+
+  it.each([
+    ['receivers'], ['emitters'], ['runOptions'],
+    ['receivers', 'emitters'], ['receivers', 'runOptions'], ['emitters', 'runOptions'],
+    ['receivers', 'emitters', 'runOptions'], [],
+  ] as import('./workspace-store').CopySetupSection[][])('copies only selected setup sections: %j', (...sections) => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'Source' })
+    const sourceId = store.getState().activeCadCaseId!
+    actions.upsertReceiver({ ...createDatumReceiver('source-rx', [1, 2, 3], [0, 0, 0]), source_face_indices: [10] })
+    actions.upsertEmitter(createFaceEmitter('source-led', [10]))
+    actions.setRayTraceConfig({ ...store.getState().rayTraceConfig, max_depth: 77 })
+    actions.addCadCase({ path: 'target.step', displayName: 'Target' })
+    const targetId = store.getState().activeCadCaseId!
+    actions.upsertReceiver(createDatumReceiver('target-rx', [9, 8, 7], [0, 0, 0]))
+    actions.upsertEmitter(createDatumEmitter('target-led', [9, 8, 7], [0, 0, 0]))
+    actions.renameComponent(1, 'Target component')
+    actions.setHiddenComponentIds([1])
+    actions.setActiveCadCase(sourceId)
+    const before = structuredClone(store.getState().cadCases.find((item) => item.caseId === targetId)!)
+    actions.copyActiveSetupToCases([{ caseId: targetId, componentIdMap: {} }], sections)
+    const after = store.getState().cadCases.find((item) => item.caseId === targetId)!
+    if (sections.length === 0) { expect(after).toEqual(before); return }
+    const expected = structuredClone(before.workspaceState!)
+    if (sections.includes('receivers')) expected.receivers = store.getState().receivers.map((item) => ({ ...item, source_face_indices: [] }))
+    if (sections.includes('emitters')) expected.emitters = store.getState().emitters.map((item) => ({ ...item, face_indices: [], source_face_indices: [] }))
+    if (sections.includes('runOptions')) expected.rayTraceConfig = store.getState().rayTraceConfig
+    expect(after.workspaceState).toEqual(expected)
+    expect(store.getState().activeCadCaseId).toBe(sourceId)
   })
 
   it('copies analysis setup while requiring CAD Surface Emitter face reselection', () => {

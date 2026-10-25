@@ -75,6 +75,7 @@ import {
   workspaceSelectors,
   workspaceStore,
   type CopySetupTarget,
+  type CopySetupSection,
 } from '@/stores'
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
@@ -156,6 +157,8 @@ export function SimulatorShell() {
   } | null>(null)
   const [projectFileNotice, setProjectFileNotice] = useState<ProjectFileNotice | null>(null)
   const [copySetupOpen, setCopySetupOpen] = useState(false)
+  const [copySetupAll, setCopySetupAll] = useState(true)
+  const [copySetupSections, setCopySetupSections] = useState<CopySetupSection[]>(['receivers', 'emitters', 'runOptions'])
   const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
   const [copySetupPending, setCopySetupPending] = useState(false)
   const [copySetupProgress, setCopySetupProgress] = useState('')
@@ -603,7 +606,7 @@ export function SimulatorShell() {
   }
 
   const handleCopyAnalysisSetup = async () => {
-    if (!scene || copySetupTargetIds.length === 0) return
+    if (!scene || copySetupTargetIds.length === 0 || (!copySetupAll && copySetupSections.length === 0)) return
     const abortController = new AbortController()
     copySetupAbortRef.current = abortController
     setCopySetupPending(true)
@@ -633,6 +636,10 @@ export function SimulatorShell() {
         // fallback. Normal imported Cases already have lightweight metadata.
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
         try {
+          if (!copySetupAll) {
+            successful.push({ item, match: matchSetupComponents({ components: [] }, { components: [] }) })
+            continue
+          }
           let targetMetadata = item.componentMatchMetadata
           if (!targetMetadata || targetMetadata.length === 0) {
             // Compatibility path for a Case created before metadata capture.
@@ -677,7 +684,7 @@ export function SimulatorShell() {
           componentIdMap: match.componentIdMap,
         }),
       )
-      actions.copyActiveSetupToCases(copyTargets)
+      actions.copyActiveSetupToCases(copyTargets, copySetupAll ? undefined : copySetupSections)
       const sourceState = workspaceStore.getState()
       const matchedComponents = successful.reduce(
         (sum, item) => sum + item.match.matched,
@@ -716,12 +723,14 @@ export function SimulatorShell() {
       openFeatureNotice(
         'Copy Setup Complete',
         [
-          `${successful.length}개 Case에 안전한 전체 설정 복사를 완료했습니다.`,
+          `${successful.length}개 Case에 ${copySetupAll ? '전체 설정' : copySetupSections.map((section) => ({ receivers: 'Receiver', emitters: 'Emitter', runOptions: 'Run option' })[section]).join(' · ')} 복사를 완료했습니다.`,
+          ...(copySetupAll ? [
           `Component 연결: ${matchedComponents}개 일치 / ${unmatchedComponents}개 불일치 제외`,
           `매칭 기준: 이름 ${matchBreakdown.name} / 형상 ${matchBreakdown.geometry} / Component ID ${matchBreakdown.componentId} / 동일 순서 ${matchBreakdown.orderedFallback}`,
           `Face 종속 Material·Transform: ${faceSpecificSkipped}개 안전을 위해 제외`,
           `CAD Surface Emitter: ${surfaceEmittersToReselect}개 Face 재선택 필요`,
           'ROI는 좌표 기준으로 재매핑되며 Hidden/Delete 상태와 기존 Ray 결과는 복사하지 않습니다.',
+          ] : sourceState.emitters.some((emitter) => emitter.emitter_type === 'face') && copySetupSections.includes('emitters') ? ['CAD Surface Emitter는 대상 Face를 다시 선택해야 합니다.'] : []),
           ...(failedCases.length > 0
             ? [`Scene 로드 실패로 제외된 Case: ${failedCases.join(', ')}`]
             : []),
@@ -1074,7 +1083,7 @@ export function SimulatorShell() {
           setCopySetupOpen(open)
         }}
         title="Copy Analysis Setup"
-        description="현재 활성 Case의 해석 조건을 선택한 Case에 복사합니다. 대상 Case의 기존 설정과 Ray 결과는 교체됩니다."
+        help="활성 Case에서 선택한 항목을 대상 Case에 복사합니다. 선택 항목의 목록 전체를 교체하고 나머지 설정은 유지합니다. 전체 복사는 Component를 매칭하고 ROI를 재매핑합니다. CAD Face 연결은 복사하지 않으며 Surface Emitter는 대상 Face를 다시 선택해야 합니다."
         footer={
           <>
             <Button
@@ -1087,11 +1096,11 @@ export function SimulatorShell() {
               {copySetupPending ? 'Cancel Copy' : 'Cancel'}
             </Button>
             <Button
-              disabled={copySetupTargetIds.length === 0 || copySetupPending}
+              disabled={copySetupTargetIds.length === 0 || copySetupPending || (!copySetupAll && copySetupSections.length === 0)}
               onClick={() => void handleCopyAnalysisSetup()}
             >
               {copySetupPending
-                ? 'Checking Components...'
+                ? (copySetupAll ? 'Checking Components...' : 'Copying...')
                 : `Copy to ${copySetupTargetIds.length} Cases`}
             </Button>
           </>
@@ -1106,7 +1115,28 @@ export function SimulatorShell() {
                 'Active Case'}
             </div>
           </div>
-          <fieldset className="space-y-2">
+          <fieldset className="space-y-2" disabled={copySetupPending}>
+            <legend className="text-sm font-semibold">Copy items</legend>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={copySetupAll} onChange={(event) => setCopySetupAll(event.currentTarget.checked)} />All setup
+            </label>
+            <div className="flex flex-wrap gap-4">
+              {(['receivers', 'emitters', 'runOptions'] as const).map((section) => <label key={section} className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={copySetupAll || copySetupSections.includes(section)}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked
+                    setCopySetupAll(false)
+                    setCopySetupSections((current) => {
+                      const selected = copySetupAll ? ['receivers', 'emitters', 'runOptions'] as CopySetupSection[] : current
+                      return checked ? [...new Set([...selected, section])] : selected.filter((item) => item !== section)
+                    })
+                  }} />
+                {({ receivers: 'Receiver', emitters: 'Emitter', runOptions: 'Run option' })[section]}
+              </label>)}
+            </div>
+          </fieldset>
+          <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">선택 항목의 기존 설정과 대상 Case의 Ray 결과가 교체됩니다.</p>
+          <fieldset className="space-y-2" disabled={copySetupPending}>
             <legend className="text-sm font-semibold">Target Cases</legend>
             {cadCases
               .filter((item) => item.caseId !== activeCadCaseId)
@@ -1146,9 +1176,6 @@ export function SimulatorShell() {
               Copying Setup · {copySetupProgress}
             </div>
           ) : null}
-          <div className="rounded-lg border border-orange-300/60 bg-orange-50/70 p-3 text-xs leading-5 text-orange-950 dark:border-orange-800 dark:bg-orange-950/30 dark:text-orange-100">
-            전체 해석 설정을 안전하게 복사합니다. Component 설정은 CAD 이름이 일치하는 부품에만 연결하고, ROI는 동일 공간 좌표로 재매핑합니다. Face 종속 Material·Transform은 제외하며 CAD Surface Emitter는 Face를 다시 선택해야 합니다.
-          </div>
         </div>
       </AppDialog>
 

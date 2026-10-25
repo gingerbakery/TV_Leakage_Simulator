@@ -1270,11 +1270,11 @@ function ReceiverDialog({
     [actions],
   )
 
-  const handleApply = () => {
+  const handleApply = (saveAs = false) => {
     if (!canApply) return
     const receiverId =
-      initialReceiver?.receiver_id ??
-      nextSpecId('receiver', existingIds)
+      saveAs ? nextSpecId('receiver', existingIds) :
+      initialReceiver?.receiver_id ?? nextSpecId('receiver', existingIds)
     const datumAxes = planeAxesFromRotation(rotation)
     const datumCenter: Vec3 = isLeakPreviewReceiver
       ? [
@@ -1304,7 +1304,8 @@ function ReceiverDialog({
       source_face_indices:
         mode === 'datum_plane' ? receiverSourceFaceIds : [],
       display_name:
-        displayName.trim() ||
+        (saveAs && displayName.trim() === initialReceiver?.display_name?.trim()
+          ? `${displayName.trim()} copy` : displayName.trim()) ||
         rayObjectDisplayName('receiver', receiverId),
       width_mm: Math.max(0.001, width),
       height_mm: Math.max(0.001, height),
@@ -1347,17 +1348,20 @@ function ReceiverDialog({
       }
       help={
         mode === 'current_view'
-          ? '현재 3D Viewer의 카메라 위치와 방향을 기준으로 Receiver를 생성합니다.'
-          : 'CAD Face 또는 중심 좌표와 Receiver Tilt로 사각 수광면을 배치합니다.'
+          ? '현재 3D Viewer의 카메라 위치와 방향을 기준으로 Receiver를 생성합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
+          : 'CAD Face 또는 중심 좌표와 Receiver Tilt로 사각 수광면을 배치합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
       }
       size="lg"
-      onSubmit={handleApply}
+      onSubmit={() => handleApply()}
       footer={
         <>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!canApply} onClick={handleApply}>
+          {initialReceiver ? <Button variant="outline" disabled={!canApply} onClick={() => handleApply(true)}>
+            Save As
+          </Button> : null}
+          <Button disabled={!canApply} onClick={() => handleApply()}>
             {initialReceiver ? 'Save Receiver' : 'Add Receiver'}
           </Button>
         </>

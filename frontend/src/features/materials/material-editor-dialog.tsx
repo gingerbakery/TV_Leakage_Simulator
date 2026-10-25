@@ -436,12 +436,12 @@ export function MaterialEditorDialog({
           <div className="space-y-1.5">
             <div className="space-y-1.5 text-sm font-medium">
               <div className="flex items-center gap-1.5">
-                <label htmlFor={profileFieldId}>Saved optical profile</label>
-                <HelpTooltip label="Saved optical profile 도움말">
-                  Base Material + Surface Property 조합을 이름 붙여
-                  저장해두고 나중에 다시 고를 수 있습니다. 아래 저장 아이콘
-                  (💾)으로 현재 조합을 새 프로필로 저장하고, 내가 만든
-                  프로필을 선택 중일 때만 삭제 아이콘이 나타납니다.
+                <label htmlFor={profileFieldId}>Material Library</label>
+                <HelpTooltip label="Material Library 도움말">
+                  Base Material, Surface Property, 사용자 광학값과 BSDF
+                  연결을 하나의 소재로 등록하고 다른 Component에 재사용합니다.
+                  BSDF가 없으면 수동 광학값을 사용하고, BSDF가 있으면 BSDF를
+                  우선 계산합니다. 현재 설정은 저장 버튼으로 내 소재에 등록합니다.
                 </HelpTooltip>
               </div>
               <div className="flex gap-1.5">
@@ -467,17 +467,19 @@ export function MaterialEditorDialog({
                     })
                   }}
                 >
-                  <option value="">None · use current draft</option>
-                  {opticalProfilePresets.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}
-                    </option>
-                  ))}
+                  <option value="">직접 설정</option>
+                  <optgroup label="기본 소재">
+                    {opticalProfilePresets.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.name} · 수동
+                      </option>
+                    ))}
+                  </optgroup>
                   {customOpticalProfiles.length > 0 ? (
-                    <optgroup label="My profiles">
+                    <optgroup label="내 소재">
                       {customOpticalProfiles.map((profile) => (
                         <option key={profile.id} value={profile.id}>
-                          {profile.name}
+                          {profile.name} · {profile.bsdfAssetId ? 'BSDF' : '수동'}
                         </option>
                       ))}
                     </optgroup>
@@ -487,7 +489,7 @@ export function MaterialEditorDialog({
                   type="button"
                   variant="outline"
                   size="icon"
-                  aria-label="Save current draft as a new profile"
+                  aria-label="Register current material in library"
                   onClick={() => {
                     setProfileNameDraft('')
                     setIsNamingProfile(true)
@@ -500,7 +502,7 @@ export function MaterialEditorDialog({
                     type="button"
                     variant="outline"
                     size="icon"
-                    aria-label="Remove saved profile"
+                    aria-label="Remove material from library"
                     onClick={handleRemoveCustomProfile}
                   >
                     <Trash2 />
@@ -515,7 +517,7 @@ export function MaterialEditorDialog({
                   type="text"
                   autoFocus
                   className={selectClassName}
-                  placeholder="새 프로필 이름"
+                  placeholder="새 소재 이름"
                   value={profileNameDraft}
                   onChange={(event) =>
                     setProfileNameDraft(event.currentTarget.value)

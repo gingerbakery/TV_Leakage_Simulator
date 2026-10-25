@@ -21,9 +21,14 @@ describe('Excel Receiver Heatmap images', () => {
     result.receivers[0].height_mm = 6
     const cases = [{ name: 'A', cad_name: 'a.step', result }, { name: 'B', cad_name: 'b.step', result }]
     const sheets = resultExcelImageSheets(cases, { mode: 'auto', minNit: 0, maxNit: 1 })
-    expect(sheets).toHaveLength(2)
+    expect(sheets).toHaveLength(4)
     expect(sheets[0].rows[1].slice(0, 3)).toEqual(['A', 'Main receiver', 'a.step'])
-    expect(sheets[1].rows[1][0]).toBe('B')
+    expect(sheets[2].rows[1][0]).toBe('B')
+    expect(sheets[1].name).toContain('Mono')
+    expect(sheets[1].rows).toEqual(sheets[0].rows)
+    // Mono uses the same square-root normalization as the screen and color map.
+    const gray = Math.round(Math.sqrt(0.003 / 0.004) * 255)
+    expect(colors).toContain(`rgb(${gray},${gray},${gray})`)
     expect(sheets[0].images).toHaveLength(1)
     expect(sheets[0].images![0]).toMatchObject({ width: 1600, height: 600, row: 5 })
     expect(sheets[0].images![0].png).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))

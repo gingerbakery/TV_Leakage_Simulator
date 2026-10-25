@@ -15,6 +15,8 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { RayTracingPanel } from './ray-tracing-panel'
 import {
   createDatumEmitter,
+  createDatumReceiver,
+  createCurrentViewReceiver,
   createFaceEmitter,
   distributeIntegerBudget,
   groupSelectedCadFaces,
@@ -57,6 +59,29 @@ afterEach(() => {
 })
 
 describe('RayTracingPanel Aim editing', () => {
+  it.each(['datum_plane', 'current_view'] as const)('saves edited %s Receiver as a new entry without changing the original', (mode) => {
+    const frame = { target: [0, 0, 0] as [number, number, number], normal: [0, 0, 1] as [number, number, number],
+      uAxis: [1, 0, 0] as [number, number, number], vAxis: [0, 1, 0] as [number, number, number] }
+    const receiver = { ...(mode === 'current_view'
+      ? createCurrentViewReceiver('receiver_001', frame, 5, [0, 0, 0], [0, 0, 0])
+      : createDatumReceiver('receiver_001', [1, 2, 3], [0, 0, 0])), display_name: 'Original RX',
+      resolution: [40, 20] as [number, number], acceptance_angle_deg: 45, source_face_indices: mode === 'datum_plane' ? [1] : [] }
+    workspaceStore.getState().actions.upsertReceiver(receiver)
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Original RX' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Receiver name' }), { target: { value: 'New RX' } })
+    fireEvent.change(screen.getByLabelText('Receiver width (mm)'), { target: { value: '42' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save As' }))
+    const receivers = workspaceStore.getState().receivers
+    expect(receivers).toHaveLength(2)
+    expect(receivers[0]).toEqual(receiver)
+    expect(receivers[1]).toMatchObject({ display_name: 'New RX', width_mm: 42,
+      resolution: [40, 20], acceptance_angle_deg: 45, placement_mode: mode,
+      source_face_indices: receiver.source_face_indices })
+    expect(receivers[1].receiver_id).not.toBe(receiver.receiver_id)
+    expect(screen.queryByRole('button', { name: 'Save As' })).toBeNull()
+  })
+
   it.each([
     ['area', 'lambertian'], ['area', 'gaussian'],
     ['sphere', 'lambertian'], ['sphere', 'gaussian'],

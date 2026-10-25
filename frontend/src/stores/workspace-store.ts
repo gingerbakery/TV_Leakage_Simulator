@@ -37,6 +37,8 @@ export interface CadCase {
   accessoryCads: AccessoryCad[]
 }
 
+export type CopySetupSection = 'receivers' | 'emitters' | 'runOptions'
+
 export interface CopySetupTarget {
   caseId: string
   componentIdMap: Record<number, number>
@@ -82,9 +84,9 @@ export interface MaterialAssignment {
   enabled: boolean
 }
 
-/** A user-named Base material + Surface property combo, saved from the
- *  Material editor's current draft so it can be reapplied later via the
- *  "Saved optical profile" picker - alongside the built-in catalog presets. */
+/** A user-named material-library entry saved from the Material editor's
+ *  current draft. It keeps the base material, surface finish, manual optical
+ *  fallback and optional BSDF link together for later reuse. */
 export interface SavedOpticalProfile {
   id: string
   name: string
@@ -291,7 +293,7 @@ export interface WorkspaceActions {
   setActiveCadCaseResult(result: RayTraceResult): void
   removeCadCaseReceiverResult(caseId: string, receiverId: string): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
-  copyActiveSetupToCases(targets: Iterable<CopySetupTarget>): void
+  copyActiveSetupToCases(targets: Iterable<CopySetupTarget>, sections?: CopySetupSection[]): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
   setFaceSelection(
     faceIds: Iterable<number>,
@@ -762,6 +764,27 @@ function projectStateFromSnapshot(
   })
 }
 
+// Library entries belong to the workspace; assignments remain Case-specific.
+function materialLibrary(state: Pick<WorkspaceSnapshot, 'customOpticalProfiles' | 'bsdfAssets'>) {
+  return {
+    customOpticalProfiles: state.customOpticalProfiles,
+    bsdfAssets: state.bsdfAssets ?? [],
+  }
+}
+
+function sharedMaterialLibrary(
+  state: WorkspaceSnapshot,
+  library: ReturnType<typeof materialLibrary>,
+) {
+  return {
+    ...library,
+    cadCases: state.cadCases.map((item) => ({
+      ...item,
+      workspaceState: { ...(item.workspaceState ?? blankProjectState()), ...library },
+    })),
+  }
+}
+
 function blankProjectState(): WorkspaceProjectState {
   const blank = createSceneSnapshot()
   return projectStateFromSnapshot({
@@ -1065,10 +1088,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
     ...createWorkspaceSnapshot(),
     actions: {
       setActiveCad: (activeCad) => {
-        set({
+        set((state) => ({
           activeCad,
           ...createSceneSnapshot(),
-        })
+          ...materialLibrary(state),
+        }))
       },
       addCadCase: (cad) => {
         set((state) => {
@@ -1081,7 +1105,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             order: state.cadCases.length + 1,
             cad,
             visible: true,
-            workspaceState: blankProjectState(),
+            workspaceState: { ...blankProjectState(), ...materialLibrary(state) },
             latestResult: null,
             accessoryCads: [],
           }
@@ -1102,6 +1126,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               nextCase,
             ],
             ...restoredSceneState(nextCase.workspaceState ?? blankProjectState()),
+            ...materialLibrary(state),
           }
         })
       },
@@ -1170,6 +1195,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             activeCadCaseId: target.caseId,
             cadCases,
             ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+            ...materialLibrary(state),
             activeRayTraceJobId: target.latestJobId ?? null,
           }
         })
@@ -1207,6 +1233,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 : {}),
             })),
             ...restoredSceneState(target.workspaceState ?? blankProjectState()),
+            ...materialLibrary(state),
             activeRayTraceJobId: target.latestJobId ?? null,
           }
         })
@@ -1235,6 +1262,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
               activeCadCaseId: null,
               cadCases: [],
               ...createSceneSnapshot(),
+              ...materialLibrary(state),
             }
           }
           return {
@@ -1247,6 +1275,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
             ...restoredSceneState(
               nextCase.workspaceState ?? blankProjectState(),
             ),
+            ...materialLibrary(state),
             activeRayTraceJobId: nextCase.latestJobId ?? null,
           }
         })
@@ -1372,7 +1401,8 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...invalidateRayTraceState(state),
         }))
       },
-      copyActiveSetupToCases: (targets) => {
+      copyActiveSetupToCases: (targets, sections) => {
+        if (sections?.length === 0) return
         const targetMappings = new Map(
           Array.from(targets, (target) => [
             target.caseId,
@@ -1453,6 +1483,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                         ...structuredClone(emitter),
                         face_indices: [],
                         source_face_indices: [],
+                        ...(emitter.source_component_ids ? { source_component_ids: [] } : {}),
                       }
                     : structuredClone(emitter),
                 ),
@@ -1461,9 +1492,16 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                   source_face_indices: [],
                 })),
               }
+              const selectedState = sections ? {
+                ...structuredClone(item.workspaceState ?? blankProjectState()),
+                ...materialLibrary(state),
+                ...(sections.includes('receivers') ? { receivers: copiedState.receivers } : {}),
+                ...(sections.includes('emitters') ? { emitters: copiedState.emitters } : {}),
+                ...(sections.includes('runOptions') ? { rayTraceConfig: copiedState.rayTraceConfig } : {}),
+              } : copiedState
               return {
                 ...item,
-                workspaceState: copiedState,
+                workspaceState: selectedState,
                 latestJobId: null,
                 latestResult: null,
               }
@@ -1603,25 +1641,26 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         }))
       },
       addCustomOpticalProfile: (profile) => {
-        set((state) => ({
+        set((state) => sharedMaterialLibrary(state, {
+          ...materialLibrary(state),
           customOpticalProfiles: [
-            ...state.customOpticalProfiles.filter(
-              (item) => item.id !== profile.id,
-            ),
-            profile,
+            ...state.customOpticalProfiles.filter((item) => item.id !== profile.id),
+            structuredClone(profile),
           ],
         }))
       },
       removeCustomOpticalProfile: (profileId) => {
-        set((state) => ({
-          customOpticalProfiles: state.customOpticalProfiles.filter(
-            (item) => item.id !== profileId,
-          ),
+        set((state) => sharedMaterialLibrary(state, {
+          ...materialLibrary(state),
+          customOpticalProfiles: state.customOpticalProfiles.filter((item) => item.id !== profileId),
         }))
       },
       addBsdfAsset: (asset) => {
         if (!isBsdfAsset(asset)) throw new Error('Invalid BSDF asset')
-        set((state) => ({ bsdfAssets: [...(state.bsdfAssets ?? []).filter((item) => item.id !== asset.id), structuredClone(asset)] }))
+        set((state) => sharedMaterialLibrary(state, {
+          ...materialLibrary(state),
+          bsdfAssets: [...(state.bsdfAssets ?? []).filter((item) => item.id !== asset.id), structuredClone(asset)],
+        }))
       },
       upsertTransformRule: (rule) => {
         const normalized = normalizeTransformRule(rule)
@@ -1943,8 +1982,16 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
       },
       restoreProjectState: (projectState) => {
         const normalized = normalizeProjectState(projectState)
-        set({
+        set((state) => ({
           ...normalized,
+          ...sharedMaterialLibrary(state, {
+            customOpticalProfiles: Array.from(new Map([
+              ...state.customOpticalProfiles, ...normalized.customOpticalProfiles,
+            ].map((item) => [item.id, item])).values()),
+            bsdfAssets: Array.from(new Map([
+              ...(state.bsdfAssets ?? []), ...(normalized.bsdfAssets ?? []),
+            ].map((item) => [item.id, item])).values()),
+          }),
           selectedFaceIds: [],
           selectedComponentIds: [],
           selectionKind: null,
@@ -1962,10 +2009,10 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           placementPreviewReceiver: null,
           activeRayTraceJobId: null,
           restoredRayTraceResult: null,
-        })
+        }))
       },
       clearSceneState: () => {
-        // Saved optical profiles aren't tied to any specific CAD's
+        // Saved material-library entries aren't tied to any specific CAD's
         // geometry/components (unlike materialAssignments) - keep them
         // across a fresh import instead of wiping them with everything else.
         set((state) => ({

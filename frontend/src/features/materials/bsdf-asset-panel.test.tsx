@@ -93,8 +93,8 @@ describe('BSDF editor integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply to part' }))
     expect(workspaceStore.getState().materialAssignments[0].bsdfAssetId).toBe(asset.id)
     expect(workspaceStore.getState().materialAssignments[0].opticalOverride).toEqual(part.opticalOverride)
-    fireEvent.click(screen.getByLabelText('Save current draft as a new profile'))
-    fireEvent.change(screen.getByPlaceholderText('새 프로필 이름'), { target: { value: 'Test BSDF' } })
+    fireEvent.click(screen.getByLabelText('Register current material in library'))
+    fireEvent.change(screen.getByPlaceholderText('새 소재 이름'), { target: { value: 'Test BSDF' } })
     fireEvent.click(screen.getByLabelText('Confirm save'))
     expect(workspaceStore.getState().customOpticalProfiles[0].bsdfAssetId).toBe(asset.id)
   })
@@ -126,6 +126,24 @@ describe('BSDF editor integration', () => {
     await act(async () => finish(asset))
     expect(workspaceStore.getState().bsdfAssets).toEqual([])
     expect(screen.getByRole('alert').textContent).toContain('등록을 취소')
+  })
+
+  it('selects a BSDF registered in CASE1 from CASE2 Surface Property without copying assignments', () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'case1.step', displayName: 'CASE1' })
+    const first = workspaceStore.getState().activeCadCaseId!
+    actions.addBsdfAsset(asset)
+    actions.upsertMaterialAssignment({ ...part, bsdfAssetId: '' })
+    actions.addCadCase({ path: 'case2.step', displayName: 'CASE2' })
+    render(<AppProviders><SurfacePropertyDialog open onOpenChange={vi.fn()}
+      component={scene.components[0]} scene={scene} componentName="CASE2 part" initialTarget="part" /></AppProviders>)
+    expect(workspaceStore.getState().materialAssignments).toEqual([])
+    fireEvent.change(screen.getByLabelText('연결할 BSDF'), { target: { value: asset.id } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to part default' }))
+    expect(workspaceStore.getState().materialAssignments[0].bsdfAssetId).toBe(asset.id)
+    act(() => actions.setActiveCadCase(first))
+    expect(workspaceStore.getState().materialAssignments[0].bsdfAssetId).toBe('')
+    expect(workspaceStore.getState().bsdfAssets).toEqual([asset])
   })
 
   it('preserves linked sources through surface editing and allows explicit unlink without changing optics', () => {

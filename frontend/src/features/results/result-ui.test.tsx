@@ -498,6 +498,36 @@ describe('Step 11 result UI', () => {
     expect(screen.getAllByText('50.0')).toHaveLength(1)
   })
 
+  it('allows relative scoring across different BSDF tables, wavelengths and transport models', () => {
+    const baseline = createRayTraceResultFixture()
+    baseline.metrics._performance_summary = {
+      ...(baseline.metrics._performance_summary as Record<string, unknown>),
+      bsdf_transport: [{ asset_id: 'bsdf-a', contract: 'model-a', wavelength_nm: 465 }],
+    }
+    const comparison = structuredClone(baseline)
+    comparison.run_id = 'run-different-bsdf'
+    comparison.metrics._performance_summary = {
+      ...(comparison.metrics._performance_summary as Record<string, unknown>),
+      bsdf_transport: [{ asset_id: 'bsdf-b', contract: 'model-b', wavelength_nm: 630 }],
+    }
+
+    render(
+      <RayTraceResultWindow
+        open
+        result={baseline}
+        reportCases={[
+          { caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result: baseline },
+          { caseId: 'case-2', name: 'CASE 02', cadName: 'b.step', result: comparison },
+        ]}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    expect(screen.getAllByText('50.0')).toHaveLength(2)
+    expect(screen.getAllByText('일치')).toHaveLength(2)
+  })
+
   it('deletes one Receiver result from the current report Case', async () => {
     const result = createRayTraceResultFixture()
     result.receivers[0].display_name = 'Front Receiver'
@@ -682,8 +712,12 @@ describe('Step 11 result UI', () => {
     result.config.min_energy_basis = basis
     const write = vi.fn().mockResolvedValue(undefined)
     const close = vi.fn().mockResolvedValue(undefined)
-    const showSaveFilePicker = vi.fn().mockResolvedValue({
-      createWritable: vi.fn().mockResolvedValue({ write, close }),
+    const showSaveFilePicker = vi.fn(() => {
+      expect(workbookExport).not.toHaveBeenCalled()
+      expect(canvasImage).not.toHaveBeenCalled()
+      return Promise.resolve({
+        createWritable: vi.fn().mockResolvedValue({ write, close }),
+      })
     })
     vi.stubGlobal('showSaveFilePicker', showSaveFilePicker)
 
@@ -725,6 +759,21 @@ describe('Step 11 result UI', () => {
     workbookExport.mockRestore()
     canvasContext.mockRestore()
     canvasImage.mockRestore()
+  })
+
+  it('does not build or download Excel when the save dialog is cancelled', async () => {
+    const workbookExport = vi.spyOn(excelExport, 'createExcelWorkbook')
+    const picker = vi.fn().mockRejectedValue(new DOMException('Cancelled', 'AbortError'))
+    vi.stubGlobal('showSaveFilePicker', picker)
+    const result = createRayTraceResultFixture()
+    render(<RayTraceResultWindow open result={result}
+      reportCases={[{ caseId: 'case-1', name: 'CASE 01', cadName: 'a.step', result }]}
+      onOpenChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Compare cases' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Export Excel' }))
+    await waitFor(() => expect(picker).toHaveBeenCalledOnce())
+    expect(workbookExport).not.toHaveBeenCalled()
+    workbookExport.mockRestore()
   })
 
   it('downloads the report when the native save picker fails', async () => {

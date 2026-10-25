@@ -669,6 +669,34 @@ describe('SimulatorShell', () => {
     getScene.mockRestore()
   })
 
+  it('copies only Run option without loading target CAD metadata or replacing other settings', async () => {
+    apiHookState.scene = createSceneFixture()
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'Source' })
+    const sourceId = workspaceStore.getState().activeCadCaseId!
+    actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, max_depth: 73 })
+    actions.addCadCase({ path: 'target.step', displayName: 'Target' })
+    const targetId = workspaceStore.getState().activeCadCaseId!
+    actions.renameComponent(1, 'Keep target name')
+    actions.setActiveCadCase(sourceId)
+    const before = structuredClone(workspaceStore.getState().cadCases.find((item) => item.caseId === targetId)!.workspaceState!)
+    const getScene = vi.spyOn(apiClient, 'getScene').mockRejectedValue(new Error('Must not load target Scene'))
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Setup' }))
+    const dialog = screen.getByRole('dialog', { name: 'Copy Analysis Setup' })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Receiver' }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Emitter' }))
+    const targetLabel = within(dialog).getByText('Target').closest('label')!
+    fireEvent.click(targetLabel.querySelector('input')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to 1 Cases' }))
+    await screen.findByRole('dialog', { name: 'Copy Setup Complete' })
+    expect(getScene).not.toHaveBeenCalled()
+    expect(workspaceStore.getState().cadCases.find((item) => item.caseId === targetId)!.workspaceState).toEqual({
+      ...before, rayTraceConfig: workspaceStore.getState().rayTraceConfig,
+    })
+    getScene.mockRestore()
+  })
+
   it('loads legacy Copy Setup target Scenes sequentially', async () => {
     const sourceScene = createSceneFixture()
     apiHookState.scene = sourceScene

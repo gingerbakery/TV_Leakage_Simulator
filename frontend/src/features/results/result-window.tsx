@@ -120,6 +120,7 @@ interface AnalysisReportSaveFileHandle {
   createWritable(): Promise<{
     write(data: Blob): Promise<void>
     close(): Promise<void>
+    abort?(): Promise<void>
   }>
 }
 
@@ -131,6 +132,56 @@ type AnalysisReportSaveFilePickerWindow = Window & {
       accept: Record<string, string[]>
     }>
   }) => Promise<AnalysisReportSaveFileHandle>
+}
+
+// Invoke the native picker before expensive serialization/canvas/ZIP work can
+// expire the browser's transient user activation.
+async function saveAnalysisExport(
+  fileName: string,
+  createBlob: () => Blob,
+  types?: Array<{ description: string; accept: Record<string, string[]> }>,
+): Promise<void> {
+  const picker = (window as AnalysisReportSaveFilePickerWindow).showSaveFilePicker
+  let handle: AnalysisReportSaveFileHandle | undefined
+  let saveError: unknown
+  if (picker) {
+    try {
+      handle = await picker.call(window, { suggestedName: fileName, ...(types ? { types } : {}) })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      saveError = error
+    }
+  }
+  let blob: Blob
+  try {
+    blob = createBlob()
+  } catch (error) {
+    window.alert(`보고서 생성 실패: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+  if (handle) {
+    let writable: Awaited<ReturnType<AnalysisReportSaveFileHandle['createWritable']>> | undefined
+    try {
+      writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return
+    } catch (error) {
+      await writable?.abort?.().catch(() => undefined)
+      saveError = error
+    }
+  }
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  if (saveError) {
+    window.alert(`저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${saveError instanceof Error ? saveError.message : String(saveError)}`)
+  }
 }
 
 type ReceiverCompareScope = 'all' | string
@@ -324,14 +375,6 @@ function comparisonConditionMismatches(
       metricGroup(candidate, '_performance_summary').receiver_flux_contract ??
         'cosine_weighted_incident_flux_v1',
     )
-  const bsdfContract = (candidate: RayTraceResult) => {
-    const models = metricGroup(candidate, '_performance_summary').bsdf_transport
-    return JSON.stringify(Array.isArray(models) ? [...models].sort((a, b) =>
-      JSON.stringify(a).localeCompare(JSON.stringify(b))) : [])
-  }
-  if (bsdfContract(result) !== bsdfContract(baseline)) {
-    mismatches.push('BSDF · 산란 표 / RT / 계산 파장 / 계산 모델')
-  }
   if (
     different(receiverFluxContract(result), receiverFluxContract(baseline))
   ) {
@@ -2670,120 +2713,43 @@ export function RayTraceResultWindow({
   const exportCases = async () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
     if (cases.length === 0) return
-    const payload: AnalysisCaseFile = {
-      format: 'tv-leakage-analysis-cases',
-      schema_version: 'analysis-cases.v1',
-      saved_at: new Date().toISOString(),
-      baseline_case_id: baselineCase?.case_id ?? null,
-      cases,
-    }
-    const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
-      type: 'application/json',
-    })
     const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.bitsam-report`
-    const downloadReport = () => {
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = fileName
-      document.body.append(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
-    }
-    const picker = (window as AnalysisReportSaveFilePickerWindow)
-      .showSaveFilePicker
-    if (picker) {
-      try {
-        // Chromium/Edge native file-system methods require Window as their
-        // receiver. A detached call may fail with "Illegal invocation".
-        const handle = await picker.call(window, {
-          suggestedName: fileName,
-        })
-        const writable = await handle.createWritable()
-        await writable.write(blob)
-        await writable.close()
-        return
-      } catch (error) {
-        if (
-          error instanceof DOMException &&
-          error.name === 'AbortError'
-        ) return
-        // Some managed Edge environments expose the picker but reject a
-        // custom extension or writable handle. Keep the report by falling
-        // back to the browser's standard Downloads path.
-        downloadReport()
-        window.alert(
-          error instanceof Error
-            ? `저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${error.message}`
-            : '저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다.',
-        )
-        return
+    const createReport = () => {
+      const payload: AnalysisCaseFile = {
+        format: 'tv-leakage-analysis-cases',
+        schema_version: 'analysis-cases.v1',
+        saved_at: new Date().toISOString(),
+        baseline_case_id: baselineCase?.case_id ?? null,
+        cases,
       }
+      const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
+        type: 'application/json',
+      })
+      return blob
     }
-
-    downloadReport()
+    await saveAnalysisExport(fileName, createReport)
   }
 
   const exportExcel = async () => {
     const cases = selectedCases.length > 0 ? selectedCases : analysisCases
     if (cases.length === 0) return
-    let blob: Blob
-    try {
-      blob = createExcelWorkbook([
-        ...analysisExcelSheets(cases, baselineCase, receiverCompareScope),
-        ...resultExcelDetailSheets(cases),
-        ...resultExcelImageSheets(cases, {
-          mode: luminanceScaleMode,
-          minNit: customScaleMinNit,
-          maxNit: customScaleMaxNit,
-          correspondingPeak: correspondingReceiverPeakNit,
-        }),
-      ])
-    } catch (error) {
-      window.alert(`Excel 보고서 생성 실패: ${error instanceof Error ? error.message : String(error)}`)
-      return
-    }
+    const createExcel = () => createExcelWorkbook([
+      ...analysisExcelSheets(cases, baselineCase, receiverCompareScope),
+      ...resultExcelDetailSheets(cases),
+      ...resultExcelImageSheets(cases, {
+        mode: luminanceScaleMode,
+        minNit: customScaleMinNit,
+        maxNit: customScaleMaxNit,
+        correspondingPeak: correspondingReceiverPeakNit,
+      }),
+    ])
     const fileName = `ray-analysis-${new Date().toISOString().slice(0, 10)}.xlsx`
-    const downloadExcel = () => {
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = fileName
-      document.body.append(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
-    }
-    const picker = (window as AnalysisReportSaveFilePickerWindow)
-      .showSaveFilePicker
-    if (picker) {
-      try {
-        const handle = await picker.call(window, {
-          suggestedName: fileName,
-          types: [{
-            description: 'Excel Workbook',
-            accept: {
-              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-            },
-          }],
-        })
-        const writable = await handle.createWritable()
-        await writable.write(blob)
-        await writable.close()
-        return
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') return
-        downloadExcel()
-        window.alert(
-          error instanceof Error
-            ? `Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다: ${error.message}`
-            : 'Excel 저장 위치 선택에 실패하여 다운로드 폴더에 저장했습니다.',
-        )
-        return
-      }
-    }
-    downloadExcel()
+    await saveAnalysisExport(fileName, createExcel, [{
+      description: 'Excel Workbook',
+      accept: {
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      },
+    }])
   }
 
   const importCases = async (event: ChangeEvent<HTMLInputElement>) => {

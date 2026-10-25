@@ -7,10 +7,11 @@ import { bsdfAssetName, bsdfImportLimits, bsdfPreparationMessage, bsdfTransportP
 
 const mib = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MiB`
 
-export function BsdfAssetPanel({ value, onChange, disabled = false }: {
+export function BsdfAssetPanel({ value, onChange, disabled = false, library = false }: {
   value: string
   onChange(id: string): void
   disabled?: boolean
+  library?: boolean
 }) {
   const id = useId()
   const input = useRef<HTMLInputElement>(null)
@@ -63,7 +64,8 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
       // Registering the same source bundle must not reset options on linked parts.
       actions.addBsdfAsset(existing ? { ...asset, transport: existing.transport, simulationReady: Boolean(existing.transport) } : asset)
       setPendingFiles([])
-      setImported(`${bsdfAssetName(asset)} 등록 완료. 아래 목록에서 선택하고 Apply를 눌러 연결하세요.`)
+      setImported(`${bsdfAssetName(asset)} 등록 완료`)
+      if (library) onChange(asset.id)
     } catch (cause) {
       if (ticket === generation.current) setError(cause instanceof Error ? cause.message : 'BSDF 파일을 읽지 못했습니다.')
     } finally {
@@ -93,10 +95,10 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
         <Button type="button" size="sm" disabled={busy || disabled} onClick={() => { void importFiles() }}>{busy ? '검증 중…' : '등록'}</Button>
       </span>
     </div> : null}
-    <label htmlFor={id} className="block font-medium">연결할 BSDF</label>
+    <label htmlFor={id} className="block font-medium">{library ? 'BSDF 라이브러리' : '연결할 BSDF'}</label>
     <select id={id} value={value} disabled={disabled} onChange={(event) => onChange(event.currentTarget.value)}
       className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm">
-      <option value="">연결 없음 · 기존 광학 값 사용</option>
+      <option value="">{library ? '선택' : '연결 없음 · 기존 광학 값 사용'}</option>
       {value && !selected ? <option value={value}>누락된 BSDF · {value}</option> : null}
       {assets.map((asset) => <option key={asset.id} value={asset.id}>{bsdfAssetName(asset)}</option>)}
     </select>
@@ -104,7 +106,7 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
       <p>{selected.data.grids.length}개 산란 표 · {selected.data.wavelengthsNm.join(', ')} nm · 입사각 {selected.data.incidenceAnglesDeg.join(', ')}°</p>
       <p className="text-muted-foreground">원본 {selected.files.length}개 파일 포함 · Polar / Relative BSDF · POI 0°</p>
       <p>반사율 R: {(Math.min(...selected.data.rt.map((row) => row.reflectance)) * 100).toFixed(2)}–{(Math.max(...selected.data.rt.map((row) => row.reflectance)) * 100).toFixed(2)}% · 투과율 T: 0%</p>
-      <p>BSDF를 연결하면 반사율은 RT, 반사 방향은 산란 표로 계산합니다. 기존 Reflectance·Specular/Diffuse·Gaussian 각도와 Optical preview는 이 계산에 사용하지 않습니다.</p>
+      <div className="flex items-center gap-1">계산 옵션<HelpTooltip label="BSDF 계산 옵션 도움말">BSDF를 연결하면 반사율은 RT, 반사 방향은 산란 표로 계산합니다. 기존 Reflectance·Specular/Diffuse·Gaussian 각도와 Optical preview는 이 계산에 사용하지 않습니다. 선택 면 양쪽에 같은 표를 적용하며 측정 입사각 범위 밖은 끝값을 사용합니다. 옵션은 같은 파일을 연결한 부품과 면에 함께 적용됩니다. LT 비교 시 Anisotropic OFF, No Shift로 맞추세요. Shift with Stretch는 지원하지 않습니다.</HelpTooltip></div>
       <label className="flex items-center gap-2">
         <input type="checkbox" aria-label="Enable isotropic No Shift BSDF tracing" disabled={disabled}
           checked={Boolean(selected.transport)} onChange={(event) => actions.addBsdfAsset({ ...selected,
@@ -121,8 +123,6 @@ export function BsdfAssetPanel({ value, onChange, disabled = false }: {
             if (Number.isFinite(wavelengthNm) && wavelengthNm > 0) actions.addBsdfAsset({ ...selected, transport: { ...selected.transport!, wavelengthNm } })
           }} />
       </label> : null}
-      <p className="text-muted-foreground">선택 면 양쪽에 같은 표 적용 · 측정 입사각 범위 밖은 끝값 사용. 이 옵션은 같은 파일을 연결한 부품/면에 함께 적용됩니다.</p>
-      <p className="text-muted-foreground">LT 비교 시 Anisotropic OFF, No Shift로 맞추세요. Shift with Stretch는 아직 지원하지 않습니다.</p>
       {selected.warnings.map((warning, index) => <p key={index} className="text-amber-700 dark:text-amber-400">{warning}</p>)}
     </> : null}
     {value ? <p role="status" className="text-amber-700 dark:text-amber-400">{selected ? bsdfTransportProblem(selected) ?? 'BSDF 표 계산 사용 · CPU·NVIDIA GPU / source sampling · LT 실측 비교 검증 대기' : bsdfPreparationMessage}</p> : null}

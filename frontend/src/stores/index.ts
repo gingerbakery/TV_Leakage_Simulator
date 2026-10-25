@@ -14,6 +14,7 @@ export type {
   ActiveCad,
   CadCase,
   CopySetupTarget,
+  CopySetupSection,
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,

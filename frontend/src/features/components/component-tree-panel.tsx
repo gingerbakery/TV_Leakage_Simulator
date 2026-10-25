@@ -1,3 +1,4 @@
+import { MaterialLibrary } from '@/features/materials/material-library'
 import { useRef, useState, type KeyboardEvent } from 'react'
 import type { SceneComponent, ScenePayload } from '@/api'
 import {
@@ -352,7 +353,7 @@ function ComponentTreeRow({
   )
 }
 
-export function ComponentTreePanel({
+function ComponentTreeContent({
   scene,
   isLoading = false,
   errorMessage,
@@ -509,4 +510,11 @@ export function ComponentTreePanel({
       ) : null}
     </div>
   )
+}
+
+export function ComponentTreePanel(props: ComponentTreePanelProps) {
+  return <div className="space-y-2">
+    <MaterialLibrary />
+    <ComponentTreeContent {...props} />
+  </div>
 }

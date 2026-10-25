@@ -1413,10 +1413,10 @@ describe('Step 07·08 feature editors', () => {
     render(<AppProviders><MaterialEditorDialog open onOpenChange={vi.fn()} component={component} componentName="Cover Deco" /></AppProviders>)
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Save current draft as a new profile',
+        name: 'Register current material in library',
       }),
     )
-    fireEvent.change(screen.getByPlaceholderText('새 프로필 이름'), {
+    fireEvent.change(screen.getByPlaceholderText('새 소재 이름'), {
       target: { value: 'PC Black measured' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm save' }))
