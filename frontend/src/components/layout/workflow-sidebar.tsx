@@ -89,6 +89,9 @@ interface WorkflowSidebarProps {
   rayTraceResult?: RayTraceResult | null
   rayObjectEditRequest?: RayObjectEditRequest | null
   autoConvergenceCancelToken?: number
+  batchRayTracingRunning?: boolean
+  batchRayTracingProgress?: number
+  onOpenBatchRayTracing?(): void
   onRayObjectEditRequestHandled?(): void
   onOpenRayTraceResult(): void
   onOpenLtValidation?(): void
@@ -269,6 +272,9 @@ export function WorkflowSidebar({
   rayTraceResult,
   rayObjectEditRequest,
   autoConvergenceCancelToken = 0,
+  batchRayTracingRunning = false,
+  batchRayTracingProgress = 0,
+  onOpenBatchRayTracing,
   onRayObjectEditRequestHandled,
   onOpenRayTraceResult,
   onOpenLtValidation,
@@ -415,6 +421,9 @@ export function WorkflowSidebar({
           cameraFrame={cameraFrame}
           editRequest={rayObjectEditRequest}
           autoConvergenceCancelToken={autoConvergenceCancelToken}
+          batchRayTracingRunning={batchRayTracingRunning}
+          batchRayTracingProgress={batchRayTracingProgress}
+          onOpenBatchRayTracing={onOpenBatchRayTracing}
           onEditRequestHandled={onRayObjectEditRequestHandled}
         />
       )

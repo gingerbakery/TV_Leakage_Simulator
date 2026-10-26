@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import re
 import hashlib
 import json
+import re
+import shutil
+import tempfile
 import threading
 import time
 import uuid
-import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
@@ -21,7 +23,22 @@ from leakage_simulator.roi import build_scene_payload
 from leakage_simulator.section_cap import build_section_cap_contours
 from leakage_simulator.composite_scene import merge_scene_meshes, merge_scene_payloads
 from leakage_simulator.bitsam_package import (
-    extract_package, mesh_identity, read_json, read_scene_cache, write_package,
+    CumulativeByteBudget,
+    MAX_WORKSPACE_BYTES,
+    MAX_WORKSPACE_CASES,
+    PACKAGE_SCHEMA,
+    WORKSPACE_FORMAT,
+    WORKSPACE_SCHEMA,
+    extract_package,
+    extract_workspace_package,
+    mesh_identity,
+    package_expanded_size,
+    package_schema,
+    read_json,
+    read_scene_cache,
+    scene_geometry_signature,
+    write_package,
+    write_workspace_package,
 )
 
 
@@ -76,7 +93,10 @@ class ApiRuntime:
         self._scene_viewer_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
         self._scene_records: dict[str, tuple[dict[str, Any], Path]] = {}
+        self._known_scene_sources: set[Path] = set()
+        self._source_display_names: dict[Path, str] = {}
         self._portable_sources: dict[str, Path] = {}
+        self._portable_composite_sources: dict[tuple[str, ...], Path] = {}
         self._project_exports: dict[str, tuple[Path, str, float]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
         self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
@@ -153,6 +173,16 @@ class ApiRuntime:
         paths = [str(value).strip() for value in cad_paths if str(value).strip()]
         if not paths:
             raise ValueError("CAD file is required")
+        source_key = tuple(str(Path(value).resolve()) for value in paths)
+        with self._state_lock:
+            package_root = self._portable_composite_sources.get(source_key)
+        if package_root is not None:
+            payload = self._load_portable_scene(package_root)
+            metadata = dict(payload.get("metadata") or {})
+            metadata["source_file"] = paths[0]
+            metadata["source_files"] = paths
+            payload["metadata"] = metadata
+            return self._register_scene(payload, Path(paths[0]))
         if len(paths) == 1:
             return self.load_scene(paths[0])
         payloads: list[dict[str, Any]] = []
@@ -209,6 +239,7 @@ class ApiRuntime:
             self._scene_mesh_cache[scene_token] = trace_mesh
             self._scene_viewer_mesh_cache[scene_token] = viewer_mesh
             self._scene_records[scene_token] = (payload, source.resolve())
+            self._known_scene_sources.add(source.resolve())
             while len(self._scene_mesh_cache) > self._max_cached_scenes:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
@@ -228,52 +259,94 @@ class ApiRuntime:
         response_payload["metadata"] = metadata
         return response_payload
 
-    def export_project(self, request: dict[str, Any]) -> dict[str, Any]:
-        token = str(request.get("scene_token") or "")
-        project = request.get("project")
+    @staticmethod
+    def _validate_project_fingerprint(
+        project: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        cad = project.get("cad")
+        if not isinstance(cad, dict):
+            raise ValueError("BITSAM CAD settings are required")
+        fingerprint = cad.get("fingerprint") or {}
+        if not isinstance(fingerprint, dict):
+            raise ValueError("BITSAM CAD fingerprint is invalid")
+        metadata = payload.get("metadata") or {}
+        for key in ("face_count", "vertex_count", "component_count"):
+            if fingerprint.get(key) != metadata.get(key):
+                raise ValueError("BITSAM settings do not match the active CAD scene")
+
+    def _write_case_package(
+        self,
+        token: str,
+        project: dict[str, Any],
+        destination: Path,
+    ) -> dict[str, Any]:
         if not isinstance(project, dict):
             raise ValueError("BITSAM project settings are required")
         with self._state_lock:
             record = self._scene_records.get(token)
             trace = self._scene_mesh_cache.get(token)
-            stale = [key for key, (_, _, created) in self._project_exports.items() if time.time() - created > 3600]
-        for key in stale:
-            self.discard_project_export(key)
         if record is None or trace is None:
             raise ValueError("CAD scene cache expired. Reload the CAD before saving BITSAM.")
         payload, source = record
-        fingerprint = (project.get("cad") or {}).get("fingerprint") or {}
-        for key in ("face_count", "vertex_count", "component_count"):
-            if fingerprint.get(key) != payload["metadata"].get(key):
-                raise ValueError("BITSAM settings do not match the active CAD scene")
+        self._validate_project_fingerprint(project, payload)
+        lock = trace.get("_deferred_trace_lock")
+        if lock is not None:
+            with lock:
+                deferred_loader = trace.get("_deferred_trace_loader")
+                cached_trace = None if callable(deferred_loader) else trace
+                # A composite project cannot rebuild its trace geometry from
+                # the main CAD alone. Embed the resolved combined trace mesh.
+                if cached_trace is None and len((payload.get("metadata") or {}).get("source_files") or []) > 1:
+                    cached_trace = deferred_loader()
+                    if not isinstance(cached_trace, dict):
+                        raise ValueError("Accessory CAD trace mesh is unavailable")
+                    viewer_sources = trace.get("_viewer_face_source_ids") or []
+                    if viewer_sources:
+                        cached_trace = dict(cached_trace)
+                        cached_trace["_viewer_face_source_ids"] = viewer_sources
+                    with self._state_lock:
+                        self._scene_mesh_cache[token] = cached_trace
+        else:
+            cached_trace = trace
+        return write_package(destination, project, source, payload, cached_trace)
+
+    @staticmethod
+    def _download_name(value: object, fallback: str = "simulation") -> str:
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or fallback)).strip(". ")
+        if name.lower().endswith(".bitsam"):
+            name = name[:-7].rstrip(". ")
+        return (name or fallback) + ".bitsam"
+
+    def _discard_stale_project_exports(self) -> None:
+        with self._state_lock:
+            stale = [
+                key
+                for key, (_, _, created) in self._project_exports.items()
+                if time.time() - created > 3600
+            ]
+        for key in stale:
+            self.discard_project_export(key)
+
+    def export_project(self, request: dict[str, Any]) -> dict[str, Any]:
+        token = str(request.get("scene_token") or "")
+        project = request.get("project")
+        if not isinstance(project, dict):
+            raise ValueError("BITSAM project settings are required")
+        self._discard_stale_project_exports()
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         export_id = uuid.uuid4().hex
         path = self.upload_dir / ("export_" + export_id + ".bitsam")
         temporary = path.with_suffix(".writing")
         started = time.perf_counter()
         try:
-            lock = trace.get("_deferred_trace_lock")
-            if lock is not None:
-                with lock:
-                    deferred_loader = trace.get("_deferred_trace_loader")
-                    cached_trace = None if callable(deferred_loader) else trace
-                    # A composite project cannot rebuild its trace geometry
-                    # from the main CAD file alone after being moved to another
-                    # PC. Resolve and embed the combined trace mesh on save.
-                    if cached_trace is None and len((payload.get("metadata") or {}).get("source_files") or []) > 1:
-                        cached_trace = deferred_loader()
-                        if not isinstance(cached_trace, dict):
-                            raise ValueError("Accessory CAD trace mesh is unavailable")
-                        self._scene_mesh_cache[token] = cached_trace
-            else:
-                cached_trace = trace
-            manifest = write_package(temporary, project, source, payload, cached_trace)
+            manifest = self._write_case_package(token, project, temporary)
             temporary.replace(path)
         except Exception:
             temporary.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
             raise
-        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(project.get("project_name") or "simulation")).strip(". ") + ".bitsam"
+        name = self._download_name(project.get("project_name"))
         with self._state_lock:
             self._project_exports[export_id] = (path, name, time.time())
         return {
@@ -281,6 +354,237 @@ class ApiRuntime:
             "filename": name,
             "size_bytes": path.stat().st_size,
             "trace_cached": manifest["trace_cached"],
+            "elapsed_sec": time.perf_counter() - started,
+        }
+
+    def _validate_workspace_source_path(self, value: object) -> Path:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Workspace CAD path is required")
+        path = Path(value).resolve()
+        if not path.is_file():
+            raise ValueError("Workspace CAD source is unavailable")
+        upload_root = self.upload_dir.resolve()
+        with self._state_lock:
+            known = path in self._known_scene_sources or str(path) in self._portable_sources
+        try:
+            path.relative_to(upload_root)
+            in_uploads = True
+        except ValueError:
+            in_uploads = False
+        if not in_uploads and not known:
+            raise ValueError("Workspace CAD source was not registered by this runtime")
+        return path
+
+    def export_workspace(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise ValueError("BITSAM workspace request is required")
+        workspace_name = request.get("workspace_name")
+        active_case_id = request.get("active_case_id")
+        raw_cases = request.get("cases")
+        if not isinstance(workspace_name, str) or not workspace_name.strip():
+            raise ValueError("Workspace name is required")
+        if len(workspace_name) > 256:
+            raise ValueError("Workspace name is too long")
+        if not isinstance(raw_cases, list) or not 1 <= len(raw_cases) <= MAX_WORKSPACE_CASES:
+            raise ValueError("BITSAM workspace requires 1 to 64 cases")
+
+        normalized: list[dict[str, Any]] = []
+        case_ids: set[str] = set()
+        orders: set[int] = set()
+        for index, item in enumerate(raw_cases):
+            if not isinstance(item, dict):
+                raise ValueError("Invalid BITSAM workspace case")
+            case_id = item.get("case_id")
+            order = item.get("order")
+            name = item.get("name", "")
+            note = item.get("note", "")
+            visible = item.get("visible", True)
+            project = item.get("project")
+            accessory_paths = item.get("accessory_paths", [])
+            if (
+                not isinstance(case_id, str)
+                or not case_id
+                or len(case_id) > 128
+                or case_id in case_ids
+                or type(order) is not int
+                or order < 0
+                or order in orders
+                or not isinstance(name, str)
+                or not isinstance(note, str)
+                or type(visible) is not bool
+                or not isinstance(project, dict)
+                or not isinstance(accessory_paths, list)
+                or len(accessory_paths) > 64
+            ):
+                raise ValueError("Invalid or duplicate BITSAM workspace case")
+            primary_path = self._validate_workspace_source_path(item.get("cad_path"))
+            project_cad = project.get("cad")
+            if not isinstance(project_cad, dict):
+                raise ValueError("BITSAM CAD settings are required")
+            primary_display_name = project_cad.get("display_name")
+            if not isinstance(primary_display_name, str) or not primary_display_name.strip():
+                primary_display_name = primary_path.name
+            accessories: list[dict[str, Any]] = []
+            accessory_ids: set[str] = set()
+            for accessory_index, raw_accessory in enumerate(accessory_paths):
+                if isinstance(raw_accessory, str):
+                    raw_path: object = raw_accessory
+                    accessory_id = "accessory-{}".format(accessory_index + 1)
+                    resolved_raw_path = Path(raw_accessory).resolve()
+                    with self._state_lock:
+                        display_name = self._source_display_names.get(
+                            resolved_raw_path,
+                            resolved_raw_path.name,
+                        )
+                    accessory_visible = True
+                elif isinstance(raw_accessory, dict):
+                    raw_path = raw_accessory.get("path")
+                    accessory_id = raw_accessory.get(
+                        "accessory_id",
+                        raw_accessory.get("accessoryId", "accessory-{}".format(accessory_index + 1)),
+                    )
+                    display_name = raw_accessory.get(
+                        "display_name",
+                        raw_accessory.get("displayName"),
+                    )
+                    accessory_visible = raw_accessory.get("visible", True)
+                else:
+                    raise ValueError("Invalid Workspace Accessory CAD")
+                accessory_path = self._validate_workspace_source_path(raw_path)
+                if display_name is None:
+                    display_name = accessory_path.name
+                if (
+                    not isinstance(accessory_id, str)
+                    or not accessory_id
+                    or len(accessory_id) > 128
+                    or accessory_id in accessory_ids
+                    or not isinstance(display_name, str)
+                    or not display_name.strip()
+                    or len(display_name) > 512
+                    or type(accessory_visible) is not bool
+                    or accessory_path.suffix.lower() not in {".stp", ".step", ".obj", ".stl"}
+                ):
+                    raise ValueError("Invalid or duplicate Workspace Accessory CAD")
+                accessory_ids.add(accessory_id)
+                accessories.append({
+                    "accessory_id": accessory_id,
+                    "display_name": display_name.strip(),
+                    "visible": accessory_visible,
+                    "path": accessory_path,
+                    "entry": "assets/{:04d}/accessory-{:04d}{}".format(
+                        index + 1,
+                        accessory_index + 1,
+                        accessory_path.suffix.lower(),
+                    ),
+                })
+            case_ids.add(case_id)
+            orders.add(order)
+            normalized.append({
+                "case_id": case_id,
+                "order": order,
+                "name": name,
+                "note": note,
+                "visible": visible,
+                "project": project,
+                "primary_path": primary_path,
+                "primary_display_name": primary_display_name.strip(),
+                "accessories": accessories,
+                "entry": "cases/{:04d}.bitsam".format(index + 1),
+            })
+        if not isinstance(active_case_id, str) or active_case_id not in case_ids:
+            raise ValueError("Active workspace Case is invalid")
+
+        # Original primary CADs are embedded in their Case packages and every
+        # Accessory CAD is stored as an outer asset. Their aggregate size is a
+        # cheap fail-closed lower bound before any geometry/package generation.
+        minimum_content_bytes = sum(
+            item["primary_path"].stat().st_size
+            + sum(accessory["path"].stat().st_size for accessory in item["accessories"])
+            for item in normalized
+        )
+        if minimum_content_bytes > MAX_WORKSPACE_BYTES:
+            raise ValueError("BITSAM workspace exceeds the cumulative size limit")
+
+        self._discard_stale_project_exports()
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        export_id = uuid.uuid4().hex
+        path = self.upload_dir / ("export_workspace_" + export_id + ".bitsam")
+        temporary = path.with_suffix(".writing")
+        started = time.perf_counter()
+        trace_cached: dict[str, bool] = {}
+        try:
+            with tempfile.TemporaryDirectory(prefix="bitsam_workspace_export_", dir=self.upload_dir) as temporary_dir:
+                case_files: dict[str, Path] = {}
+                asset_files: dict[str, Path] = {}
+                workspace_cases: list[dict[str, Any]] = []
+                generation_budget = CumulativeByteBudget(MAX_WORKSPACE_BYTES)
+                generation_budget.reserve(sum(
+                    accessory["path"].stat().st_size
+                    for item in normalized
+                    for accessory in item["accessories"]
+                ))
+                for item in normalized:
+                    scene_paths = [
+                        item["primary_path"],
+                        *(
+                            accessory["path"]
+                            for accessory in item["accessories"]
+                            if accessory["visible"]
+                        ),
+                    ]
+                    scene = self.load_composite_scene([str(value) for value in scene_paths])
+                    token = str((scene.get("metadata") or {}).get("scene_token") or "")
+                    case_path = Path(temporary_dir) / Path(item["entry"]).name
+                    inner_manifest = self._write_case_package(token, item["project"], case_path)
+                    generation_budget.reserve(case_path.stat().st_size)
+                    trace_cached[item["case_id"]] = bool(inner_manifest["trace_cached"])
+                    case_files[item["entry"]] = case_path
+                    workspace_cases.append({
+                        "case_id": item["case_id"],
+                        "order": item["order"],
+                        "name": item["name"],
+                        "note": item["note"],
+                        "visible": item["visible"],
+                        "entry": item["entry"],
+                        "source": {"display_name": item["primary_display_name"]},
+                        "accessories": [
+                            {
+                                "accessory_id": accessory["accessory_id"],
+                                "display_name": accessory["display_name"],
+                                "visible": accessory["visible"],
+                                "entry": accessory["entry"],
+                            }
+                            for accessory in item["accessories"]
+                        ],
+                    })
+                    for accessory in item["accessories"]:
+                        asset_files[accessory["entry"]] = accessory["path"]
+                workspace = {
+                    "format": WORKSPACE_FORMAT,
+                    "schema_version": WORKSPACE_SCHEMA,
+                    "workspace_name": workspace_name.strip(),
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "active_case_id": active_case_id,
+                    "cases": workspace_cases,
+                }
+                write_workspace_package(temporary, workspace, case_files, asset_files)
+            temporary.replace(path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
+
+        name = self._download_name(workspace_name, "workspace")
+        with self._state_lock:
+            self._project_exports[export_id] = (path, name, time.time())
+        return {
+            "scope": "workspace",
+            "download_url": "/api/projects/download/" + export_id,
+            "filename": name,
+            "size_bytes": path.stat().st_size,
+            "case_count": len(normalized),
+            "trace_cached": all(trace_cached.values()),
+            "case_trace_cached": trace_cached,
             "elapsed_sec": time.perf_counter() - started,
         }
 
@@ -298,36 +602,247 @@ class ApiRuntime:
             record[0].unlink(missing_ok=True)
 
     def import_project(self, package: Path) -> dict[str, Any]:
+        schema = package_schema(package)
+        if schema == PACKAGE_SCHEMA:
+            return self._import_case_project(package)
+        if schema == WORKSPACE_SCHEMA:
+            return self._import_workspace_project(package)
+        raise ValueError("Unsupported BITSAM package version")
+
+    @staticmethod
+    def _validate_imported_project(
+        project: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        require_geometry_signature: bool = False,
+    ) -> None:
+        if (
+            project.get("schema_version") not in {
+                "bitsam-project.v1",
+                "bitsam-project.v1-bsdf1",
+                "bitsam-project.v1-preview1",
+            }
+            or not isinstance(project.get("workspace"), dict)
+        ):
+            raise ValueError("Invalid BITSAM settings")
+        has_preview = isinstance(project.get("leak_preview"), dict)
+        if (
+            project.get("schema_version") == "bitsam-project.v1-preview1"
+        ) != has_preview:
+            raise ValueError("Invalid BITSAM Leak Preview settings")
+        cad = project.get("cad")
+        if not isinstance(cad, dict):
+            raise ValueError("Invalid BITSAM CAD settings")
+        fingerprint = cad.get("fingerprint") or {}
+        if not isinstance(fingerprint, dict):
+            raise ValueError("Invalid BITSAM CAD fingerprint")
+        metadata = payload.get("metadata") or {}
+        for key in ("face_count", "vertex_count", "component_count"):
+            if fingerprint.get(key) != metadata.get(key):
+                raise ValueError("BITSAM geometry and settings fingerprint mismatch")
+        expected_schema = fingerprint.get("scene_schema_version")
+        if expected_schema is not None and expected_schema != payload.get("schema_version"):
+            raise ValueError("BITSAM geometry and settings fingerprint mismatch")
+        expected_signature = fingerprint.get("geometry_signature")
+        if require_geometry_signature and not isinstance(expected_signature, str):
+            raise ValueError("BITSAM Workspace Case geometry signature is missing")
+        if expected_signature is not None:
+            if (
+                not isinstance(expected_signature, str)
+                or expected_signature != scene_geometry_signature(payload)
+            ):
+                raise ValueError("BITSAM geometry and settings fingerprint mismatch")
+
+    def _commit_portable_cases(
+        self,
+        cases: list[tuple[Path, Path, dict[str, Any]]],
+        *,
+        composites: list[tuple[tuple[str, ...], Path]] | None = None,
+        additional_sources: list[Path] | None = None,
+        display_names: dict[Path, str] | None = None,
+    ) -> None:
+        """Publish already validated portable sources as one atomic state update."""
+        with self._state_lock:
+            for source, directory, payload in cases:
+                self._portable_sources[str(source)] = directory
+                self._known_scene_sources.add(source)
+                self._scene_payload_cache[self._scene_cache_key(str(source))] = payload
+            for source_key, directory in composites or []:
+                self._portable_composite_sources[source_key] = directory
+            self._known_scene_sources.update(additional_sources or [])
+            self._source_display_names.update(display_names or {})
+            while len(self._scene_payload_cache) > self._max_cached_scenes:
+                self._scene_payload_cache.pop(next(iter(self._scene_payload_cache)), None)
+
+    def _import_case_project(self, package: Path) -> dict[str, Any]:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
         destination = self.upload_dir / ("project_" + uuid.uuid4().hex)
-        with tempfile.TemporaryDirectory(prefix="bitsam_", dir=self.upload_dir) as temporary:
-            staging = Path(temporary)
-            manifest = extract_package(package, staging)
-            project = read_json(staging / "project.json")
-            if project.get("schema_version") not in {"bitsam-project.v1", "bitsam-project.v1-bsdf1"} or not isinstance(project.get("workspace"), dict):
-                raise ValueError("Invalid BITSAM settings")
-            payload = self._load_portable_scene(staging)
-            fingerprint = (project.get("cad") or {}).get("fingerprint") or {}
-            for key in ("face_count", "vertex_count", "component_count"):
-                if fingerprint.get(key) != payload["metadata"].get(key):
-                    raise ValueError("BITSAM geometry and settings fingerprint mismatch")
-            staging.rename(destination)
-        source = (destination / manifest["source"]).resolve()
-        payload["metadata"]["source_file"] = str(source)
+        try:
+            with tempfile.TemporaryDirectory(prefix="bitsam_", dir=self.upload_dir) as temporary:
+                staging = Path(temporary)
+                manifest = extract_package(package, staging)
+                project = read_json(staging / "project.json")
+                self._validate_imported_project(project, self._load_portable_scene(staging))
+                staging.rename(destination)
+            # Re-open after the atomic move so a deferred trace loader captures
+            # the permanent embedded CAD path rather than the staging path.
+            payload = self._load_portable_scene(destination)
+            source = (destination / manifest["source"]).resolve()
+            self._commit_portable_cases(
+                [(source, destination, payload)],
+                display_names={source: project["cad"]["display_name"]},
+            )
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
         elapsed = time.perf_counter() - started
-        payload["metadata"]["import_timings_sec"] = {"package_restore": elapsed, "scene_payload_total": elapsed}
-        if not manifest["trace_cached"]:
-            payload["_trace_mesh_loader"] = self._portable_trace_loader(source, payload["mesh"])
-        with self._state_lock:
-            self._portable_sources[str(source)] = destination
-            self._scene_payload_cache[self._scene_cache_key(str(source))] = payload
-            while len(self._scene_payload_cache) > self._max_cached_scenes:
-                self._scene_payload_cache.pop(next(iter(self._scene_payload_cache)), None)
         return {
             "project": project,
             "cad": {"path": str(source), "displayName": project["cad"]["display_name"]},
             "trace_cached": manifest["trace_cached"],
+            "elapsed_sec": elapsed,
+        }
+
+    def _import_workspace_project(self, package: Path) -> dict[str, Any]:
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        started = time.perf_counter()
+        destination = self.upload_dir / ("project_workspace_" + uuid.uuid4().hex)
+        validated: list[dict[str, Any]] = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="bitsam_workspace_", dir=self.upload_dir) as temporary:
+                staging = Path(temporary)
+                outer = extract_workspace_package(package, staging)
+                workspace = outer["workspace"]
+                entry_metadata = outer["manifest"]["entries"]
+                accessory_entries = {
+                    accessory["entry"]
+                    for case in workspace["cases"]
+                    for accessory in case["accessories"]
+                }
+                accessory_bytes = sum(
+                    entry_metadata[entry]["size"] for entry in accessory_entries
+                )
+                retained_outer_bytes = (
+                    accessory_bytes
+                    + entry_metadata["workspace.json"]["size"]
+                    + (staging / "manifest.json").stat().st_size
+                )
+
+                # Validate every nested archive and the shared final-size
+                # budget before extracting the first Case. Each V2 archive may
+                # be valid below 8 GiB on its own while their sum is not.
+                preflight_budget = CumulativeByteBudget(MAX_WORKSPACE_BYTES)
+                preflight_budget.reserve(retained_outer_bytes)
+                for case in workspace["cases"]:
+                    preflight_budget.reserve(package_expanded_size(staging / case["entry"]))
+
+                extraction_budget = CumulativeByteBudget(MAX_WORKSPACE_BYTES)
+                extraction_budget.reserve(retained_outer_bytes)
+                for index, case in enumerate(workspace["cases"]):
+                    entry = staging / case["entry"]
+                    relative_directory = Path("restored") / "{:04d}".format(index + 1)
+                    case_directory = staging / relative_directory
+                    manifest = extract_package(
+                        entry,
+                        case_directory,
+                        byte_budget=extraction_budget,
+                    )
+                    project = read_json(case_directory / "project.json")
+                    payload = self._load_portable_scene(case_directory)
+                    self._validate_imported_project(
+                        project,
+                        payload,
+                        require_geometry_signature=True,
+                    )
+                    visible_accessories = [
+                        accessory
+                        for accessory in case["accessories"]
+                        if accessory["visible"]
+                    ]
+                    saved_sources = (payload.get("metadata") or {}).get("source_files")
+                    saved_source_count = len(saved_sources) if isinstance(saved_sources, list) else 1
+                    if saved_source_count != 1 + len(visible_accessories):
+                        raise ValueError("Workspace Accessory CAD composition does not match the saved Case")
+                    if visible_accessories and not manifest["trace_cached"]:
+                        raise ValueError("Workspace Accessory CAD Case is missing its combined trace cache")
+                    validated.append({
+                        "metadata": case,
+                        "relative_directory": relative_directory,
+                        "manifest": manifest,
+                        "project": project,
+                    })
+                # The extracted, validated V2 contents are the runtime copy.
+                # Keeping the nested ZIPs would nearly double restored storage.
+                for item in validated:
+                    (staging / item["metadata"]["entry"]).unlink()
+                staging.rename(destination)
+
+            portable_cases: list[tuple[Path, Path, dict[str, Any]]] = []
+            portable_composites: list[tuple[tuple[str, ...], Path]] = []
+            trusted_sources: list[Path] = []
+            trusted_display_names: dict[Path, str] = {}
+            response_cases: list[dict[str, Any]] = []
+            for item in validated:
+                case_directory = destination / item["relative_directory"]
+                payload = self._load_portable_scene(case_directory)
+                source = (case_directory / item["manifest"]["source"]).resolve()
+                metadata = item["metadata"]
+                project = item["project"]
+                accessory_cads: list[dict[str, Any]] = []
+                visible_paths: list[Path] = []
+                for accessory in metadata["accessories"]:
+                    accessory_path = (destination / accessory["entry"]).resolve()
+                    accessory_cads.append({
+                        "accessoryId": accessory["accessory_id"],
+                        "cad": {
+                            "path": str(accessory_path),
+                            "displayName": accessory["display_name"],
+                        },
+                        "visible": accessory["visible"],
+                    })
+                    trusted_sources.append(accessory_path)
+                    trusted_display_names[accessory_path] = accessory["display_name"]
+                    if accessory["visible"]:
+                        visible_paths.append(accessory_path)
+                trusted_sources.append(source)
+                trusted_display_names[source] = metadata["source"]["display_name"]
+                if visible_paths:
+                    portable_composites.append((
+                        tuple(str(value) for value in [source, *visible_paths]),
+                        case_directory,
+                    ))
+                else:
+                    portable_cases.append((source, case_directory, payload))
+                response_cases.append({
+                    "case_id": metadata["case_id"],
+                    "order": metadata["order"],
+                    "name": metadata["name"],
+                    "note": metadata["note"],
+                    "visible": metadata["visible"],
+                    "project": project,
+                    "cad": {
+                        "path": str(source),
+                        "displayName": metadata["source"]["display_name"],
+                    },
+                    "accessory_cads": accessory_cads,
+                    "trace_cached": item["manifest"]["trace_cached"],
+                })
+            self._commit_portable_cases(
+                portable_cases,
+                composites=portable_composites,
+                additional_sources=trusted_sources,
+                display_names=trusted_display_names,
+            )
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+
+        return {
+            "scope": "workspace",
+            "workspace_name": workspace["workspace_name"],
+            "active_case_id": workspace["active_case_id"],
+            "cases": response_cases,
             "elapsed_sec": time.perf_counter() - started,
         }
 
@@ -381,6 +896,7 @@ class ApiRuntime:
                 )
                 temporary_path.write_bytes(content)
                 temporary_path.replace(target_path)
+            self._source_display_names[target_path.resolve()] = safe_name
         return {
             "ok": True,
             "display_name": safe_name,

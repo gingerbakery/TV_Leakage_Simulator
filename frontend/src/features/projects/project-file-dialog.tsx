@@ -14,6 +14,7 @@ export interface ProjectFileNotice {
   fileName: string
   includesCad: boolean
   includesResult: boolean
+  caseCount?: number
   downloadStarted?: boolean
   notes?: string[]
 }
@@ -58,6 +59,9 @@ export function ProjectFileDialog({ notice, onClose, returnFocusRef }: ProjectFi
         <div className="min-w-0 text-xs leading-5 text-muted-foreground">
           <p className="text-[11px] font-medium">{isLoad ? '불러온 항목' : '함께 저장된 항목'}</p>
           <ul className="mt-1 list-disc pl-4">
+            {notice?.caseCount && notice.caseCount > 1 ? (
+              <li>전체 Workspace · {notice.caseCount}개 Case</li>
+            ) : null}
             {notice?.includesCad && <li>{isLoad ? 'CAD 모델 형상' : '원본 CAD 및 모델 형상'}</li>}
             <li>{notice?.includesResult ? '해석 설정 및 결과' : '해석 설정'}</li>
           </ul>

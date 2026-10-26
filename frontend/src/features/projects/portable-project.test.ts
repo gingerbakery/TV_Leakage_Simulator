@@ -5,7 +5,14 @@ import { createWorkspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createBitsamProject } from './bitsam-project'
-import { createPortableProjectClient, isPortableProject, loadPortableProject, savePortableProject } from './portable-project'
+import {
+  createPortableProjectClient,
+  isPortableProject,
+  loadPortableBundle,
+  loadPortableProject,
+  savePortableProject,
+  savePortableWorkspace,
+} from './portable-project'
 
 function fixture() {
   const store = createWorkspaceStore()
@@ -20,10 +27,19 @@ function fixture() {
   return { scene, project, cad, result }
 }
 
+type PackageImportFixture = Awaited<
+  ReturnType<ReturnType<typeof createPortableProjectClient>['importProject']>
+>
+
 function mockClient() {
   return {
     exportProject: vi.fn(async () => ({ download_url: '/api/projects/download/token', filename: 'project.bitsam', size_bytes: 4, trace_cached: true })),
-    importProject: vi.fn(async () => ({ project: fixture().project, cad: fixture().cad, trace_cached: true })),
+    exportWorkspace: vi.fn(async () => ({ download_url: '/api/projects/download/workspace-token', filename: 'workspace.bitsam', size_bytes: 4, trace_cached: true, case_count: 2 })),
+    importProject: vi.fn(async (_file: File): Promise<PackageImportFixture> => ({
+      project: fixture().project,
+      cad: fixture().cad,
+      trace_cached: true,
+    })),
     download: vi.fn(async () => new Response(new Uint8Array([80, 75, 3, 4]))),
   }
 }
@@ -64,6 +80,57 @@ describe('portable BITSAM packages', () => {
     expect(client.exportProject).not.toHaveBeenCalled()
   })
 
+  it('saves every Case as one portable Workspace package', async () => {
+    const write = vi.fn(async (_data: Uint8Array) => undefined)
+    const close = vi.fn(async () => undefined)
+    Object.assign(window, {
+      showSaveFilePicker: vi.fn(async () => ({
+        createWritable: async () => ({ write, close }),
+      })),
+    })
+    const first = fixture()
+    const second = fixture()
+    second.project.project_name = 'Case B'
+    const client = mockClient()
+    const cases = [
+      {
+        caseId: 'case-a', order: 1, name: 'Case A', note: '', visible: true,
+        cadPath: 'case-a.step', accessoryCads: [], project: first.project,
+      },
+      {
+        caseId: 'case-b', order: 2, name: 'Case B', note: 'variant', visible: false,
+        cadPath: 'case-b.step',
+        accessoryCads: [{
+          accessoryId: 'bracket',
+          cad: { path: 'bracket.step', displayName: 'bracket.step' },
+          visible: true,
+        }],
+        project: second.project,
+      },
+    ]
+
+    const result = await savePortableWorkspace(
+      'TV variants',
+      'case-a',
+      cases,
+      vi.fn(),
+      client,
+    )
+
+    expect(client.exportWorkspace).toHaveBeenCalledWith(
+      'TV variants',
+      'case-a',
+      cases,
+    )
+    expect(Array.from(write.mock.calls[0][0])).toEqual([80, 75, 3, 4])
+    expect(close).toHaveBeenCalledOnce()
+    expect(result).toEqual({
+      cancelled: false,
+      downloaded: false,
+      caseCount: 2,
+    })
+  })
+
   it('uses a server download when native file writing is unavailable', async () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     const client = mockClient()
@@ -101,6 +168,77 @@ describe('portable BITSAM packages', () => {
     expect(store.getState().restoredRayTraceResult).toEqual(project.analysis_result)
   })
 
+  it('restores every Case setting and loads only the active Case Scene', async () => {
+    const first = fixture()
+    const second = fixture()
+    second.project.project_name = 'Case B'
+    const client = mockClient()
+    client.importProject.mockResolvedValueOnce({
+      scope: 'workspace' as const,
+      active_case_id: 'case-b',
+      cases: [
+        {
+          case_id: 'case-a', order: 1, name: 'Case A', note: '', visible: false,
+          project: first.project,
+          cad: { path: 'restored/a.step', displayName: 'a.step' },
+          accessory_cads: [],
+          trace_cached: true,
+        },
+        {
+          case_id: 'case-b', order: 2, name: 'Case B', note: 'active', visible: true,
+          project: second.project,
+          cad: { path: 'restored/b.step', displayName: 'b.step' },
+          accessory_cads: [{
+            accessoryId: 'bracket',
+            cad: {
+              path: 'restored/bracket.step',
+              displayName: 'Bracket.step',
+            },
+            visible: true,
+          }],
+          trace_cached: false,
+        },
+      ],
+    })
+    const sceneClient = {
+      getScene: vi.fn(async (
+        _path: string,
+        _options?: { signal?: AbortSignal },
+        _accessoryPaths?: string[],
+      ) => first.scene),
+    }
+
+    const restored = await loadPortableBundle(
+      new File(['PK'], 'workspace.bitsam'),
+      vi.fn(),
+      client,
+      sceneClient,
+    )
+
+    expect('cases' in restored).toBe(true)
+    if (!('cases' in restored)) throw new Error('Expected Workspace restore')
+    expect(restored.activeCaseId).toBe('case-b')
+    expect(restored.cases.map((item) => item.caseId)).toEqual([
+      'case-a',
+      'case-b',
+    ])
+    expect(restored.cases[1]).toMatchObject({
+      name: 'Case B',
+      note: 'active',
+      traceCached: false,
+      accessoryCads: [{
+        accessoryId: 'bracket',
+        cad: { path: 'restored/bracket.step' },
+        visible: true,
+      }],
+    })
+    expect(restored.cases[0].scene).toBeUndefined()
+    expect(restored.cases[1].scene).toEqual(first.scene)
+    expect(sceneClient.getScene.mock.calls).toEqual([
+      ['restored/b.step', undefined, ['restored/bracket.step']],
+    ])
+  })
+
   it('rejects mismatching geometry without silently dropping face-bound settings', async () => {
     const client = mockClient()
     const scene = createSceneFixture()
@@ -116,5 +254,46 @@ describe('portable BITSAM packages', () => {
     expect(url).toBe('http://127.0.0.1:8788/api/projects/export')
     expect(JSON.parse(options.body as string).scene_token).toBe('scene-known')
     expect(JSON.parse(options.body as string).cad_path).toBeUndefined()
+  })
+
+  it('sends complete Accessory CAD metadata for Workspace export', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      download_url: '/api/projects/download/workspace',
+      filename: 'workspace.bitsam',
+      size_bytes: 4,
+      trace_cached: true,
+      case_count: 1,
+    }), { headers: { 'Content-Type': 'application/json' } }))
+    const client = createPortableProjectClient({
+      baseUrl: 'http://127.0.0.1:8788',
+      fetch: fetcher,
+    })
+    const project = fixture().project
+    await client.exportWorkspace('Study', 'case-a', [{
+      caseId: 'case-a',
+      order: 1,
+      name: 'Baseline',
+      note: '',
+      visible: true,
+      cadPath: 'main.step',
+      accessoryCads: [{
+        accessoryId: 'hidden-board',
+        cad: { path: 'board.step', displayName: 'Board.step' },
+        visible: false,
+      }],
+      project,
+    }])
+
+    const [, options] = fetcher.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ]
+    const payload = JSON.parse(options.body as string)
+    expect(payload.cases[0].accessory_paths).toEqual([{
+      accessory_id: 'hidden-board',
+      path: 'board.step',
+      display_name: 'Board.step',
+      visible: false,
+    }])
   })
 })

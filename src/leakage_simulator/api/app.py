@@ -272,6 +272,15 @@ def create_app(
         except Exception as exc:
             return _error(500, str(exc))
 
+    @application.post("/api/projects/export-workspace")
+    def export_workspace(payload: dict[str, Any] = Body(...)) -> Any:
+        try:
+            return api_runtime.export_workspace(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
     @application.get("/api/projects/download/{export_id}")
     def download_project(export_id: str) -> Any:
         try:

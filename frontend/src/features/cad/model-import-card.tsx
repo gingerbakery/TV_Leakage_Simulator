@@ -3,7 +3,11 @@ import { Check, Eye, EyeOff, FolderOpen, LoaderCircle, Plus, Trash2 } from 'luci
 
 import { useUploadCadMutation } from '@/api'
 import { Button } from '@/components/ui/button'
-import { useWorkspaceStore, workspaceSelectors } from '@/stores'
+import {
+  useWorkspaceStore,
+  workspaceSelectors,
+  workspaceStore,
+} from '@/stores'
 
 interface ModelImportCardProps {
   sceneStatus?: string
@@ -16,16 +20,25 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const cadCases = useWorkspaceStore(workspaceSelectors.cadCases)
   const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  const singleRayTraceRun = useWorkspaceStore(
+    workspaceSelectors.singleRayTraceRun,
+  )
+  const batchRayTraceActive = useWorkspaceStore(
+    workspaceSelectors.batchRayTraceActive,
+  )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const uploadMutation = useUploadCadMutation()
   const activeCase = cadCases.find((item) => item.caseId === activeCadCaseId)
+  const executionLocked = singleRayTraceRun !== null || batchRayTraceActive
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
-    if (!file) return
+    if (!file || executionLocked) return
     try {
       const uploaded = await uploadMutation.mutateAsync({ file, filename: file.name })
+      const latest = workspaceStore.getState()
+      if (latest.singleRayTraceRun || latest.batchRayTraceActive) return
       actions.addCadCase({ path: uploaded.path, displayName: uploaded.display_name })
       onImported()
     } catch {
@@ -36,9 +49,11 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
   const handleAccessoryFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
-    if (!file || !activeCadCaseId) return
+    if (!file || !activeCadCaseId || executionLocked) return
     try {
       const uploaded = await uploadMutation.mutateAsync({ file, filename: file.name })
+      const latest = workspaceStore.getState()
+      if (latest.singleRayTraceRun || latest.batchRayTraceActive) return
       actions.addAccessoryCad(activeCadCaseId, {
         path: uploaded.path,
         displayName: uploaded.display_name,
@@ -66,12 +81,18 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                 <div
                   key={item.caseId}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={executionLocked ? -1 : 0}
+                  aria-disabled={executionLocked}
                   aria-label={`Activate CASE ${item.order}`}
                   className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 transition ${active ? 'border-primary/35 bg-primary/10' : 'border-border bg-background/50 hover:bg-muted/35'}`}
-                  onClick={() => actions.setActiveCadCase(item.caseId)}
+                  onClick={() => {
+                    if (!executionLocked) actions.setActiveCadCase(item.caseId)
+                  }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
+                    if (
+                      !executionLocked &&
+                      (event.key === 'Enter' || event.key === ' ')
+                    ) {
                       event.preventDefault()
                       actions.setActiveCadCase(item.caseId)
                     }
@@ -81,6 +102,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     type="checkbox"
                     aria-label={`Show CASE ${item.order}`}
                     checked={item.visible}
+                    disabled={executionLocked}
                     onClick={(event) => event.stopPropagation()}
                     onChange={(event) => actions.setCadCaseVisible(item.caseId, event.currentTarget.checked)}
                   />
@@ -90,6 +112,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                         aria-label={`Case name ${item.caseId}`}
                         className="h-6 min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-sm font-semibold outline-none hover:border-border focus:border-primary focus:bg-background"
                         value={item.name ?? ''}
+                        disabled={executionLocked}
                         placeholder={`CASE ${String(item.order).padStart(2, '0')}`}
                         maxLength={80}
                         onClick={(event) => event.stopPropagation()}
@@ -109,6 +132,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                       aria-label={`Case caption ${item.caseId}`}
                       className="mt-1 h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-1 text-xs text-muted-foreground outline-none hover:border-border focus:border-primary focus:bg-background"
                       value={item.note ?? ''}
+                      disabled={executionLocked}
                       placeholder="Caption 입력"
                       maxLength={160}
                       onClick={(event) => event.stopPropagation()}
@@ -130,6 +154,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     aria-label={`Delete CASE ${item.order}`}
                     title="Remove imported CAD case"
                     className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    disabled={executionLocked}
                     onClick={(event) => {
                       event.stopPropagation()
                       actions.removeCadCase(item.caseId)
@@ -158,6 +183,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     type="checkbox"
                     aria-label={`Show Accessory CAD ${accessory.cad.displayName}`}
                     checked={accessory.visible}
+                    disabled={executionLocked}
                     onChange={(event) => actions.setAccessoryCadVisible(activeCase.caseId, accessory.accessoryId, event.currentTarget.checked)}
                   />
                   <span className="min-w-0 flex-1 truncate text-xs font-medium">{accessory.cad.displayName}</span>
@@ -167,6 +193,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                     variant="ghost"
                     size="icon-xs"
                     aria-label={`Delete Accessory CAD ${accessory.cad.displayName}`}
+                    disabled={executionLocked}
                     onClick={() => actions.removeAccessoryCad(activeCase.caseId, accessory.accessoryId)}
                   >
                     <Trash2 />
@@ -174,16 +201,16 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
                 </div>
               ))}
             </div>
-            <input ref={accessoryInputRef} type="file" className="sr-only" aria-label="Choose Accessory CAD file" accept=".step,.stp,.stl,.obj" onChange={handleAccessoryFileChange} />
-            <Button className="mt-2 w-full" size="sm" variant="outline" disabled={uploadMutation.isPending} onClick={() => accessoryInputRef.current?.click()}>
+            <input ref={accessoryInputRef} type="file" className="sr-only" aria-label="Choose Accessory CAD file" accept=".step,.stp,.stl,.obj" disabled={executionLocked || uploadMutation.isPending} onChange={handleAccessoryFileChange} />
+            <Button className="mt-2 w-full" size="sm" variant="outline" disabled={uploadMutation.isPending || executionLocked} onClick={() => accessoryInputRef.current?.click()}>
               {uploadMutation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}
               Add Accessory CAD
             </Button>
           </div>
         ) : null}
       </div>
-      <input ref={inputRef} type="file" className="sr-only" aria-label="Choose CAD file" accept=".step,.stp,.stl,.obj" onChange={handleFileChange} />
-      <Button className="w-full" disabled={uploadMutation.isPending} onClick={() => inputRef.current?.click()}>
+      <input ref={inputRef} type="file" className="sr-only" aria-label="Choose CAD file" accept=".step,.stp,.stl,.obj" disabled={executionLocked || uploadMutation.isPending} onChange={handleFileChange} />
+      <Button className="w-full" disabled={uploadMutation.isPending || executionLocked} onClick={() => inputRef.current?.click()}>
         {uploadMutation.isPending ? <LoaderCircle className="animate-spin" /> : <FolderOpen data-icon="inline-start" />}
         {uploadMutation.isPending ? 'Uploading CAD…' : 'Import CAD'}
       </Button>

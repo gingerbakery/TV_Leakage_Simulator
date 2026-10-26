@@ -125,6 +125,58 @@ describe('BITSAM project format', () => {
     expect(serialized).not.toContain('activeRayTraceJobId')
   })
 
+  it('round-trips Case-scoped Leak Preview constraints and rejects damage', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.addCadCase({
+      path: 'preview.step',
+      displayName: 'preview.step',
+    })
+    const leakPreview = {
+      sourceMode: 'body' as const,
+      sourceFaceIds: [],
+      sourceComponentIds: [3],
+      sourceBodyFaceCount: 12,
+      quality: 'deep' as const,
+      directions: ['neg_y' as const],
+      visualizationVisible: false,
+      ignoreAreasVisible: true,
+      blockersVisible: true,
+      ignoreAreas: [{
+        id: 'allowed-1', label: 'Vent', enabled: true,
+        regions: [{ plane: 'xy' as const, xMin: 0, xMax: 2, yMin: 1, yMax: 3, zMin: 4, zMax: 5 }],
+      }],
+      blockers: [{
+        id: 'blocker-1', label: 'Rib', enabled: true,
+        baseCenter: [0, 0, 0] as [number, number, number],
+        uAxis: [1, 0, 0] as [number, number, number],
+        vAxis: [0, 1, 0] as [number, number, number],
+        normal: [0, 0, 1] as [number, number, number],
+        widthMm: 10, heightMm: 20, offsetMm: 0, depthMm: 1, reverse: false,
+      }],
+    }
+    const project = createBitsamProject(
+      createSceneFixture(),
+      store.getState(),
+      new Date('2026-10-23T00:00:00.000Z'),
+      null,
+      leakPreview,
+    )
+
+    expect(parseBitsamProject(serializeBitsamProject(project)).leak_preview)
+      .toEqual(leakPreview)
+
+    const damaged = JSON.parse(serializeBitsamProject(project))
+    damaged.leak_preview.blockers[0].normal = [0, 1]
+    expect(() => parseBitsamProject(JSON.stringify(damaged)))
+      .toThrow(BitsamProjectError)
+
+    const legacy = JSON.parse(serializeBitsamProject(project))
+    delete legacy.leak_preview
+    legacy.schema_version = 'bitsam-project.v1'
+    expect(parseBitsamProject(JSON.stringify(legacy)).leak_preview)
+      .toBeUndefined()
+  })
+
   it('round-trips the explicit CUDA compute backend', () => {
     const store = createWorkspaceStore()
     store.getState().actions.setActiveCad({

@@ -58,6 +58,25 @@ export interface LeakPreviewBlocker {
   reverse: boolean
 }
 
+/**
+ * Case-scoped Leak Preview inputs that must survive Case switches and project
+ * save/load. Runtime jobs, sampled points, and selection gestures are omitted:
+ * they are derived/transient state and must never be replayed as active work.
+ */
+export interface LeakPreviewProjectState {
+  sourceMode: 'face' | 'body'
+  sourceFaceIds: number[]
+  sourceComponentIds: number[]
+  sourceBodyFaceCount: number
+  quality: LeakPreviewQuality
+  directions: LeakPreviewDirection[]
+  visualizationVisible: boolean
+  ignoreAreasVisible: boolean
+  blockersVisible: boolean
+  ignoreAreas: LeakPreviewIgnoreArea[]
+  blockers: LeakPreviewBlocker[]
+}
+
 export interface LeakPreviewPoint {
   position: Vec3
   relativeStrength: number

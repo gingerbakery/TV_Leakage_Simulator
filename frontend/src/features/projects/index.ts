@@ -2,6 +2,7 @@ export {
   BitsamProjectError,
   bitsamDownloadFileName,
   bitsamFileExtension,
+  bitsamPreviewSchemaVersion,
   bitsamSchemaVersion,
   compareBitsamProjectScene,
   createBitsamSettingsOnlyState,

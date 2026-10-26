@@ -1,17 +1,24 @@
 export type { FaceDisplayColor } from './face-display-color'
 export {
+  assertCompatibleProjectLibrary,
   createWorkspaceStore,
+  cadCaseRayTraceSetupHash,
+  cadCaseRayTraceSourcePaths,
   defaultRayPathDisplayFilters,
   defaultRayTraceConfig,
   maxReflectionDepth,
   mergeRayTraceReceiverResults,
   removeReceiverFromRayTraceResult,
+  snapshotCadCasesForRayTrace,
   useWorkspaceStore,
   workspaceSelectors,
   workspaceStore,
 } from './workspace-store'
 export type {
   ActiveCad,
+  CadCaseRayTraceSnapshot,
+  CadCaseResultStoreOutcome,
+  CadCaseSetupValidationOutcome,
   CadCase,
   CopySetupTarget,
   CopySetupSection,

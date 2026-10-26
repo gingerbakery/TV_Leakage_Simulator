@@ -9,10 +9,45 @@ import type {
   LeakPreviewPoint,
   LeakPreviewQuality,
   LeakPreviewDirection,
+  LeakPreviewProjectState,
 } from './leak-preview-model'
+import { workspaceStore } from '@/stores/workspace-store'
+
+export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState {
+  return {
+    sourceMode: 'face',
+    sourceFaceIds: [],
+    sourceComponentIds: [],
+    sourceBodyFaceCount: 0,
+    quality: 'balanced',
+    directions: ['pos_z'],
+    visualizationVisible: true,
+    ignoreAreasVisible: true,
+    blockersVisible: true,
+    ignoreAreas: [],
+    blockers: [],
+  }
+}
+
+function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState {
+  return structuredClone({
+    sourceMode: state.sourceMode,
+    sourceFaceIds: state.sourceFaceIds,
+    sourceComponentIds: state.sourceComponentIds,
+    sourceBodyFaceCount: state.sourceBodyFaceCount,
+    quality: state.quality,
+    directions: state.directions,
+    visualizationVisible: state.visualizationVisible,
+    ignoreAreasVisible: state.ignoreAreasVisible,
+    blockersVisible: state.blockersVisible,
+    ignoreAreas: state.ignoreAreas,
+    blockers: state.blockers,
+  })
+}
 
 interface LeakPreviewState {
   sceneToken: string | null
+  sceneIdentity: string | null
   sourceMode: 'face' | 'body'
   sourceFaceIds: number[]
   sourceComponentIds: number[]
@@ -58,11 +93,44 @@ interface LeakPreviewState {
   removeBlocker(blockerId: string): void
   beginBlockerAreaSelection(blockerId: string): void
   finishBlockerAreaSelection(): void
+  restoreProjectState(state?: LeakPreviewProjectState): void
   clear(): void
 }
 
-const store = createStore<LeakPreviewState>()((set) => ({
+const store = createStore<LeakPreviewState>()((set, get) => {
+  const activeSceneIdentity = (sceneToken: string) => {
+    const workspace = workspaceStore.getState()
+    const active = workspace.cadCases.find(
+      (item) => item.caseId === workspace.activeCadCaseId,
+    )
+    if (!active) return `scene-token:${sceneToken}`
+    return JSON.stringify([
+      active.caseId,
+      active.cad.path,
+      ...(active.accessoryCads ?? [])
+        .filter((item) => item.visible)
+        .map((item) => item.cad.path),
+    ])
+  }
+  const persistActiveCase = () => {
+    const workspace = workspaceStore.getState()
+    if (!workspace.activeCadCaseId) return
+    workspace.actions.setCadCaseLeakPreviewState(
+      workspace.activeCadCaseId,
+      projectStateFromStore(get()),
+    )
+  }
+  const setAndPersist = (
+    update:
+      | Partial<LeakPreviewState>
+      | ((state: LeakPreviewState) => Partial<LeakPreviewState>),
+  ) => {
+    set(update)
+    persistActiveCase()
+  }
+  return ({
   sceneToken: null,
+  sceneIdentity: null,
   sourceMode: 'face',
   sourceFaceIds: [],
   sourceComponentIds: [],
@@ -83,15 +151,26 @@ const store = createStore<LeakPreviewState>()((set) => ({
   blockers: [],
   blockerAreaSelectionId: null,
   runSignature: null,
-  ensureScene: (sceneToken) => set((state) =>
-    state.sceneToken === sceneToken
-      ? state
-      : {
+  ensureScene: (sceneToken) => {
+    const sceneIdentity = activeSceneIdentity(sceneToken)
+    let resetPersistentState = false
+    set((state) => {
+      if (state.sceneIdentity === sceneIdentity) {
+        return state.sceneToken === sceneToken ? state : { sceneToken }
+      }
+      if (state.sceneIdentity === null) {
+        return { sceneToken, sceneIdentity }
+      }
+      resetPersistentState = true
+      return {
           sceneToken,
+          sceneIdentity,
           sourceMode: 'face',
           sourceFaceIds: [],
           sourceComponentIds: [],
           sourceBodyFaceCount: 0,
+          quality: 'balanced',
+          directions: ['pos_z'],
           jobId: null,
           result: null,
           points: [],
@@ -106,23 +185,26 @@ const store = createStore<LeakPreviewState>()((set) => ({
           blockers: [],
           blockerAreaSelectionId: null,
           runSignature: null,
-        }),
+        }
+    })
+    if (resetPersistentState) persistActiveCase()
+  },
   rebindSceneToken: (sceneToken) => set({ sceneToken }),
-  setSourceFaceIds: (sourceFaceIds) => set({
+  setSourceFaceIds: (sourceFaceIds) => setAndPersist({
     sourceMode: 'face',
     sourceFaceIds: [...new Set(sourceFaceIds)],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
   }),
-  setSourceBody: (sourceComponentIds, sourceBodyFaceCount) => set({
+  setSourceBody: (sourceComponentIds, sourceBodyFaceCount) => setAndPersist({
     sourceMode: 'body',
     sourceComponentIds: [...new Set(sourceComponentIds)],
     sourceFaceIds: [],
     sourceBodyFaceCount: Math.max(0, Math.trunc(sourceBodyFaceCount)),
   }),
-  setSourceMode: (sourceMode) => set({ sourceMode }),
-  setQuality: (quality) => set({ quality }),
-  toggleDirection: (direction) => set({ directions: [direction] }),
+  setSourceMode: (sourceMode) => setAndPersist({ sourceMode }),
+  setQuality: (quality) => setAndPersist({ quality }),
+  toggleDirection: (direction) => setAndPersist({ directions: [direction] }),
   setJobId: (jobId) => set({ jobId }),
   setRunSignature: (runSignature) => set({ runSignature }),
   setDetection: (result, points, candidates) => set({
@@ -140,11 +222,11 @@ const store = createStore<LeakPreviewState>()((set) => ({
     selectedCandidateId: null,
     runSignature: null,
   }),
-  setVisualizationVisible: (visualizationVisible) => set({ visualizationVisible }),
-  setIgnoreAreasVisible: (ignoreAreasVisible) => set({ ignoreAreasVisible }),
-  setBlockersVisible: (blockersVisible) => set({ blockersVisible }),
+  setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
+  setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
+  setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
   selectCandidate: (selectedCandidateId) => set({ selectedCandidateId }),
-  beginIgnoreAreaSelection: (areaId) => set((state) => {
+  beginIgnoreAreaSelection: (areaId) => setAndPersist((state) => {
     if (areaId && state.ignoreAreas.some((area) => area.id === areaId)) {
       return { ignoreAreaSelectionArmed: true, activeIgnoreAreaId: areaId }
     }
@@ -164,38 +246,38 @@ const store = createStore<LeakPreviewState>()((set) => ({
       ],
     }
   }),
-  finishIgnoreAreaSelection: () => set((state) => ({
+  finishIgnoreAreaSelection: () => setAndPersist((state) => ({
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,
     ignoreAreas: state.ignoreAreas.filter((area) => area.regions.length > 0),
   })),
-  addIgnoreAreaRegion: (clipBox) => set((state) => ({
+  addIgnoreAreaRegion: (clipBox) => setAndPersist((state) => ({
     ignoreAreas: state.ignoreAreas.map((area) =>
       area.id === state.activeIgnoreAreaId
         ? { ...area, regions: [...area.regions, { ...clipBox }] }
         : area,
     ),
   })),
-  setIgnoreAreaEnabled: (areaId, enabled) => set((state) => ({
+  setIgnoreAreaEnabled: (areaId, enabled) => setAndPersist((state) => ({
     ignoreAreas: state.ignoreAreas.map((area) =>
       area.id === areaId ? { ...area, enabled } : area,
     ),
   })),
-  removeIgnoreArea: (areaId) => set((state) => ({
+  removeIgnoreArea: (areaId) => setAndPersist((state) => ({
     ignoreAreas: state.ignoreAreas.filter((area) => area.id !== areaId),
     ...(state.activeIgnoreAreaId === areaId
       ? { activeIgnoreAreaId: null, ignoreAreaSelectionArmed: false }
       : {}),
   })),
-  addBlocker: (blocker) => set((state) => ({
+  addBlocker: (blocker) => setAndPersist((state) => ({
     blockers: [...state.blockers, blocker],
   })),
-  updateBlocker: (blockerId, patch) => set((state) => ({
+  updateBlocker: (blockerId, patch) => setAndPersist((state) => ({
     blockers: state.blockers.map((blocker) =>
       blocker.id === blockerId ? { ...blocker, ...patch, id: blocker.id } : blocker,
     ),
   })),
-  removeBlocker: (blockerId) => set((state) => ({
+  removeBlocker: (blockerId) => setAndPersist((state) => ({
     blockers: state.blockers.filter((blocker) => blocker.id !== blockerId),
     ...(state.blockerAreaSelectionId === blockerId
       ? { blockerAreaSelectionId: null }
@@ -207,12 +289,31 @@ const store = createStore<LeakPreviewState>()((set) => ({
       : null,
   })),
   finishBlockerAreaSelection: () => set({ blockerAreaSelectionId: null }),
+  restoreProjectState: (projectState) => {
+    const restored = projectState ?? createDefaultLeakPreviewProjectState()
+    set({
+      ...structuredClone(restored),
+      sceneToken: null,
+      sceneIdentity: null,
+      jobId: null,
+      result: null,
+      points: [],
+      candidates: [],
+      selectedCandidateId: null,
+      ignoreAreaSelectionArmed: false,
+      activeIgnoreAreaId: null,
+      blockerAreaSelectionId: null,
+      runSignature: null,
+    })
+  },
   clear: () => set({
     sceneToken: null,
+    sceneIdentity: null,
     sourceMode: 'face',
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
+    quality: 'balanced',
     directions: ['pos_z'],
     jobId: null,
     result: null,
@@ -229,7 +330,11 @@ const store = createStore<LeakPreviewState>()((set) => ({
     blockerAreaSelectionId: null,
     runSignature: null,
   }),
-}))
+})})
+
+export function snapshotLeakPreviewProjectState(): LeakPreviewProjectState {
+  return projectStateFromStore(store.getState())
+}
 
 export function useLeakPreviewStore<T>(selector: (state: LeakPreviewState) => T): T {
   return useStore(store, selector)

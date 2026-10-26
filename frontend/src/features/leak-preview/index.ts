@@ -15,7 +15,14 @@ export type {
   LeakPreviewCandidate,
   LeakPreviewDetection,
   LeakPreviewIgnoreArea,
+  LeakPreviewBlocker,
   LeakPreviewPoint,
   LeakPreviewQuality,
+  LeakPreviewProjectState,
 } from './leak-preview-model'
-export { leakPreviewStore, useLeakPreviewStore } from './leak-preview-store'
+export {
+  createDefaultLeakPreviewProjectState,
+  leakPreviewStore,
+  snapshotLeakPreviewProjectState,
+  useLeakPreviewStore,
+} from './leak-preview-store'
