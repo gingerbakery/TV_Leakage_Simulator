@@ -105,7 +105,15 @@ def merge_scene_payloads(
             copied["face_indices"] = [int(value) + face_offset for value in copied.get("face_indices", [])]
             components.append(copied)
 
-    merged = deepcopy(payloads[0])
+    # Mesh sequences can reference a live TriangleMesh with uncopyable locks.
+    # Rebuild geometry below and let the runtime supply the composite trace
+    # loader; neither the original meshes nor their loaders belong in this copy.
+    replaced_keys = {"mesh", "components", "objects", "metadata", "_trace_mesh", "_trace_mesh_loader"}
+    merged = {
+        key: deepcopy(value)
+        for key, value in payloads[0].items()
+        if key not in replaced_keys
+    }
     merged["mesh"] = merge_scene_meshes(
         [payload["mesh"] for payload in payloads], component_maps, source_offsets,
     )

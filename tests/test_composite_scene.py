@@ -1,4 +1,9 @@
 from leakage_simulator.composite_scene import merge_scene_payloads
+from leakage_simulator.api import ApiRuntime
+from leakage_simulator.geometry import TriangleMesh
+from leakage_simulator.roi import _FaceSourceIds, _MeshMaterialIds, _TriangleFaceRows
+
+import pytest
 
 
 def _scene(name: str, component_id: int, x: float) -> dict:
@@ -46,3 +51,46 @@ def test_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity(
     assert merged["metadata"]["component_count"] == 2
     assert component_maps == [{7: 7}, {7: 8}]
     assert source_offsets == [0, 1]
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_accessory_import_with_live_mesh_sequences(tmp_path, deferred):
+    payloads = []
+    trace_calls = []
+
+    def loader(path):
+        payload = _scene("Part", 7, 0)
+        mesh = TriangleMesh()
+        for point in payload["mesh"]["vertices"]:
+            mesh.add_vertex(tuple(point))
+        mesh.add_face(0, 1, 2, "default", {"face_index": 0})
+        payload["mesh"]["faces"] = _TriangleFaceRows(mesh.faces)
+        payload["mesh"]["face_material_ids"] = _MeshMaterialIds(mesh)
+        payload["mesh"]["face_source_ids"] = _FaceSourceIds(mesh)
+        if deferred:
+            def trace_loader():
+                trace_calls.append(path)
+                return payload["mesh"]
+            payload["_trace_mesh_loader"] = trace_loader
+        else:
+            payload["_trace_mesh"] = payload["mesh"]
+        payloads.append(payload)
+        return payload
+
+    runtime = ApiRuntime(tmp_path, scene_loader=loader)
+    combined = runtime.load_composite_scene(["main.step", "accessory.step"])
+    assert combined["mesh"]["faces"] == [[0, 1, 2], [3, 4, 5]]
+    assert combined["mesh"]["face_material_ids"] == ["default", "default"]
+    assert combined["mesh"]["face_source_ids"] == [0, 1]
+    assert combined["mesh"]["face_component_ids"] == [7, 8]
+    assert "_trace_mesh" not in combined
+    assert "_trace_mesh_loader" not in combined
+    assert trace_calls == []
+    token = combined["metadata"]["scene_token"]
+    trace = runtime._resolve_deferred_trace_mesh(runtime._scene_mesh_cache[token])
+    assert trace["faces"] == combined["mesh"]["faces"]
+    assert trace["face_component_ids"] == [7, 8]
+    assert len(trace_calls) == (2 if deferred else 0)
+    assert list(payloads[0]["mesh"]["faces"]) == [(0, 1, 2)]
+    combined["components"][0]["face_indices"].append(99)
+    assert payloads[0]["components"][0]["face_indices"] == [0]
