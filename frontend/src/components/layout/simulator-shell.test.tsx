@@ -254,7 +254,12 @@ describe('SimulatorShell', () => {
     actions.addCadCase({ path: 'case-b.step', displayName: 'case-b.step' })
     const caseB = workspaceStore.getState().activeCadCaseId!
     actions.updateCadCaseMetadata(caseB, 'Shield', 'variant')
-    const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(scene)
+    const picker = vi.fn(async () => ({ createWritable: vi.fn() }))
+    Object.assign(window, { showSaveFilePicker: picker })
+    const getScene = vi.spyOn(apiClient, 'getScene').mockImplementation(async () => {
+      expect(picker).toHaveBeenCalledOnce()
+      return scene
+    })
     const save = vi.spyOn(
       portableProjects,
       'savePortableWorkspace',
@@ -291,6 +296,7 @@ describe('SimulatorShell', () => {
     } finally {
       getScene.mockRestore()
       save.mockRestore()
+      delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
     }
   })
 

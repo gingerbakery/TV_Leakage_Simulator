@@ -1,4 +1,4 @@
-import { Box3, Plane, Vector3 } from 'three'
+import { Box3, Plane, Vector3, type Material, type Object3D } from 'three'
 
 export type ViewerSectionAxis = 'x' | 'y' | 'z'
 
@@ -85,4 +85,26 @@ export function viewerSectionPlane(
     plane: new Plane(clippingNormal, -clippingNormal.dot(center)),
     visualSize: Math.max(boundsSize.length() * 1.25, 1),
   }
+}
+
+export function setObjectClippingPlane(root: Object3D, plane: Plane | null): void {
+  root.traverse((object) => {
+    const candidate = object as Object3D & {
+      material?: Material | Material[]
+    }
+    if (!candidate.material) return
+    const materials = Array.isArray(candidate.material)
+      ? candidate.material
+      : [candidate.material]
+    for (const material of materials) {
+      const currentPlanes = material.clippingPlanes
+      const alreadyApplied = plane
+        ? currentPlanes?.length === 1 && currentPlanes[0] === plane
+        : !currentPlanes || currentPlanes.length === 0
+      if (alreadyApplied) continue
+      material.clippingPlanes = plane ? [plane] : null
+      material.clipIntersection = false
+      material.needsUpdate = true
+    }
+  })
 }

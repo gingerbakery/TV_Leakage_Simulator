@@ -1,7 +1,8 @@
-import { Box3, Vector3 } from 'three'
+import { Box3, Vector3, Group, Mesh, MeshBasicMaterial, BufferGeometry, LineSegments, LineBasicMaterial, Plane } from 'three'
 import { describe, expect, it } from 'vitest'
 
 import {
+  setObjectClippingPlane,
   viewerSectionAxisNormal,
   viewerSectionAxisRange,
   viewerSectionOffsetRatio,
@@ -46,5 +47,30 @@ describe('viewer section plane', () => {
     expect(viewerSectionPositionMm(range!, 0.25)).toBe(2.5)
     expect(viewerSectionOffsetRatio(range!, -5)).toBe(-0.5)
     expect(viewerSectionOffsetRatio(range!, 50)).toBe(1)
+  })
+})
+
+
+describe('section clipping for emitter placements', () => {
+  it('clips nested emitter faces and arrows, follows the moving plane, and restores them when disabled', () => {
+    const placements = new Group()
+    const emitter = new Group()
+    const face = new MeshBasicMaterial()
+    const edge = new LineBasicMaterial()
+    emitter.add(new Mesh(new BufferGeometry(), face), new LineSegments(new BufferGeometry(), edge))
+    placements.add(emitter)
+    const plane = new Plane(new Vector3(1, 0, 0), 0)
+    setObjectClippingPlane(placements, plane)
+    expect(face.clippingPlanes?.[0]).toBe(plane)
+    expect(edge.clippingPlanes?.[0]).toBe(plane)
+    plane.constant = -5
+    plane.negate()
+    expect(face.clippingPlanes?.[0].constant).toBe(5)
+    const addedEmitterMaterial = new MeshBasicMaterial()
+    placements.add(new Mesh(new BufferGeometry(), addedEmitterMaterial))
+    setObjectClippingPlane(placements, plane)
+    expect(addedEmitterMaterial.clippingPlanes?.[0]).toBe(plane)
+    setObjectClippingPlane(placements, null)
+    for (const material of [face, edge, addedEmitterMaterial]) expect(material.clippingPlanes).toBeNull()
   })
 })

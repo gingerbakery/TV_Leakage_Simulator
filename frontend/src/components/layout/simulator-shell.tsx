@@ -21,6 +21,7 @@ import {
   loadPortableBundle,
   savePortableProject,
   savePortableWorkspace,
+  chooseWorkspaceSaveTarget,
   type PortableWorkspaceRestore,
   type PortableWorkspaceSaveCase,
 } from '@/features/projects/portable-project'
@@ -623,6 +624,9 @@ export function SimulatorShell() {
       return
     }
 
+    const name = loadedWorkspaceName?.trim() || workspaceProjectName(snapshot.cadCases)
+    const destination = await chooseWorkspaceSaveTarget(name)
+    if (destination.handle === null) return
     const savedAt = new Date()
     const cases: PortableWorkspaceSaveCase[] = []
     for (let index = 0; index < snapshot.cadCases.length; index += 1) {
@@ -673,13 +677,13 @@ export function SimulatorShell() {
       })
     }
 
-    const name = loadedWorkspaceName?.trim() ||
-      workspaceProjectName(snapshot.cadCases)
     const saved = await savePortableWorkspace(
       name,
       snapshot.activeCadCaseId,
       cases,
       setProjectProgress,
+      undefined,
+      destination,
     )
     const activeCase = snapshot.cadCases.find(
       (item) => item.caseId === snapshot.activeCadCaseId,

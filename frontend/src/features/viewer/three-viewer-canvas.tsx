@@ -128,6 +128,7 @@ import {
   cadFaceContextSelection,
 } from './viewer-selection'
 import {
+  setObjectClippingPlane,
   viewerSectionAxisNormal,
   viewerSectionAxisRange,
   viewerSectionOffsetRatio,
@@ -420,28 +421,6 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
   const texture = new CanvasTexture(canvas)
   texture.colorSpace = SRGBColorSpace
   return texture
-}
-
-function setObjectClippingPlane(root: Object3D, plane: Plane | null): void {
-  root.traverse((object) => {
-    const candidate = object as Object3D & {
-      material?: Material | Material[]
-    }
-    if (!candidate.material) return
-    const materials = Array.isArray(candidate.material)
-      ? candidate.material
-      : [candidate.material]
-    for (const material of materials) {
-      const currentPlanes = material.clippingPlanes
-      const alreadyApplied = plane
-        ? currentPlanes?.length === 1 && currentPlanes[0] === plane
-        : !currentPlanes || currentPlanes.length === 0
-      if (alreadyApplied) continue
-      material.clippingPlanes = plane ? [plane] : null
-      material.clipIntersection = false
-      material.needsUpdate = true
-    }
-  })
 }
 
 interface SectionLoop {
@@ -5203,6 +5182,11 @@ export function ThreeViewerCanvas({
     if (runtime.roiPreviewRoot.visible) {
       runtime.pipLastRenderTime = 0
     }
+    // Placement and CAD face overlays are recreated by this effect. Apply the
+    // current shared plane after construction, even when Section itself did not change.
+    for (const root of [runtime.modelRoot, runtime.roiPreviewRoot, runtime.roiSelectionRoot, runtime.placementRoot]) {
+      setObjectClippingPlane(root, sectionView.enabled ? sectionClippingPlaneRef.current : null)
+    }
     onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
   }, [
     deletedComponentIds,
@@ -5247,9 +5231,7 @@ export function ThreeViewerCanvas({
       runtime.roiBoundsMarker,
       runtime.receiverHeatmapRoot,
       runtime.rayPathRoot,
-      ...runtime.placementRoot.children.filter(
-        (object) => object.userData.rayObjectKind === 'receiver',
-      ),
+      runtime.placementRoot,
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
     if (!sectionView.enabled) {

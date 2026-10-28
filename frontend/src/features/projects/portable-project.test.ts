@@ -12,6 +12,7 @@ import {
   loadPortableProject,
   savePortableProject,
   savePortableWorkspace,
+  chooseWorkspaceSaveTarget,
 } from './portable-project'
 
 function fixture() {
@@ -129,6 +130,30 @@ describe('portable BITSAM packages', () => {
       downloaded: false,
       caseCount: 2,
     })
+  })
+
+  it('retains the selected Workspace destination across slow CAD preparation without reopening the picker', async () => {
+    const write = vi.fn(async (_data: Uint8Array) => undefined)
+    const close = vi.fn(async () => undefined)
+    const picker = vi.fn(async () => ({ createWritable: async () => ({ write, close }) }))
+    Object.assign(window, { showSaveFilePicker: picker })
+    const destination = await chooseWorkspaceSaveTarget('TV workspace')
+    picker.mockRejectedValue(new DOMException('activation expired', 'SecurityError'))
+    const { project } = fixture()
+    const client = mockClient()
+    const saved = await savePortableWorkspace('TV workspace', 'case-a', [{
+      caseId: 'case-a', order: 1, visible: true, cadPath: 'case.step', accessoryCads: [], project,
+    }], vi.fn(), client, destination)
+    expect(picker).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledOnce()
+    expect(saved.downloaded).toBe(false)
+  })
+
+  it('reports a blocked picker instead of silently downloading to the default folder', async () => {
+    Object.assign(window, { showSaveFilePicker: vi.fn(async () => { throw new DOMException('blocked', 'SecurityError') }) })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    await expect(chooseWorkspaceSaveTarget('TV workspace')).rejects.toThrow('저장 위치 선택 창')
+    expect(click).not.toHaveBeenCalled()
   })
 
   it('uses a server download when native file writing is unavailable', async () => {

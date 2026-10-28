@@ -168,6 +168,10 @@ interface PackageFileHandle {
   createWritable(): Promise<PackageWritable>
 }
 
+export interface PackageSaveTarget {
+  handle: PackageFileHandle | undefined | null
+}
+
 type PackagePickerWindow = Window & {
   showSaveFilePicker?: (options: {
     suggestedName: string
@@ -201,9 +205,14 @@ async function choosePackageFileHandle(
     if (
       error instanceof DOMException &&
       ['SecurityError', 'NotAllowedError'].includes(error.name)
-    ) return undefined
+    ) throw new BitsamProjectError('저장 위치 선택 창을 열 수 없습니다. 저장 버튼을 다시 누르거나 Chrome/Edge의 로컬 실행 화면에서 저장해 주세요.')
     throw error
   }
+}
+
+/** Call directly from the save gesture, before loading or packaging CAD. */
+export async function chooseWorkspaceSaveTarget(workspaceName: string): Promise<PackageSaveTarget> {
+  return { handle: await choosePackageFileHandle(safeWorkspaceFileName(workspaceName)) }
 }
 
 async function savePreparedPackage(
@@ -276,13 +285,12 @@ export async function savePortableWorkspace(
   cases: PortableWorkspaceSaveCase[],
   onProgress: (message: string) => void,
   client: PortableWorkspaceExportClient = portableClient,
+  destination?: PackageSaveTarget,
 ): Promise<{ cancelled: boolean; downloaded?: boolean; caseCount?: number }> {
   if (cases.length === 0) {
     throw new BitsamProjectError('저장할 Case가 없습니다.')
   }
-  const handle = await choosePackageFileHandle(
-    safeWorkspaceFileName(workspaceName),
-  )
+  const handle = destination ? destination.handle : (await chooseWorkspaceSaveTarget(workspaceName)).handle
   if (handle === null) return { cancelled: true }
   onProgress(`전체 Workspace 패키징 중 · ${cases.length}개 Case`)
   const prepared = await client.exportWorkspace(
