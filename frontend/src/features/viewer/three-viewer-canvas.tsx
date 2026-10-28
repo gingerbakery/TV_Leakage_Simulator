@@ -1,3 +1,4 @@
+import { HelpTooltip } from '@/components/common/help-tooltip'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
@@ -119,7 +120,7 @@ import { emitterSphereDirection } from '@/features/raytracing/emitter-aim'
 import { createRoiCapMaterial } from './roi-cap-material'
 import { roiSurfaceAppearance } from './roi-surface-appearance'
 import { applyFaceDisplayColors, resolveFaceDisplayColors, setDisplayVertexColors } from './face-display-colors'
-import { ViewerTrackballControls } from './viewer-controls'
+import { attachViewerNavigationShortcuts, ViewerTrackballControls } from './viewer-controls'
 import {
   resolveCadFacePick,
   resolveViewerHighlight,
@@ -3733,6 +3734,7 @@ export function ThreeViewerCanvas({
       event.stopPropagation()
     }
 
+    const detachNavigationShortcuts = attachViewerNavigationShortcuts(canvas, controls, () => !pointerInPip)
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
@@ -3764,6 +3766,7 @@ export function ThreeViewerCanvas({
       window.removeEventListener('keydown', handleKeyDown)
       controls.removeEventListener('start', handleControlsStart)
       controls.removeEventListener('end', handleControlsEnd)
+      detachNavigationShortcuts()
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
@@ -5854,7 +5857,7 @@ export function ThreeViewerCanvas({
       ) : null}
       <div
         id="three-viewer-controls"
-        className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur"
+        className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur"
       >
         {roiBoxSelectionArmed
           ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
@@ -5863,6 +5866,11 @@ export function ThreeViewerCanvas({
               ? 'Emitter body mode · Click add · Shift + click remove · Left drag rotate'
               : 'Emitter surface mode · Click/Ctrl drag add · Shift click/drag remove · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
+        <HelpTooltip label="뷰어 단축키 도움말" triggerClassName="pointer-events-auto">
+          마우스 버튼 없이 F1을 누른 채 이동하면 PAN, F2는 ZOOM, F3는 ROTATE입니다.
+          키를 떼면 종료합니다. F4는 현재 방향에서 가장 가까운 기본 뷰로 정렬합니다.
+          기존 마우스 버튼·휠 조작도 사용할 수 있습니다.
+        </HelpTooltip>
       </div>
       {rendererError ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/85 p-6 text-center">

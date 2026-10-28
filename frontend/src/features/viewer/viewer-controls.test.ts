@@ -4,6 +4,7 @@ import { MathUtils, PerspectiveCamera, Vector3 } from 'three'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  attachViewerNavigationShortcuts,
   DEFAULT_VIEWER_PAN_SPEED,
   projectionAwarePanSpeed,
   ViewerTrackballControls,
@@ -140,5 +141,66 @@ describe('projection-aware viewer panning', () => {
     expect(camera.position.equals(before)).toBe(true)
     expect(controls.target.equals(new Vector3())).toBe(true)
     controls.dispose()
+  })
+})
+
+
+describe('held function-key navigation', () => {
+  function setup() {
+    const result = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    const detach = attachViewerNavigationShortcuts(result.canvas, result.controls)
+    const move = (x: number, y: number) => result.canvas.dispatchEvent(new MouseEvent('pointermove', {
+      clientX: x, clientY: y, buttons: 0, bubbles: true,
+    }))
+    result.canvas.dispatchEvent(new MouseEvent('pointerenter', { clientX: 600, clientY: 400 }))
+    const key = (code: string, type = 'keydown') => window.dispatchEvent(new KeyboardEvent(type, { code, key: code, cancelable: true }))
+    return { ...result, move, key, dispose: () => { detach(); result.controls.dispose() } }
+  }
+  it.each(['F1', 'F2', 'F3'])('%s changes the camera without a mouse button and stops on key release', (code) => {
+    const { camera, controls, move, key, dispose } = setup()
+    const before = camera.position.clone()
+    const target = controls.target.clone()
+    key(code)
+    move(650, 450)
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    if (code === 'F1') expect(controls.target.distanceTo(target)).toBeGreaterThan(0)
+    else expect(controls.target).toEqual(target)
+    key(code, 'keyup')
+    const released = camera.position.clone()
+    move(700, 500)
+    expect(camera.position).toEqual(released)
+    dispose()
+  })
+  it('F4 snaps to a principal direction without changing target, distance, or zoom', () => {
+    const { camera, controls, key, dispose } = setup()
+    camera.position.set(10, 20, 100)
+    controls.target.set(2, 3, 4)
+    camera.up.set(0.2, 1, 0.1).normalize()
+    const distance = camera.position.distanceTo(controls.target)
+    const zoom = camera.zoom
+    key('F4')
+    expect(camera.position.clone().sub(controls.target).normalize().toArray()).toEqual([0, 0, 1])
+    expect(camera.up.toArray()).toEqual([0, 1, 0])
+    expect(camera.position.distanceTo(controls.target)).toBeCloseTo(distance)
+    expect(camera.zoom).toBe(zoom)
+    expect(controls.target.toArray()).toEqual([2, 3, 4])
+    dispose()
+  })
+  it('ignores shortcuts during text entry and cancels held navigation on blur', () => {
+    const { camera, move, key, dispose } = setup()
+    const input = document.createElement('input')
+    document.body.append(input)
+    input.focus()
+    const before = camera.position.clone()
+    key('F1'); move(650, 450)
+    expect(camera.position).toEqual(before)
+    input.blur()
+    key('F1'); move(700, 500)
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    window.dispatchEvent(new Event('blur'))
+    const stopped = camera.position.clone()
+    move(750, 550)
+    expect(camera.position).toEqual(stopped)
+    dispose()
   })
 })
