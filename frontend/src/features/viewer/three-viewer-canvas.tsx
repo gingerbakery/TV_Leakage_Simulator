@@ -1,4 +1,5 @@
 import { HelpTooltip } from '@/components/common/help-tooltip'
+import { applyRayObjectOcclusion } from './ray-object-display'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
@@ -4977,7 +4978,7 @@ export function ThreeViewerCanvas({
                 : isEmitterSurfaceDraft
                   ? 0.94
                   : 0.86,
-              depthTest: !isEmitterSurfaceDraft,
+              depthTest: true,
               depthWrite: false,
               polygonOffset: true,
               polygonOffsetFactor: -6,
@@ -5184,6 +5185,11 @@ export function ThreeViewerCanvas({
     }
     if (runtime.roiPreviewRoot.visible) {
       runtime.pipLastRenderTime = 0
+    }
+    applyRayObjectOcclusion(runtime.placementRoot)
+    for (const node of runtime.nodes.values()) {
+      applyRayObjectOcclusion(node.emitterOverlayRoot)
+      if (emitterFaceSelectionArmed) applyRayObjectOcclusion(node.selectionOverlayRoot)
     }
     // Placement and CAD face overlays are recreated by this effect. Apply the
     // current shared plane after construction, even when Section itself did not change.

@@ -86,6 +86,20 @@ describe('RayTracingPanel Aim editing', () => {
     expect(screen.queryByRole('button', { name: 'Save As' })).toBeNull()
   })
 
+  it('Receiver Save As allocates a new ID and labels an unchanged name as a copy', () => {
+    const original = { ...createDatumReceiver('receiver_001', [1, 2, 3], [0, 0, 0]), display_name: 'Original RX' }
+    workspaceStore.getState().actions.upsertReceiver(original)
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Original RX' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save As' }))
+    const receivers = workspaceStore.getState().receivers
+    expect(receivers).toHaveLength(2)
+    expect(receivers[0]).toEqual(original)
+    expect(receivers[1].receiver_id).not.toBe(original.receiver_id)
+    expect(receivers[1].display_name).toBe('Original RX copy')
+    expect(receivers[1].center).toEqual(original.center)
+  })
+
   it.each([
     ['area', 'lambertian'], ['area', 'gaussian'],
     ['sphere', 'lambertian'], ['sphere', 'gaussian'],
