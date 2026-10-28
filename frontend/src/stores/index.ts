@@ -22,6 +22,7 @@ export type {
   CadCase,
   CopySetupTarget,
   CopySetupSection,
+  LinkedSetupSection,
   ComponentTransformRule,
   MaterialAssignment,
   MaterialTargetType,

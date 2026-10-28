@@ -92,10 +92,17 @@ import {
   type CadCase,
   type CopySetupTarget,
   type CopySetupSection,
+  type LinkedSetupSection,
   type WorkspaceSnapshot,
 } from '@/stores'
 
 type ComponentDialogType = 'material' | 'transform' | 'delete'
+
+const copySetupLabels: Record<CopySetupSection, string> = {
+  receivers: 'Receiver', emitters: 'Emitter', runOptions: 'Run option',
+  allowedAreas: 'Allowed', blockers: 'Block', accessoryCads: 'ACC CAD',
+}
+const allCopySetupSections = Object.keys(copySetupLabels) as CopySetupSection[]
 
 const WORKFLOW_SIDEBAR_STORAGE_KEY = 'tv-leakage-workflow-sidebar-width'
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320
@@ -197,7 +204,7 @@ export function SimulatorShell() {
   const [projectFileNotice, setProjectFileNotice] = useState<ProjectFileNotice | null>(null)
   const [copySetupOpen, setCopySetupOpen] = useState(false)
   const [copySetupAll, setCopySetupAll] = useState(true)
-  const [copySetupSections, setCopySetupSections] = useState<CopySetupSection[]>(['receivers', 'emitters', 'runOptions'])
+  const [copySetupSections, setCopySetupSections] = useState<CopySetupSection[]>(allCopySetupSections)
   const [copySetupTargetIds, setCopySetupTargetIds] = useState<string[]>([])
   const [copySetupPending, setCopySetupPending] = useState(false)
   const [copySetupProgress, setCopySetupProgress] = useState('')
@@ -384,6 +391,14 @@ export function SimulatorShell() {
     suppressedCaseJobIdRef.current = targetCase?.latestJobId ?? null
     suppressedCaseRunIdRef.current = targetCase?.latestResult?.run_id ?? null
     setRayTraceResultOpen(false)
+  }, [activeCadCaseId, cadCases])
+
+  useEffect(() => {
+    const active = cadCases.find((item) => item.caseId === activeCadCaseId)
+    if (!active?.leakPreviewState) return
+    if (JSON.stringify(snapshotLeakPreviewProjectState()) !== JSON.stringify(active.leakPreviewState)) {
+      leakPreviewStore.getState().restoreProjectState(active.leakPreviewState)
+    }
   }, [activeCadCaseId, cadCases])
 
   useEffect(() => {
@@ -641,6 +656,11 @@ export function SimulatorShell() {
           ? snapshotLeakPreviewProjectState()
           : item.leakPreviewState,
       )
+      project.case_metadata = {
+        ...project.case_metadata,
+        setup_links: item.setupLinks
+          ? Object.fromEntries(Object.entries(item.setupLinks).filter(([, sourceId]) => sourceId)) : undefined,
+      }
       cases.push({
         caseId: item.caseId,
         order: item.order,
@@ -812,6 +832,18 @@ export function SimulatorShell() {
       }
     }
 
+    // Workspace IDs are regenerated on import; reconnect only sources in this bundle.
+    stagedStore.setState((state) => ({
+      cadCases: state.cadCases.map((item) => {
+        const saved = sortedCases.find((entry) => restoredCaseIds.get(entry.caseId) === item.caseId)
+        const links = saved?.project.case_metadata?.setup_links
+        if (!links) return item
+        return { ...item, setupLinks: Object.fromEntries(Object.entries(links).flatMap(([section, sourceId]) => {
+          const remapped = sourceId ? restoredCaseIds.get(sourceId) : undefined
+          return remapped && remapped !== item.caseId ? [[section, remapped]] : []
+        })) }
+      }),
+    }))
     const visibleRestoredCase = sortedCases.find((item) => item.visible)
     const visibleCaseId = visibleRestoredCase
       ? restoredCaseIds.get(visibleRestoredCase.caseId)
@@ -1083,7 +1115,7 @@ export function SimulatorShell() {
       openFeatureNotice(
         'Copy Setup Complete',
         [
-          `${successful.length}개 Case에 ${copySetupAll ? '전체 설정' : copySetupSections.map((section) => ({ receivers: 'Receiver', emitters: 'Emitter', runOptions: 'Run option' })[section]).join(' · ')} 복사를 완료했습니다.`,
+          `${successful.length}개 Case에 ${copySetupAll ? '전체 설정' : copySetupSections.map((section) => copySetupLabels[section]).join(' · ')} 적용을 완료했습니다. ALLOWED/BLOCK/ACC 선택 항목은 원본과 연결됩니다.`,
           ...(copySetupAll ? [
           `Component 연결: ${matchedComponents}개 일치 / ${unmatchedComponents}개 불일치 제외`,
           `매칭 기준: 이름 ${matchBreakdown.name} / 형상 ${matchBreakdown.geometry} / Component ID ${matchBreakdown.componentId} / 동일 순서 ${matchBreakdown.orderedFallback}`,
@@ -1496,7 +1528,7 @@ export function SimulatorShell() {
           setCopySetupOpen(open)
         }}
         title="Copy Analysis Setup"
-        help="활성 Case에서 선택한 항목을 대상 Case에 복사합니다. 선택 항목의 목록 전체를 교체하고 나머지 설정은 유지합니다. 전체 복사는 Component를 매칭하고 ROI를 재매핑합니다. CAD Face 연결은 복사하지 않으며 Surface Emitter는 대상 Face를 다시 선택해야 합니다."
+        help="활성 Case에서 선택한 항목을 대상 Case에 복사합니다. 선택 항목의 목록 전체를 교체하고 나머지 설정은 유지합니다. 전체 복사는 Component를 매칭하고 ROI를 재매핑합니다. ALLOWED/BLOCK은 원본 좌표로 적용하므로 Case의 원점과 배치가 같아야 합니다. ACC는 재업로드 없이 가져온 파일을 재사용합니다. ALLOWED/BLOCK/ACC는 원본 변경 시 자동 동기화합니다. 대상에서 직접 수정하거나 별도 IMPORT하면 해당 항목만 연결이 해제됩니다. 연결 해제 후에는 현재 값을 유지합니다. CAD Face 연결은 복사하지 않으며 Surface Emitter는 대상 Face를 다시 선택해야 합니다. ACC 목록 변경 시 Preview Source를 다시 선택해야 합니다."
         footer={
           <>
             <Button
@@ -1528,23 +1560,29 @@ export function SimulatorShell() {
                 'Active Case'}
             </div>
           </div>
+          {Object.entries(cadCases.find((item) => item.caseId === activeCadCaseId)?.setupLinks ?? {}).filter(([, sourceId]) => sourceId).map(([section, sourceId]) => (
+            <div key={section} className="flex items-center justify-between gap-2 text-xs">
+              <span>{copySetupLabels[section as LinkedSetupSection]} · {cadCases.find((item) => item.caseId === sourceId)?.name || cadCases.find((item) => item.caseId === sourceId)?.cad.displayName} 연결됨</span>
+              <Button size="sm" variant="outline" disabled={copySetupPending} onClick={() => actions.unlinkCaseSetup(activeCadCaseId!, section as LinkedSetupSection)}>Unlink</Button>
+            </div>
+          ))}
           <fieldset className="space-y-2" disabled={copySetupPending}>
-            <legend className="text-sm font-semibold">Copy items</legend>
+            <legend className="text-sm font-semibold">Copy / Link items</legend>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={copySetupAll} onChange={(event) => setCopySetupAll(event.currentTarget.checked)} />All setup
             </label>
             <div className="flex flex-wrap gap-4">
-              {(['receivers', 'emitters', 'runOptions'] as const).map((section) => <label key={section} className="flex items-center gap-2 text-sm">
+              {allCopySetupSections.map((section) => <label key={section} className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={copySetupAll || copySetupSections.includes(section)}
                   onChange={(event) => {
                     const checked = event.currentTarget.checked
                     setCopySetupAll(false)
                     setCopySetupSections((current) => {
-                      const selected = copySetupAll ? ['receivers', 'emitters', 'runOptions'] as CopySetupSection[] : current
+                      const selected = copySetupAll ? allCopySetupSections : current
                       return checked ? [...new Set([...selected, section])] : selected.filter((item) => item !== section)
                     })
                   }} />
-                {({ receivers: 'Receiver', emitters: 'Emitter', runOptions: 'Run option' })[section]}
+                {copySetupLabels[section]}
               </label>)}
             </div>
           </fieldset>

@@ -40,9 +40,12 @@ export interface CadCase {
   accessoryCads: AccessoryCad[]
   /** Case-owned precision-preview inputs used by Batch and project restore. */
   leakPreviewState?: LeakPreviewProjectState
+  setupLinks?: Partial<Record<LinkedSetupSection, string>>
 }
 
-export type CopySetupSection = 'receivers' | 'emitters' | 'runOptions'
+export type LinkedSetupSection = 'allowedAreas' | 'blockers' | 'accessoryCads'
+const linkedSetupSections: LinkedSetupSection[] = ['allowedAreas', 'blockers', 'accessoryCads']
+export type CopySetupSection = 'receivers' | 'emitters' | 'runOptions' | 'allowedAreas' | 'blockers' | 'accessoryCads'
 
 export interface CopySetupTarget {
   caseId: string
@@ -341,6 +344,7 @@ export interface WorkspaceActions {
   removeCadCaseReceiverResult(caseId: string, receiverId: string): void
   updateCadCaseMetadata(caseId: string, name: string, note: string): void
   copyActiveSetupToCases(targets: Iterable<CopySetupTarget>, sections?: CopySetupSection[]): void
+  unlinkCaseSetup(caseId: string, section: LinkedSetupSection): void
   setSelectedFaceIds(faceIds: Iterable<number>): void
   setFaceSelection(
     faceIds: Iterable<number>,
@@ -1343,8 +1347,83 @@ function createWorkspaceSnapshot(): WorkspaceSnapshot {
   }
 }
 
+function linkedSetupValue(item: CadCase, section: LinkedSetupSection): unknown {
+  if (section === 'accessoryCads') return item.accessoryCads
+  const preview = item.leakPreviewState
+  return section === 'allowedAreas'
+    ? [preview?.ignoreAreas ?? [], preview?.ignoreAreasVisible ?? true]
+    : [preview?.blockers ?? [], preview?.blockersVisible ?? true]
+}
+
+/** Resolve links in the same transaction so analysis never sees stale inputs. */
+function synchronizeCaseSetup(previous: WorkspaceStore, next: WorkspaceStore): WorkspaceStore {
+  if (previous.cadCases === next.cadCases) return next
+  const cases = new Map(next.cadCases.map((item) => [item.caseId, item]))
+  const oldCases = new Map(previous.cadCases.map((item) => [item.caseId, item]))
+  const resolved = new Set<string>()
+  const visiting = new Set<string>()
+  const resolve = (id: string, section: LinkedSetupSection): CadCase => {
+    const key = `${id}:${section}`
+    if (resolved.has(key)) return cases.get(id)!
+    let item = cases.get(id)!
+    visiting.add(key)
+    const old = oldCases.get(id)
+    const sourceId = item.setupLinks?.[section]
+    if (sourceId) {
+      const locallyEdited = old?.setupLinks?.[section] === sourceId &&
+        !sameSerializableValue(linkedSetupValue(old, section), linkedSetupValue(item, section))
+      if (!cases.has(sourceId) || visiting.has(`${sourceId}:${section}`) || locallyEdited) {
+        const setupLinks = { ...item.setupLinks }
+        delete setupLinks[section]
+        item = { ...item, setupLinks }
+      } else {
+        const source = resolve(sourceId, section)
+        if (!sameSerializableValue(linkedSetupValue(source, section), linkedSetupValue(item, section))) {
+          const preview = structuredClone(item.leakPreviewState ?? blankLeakPreviewProjectState())
+          const sourcePreview = source.leakPreviewState ?? blankLeakPreviewProjectState()
+          if (section === 'accessoryCads') {
+            item = { ...item, accessoryCads: structuredClone(source.accessoryCads) }
+            preview.sourceFaceIds = []
+            preview.sourceComponentIds = []
+            preview.sourceBodyFaceCount = 0
+          } else if (section === 'allowedAreas') {
+            preview.ignoreAreas = structuredClone(sourcePreview.ignoreAreas)
+            preview.ignoreAreasVisible = sourcePreview.ignoreAreasVisible
+          } else {
+            preview.blockers = structuredClone(sourcePreview.blockers)
+            preview.blockersVisible = sourcePreview.blockersVisible
+          }
+          item = { ...item, leakPreviewState: preview, latestJobId: null, latestResult: null }
+        }
+      }
+    }
+    visiting.delete(key)
+    resolved.add(key)
+    cases.set(id, item)
+    return item
+  }
+  for (const section of linkedSetupSections) {
+    for (const item of next.cadCases) resolve(item.caseId, section)
+  }
+  const cadCases = next.cadCases.map((item) => cases.get(item.caseId)!)
+  const active = cadCases.find((item) => item.caseId === next.activeCadCaseId)
+  const beforeActive = next.cadCases.find((item) => item.caseId === next.activeCadCaseId)
+  return { ...next, cadCases,
+    ...(active !== beforeActive && active?.latestResult === null
+      ? { activeRayTraceJobId: null, restoredRayTraceResult: null } : {}),
+  }
+}
+
 export function createWorkspaceStore(): WorkspaceStoreApi {
-  return createStore<WorkspaceStore>()((set, get) => ({
+  return createStore<WorkspaceStore>()((rawSet, get) => {
+    const set = (update: Partial<WorkspaceStore> | ((state: WorkspaceStore) => Partial<WorkspaceStore>)) => {
+      rawSet((state) => {
+        const patch = typeof update === 'function' ? update(state) : update
+        if (patch === state) return state
+        return synchronizeCaseSetup(state, { ...state, ...patch })
+      })
+    }
+    return ({
     ...createWorkspaceSnapshot(),
     actions: {
       replaceWorkspaceSnapshot: (snapshot) => {
@@ -1827,6 +1906,16 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...invalidateRayTraceState(state),
         }))
       },
+      unlinkCaseSetup: (caseId, section) => {
+        set((state) => state.singleRayTraceRun || state.batchRayTraceActive ? state : ({
+          cadCases: state.cadCases.map((item) => {
+            if (item.caseId !== caseId || !item.setupLinks?.[section]) return item
+            const setupLinks = { ...item.setupLinks }
+            delete setupLinks[section]
+            return { ...item, setupLinks }
+          }),
+        }))
+      },
       copyActiveSetupToCases: (targets, sections) => {
         if (sections?.length === 0) return
         const targetMappings = new Map(
@@ -1836,8 +1925,11 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ]),
         )
         set((state) => {
-          if (!state.activeCadCaseId || targetMappings.size === 0) return state
+          if (state.singleRayTraceRun || state.batchRayTraceActive || !state.activeCadCaseId || targetMappings.size === 0) return state
           const source = projectStateFromSnapshot(state)
+          const sourceCase = state.cadCases.find((item) => item.caseId === state.activeCadCaseId)!
+          const sourcePreview = sourceCase.leakPreviewState ?? blankLeakPreviewProjectState()
+          const includes = (section: CopySetupSection) => !sections || sections.includes(section)
           return {
             cadCases: state.cadCases.map((item) => {
               const componentIdMap = targetMappings.get(item.caseId)
@@ -1925,9 +2017,36 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 ...(sections.includes('emitters') ? { emitters: copiedState.emitters } : {}),
                 ...(sections.includes('runOptions') ? { rayTraceConfig: copiedState.rayTraceConfig } : {}),
               } : copiedState
+              const accessoriesChanged = includes('accessoryCads') &&
+                !sameSerializableValue(item.accessoryCads, sourceCase.accessoryCads)
+              const targetPreview = structuredClone(item.leakPreviewState ?? blankLeakPreviewProjectState())
+              // A changed composite CAD invalidates target triangle/component IDs.
+              // Coordinate-based constraints survive; source CAD IDs never transfer.
+              if (accessoriesChanged) {
+                targetPreview.sourceFaceIds = []
+                targetPreview.sourceComponentIds = []
+                targetPreview.sourceBodyFaceCount = 0
+              }
+              if (includes('allowedAreas')) {
+                targetPreview.ignoreAreas = structuredClone(sourcePreview.ignoreAreas)
+                targetPreview.ignoreAreasVisible = sourcePreview.ignoreAreasVisible
+              }
+              if (includes('blockers')) {
+                targetPreview.blockers = structuredClone(sourcePreview.blockers)
+                targetPreview.blockersVisible = sourcePreview.blockersVisible
+              }
               return {
                 ...item,
                 workspaceState: selectedState,
+                setupLinks: {
+                  ...item.setupLinks,
+                  ...Object.fromEntries(linkedSetupSections.filter(includes).map((section) => [
+                    section, sourceCase.setupLinks?.[section] === item.caseId
+                      ? undefined : sourceCase.setupLinks?.[section] ?? sourceCase.caseId,
+                  ])),
+                },
+                ...(includes('accessoryCads') ? { accessoryCads: structuredClone(sourceCase.accessoryCads) } : {}),
+                ...(accessoriesChanged || includes('allowedAreas') || includes('blockers') ? { leakPreviewState: targetPreview } : {}),
                 latestJobId: null,
                 latestResult: null,
               }
@@ -2452,7 +2571,8 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         set(createWorkspaceSnapshot())
       },
     },
-  }))
+  })
+  })
 }
 
 export const workspaceStore = createWorkspaceStore()

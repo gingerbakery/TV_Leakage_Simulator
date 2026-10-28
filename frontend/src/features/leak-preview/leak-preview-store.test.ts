@@ -69,11 +69,12 @@ describe('leak preview Allowed Area groups', () => {
     })
   })
 
-  it('keeps constraints across a token refresh and clears them for a new CAD composition', () => {
+  it('keeps coordinate constraints across token refresh and ACC imports while resetting CAD selections', () => {
     const actions = workspaceStore.getState().actions
     actions.addCadCase({ path: 'main.step', displayName: 'main.step' })
     const caseId = workspaceStore.getState().activeCadCaseId!
     leakPreviewStore.getState().ensureScene('scene-old')
+    leakPreviewStore.getState().setSourceFaceIds([7])
     leakPreviewStore.getState().addBlocker({
       id: 'blocker-1', label: 'Main Board', enabled: true,
       baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
@@ -89,9 +90,10 @@ describe('leak preview Allowed Area groups', () => {
       path: 'board.step', displayName: 'board.step',
     })
     leakPreviewStore.getState().ensureScene('scene-composite')
-    expect(leakPreviewStore.getState().blockers).toEqual([])
+    expect(leakPreviewStore.getState().blockers).toHaveLength(1)
+    expect(leakPreviewStore.getState().sourceFaceIds).toEqual([])
     expect(workspaceStore.getState().cadCases[0].leakPreviewState?.blockers)
-      .toEqual([])
+      .toHaveLength(1)
   })
 
   it('tracks blocker drag selection and clears it when the blocker is removed', () => {

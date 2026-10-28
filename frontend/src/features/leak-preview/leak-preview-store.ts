@@ -162,6 +162,10 @@ const store = createStore<LeakPreviewState>()((set, get) => {
         return { sceneToken, sceneIdentity }
       }
       resetPersistentState = true
+      const workspace = workspaceStore.getState()
+      const active = workspace.cadCases.find((item) => item.caseId === workspace.activeCadCaseId)
+      const sameCase = active && state.sceneIdentity?.startsWith(JSON.stringify([active.caseId]).slice(0, -1) + ',')
+      const preserved = sameCase ? active.leakPreviewState : undefined
       return {
           sceneToken,
           sceneIdentity,
@@ -176,13 +180,13 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           points: [],
           candidates: [],
           visualizationVisible: true,
-          ignoreAreasVisible: true,
-          blockersVisible: true,
+          ignoreAreasVisible: preserved?.ignoreAreasVisible ?? true,
+          blockersVisible: preserved?.blockersVisible ?? true,
           selectedCandidateId: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
-          ignoreAreas: [],
-          blockers: [],
+          ignoreAreas: structuredClone(preserved?.ignoreAreas ?? []),
+          blockers: structuredClone(preserved?.blockers ?? []),
           blockerAreaSelectionId: null,
           runSignature: null,
         }

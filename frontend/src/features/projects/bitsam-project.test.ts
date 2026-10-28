@@ -51,6 +51,16 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('round-trips workspace setup links and rejects malformed links', () => {
+    const { project } = createProjectFixture()
+    project.case_metadata = { ...project.case_metadata, setup_links: { blockers: 'source-case', accessoryCads: 'source-case' } }
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.case_metadata?.setup_links).toEqual(project.case_metadata.setup_links)
+    const invalid = JSON.parse(serializeBitsamProject(project))
+    invalid.case_metadata.setup_links = { blockers: 12 }
+    expect(() => parseBitsamProject(JSON.stringify(invalid))).toThrow(BitsamProjectError)
+  })
+
   it('preserves termination units through save/load and keeps legacy lm units', () => {
     const { project } = createProjectFixture()
     const restored = parseBitsamProject(serializeBitsamProject(project))

@@ -9,6 +9,7 @@ import type {
 } from '@/api'
 import type {
   ActiveCad,
+  LinkedSetupSection,
   FaceDisplayColor,
   ComponentTransformRule,
   MaterialAssignment,
@@ -73,7 +74,7 @@ export interface BitsamProject {
   saved_at: string
   project_name: string
   cad: BitsamCadReference
-  case_metadata?: { name?: string; note?: string }
+  case_metadata?: { name?: string; note?: string; setup_links?: Partial<Record<LinkedSetupSection, string>> }
   workspace: WorkspaceProjectState
   /** Case-scoped Leak Preview inputs; runtime preview samples are not saved. */
   leak_preview?: LeakPreviewProjectState
@@ -826,7 +827,11 @@ export function parseBitsamProject(source: string): BitsamProject {
     (parsed.case_metadata !== undefined &&
       (!isRecord(parsed.case_metadata) ||
         (parsed.case_metadata.name !== undefined && !isString(parsed.case_metadata.name)) ||
-        (parsed.case_metadata.note !== undefined && !isString(parsed.case_metadata.note)))) ||
+        (parsed.case_metadata.note !== undefined && !isString(parsed.case_metadata.note)) ||
+        (parsed.case_metadata.setup_links !== undefined &&
+          (!isRecord(parsed.case_metadata.setup_links) || Object.entries(parsed.case_metadata.setup_links).some(
+            ([key, value]) => !['allowedAreas', 'blockers', 'accessoryCads'].includes(key) || !isString(value),
+          ))))) ||
     (parsed.analysis_result !== undefined &&
       parsed.analysis_result !== null &&
       !isSavedRayTraceResult(parsed.analysis_result))

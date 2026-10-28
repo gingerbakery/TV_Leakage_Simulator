@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
 import { createWorkspaceStore, workspaceStore, type MaterialAssignment } from '@/stores'
+import { createDefaultLeakPreviewProjectState } from '@/features/leak-preview/leak-preview-store'
 import { buildRayTraceRequest } from '@/features/raytracing'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -415,6 +416,7 @@ describe('SimulatorShell', () => {
       new Date(),
       result,
     )
+    secondProject.case_metadata = { setup_links: { blockers: 'saved-a' } }
     const load = vi.spyOn(
       portableProjects,
       'loadPortableBundle',
@@ -498,6 +500,14 @@ describe('SimulatorShell', () => {
       expect(restored.activeCad?.path).toBe('restored/b.step')
       expect(restored.rayTraceConfig.ray_count).toBe(34_000)
       expect(restored.restoredRayTraceResult?.run_id).toBe(result.run_id)
+      expect(restored.cadCases[1].setupLinks?.blockers).toBe(restored.cadCases[0].caseId)
+      const sourcePreview = structuredClone(restored.cadCases[0].leakPreviewState ?? createDefaultLeakPreviewProjectState())
+      sourcePreview.blockers = [{ id: 'restored-block', label: 'Restored block', enabled: true,
+        baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+        widthMm: 10, heightMm: 10, offsetMm: 0, depthMm: 1, reverse: false }]
+      act(() => restored.actions.setCadCaseLeakPreviewState(restored.cadCases[0].caseId, sourcePreview))
+      expect(workspaceStore.getState().cadCases[1].leakPreviewState?.blockers).toEqual(sourcePreview.blockers)
+
     } finally {
       load.mockRestore()
     }
@@ -1137,6 +1147,7 @@ describe('SimulatorShell', () => {
     const dialog = screen.getByRole('dialog', { name: 'Copy Analysis Setup' })
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Receiver' }))
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Emitter' }))
+    for (const name of ['Allowed', 'Block', 'ACC CAD']) fireEvent.click(within(dialog).getByRole('checkbox', { name }))
     const targetLabel = within(dialog).getByText('Target').closest('label')!
     fireEvent.click(targetLabel.querySelector('input')!)
     fireEvent.click(screen.getByRole('button', { name: 'Copy to 1 Cases' }))
@@ -1144,6 +1155,30 @@ describe('SimulatorShell', () => {
     expect(getScene).not.toHaveBeenCalled()
     expect(workspaceStore.getState().cadCases.find((item) => item.caseId === targetId)!.workspaceState).toEqual({
       ...before, rayTraceConfig: workspaceStore.getState().rayTraceConfig,
+    })
+    getScene.mockRestore()
+  })
+
+  it('links selected preview items and ACC without reimporting target CAD', async () => {
+    apiHookState.scene = createSceneFixture()
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'link-source.step', displayName: 'Source' })
+    const sourceId = workspaceStore.getState().activeCadCaseId!
+    actions.addAccessoryCad(sourceId, { path: 'once.step', displayName: 'ACC' })
+    actions.addCadCase({ path: 'link-target.step', displayName: 'Target' })
+    const targetId = workspaceStore.getState().activeCadCaseId!
+    actions.setActiveCadCase(sourceId)
+    const getScene = vi.spyOn(apiClient, 'getScene').mockRejectedValue(new Error('No reimport'))
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Setup' }))
+    const dialog = screen.getByRole('dialog', { name: 'Copy Analysis Setup' })
+    for (const name of ['Receiver', 'Emitter', 'Run option']) fireEvent.click(within(dialog).getByRole('checkbox', { name }))
+    fireEvent.click(within(dialog).getByText('Target').closest('label')!.querySelector('input')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to 1 Cases' }))
+    await screen.findByRole('dialog', { name: 'Copy Setup Complete' })
+    expect(getScene).not.toHaveBeenCalled()
+    expect(workspaceStore.getState().cadCases.find((item) => item.caseId === targetId)?.setupLinks).toEqual({
+      allowedAreas: sourceId, blockers: sourceId, accessoryCads: sourceId,
     })
     getScene.mockRestore()
   })

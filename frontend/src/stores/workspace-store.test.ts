@@ -729,6 +729,58 @@ describe('workspace store', () => {
     expect(store.getState().activeCadCaseId).toBe(sourceId)
   })
 
+  it('links preview constraints and ACC to selected Cases, with independent editing and unlink', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'Source' })
+    const sourceId = store.getState().activeCadCaseId!
+    const preview = structuredClone(store.getState().cadCases[0].leakPreviewState!)
+    preview.ignoreAreas = [{ id: 'allowed', label: 'Allowed', enabled: true, regions: [] }]
+    preview.blockers = [{ id: 'block', label: 'Block', enabled: true,
+      baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+      widthMm: 10, heightMm: 10, offsetMm: 0, depthMm: 1, reverse: false }]
+    actions.setCadCaseLeakPreviewState(sourceId, preview)
+    actions.addAccessoryCad(sourceId, { path: 'shared.step', displayName: 'ACC' })
+    actions.addCadCase({ path: 'target.step', displayName: 'Target' })
+    const targetId = store.getState().activeCadCaseId!
+    actions.upsertReceiver(createDatumReceiver('keep-rx', [1, 2, 3], [0, 0, 0]))
+    actions.addCadCase({ path: 'other.step', displayName: 'Other' })
+    const otherId = store.getState().activeCadCaseId!
+    actions.addCadCase({ path: 'untouched.step', displayName: 'Untouched' })
+    const untouchedId = store.getState().activeCadCaseId!
+    actions.setActiveCadCase(sourceId)
+    const getCase = (id: string) => store.getState().cadCases.find((item) => item.caseId === id)!
+    actions.copyActiveSetupToCases([targetId, otherId].map((caseId) => ({ caseId, componentIdMap: {} })), ['allowedAreas', 'blockers', 'accessoryCads'])
+    expect(getCase(targetId).setupLinks).toEqual({ allowedAreas: sourceId, blockers: sourceId, accessoryCads: sourceId })
+    expect(getCase(targetId).workspaceState?.receivers[0].receiver_id).toBe('keep-rx')
+    expect(getCase(targetId).accessoryCads[0].cad.path).toBe('shared.step')
+    expect(getCase(targetId).leakPreviewState?.sourceFaceIds).toEqual([])
+    expect(getCase(untouchedId).accessoryCads).toEqual([])
+    expect(getCase(untouchedId).leakPreviewState?.blockers).toEqual([])
+    actions.setActiveCadCase(targetId)
+    actions.setActiveCadCaseResult(createRayTraceResultFixture())
+    actions.setCadCaseLeakPreviewState(sourceId, { ...preview, blockers: [{ ...preview.blockers[0], widthMm: 25 }] })
+    expect(getCase(targetId).latestResult).toBeNull()
+    expect(getCase(targetId).leakPreviewState?.blockers[0].widthMm).toBe(25)
+    expect(getCase(otherId).leakPreviewState?.blockers[0].widthMm).toBe(25)
+    expect(getCase(targetId).leakPreviewState?.blockers).not.toBe(getCase(sourceId).leakPreviewState?.blockers)
+    actions.setCadCaseLeakPreviewState(targetId, { ...getCase(targetId).leakPreviewState!, ignoreAreas: [] })
+    expect(getCase(targetId).setupLinks?.allowedAreas).toBeUndefined()
+    expect(getCase(targetId).setupLinks?.blockers).toBe(sourceId)
+    actions.addAccessoryCad(targetId, { path: 'own.step', displayName: 'Own ACC' })
+    expect(getCase(targetId).setupLinks?.accessoryCads).toBeUndefined()
+    actions.addAccessoryCad(sourceId, { path: 'new.step', displayName: 'New ACC' })
+    expect(getCase(otherId).accessoryCads.map((item) => item.cad.path)).toEqual(['shared.step', 'new.step'])
+    expect(getCase(targetId).accessoryCads.map((item) => item.cad.path)).toEqual(['shared.step', 'own.step'])
+    actions.unlinkCaseSetup(otherId, 'blockers')
+    actions.setCadCaseLeakPreviewState(sourceId, { ...preview, blockers: [] })
+    expect(getCase(otherId).leakPreviewState?.blockers[0].widthMm).toBe(25)
+    expect(getCase(targetId).leakPreviewState?.blockers).toEqual([])
+    actions.removeCadCase(sourceId)
+    expect(getCase(otherId).setupLinks?.accessoryCads).toBeUndefined()
+    expect(getCase(otherId).accessoryCads).toHaveLength(2)
+  })
+
   it('copies analysis setup while requiring CAD Surface Emitter face reselection', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions
