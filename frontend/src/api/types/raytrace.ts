@@ -31,6 +31,8 @@ export interface EmitterAimSpec {
 }
 
 export interface EmitterSpec {
+  /** Display only; never controls emission or trace input. */
+  visible?: boolean
   emitter_id: string
   /** Optional UI grouping for independently traced LED-face emitters. */
   array_group_id?: string | null
@@ -206,6 +208,8 @@ export interface RayTraceRequest {
   project_name: string
   /** Preview runs may use the already-loaded display tessellation. */
   geometry_mode?: 'precision' | 'preview'
+  analysis_roi?: { face_indices: number[]; clip_boxes: NonNullable<RayTraceRequest['roi_clip_boxes']> }
+  observer_probe?: Omit<import('@/features/leak-preview/leak-preview-model').LeakPreviewObserverSettings, 'enabled'>
   escape_collection?: {
     direction: 'pos_x' | 'neg_x' | 'pos_y' | 'neg_y' | 'pos_z' | 'neg_z'
     minimum: Vec3

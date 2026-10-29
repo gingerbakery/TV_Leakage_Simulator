@@ -11,6 +11,7 @@ import type {
   LeakPreviewDirection,
   LeakPreviewProjectState,
 } from './leak-preview-model'
+import { defaultObserverSettings } from './leak-preview-model'
 import { workspaceStore } from '@/stores/workspace-store'
 
 export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState {
@@ -18,6 +19,7 @@ export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState 
     sourceMode: 'face',
     sourceEmitterIds: [],
     detectionMode: 'escape_directions',
+    observer: { ...defaultObserverSettings },
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
@@ -35,6 +37,7 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
   return structuredClone({
     sourceMode: state.sourceMode,
     detectionMode: state.detectionMode,
+    observer: state.observer,
     sourceEmitterIds: state.sourceEmitterIds,
     sourceFaceIds: state.sourceFaceIds,
     sourceComponentIds: state.sourceComponentIds,
@@ -54,6 +57,7 @@ interface LeakPreviewState {
   sceneIdentity: string | null
   sourceMode: LeakPreviewProjectState['sourceMode']
   detectionMode: 'escape_directions' | 'planar'
+  observer: import('./leak-preview-model').LeakPreviewObserverSettings
   sourceEmitterIds: string[]
   sourceFaceIds: number[]
   sourceComponentIds: number[]
@@ -81,12 +85,14 @@ interface LeakPreviewState {
   setSourceBody(componentIds: number[], faceCount: number): void
   setSourceMode(mode: LeakPreviewProjectState['sourceMode']): void
   setDetectionMode(mode: 'escape_directions' | 'planar'): void
+  setObserver(patch: Partial<LeakPreviewState['observer']>): void
   setQuality(quality: LeakPreviewQuality): void
   toggleDirection(direction: LeakPreviewDirection): void
   setJobId(jobId: string | null): void
   setRunSignature(signature: string | null): void
   setDetection(result: RayTraceResult, points: LeakPreviewPoint[], candidates: LeakPreviewCandidate[]): void
   clearDetection(): void
+  removeCandidate(candidateId: string): void
   setVisualizationVisible(visible: boolean): void
   setIgnoreAreasVisible(visible: boolean): void
   setBlockersVisible(visible: boolean): void
@@ -95,6 +101,7 @@ interface LeakPreviewState {
   finishIgnoreAreaSelection(): void
   addIgnoreAreaRegion(clipBox: LeakPreviewIgnoreArea['regions'][number]): void
   setIgnoreAreaEnabled(areaId: string, enabled: boolean): void
+  setIgnoreAreaVisible(areaId: string, visible: boolean): void
   removeIgnoreArea(areaId: string): void
   addBlocker(blocker: LeakPreviewBlocker): void
   updateBlocker(blockerId: string, patch: Partial<LeakPreviewBlocker>): void
@@ -141,6 +148,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   sceneIdentity: null,
   sourceMode: 'face',
   detectionMode: 'escape_directions',
+  observer: { ...defaultObserverSettings },
   sourceEmitterIds: [],
   sourceFaceIds: [],
   sourceComponentIds: [],
@@ -179,6 +187,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       return {
           sceneToken,
           sceneIdentity,
+          observer: { ...defaultObserverSettings, ...preserved?.observer },
+          detectionMode: 'escape_directions',
           sourceMode: 'face',
           sourceEmitterIds: [],
           sourceFaceIds: [],
@@ -222,6 +232,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   }),
   setSourceMode: (sourceMode) => setAndPersist({ sourceMode }),
   setDetectionMode: (detectionMode) => setAndPersist({ detectionMode }),
+  setObserver: (patch) => setAndPersist((state) => ({ observer: { ...state.observer, ...patch } })),
   setQuality: (quality) => setAndPersist({ quality }),
   toggleDirection: (direction) => setAndPersist({ directions: [direction] }),
   setJobId: (jobId) => set({ jobId }),
@@ -232,6 +243,11 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     candidates,
     visualizationVisible: true,
     selectedCandidateId: candidates[0]?.id ?? null,
+  }),
+  removeCandidate: (candidateId) => set((state) => {
+    const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
+    return { candidates, points: state.points.filter((point) => point.candidateId !== candidateId),
+      selectedCandidateId: state.selectedCandidateId === candidateId ? candidates[0]?.id ?? null : state.selectedCandidateId }
   }),
   clearDetection: () => set({
     jobId: null,
@@ -277,6 +293,9 @@ const store = createStore<LeakPreviewState>()((set, get) => {
         : area,
     ),
   })),
+  setIgnoreAreaVisible: (areaId, visible) => setAndPersist((state) => ({
+    ignoreAreas: state.ignoreAreas.map((area) => area.id === areaId ? { ...area, visible } : area),
+  })),
   setIgnoreAreaEnabled: (areaId, enabled) => setAndPersist((state) => ({
     ignoreAreas: state.ignoreAreas.map((area) =>
       area.id === areaId ? { ...area, enabled } : area,
@@ -314,6 +333,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       ...structuredClone(restored),
       sourceEmitterIds: restored.sourceEmitterIds ?? [],
       detectionMode: restored.detectionMode ?? 'planar',
+      observer: { ...defaultObserverSettings, ...restored.observer },
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,
@@ -329,6 +349,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   },
   clear: () => set({
     detectionMode: 'escape_directions',
+    observer: { ...defaultObserverSettings },
     sceneToken: null,
     sceneIdentity: null,
     sourceMode: 'face',

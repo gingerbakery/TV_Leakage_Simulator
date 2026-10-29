@@ -1088,7 +1088,7 @@ export function buildRayTraceRequest({
   auxiliaryBlockers = [],
   bsdfAssets = [],
 }: RayTraceRequestSource): RayTraceRequest {
-  const enabledEmitters = emitters.filter((emitter) => emitter.enabled)
+  const enabledEmitters = emitters.filter((emitter) => emitter.enabled).map(({ visible: _visible, ...emitter }) => emitter)
   const enabledReceivers = receivers.filter((receiver) => receiver.enabled)
   const totalRayCount = enabledEmitters.reduce(
     (sum, emitter) => sum + Math.max(1, emitter.ray_count),
@@ -1109,7 +1109,11 @@ export function buildRayTraceRequest({
     throw new Error('BSDF 표 계산은 Source sampling을 선택해야 합니다. Receiver MIS는 아직 지원하지 않습니다.')
   }
   const deleted = new Set(deletedComponentIds)
-  const roiFaces = activeRoiFaces(roiScopes, deleted)
+  // Observer-discovered paths can reflect/occlude far outside the local ROI.
+  // Keep the full transport scene instead of silently inventing open paths.
+  const hasObserverRoi = roiScopes.some((scope) => scope.active && scope.observerView)
+  const analysisRoiFaces = activeRoiFaces(roiScopes, deleted)
+  const roiFaces = hasObserverRoi ? [] : analysisRoiFaces
   const roiClipBoxes = activeRoiClipBoxes(roiScopes)
   const {
     auto_convergence: _autoConvergence,
@@ -1151,6 +1155,7 @@ export function buildRayTraceRequest({
         ...deletedComponentIds,
       ]),
     ].sort((left, right) => left - right),
+    ...(analysisRoiFaces.length > 0 ? { analysis_roi: { face_indices: analysisRoiFaces, clip_boxes: roiClipBoxes } } : {}),
     ...(roiFaces.length > 0 ? { roi_faces: roiFaces } : {}),
     ...(roiFaces.length > 0 && roiClipBoxes.length > 0
       ? { roi_clip_boxes: roiClipBoxes }

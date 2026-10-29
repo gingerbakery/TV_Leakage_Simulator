@@ -76,6 +76,34 @@ class EscapeCollectionTests(unittest.TestCase):
         self.assertEqual(s["cells"][0]["position"], [6., 0., -10.])
         self.assertEqual(s["bins"][0]["flux_lumen"], 2.)
 
+    def test_oblique_allowed_hole_is_checked_at_its_plane_not_enclosure(self):
+        region = {"plane": "xy", "xMin": -.5, "xMax": .5, "yMin": -.5, "yMax": .5, "zMin": -2, "zMax": -2}
+        c = collector([region])
+        d = math.sqrt(.5)
+        # Crosses the allowed hole at (0,0,-2), exits enclosure at (8,0,-10).
+        self.assertFalse(c.record((-2, 0, 0), (d, 0, -d), 1., 0))
+        # A neighbouring real leak must not disappear in the old 5 mm padding.
+        self.assertTrue(c.record((1, 0, 0), (0, 0, -1), 1., 0))
+        # Exit projects inside the hole, but the crossing at z=-2 is outside it.
+        self.assertTrue(c.record((-10, 0, 0), (d, 0, -d), 1., 0))
+        self.assertEqual(c.summary()["excluded_count"], 1)
+        self.assertEqual(c.summary()["selected_count"], 2)
+
+    def test_allowed_boundaries_do_not_exclude_ray_behind_or_parallel_to_patch(self):
+        region = {"plane": "xy", "xMin": -1, "xMax": 1, "yMin": -1, "yMax": 1, "zMin": 2, "zMax": 2}
+        self.assertTrue(collector([region]).record((0, 0, 0), (0, 0, -1), 1., 0))
+        self.assertTrue(collector([region]).record((0, 0, 0), (1, 0, 0), 1., 0))
+
+    def test_allowed_side_planes_and_volumes_follow_final_segment(self):
+        for plane, origin, direction, region in (
+            ("yz", (0, 0, 0), (1, 0, 0), {"xMin": 2, "xMax": 2, "yMin": -1, "yMax": 1, "zMin": -1, "zMax": 1}),
+            ("zx", (0, 0, 0), (0, 1, 0), {"xMin": -1, "xMax": 1, "yMin": 2, "yMax": 2, "zMin": -1, "zMax": 1}),
+            ("xyz", (0, 0, 0), (0, 0, -1), {"xMin": -1, "xMax": 1, "yMin": -1, "yMax": 1, "zMin": -3, "zMax": -2}),
+        ):
+            with self.subTest(plane=plane):
+                self.assertFalse(collector([dict(region, plane=plane)]).record(origin, direction, 1., 0))
+                self.assertTrue(collector([dict(region, plane=plane)]).record((5, 5, 5), direction, 1., 0))
+
     def test_bsdf_directional_batch_transport_keeps_tables_and_collects_final_reflections(self):
         from test_bsdf_transport import synthetic_asset, planar_trace_input
         trace = planar_trace_input(synthetic_asset(), rays=128, depth=3)

@@ -1,3 +1,4 @@
+import { clipEmitterDisplayToRoi, emitterPointInRoi } from './emitter-roi-display'
 import { HelpTooltip } from '@/components/common/help-tooltip'
 import { applyRayObjectOcclusion } from './ray-object-display'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -2954,6 +2955,7 @@ export function ThreeViewerCanvas({
         while (object && object !== runtime.placementRoot) {
           const kind = object.userData.rayObjectKind
           const id = object.userData.rayObjectId
+          if (kind === 'emitter' && !emitterPointInRoi(hit.point, object.userData.emitterRoiBoxes ?? [])) break
           if (
             (kind === 'emitter' || kind === 'receiver') &&
             typeof id === 'string' &&
@@ -3700,7 +3702,7 @@ export function ThreeViewerCanvas({
           ? null
           : emittersRef.current.find(
               (emitter) =>
-                emitter.enabled &&
+                emitter.enabled && emitter.visible !== false &&
                 emitter.emitter_type === 'face' &&
                 emitter.face_indices.includes(hit.faceId as number),
             ) ?? null
@@ -3787,7 +3789,7 @@ export function ThreeViewerCanvas({
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
     for (const blocker of leakPreviewBlockersVisible ? leakPreviewBlockers : []) {
-      if (!blocker.enabled) continue
+      if (blocker.visible === false) continue
       const normal = new Vector3(...blocker.normal)
         .normalize()
         .multiplyScalar(blocker.reverse ? -1 : 1)
@@ -3837,7 +3839,7 @@ export function ThreeViewerCanvas({
       runtime.leakPreviewRoot.add(solid, outline)
     }
     for (const area of leakPreviewIgnoreAreasVisible ? leakPreviewIgnoreAreas : []) {
-      if (!area.enabled) continue
+      if (area.visible === false) continue
       for (const [regionIndex, clip] of area.regions.entries()) {
         const sizeX = Math.max(clip.xMax - clip.xMin, markerSize * 0.25)
         const sizeY = Math.max(clip.yMax - clip.yMin, markerSize * 0.25)
@@ -4374,12 +4376,13 @@ export function ThreeViewerCanvas({
       return grouped
     }
 
+    const displayEmitters = emitters.filter((emitter) => emitter.visible !== false)
     const visibleEmitters = placementPreviewEmitter
-      ? [...emitters.filter((emitter) => emitter.emitter_id !== placementPreviewEmitter.emitter_id), placementPreviewEmitter]
-      : emitters
+      ? [...displayEmitters.filter((emitter) => emitter.emitter_id !== placementPreviewEmitter.emitter_id), placementPreviewEmitter]
+      : displayEmitters
     const enabledFaceEmitters = visibleEmitters.filter(
       (emitter) =>
-        emitter.enabled && emitter.emitter_type === 'face',
+        emitter.enabled && emitter.visible !== false && emitter.emitter_type === 'face',
     )
     const enabledBodyEmitters = enabledFaceEmitters.filter(
       (emitter) => (emitter.source_component_ids?.length ?? 0) > 0,
@@ -4436,14 +4439,14 @@ export function ThreeViewerCanvas({
     clearGroup(runtime.placementRoot)
     const basePlacementEmitters = placementPreviewEmitter
       ? [
-          ...emitters.filter(
+          ...displayEmitters.filter(
             (emitter) =>
               emitter.emitter_id !==
               placementPreviewEmitter.emitter_id,
           ),
           placementPreviewEmitter,
         ]
-      : emitters
+      : displayEmitters
     const hasSavedLeakPreviewBodyPlane = emitters.some(
       (emitter) => emitter.reference_mode === 'leak_preview_body_plane',
     )
@@ -4474,6 +4477,7 @@ export function ThreeViewerCanvas({
       ? activeBoxScopes.flatMap((scope) => scope.clipBox ? [scope.clipBox] : [])
       : []
     for (const emitter of placementEmitters) {
+      if (!emitter.enabled || emitter.visible === false) continue
       if (emitter.aim?.enabled) {
         let sourceCenter = emitter.center
         if (emitter.emitter_type === 'face') {
@@ -4522,7 +4526,11 @@ export function ThreeViewerCanvas({
         }
         if (sourceCenter) {
           const aimOverlay = createEmitterAimOverlay(emitter, sourceCenter)
-          if (aimOverlay) runtime.placementRoot.add(aimOverlay)
+          if (aimOverlay) {
+            aimOverlay.userData.rayObjectKind = 'emitter'
+            aimOverlay.userData.rayObjectId = emitter.emitter_id
+            runtime.placementRoot.add(aimOverlay)
+          }
         }
       }
       if (
@@ -5186,6 +5194,9 @@ export function ThreeViewerCanvas({
     }
     if (runtime.roiPreviewRoot.visible) {
       runtime.pipLastRenderTime = 0
+    }
+    for (const object of runtime.placementRoot.children) {
+      if (object.userData.rayObjectKind === 'emitter') clipEmitterDisplayToRoi(object, activePlacementClipBoxes)
     }
     applyRayObjectOcclusion(runtime.placementRoot)
     for (const node of runtime.nodes.values()) {

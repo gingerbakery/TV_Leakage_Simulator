@@ -21,6 +21,25 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('keeps jobs, results and batch identity when an Emitter is hidden', () => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'visibility.step', displayName: 'Visibility' })
+    actions.upsertEmitter(createDatumEmitter('emitter_001', [0,0,0], [0,0,0]))
+    actions.setActiveRayTraceJobId('running')
+    const result = createRayTraceResultFixture()
+    const id = store.getState().activeCadCaseId!
+    const before = snapshotCadCasesForRayTrace(store.getState(), [id])[0].setupHash
+    actions.setEmitterVisible('emitter_001', false)
+    expect(store.getState().emitters[0]).toMatchObject({ enabled: true, visible: false })
+    expect(store.getState().activeRayTraceJobId).toBe('running')
+    actions.setRestoredRayTraceResult(result)
+    const cached = store.getState().restoredRayTraceResult
+    actions.setEmitterVisible('emitter_001', true)
+    expect(store.getState().restoredRayTraceResult).toBe(cached)
+    expect(snapshotCadCasesForRayTrace(store.getState(), [id])[0].setupHash).toBe(before)
+  })
+
   it('shares BSDF and saved materials across all Case lifecycle paths while keeping assignments separate', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

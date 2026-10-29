@@ -159,6 +159,7 @@ export interface RoiScope {
   components: RoiComponentClip[]
   active: boolean
   clipBox?: RoiClipBox
+  observerView?: { horizontalDeg: number; verticalDeg: number; direction: [number, number, number] }
   point?: Vector3Value
 }
 
@@ -168,6 +169,7 @@ export interface RoiScopeInput {
   view: RoiView
   components: RoiComponentClip[]
   clipBox?: RoiClipBox
+  observerView?: { horizontalDeg: number; verticalDeg: number; direction: [number, number, number] }
   point?: Vector3Value
 }
 
@@ -389,6 +391,7 @@ export interface WorkspaceActions {
   upsertEmitter(emitter: EmitterSpec): void
   setEmitterRayCount(rayCount: number): void
   setEmitterEnabled(emitterId: string, enabled: boolean): void
+  setEmitterVisible(emitterId: string, visible: boolean): void
   removeEmitter(emitterId: string): void
   upsertReceiver(receiver: ReceiverSpec): void
   setReceiverEnabled(receiverId: string, enabled: boolean): void
@@ -997,7 +1000,7 @@ export function cadCaseRayTraceSetupHash(
     bsdfAssets: referencedBsdfAssets(normalized),
     transformRules: normalized.transformRules,
     roiScopes: normalized.roiScopes,
-    emitters: normalized.emitters,
+    emitters: normalized.emitters.map(({ visible: _visible, ...emitter }) => emitter),
     receivers: normalized.receivers,
     rayTraceConfig: normalized.rayTraceConfig,
     leakPreviewTraceInputs,
@@ -2272,6 +2275,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 components,
                 active: true,
                 clipBox: normalizeRoiClipBox(scope.clipBox),
+                observerView: scope.observerView ? structuredClone(scope.observerView) : undefined,
                 point: scope.point
                   ? normalizeVector(scope.point)
                   : undefined,
@@ -2378,6 +2382,9 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
           ...invalidateRayTraceState(state),
         }))
       },
+      setEmitterVisible: (emitterId, visible) => set((state) => ({
+        emitters: state.emitters.map((emitter) => emitter.emitter_id === emitterId ? { ...emitter, visible } : emitter),
+      })),
       setEmitterEnabled: (emitterId, enabled) => {
         set((state) => ({
           emitters: state.emitters.map((emitter) =>

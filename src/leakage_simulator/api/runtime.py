@@ -1104,6 +1104,11 @@ class ApiRuntime:
             "excluded_component_ids": excluded,
             "roi_faces": sorted(int(value) for value in request_payload.get("roi_faces", [])),
             "roi_clip_boxes": request_payload.get("roi_clip_boxes", []),
+            "analysis_roi": request_payload.get("analysis_roi"),
+            "roi_emitter_geometry": [{key: item.get(key) for key in (
+                "emitter_id", "emitter_type", "face_indices", "source_component_ids", "center", "u_axis", "v_axis",
+                "width_mm", "height_mm", "surface_construction", "polygon_vertices")}
+                for item in request_payload.get("emitters", [])] if request_payload.get("analysis_roi") or request_payload.get("roi_faces") else [],
             "preserved_emitter_faces": preserved_emitter_faces,
             "preserved_emitter_components": preserved_emitter_components,
             "preview_blockers": request_payload.get("preview_blockers", []),

@@ -186,6 +186,8 @@ class DirectRayTraceInput:
     geometry_cache_hit: bool = False
     bsdf_assets: List[Dict] = field(default_factory=list)
     escape_collection: Optional[Dict] = None
+    observer_probe: Optional[Dict] = None
+    analysis_roi: Optional[Dict] = None
 
 
 @dataclass(slots=True)
@@ -201,6 +203,7 @@ class ReceiverFrame:
     minimum_acceptance_cosine: float
     columns: int
     rows: int
+    roi_boxes: tuple = ()
 
 
 @dataclass(slots=True)
@@ -2155,6 +2158,22 @@ def run_direct_ray_trace(
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
 ) -> RayTraceResult:
+    if trace_input.analysis_roi and trace_input.analysis_roi.get("detection_boxes"):
+        # Keep CUDA BVH intersections, but route Receiver acceptance through
+        # the shared host ROI predicate instead of rectangle-only fused kernels.
+        scalar_roi_reference = intersection_dispatch == "scalar"
+        intersection_dispatch = "scalar" if scalar_roi_reference else "batch"
+        intersection_provider = "gpu_cuda" if trace_input.config.compute_backend == "gpu_cuda" else "python_cpu"
+        wavefront_pipeline = "object_reference" if scalar_roi_reference else "soa_event_tape"
+        wavefront_rng = "per_primary_seeded_v1" if scalar_roi_reference else "counter_rng_v2"
+        wavefront_planner = wavefront_reducer = "python_cpu"
+        wavefront_residency = "host_roundtrip"
+        gpu_accumulator = "host"
+    if trace_input.observer_probe is not None:
+        from .observer_probe import validate_settings
+        validate_settings(trace_input.observer_probe)
+        if trace_input.escape_collection is None:
+            raise ValueError("Observer probing requires escape collection bounds")
     if trace_input.escape_collection is not None:
         if trace_input.config.primary_sampling_strategy != "source" or trace_input.config.bounce_sampling_strategy != "source":
             raise ValueError("Directional escape collection requires Source sampling")
@@ -2372,6 +2391,9 @@ def run_direct_ray_trace(
         commit_policy=wavefront_reducer_commit,
     )
     receiver_frames = [_build_receiver_frame(receiver) for receiver in trace_input.receivers if receiver.enabled]
+    if trace_input.analysis_roi:
+        for frame in receiver_frames:
+            frame.roi_boxes = tuple(trace_input.analysis_roi.get("detection_boxes", []))
     primary_sampling_stats = _PrimarySamplingStats(
         requested_strategy=trace_input.config.primary_sampling_strategy,
         receiver_fraction=trace_input.config.receiver_importance_fraction,
@@ -3311,6 +3333,16 @@ def run_direct_ray_trace(
         metrics["_escape_direction_summary"]["sample_contract"] = (
             "escape_shared_counter_rng_batch_v1" if intersection_dispatch == "batch" else "escape_scalar_reference_v1"
         )
+    if trace_input.observer_probe is not None:
+        if escape_collector is None:
+            raise ValueError("Observer probing requires escape collection bounds")
+        from .observer_probe import trace_observer_paths
+        metrics["_observer_probe_summary"] = trace_observer_paths(
+            trace_input, escape_collector, resolved_optical_by_face, should_stop,
+        )
+        stopped_early = stopped_early or metrics["_observer_probe_summary"]["stopped"]
+    if trace_input.analysis_roi:
+        metrics["_roi_scope_summary"] = trace_input.analysis_roi
     metrics["_optical_summary"] = optical_summary
     metrics["_reflection_summary"] = reflection_summary
     metrics["_termination_summary"] = termination_summary(
@@ -4571,6 +4603,9 @@ def _find_first_receiver_hits_numeric(
             & (v_values <= frame.half_height)
             & (acceptance_cosine >= frame.minimum_acceptance_cosine)
         )
+        if frame.roi_boxes:
+            from .roi_scope import receiver_roi_mask
+            valid &= receiver_roi_mask(np.column_stack((point_x, point_y, point_z)), frame.normal, frame.roi_boxes)
         if not np.any(valid):
             continue
         candidate_indices = candidate_indices[valid]
@@ -7461,7 +7496,7 @@ def _try_fused_cpu_transport(
     intersection_stats, planner_stats, wavefront_summary, bounce_sampling_stats,
     bounce_sampling_enabled,
 ):
-    if intersection_stats.escape_collector is not None:
+    if intersection_stats.escape_collector is not None or any(frame.roi_boxes for frame in receivers):
         return None
     requested_mode = os.environ.get("LEAKAGE_CPU_TRANSPORT", "auto")
     if (
@@ -9901,6 +9936,10 @@ def _find_first_receiver_hit(
         point_x = origin_x + direction_x * t
         point_y = origin_y + direction_y * t
         point_z = origin_z + direction_z * t
+        if frame.roi_boxes:
+            from .roi_scope import receiver_roi_mask
+            if not receiver_roi_mask([(point_x, point_y, point_z)], frame.normal, frame.roi_boxes)[0]:
+                continue
         local_x = point_x - center_x
         local_y = point_y - center_y
         local_z = point_z - center_z

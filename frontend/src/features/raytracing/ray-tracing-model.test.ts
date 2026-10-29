@@ -22,6 +22,22 @@ import {
 } from './ray-tracing-model'
 
 describe('ray tracing model', () => {
+  it('retains the full transport scene for an active observer ROI only', () => {
+    const roi = { id: 'observer-roi', scopeId: 'Observer', source: 'box' as const, view: 'coordinate' as const, active: true,
+      observerView: { horizontalDeg: 85, verticalDeg: 0, direction: [1, 0, 0] as [number, number, number] },
+      clipBox: { plane: 'xyz' as const, xMin: 0, xMax: 1, yMin: 0, yMax: 1, zMin: 0, zMax: 1 },
+      components: [{ componentId: 1, componentName: 'Part', faceIds: [0], areaMm2: 1,
+        bboxMin: { x: 0, y: 0, z: 0 }, bboxMax: { x: 1, y: 1, z: 1 } }] }
+    const options = { scene: createSceneFixture(), projectName: 'Observer', emitters: [createFaceEmitter('led', [0])],
+      receivers: [], materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [],
+      roiScopes: [roi], config: defaultRayTraceConfig }
+    const request = buildRayTraceRequest(options)
+    expect(request.roi_faces).toBeUndefined()
+    expect(request.roi_clip_boxes).toBeUndefined()
+    expect(request.analysis_roi).toEqual({ face_indices: [0], clip_boxes: [{ x_min: 0, x_max: 1, y_min: 0, y_max: 1, z_min: 0, z_max: 1 }] })
+    expect(buildRayTraceRequest({ ...options, roiScopes: [{ ...roi, observerView: undefined }] }).roi_faces).toEqual([0])
+  })
+
   it('weights termination losses across unequal segments and preserves unavailable diagnostics', () => {
     const first = createRayTraceResultFixture()
     const second = createRayTraceResultFixture()

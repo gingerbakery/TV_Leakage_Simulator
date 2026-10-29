@@ -947,6 +947,19 @@ describe('Step 07·08 feature editors', () => {
     expect(workspaceStore.getState().pivotPickArmed).toBe(false)
   })
 
+  it('hides and shows an Emitter independently of its enabled state', () => {
+    const actions = workspaceStore.getState().actions
+    actions.upsertEmitter(createFaceEmitter('emitter_001', [0]))
+    render(<AppProviders><RayTracingPanel scene={createSceneFixture()} cameraFrame={null} /></AppProviders>)
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Emitter 1' }))
+    expect(workspaceStore.getState().emitters[0]).toMatchObject({ enabled: true, visible: false })
+    expect(screen.getByRole('checkbox', { name: 'Enable Emitter 1' })).toHaveProperty('checked', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Show Emitter 1' }))
+    expect(workspaceStore.getState().emitters[0]).toMatchObject({ enabled: true, visible: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Hide All' }))
+    expect(workspaceStore.getState().emitters[0]).toMatchObject({ enabled: true, visible: false })
+  })
+
   it('creates Emitter and Datum Plane Receiver contracts for Step 10', () => {
     render(
       <AppProviders>

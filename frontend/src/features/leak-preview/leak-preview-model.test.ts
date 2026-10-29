@@ -12,6 +12,8 @@ import {
   getLeakPreviewBounds,
   createEscapeEnclosureReceivers,
   escapeDirectionSummary,
+  observerProbeSummary,
+  defaultObserverSettings,
   createCandidateReceiver,
   createLeakPreviewBlockerFromFaces,
   createLeakPreviewReceivers,
@@ -68,6 +70,22 @@ describe('whole-set leak preview', () => {
     expect(request.config).toMatchObject({ compute_backend: 'gpu_cuda', primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
   })
 
+  it('keeps hidden Emitters, Allowed and Blockers in the trace and strips display metadata', () => {
+    const emitter = createDatumEmitter('emitter_001', [0,0,0], [0,0,0])
+    const area = { id: 'allowed', label: 'Allowed', enabled: true, regions: [{ plane: 'xy' as const, xMin: 0, xMax: 1, yMin: 0, yMax: 1 }] }
+    const blocker = { id: 'block', label: 'Block', enabled: true, baseCenter: [0,0,0] as [number,number,number], uAxis: [1,0,0] as [number,number,number], vAxis: [0,1,0] as [number,number,number], normal: [0,0,1] as [number,number,number], widthMm: 1, heightMm: 1, offsetMm: 0, depthMm: 1, reverse: false }
+    const options = { scene: createSceneFixture(), sourceFaceIds: [], quality: 'fast' as const, computeBackend: 'cpu' as const,
+      detectionMode: 'escape_directions' as const, materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [],
+      existingEmitters: [emitter], allowedAreas: [area], blockers: [blocker] }
+    const shown = buildLeakPreviewRequest(options)
+    const hidden = buildLeakPreviewRequest({ ...options, existingEmitters: [{ ...emitter, visible: false }], allowedAreas: [{ ...area, visible: false }], blockers: [{ ...blocker, visible: false }] })
+    expect(hidden).toEqual(shown)
+    expect(hidden.emitters).toHaveLength(1)
+    expect(hidden.emitters[0]).not.toHaveProperty('visible')
+    expect(hidden.escape_collection?.allowed_regions).toHaveLength(1)
+    expect(hidden.preview_blockers).toHaveLength(1)
+  })
+
   it('uses exact all-ray escape positions and extreme-angle bins even when no paths are stored', () => {
     const scene = createSceneFixture()
     const result = createRayTraceResultFixture()
@@ -88,6 +106,73 @@ describe('whole-set leak preview', () => {
     expect(escapeDirectionSummary(result)?.bins[3].count).toBe(1)
     ;(result.metrics._escape_direction_summary as { selected_count: number }).selected_count = 2
     expect(escapeDirectionSummary(result)).toBeNull()
+  })
+
+  it('keeps weak normal escapes and more than eight disconnected directional candidates', () => {
+    const scene = createSceneFixture()
+    const result = createRayTraceResultFixture()
+    result.receivers = createEscapeEnclosureReceivers(scene)
+    const id = result.receivers[0].receiver_id
+    result.receiver_grids = result.receivers.map((receiver, index) => ({ receiver_id: receiver.receiver_id,
+      resolution: [19, 1] as [number, number], bin_area_mm2: 1,
+      flux_lumen: [Array.from({ length: 19 }, (_, column) => index === 0 && column % 2 === 0 ? (column === 0 ? 1 : 1e-8) : 0)],
+      hit_count: index === 0 ? 10 : 0 }))
+    result.stored_paths = []
+    result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+      escaped_count: 10, selected_count: 10, excluded_count: 0,
+      bins: [0, 30, 60, 80].map((min_deg, i) => ({ min_deg, max_deg: [30, 60, 80, 90][i], count: i === 0 ? 10 : 0, flux_lumen: i === 0 ? 1 + 9e-8 : 0 })),
+      cells: Array.from({ length: 10 }, (_, i) => ({ receiver_id: id, row: 0, column: i * 2,
+        position: [i * 1000, 0, 0], count: 1, grazing_count: 0, min_depth: 0, max_depth: 0, angle_sum_deg: 0 })),
+    }
+    expect(escapeDirectionSummary(result)).not.toBeNull()
+    const detection = detectLeakPreviewCandidates(scene, result)
+    expect(detection.points).toHaveLength(10)
+    expect(detection.candidates).toHaveLength(10)
+    expect(detection.candidates.filter((candidate) => candidate.fluxLumen < 1e-7)).toHaveLength(9)
+  })
+
+  it('requests observer sweeps and rejects excessive budgets before starting', () => {
+    const options = { scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast' as const, computeBackend: 'cpu' as const,
+      detectionMode: 'escape_directions' as const, materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [] }
+    const observer = { ...defaultObserverSettings, enabled: true, horizontal_deg: -88.9, vertical_deg: 15 }
+    expect(buildLeakPreviewRequest({ ...options, observer }).observer_probe).toMatchObject({ horizontal_deg: -88.9, vertical_deg: 15 })
+    expect(buildLeakPreviewRequest({ ...options, observer: { ...observer, enabled: false } }).observer_probe).toBeUndefined()
+    expect(() => buildLeakPreviewRequest({ ...options, observer: { ...observer, range_deg: 10, step_deg: .1 } })).toThrow('한도 초과')
+  })
+
+  it('finds observer candidates even when no forward rays hit, without fabricating lumen', () => {
+    const scene = createSceneFixture()
+    const result = createRayTraceResultFixture()
+    result.receivers = createEscapeEnclosureReceivers(scene)
+    result.receiver_grids = result.receivers.map((receiver) => ({ receiver_id: receiver.receiver_id,
+      resolution: [1, 1] as [number, number], bin_area_mm2: 1, flux_lumen: [[0]], hit_count: 0 }))
+    result.metrics._observer_probe_summary = {
+      contract: 'observer_path_support_v1', execution_backend: 'cpu', measure: 'path_support_counts',
+      settings: { ...defaultObserverSettings, resolution: 8 }, attempted_count: 128, planned_count: 128,
+      direct_count: 1, reflected_count: 2, excluded_count: 0, depth_limited_count: 0, complete: true, stopped: false, runtime_sec: .1,
+      views: [{ horizontal_deg: 85, vertical_deg: 20, direction: [Math.sin(85*Math.PI/180), 0, -Math.cos(85*Math.PI/180)], observer_center: [1000,0,-100], u_axis: [0, 1, 0], v_axis: [0, 0, 1], spacing_mm: [1, 1], direct_count: 1, reflected_count: 2 }],
+      cells: [{ view_index: 0, row: 0, column: 0, position: [1, 2, 3], direct_count: 1, reflected_count: 2, min_depth: 0, max_depth: 2 }],
+    }
+    expect(observerProbeSummary(result)).not.toBeNull()
+    const detection = detectLeakPreviewCandidates(scene, result)
+    expect(detection.points).toHaveLength(1)
+    expect(detection.candidates).toHaveLength(1)
+    const receiver = createCandidateReceiver(detection.candidates[0], 1)
+    const observationDirection = detection.candidates[0].observerEvidence!.direction
+    expect(receiver.center).toEqual(detection.candidates[0].observerEvidence!.receiverCenter)
+    expect(receiver.normal).toEqual(observationDirection.map((value) => -value))
+    expect(detection.candidates[0]).toMatchObject({ fluxLumen: 0, peakFluxLumen: 0, sampledPathCount: 3,
+      observerEvidence: { horizontalDeg: 85, verticalDeg: 20, directCount: 1, reflectedCount: 2 } })
+    const probe = result.metrics._observer_probe_summary as Record<string, unknown>
+    probe.execution_backend = 'gpu_cuda'
+    probe.requested_backend = 'gpu_cuda'
+    probe.sample_contract = 'observer_per_ray_seed_batch_v1'
+    probe.performance = { compute_execution_state: 'gpu_requested_cpu_only', gpu_cuda_gpu_success_count: 0 }
+    expect(observerProbeSummary(result)).toBeNull()
+    probe.performance = { compute_execution_state: 'gpu_active', gpu_cuda_gpu_success_count: 2 }
+    expect(observerProbeSummary(result)).not.toBeNull()
+    ;(result.metrics._observer_probe_summary as { reflected_count: number }).reflected_count = 3
+    expect(observerProbeSummary(result)).toBeNull()
   })
 
   it('detects a rear 45-degree path independently of the screen camera', () => {

@@ -9,8 +9,8 @@ OptiX 및 보류한 PERF-5 후보는 포함하지 않았다. 실행 중인 8788 
 다른 개발 worktree, 사용자 CAD/프로젝트는 변경하지 않았다.
 
 자동 검사, 실제 CUDA 확인, 독립 검토 4개 항목이 모두 통과했다. 아래 한계 안에서
-**실사용자 평가용 소스 배포 준비 가능**으로 판단한다. 로컬 커밋까지만 준비하며
-이 작업은 push 또는 서버 교체를 포함하지 않는다.
+**실사용자 평가용 소스 배포 준비 가능**으로 판단했다. 최초 검증은 로컬 커밋
+`ae4347d1`까지였으며, 이후 별도 push 요청에 따른 최신 main 통합 검사는 마지막 절에 기록한다.
 
 추가 main 변경은 방향·각도 기반 Leak Preview, 기존 광원/BSDF Preview,
 연결된 Case의 Accessory/차광·허용 영역 동기화, 저장 대화상자 호출 순서,
@@ -132,3 +132,62 @@ Windows inventory helper의 드라이버 N/A 진단은 실제 nvidia-smi/CIM 정
 확인한다. Git 업데이트 후 기존 실행 프로세스는 그대로이므로, 배포 승인 후
 공식 launcher로 최신 frontend를 빌드하여 재실행해야 한다. Git pull은 이미
 풀어 둔 EXE/ZIP을 갱신하지 않는다.
+
+## 후속 push 요청과 최신 main 병합 검사 2026-10-30
+
+Push 직전 fetch에서 원격 main이 `1b9bbd97612081c8e8faeecb0b61d360bbf28dfb`
+(GPU Observer Preview 및 ROI 해석 범위 적용)로 전진한 것을 확인했다.
+`ae4347d1`과 이 커밋을 일반 merge로 통합했다. 5개 공통 변경 파일은 자동 병합됐고
+텍스트 충돌은 없었다. 타 개발자의 기능과 기존 회귀 수정 모두 유지했다.
+OptiX/보류 실험과 서버 재시작은 여전히 포함하지 않는다.
+
+이번 통합은 메인의 추가 소스 검토 및 재실행 결과이며 앞선 R2 독립 검토가
+새 원격 변경까지 검토했다고 주장하지 않는다. 소스 916개 파일의 실행 전후 hash가
+일치했다. 입력 manifest SHA-256은
+`383a1db7e4390c7df780d2aed63b86a19cc9369f9397d1bd3bf9839fb3da1716`이다.
+초기 manifest의 Git-quoted 한글 문서 경로 누락은 제품 변경 없이 수정했으며
+불완전한 초기 manifest도 로컬에 남겼다.
+
+| 통합 검사 | 결과 |
+| --- | --- |
+| Backend 기존 회귀 + Observer/ROI 추가 모듈 | 203 tests PASS, 0 skip |
+| 전체 frontend | 65 files, 614 tests PASS |
+| TypeScript/production build, lint | PASS; 기존 lint 8 warnings 및 bundle 크기 경고 유지 |
+| 기존 Escape 방향 검증 | 8조건 × first/warm/warm, 24회 PASS |
+| 새 Observer 실제 CUDA 검증 | 17조건 × first/warm/warm, 51회 PASS |
+| ROI crop 실제 CUDA 검증 | Datum/Face/disjoint 3조건 × 3회, 9회 PASS |
+| ROI 없는 일반 RT 보존 | 직광/혼합반사/BSDF × CPU/GPU 6조건에서 ae4347d1과 입력/semantic 결과 exact 일치 |
+
+공식 launcher가 준비한 기존 source 환경을 사용했다. 이번 production preflight도
+RTX 3070에서 네 boolean 모두 true, `production_ray_bvh`,
+`strict_float64_bvh_v1`이었다. GPU Observer는 모든 반복 `gpu_active`,
+CPU hybrid/fallback 0, 비교 차이 0이었다. CUDA 성공/시도는 보통 2/2,
+1회 반사 3/3, 2회 반사 5/5, BSDF-zero 3/3이었다. 각도/Face/좁은 틈/차폐/
+Allowed/앞뒤 발광/반사/BSDF의 양성·음성 조건을 검사했다.
+Observer의 표본 수는 lm/nit가 아니며, CAD 교차만 CUDA이고 수송/BSDF/집계는
+공통 CPU 코드다. 속도 비율은 이번 배포의 통과 조건이나 성능 향상 주장으로 사용하지 않았다.
+
+| 대표 Observer 장면 | first / warm / warm 초 |
+| --- | --- |
+| rear 0 | .102229 / .141539 / .100251 |
+| Face emitter | .098597 / .134290 / .094644 |
+| mirror twice | .205450 / .165167 / .159358 |
+| BSDF | .224494 / .221999 / .263612 |
+
+ROI 검사는 각 8,192 rays, seed 17, depth 3, CPU/GPU 이산 exact 및 float
+상대 1e-9 또는 절대 1e-12를 요구했다. 모든 반복 Receiver 8,192 hits,
+잘린 Datum/Face 4 lm, 겹침을 제거한 disjoint ROI 8 lm로 예상 광량을 보존했다.
+모두 `gpu_active`, CUDA 1/1, hybrid/fallback 0이었다. first/warm/warm은
+Datum .049870/.049748/.046432초, Face .056140/.047360/.048053초,
+disjoint .049810/.047400/.047820초였다.
+
+새 main의 ROI 계약은 광원 절단 면적 비율 및 Receiver 투영 범위를 실제 계산에
+적용한다. 따라서 **기존 ROI 해석값과 달라질 수 있으며**, 이는 원격 커밋의
+의도된 범위 수정이다. ROI에서는 CPU 수광 판정/집계 경로를 사용하므로 기존
+fused GPU 경로와 동일한 속도를 보장하지 않는다. 이번 검사는 합성 조건의
+정확도/실행/호환성 검사이지 실사용 대형 ROI 성능이나 LT 정합 인증은 아니다.
+
+추가 근거는 `outputs/validation/main-release-20261029/push-integration/`의
+`input-manifest.json`, `backend.log`, `frontend.log`, `build.log`, `lint.log`,
+`observer-gpu.json`, `escape-gpu.json`, `roi-gpu.json`, `ordinary-comparison.json`에 있다.
+전체 first/warm 시간, 장치 실행 정보, source hash 및 입력은 해당 JSON에 보존했다.
