@@ -4,6 +4,7 @@ import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls
 import { DEFAULT_CAMERA_FOV_DEGREES } from './viewer-display'
 
 export const DEFAULT_VIEWER_PAN_SPEED = 0.16
+export const KEYBOARD_VIEWER_PAN_SPEED = 0.24
 
 export function projectionAwarePanSpeed(camera: PerspectiveCamera): number {
   return DEFAULT_VIEWER_PAN_SPEED *
@@ -77,7 +78,8 @@ export function attachViewerNavigationShortcuts(
     const up = camera.up.clone().normalize()
     const right = new Vector3().crossVectors(up, eye).normalize()
     if (mode === 'F1') {
-      const speed = camera instanceof PerspectiveCamera ? projectionAwarePanSpeed(camera) : DEFAULT_VIEWER_PAN_SPEED
+      const speed = (camera instanceof PerspectiveCamera ? projectionAwarePanSpeed(camera) : DEFAULT_VIEWER_PAN_SPEED)
+        * (KEYBOARD_VIEWER_PAN_SPEED / DEFAULT_VIEWER_PAN_SPEED)
       const pan = right.multiplyScalar(-dx).addScaledVector(up, dy).multiplyScalar(eye.length() * speed)
       camera.position.add(pan)
       controls.target.add(pan)
