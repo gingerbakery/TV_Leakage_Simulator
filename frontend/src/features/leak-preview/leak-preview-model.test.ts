@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { createEmitterAim } from '@/features/raytracing/emitter-aim'
+import { createBsdfFixture } from '@/test/bsdf-fixture'
+import { createDatumEmitter, createFaceEmitter } from '@/features/raytracing/ray-tracing-model'
 import type { RayTraceResult } from '@/api'
 import { createSceneFixture } from '@/test/scene-fixture'
 
@@ -17,6 +20,38 @@ import {
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
+  it('reuses Ray Tracing face, body and datum emitters while preserving power and aiming settings', () => {
+    const face = { ...createFaceEmitter('emitter_001', [0]), power_lumen: 12, ray_count: 20, normal_flip: true }
+    const body = { ...createFaceEmitter('emitter_002', []), source_component_ids: [1], power_lumen: 8, ray_count: 30 }
+    const datum = { ...createDatumEmitter('emitter_003', [1, 2, 3], [10, 20, 30]), power_lumen: 3,
+      direction_distribution: 'gaussian' as const, gaussian_sigma_deg: 7, ray_count: 50, aim: { ...createEmitterAim([0, 0, 10]), enabled: true } }
+    const emitters = [face, body, datum]
+    const original = structuredClone(emitters)
+    const request = buildLeakPreviewRequest({ scene: createSceneFixture(), sourceFaceIds: [], existingEmitters: emitters,
+      quality: 'fast', computeBackend: 'cpu', materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [] })
+    expect(request.emitters.map((emitter) => emitter.emitter_id)).toEqual(emitters.map((emitter) => emitter.emitter_id))
+    expect(request.emitters.map((emitter) => emitter.ray_count)).toEqual([20000, 30000, 50000])
+    expect(request.emitters[0]).toMatchObject({ power_lumen: 12, normal_flip: true, face_indices: [0] })
+    expect(request.emitters[1]).toMatchObject({ source_component_ids: [1], power_lumen: 8 })
+    expect(request.emitters[2]).toMatchObject({ center: [1, 2, 3], direction_distribution: 'gaussian', gaussian_sigma_deg: 7, power_lumen: 3 })
+    expect(request.emitters[2].aim).toEqual(datum.aim)
+    expect(emitters).toEqual(original)
+  })
+
+  it('preserves BSDF tables and uses CPU Source sampling for Preview only', () => {
+    const asset = createBsdfFixture()
+    asset.transport = { model: 'isotropic_no_shift', wavelengthNm: 550, aoiExtrapolation: 'clamp' }
+    const options = { scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast' as const, computeBackend: 'cpu' as const,
+      materialAssignments: [{ assignmentId: 'bsdf-face', componentId: 1, targetType: 'faces' as const, faceIds: [0],
+        baseMaterialId: 'pc_black', surfaceId: 'matte_black_resin', profileId: '', bsdfAssetId: asset.id, enabled: true }],
+      bsdfAssets: [asset], transformRules: [], excludedComponentIds: [], deletedComponentIds: [] }
+    const request = buildLeakPreviewRequest(options)
+    expect(request.config).toMatchObject({ compute_backend: 'cpu', primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
+    expect(request.bsdf_assets).toEqual([asset])
+    expect(request.optical_profiles.some((profile) => profile.bsdf_asset_id === asset.id)).toBe(true)
+    expect(() => buildLeakPreviewRequest({ ...options, bsdfAssets: [] })).toThrow('BSDF')
+  })
+
   it('builds an isolated two-sided source and six automatic enclosure receivers', () => {
     const scene = createSceneFixture()
     const request = buildLeakPreviewRequest({

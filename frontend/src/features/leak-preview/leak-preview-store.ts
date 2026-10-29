@@ -16,6 +16,7 @@ import { workspaceStore } from '@/stores/workspace-store'
 export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState {
   return {
     sourceMode: 'face',
+    sourceEmitterIds: [],
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
@@ -32,6 +33,7 @@ export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState 
 function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState {
   return structuredClone({
     sourceMode: state.sourceMode,
+    sourceEmitterIds: state.sourceEmitterIds,
     sourceFaceIds: state.sourceFaceIds,
     sourceComponentIds: state.sourceComponentIds,
     sourceBodyFaceCount: state.sourceBodyFaceCount,
@@ -48,7 +50,8 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
 interface LeakPreviewState {
   sceneToken: string | null
   sceneIdentity: string | null
-  sourceMode: 'face' | 'body'
+  sourceMode: LeakPreviewProjectState['sourceMode']
+  sourceEmitterIds: string[]
   sourceFaceIds: number[]
   sourceComponentIds: number[]
   sourceBodyFaceCount: number
@@ -70,9 +73,10 @@ interface LeakPreviewState {
   runSignature: string | null
   ensureScene(sceneToken: string): void
   rebindSceneToken(sceneToken: string): void
+  setSourceEmitters(emitterIds: string[]): void
   setSourceFaceIds(faceIds: number[]): void
   setSourceBody(componentIds: number[], faceCount: number): void
-  setSourceMode(mode: 'face' | 'body'): void
+  setSourceMode(mode: LeakPreviewProjectState['sourceMode']): void
   setQuality(quality: LeakPreviewQuality): void
   toggleDirection(direction: LeakPreviewDirection): void
   setJobId(jobId: string | null): void
@@ -132,6 +136,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   sceneToken: null,
   sceneIdentity: null,
   sourceMode: 'face',
+  sourceEmitterIds: [],
   sourceFaceIds: [],
   sourceComponentIds: [],
   sourceBodyFaceCount: 0,
@@ -170,6 +175,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           sceneToken,
           sceneIdentity,
           sourceMode: 'face',
+          sourceEmitterIds: [],
           sourceFaceIds: [],
           sourceComponentIds: [],
           sourceBodyFaceCount: 0,
@@ -194,14 +200,17 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     if (resetPersistentState) persistActiveCase()
   },
   rebindSceneToken: (sceneToken) => set({ sceneToken }),
+  setSourceEmitters: (emitterIds) => setAndPersist({ sourceMode: 'emitters', sourceEmitterIds: [...new Set(emitterIds)] }),
   setSourceFaceIds: (sourceFaceIds) => setAndPersist({
     sourceMode: 'face',
+    sourceEmitterIds: [],
     sourceFaceIds: [...new Set(sourceFaceIds)],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
   }),
   setSourceBody: (sourceComponentIds, sourceBodyFaceCount) => setAndPersist({
     sourceMode: 'body',
+    sourceEmitterIds: [],
     sourceComponentIds: [...new Set(sourceComponentIds)],
     sourceFaceIds: [],
     sourceBodyFaceCount: Math.max(0, Math.trunc(sourceBodyFaceCount)),
@@ -297,6 +306,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     const restored = projectState ?? createDefaultLeakPreviewProjectState()
     set({
       ...structuredClone(restored),
+      sourceEmitterIds: restored.sourceEmitterIds ?? [],
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,
@@ -314,6 +324,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     sceneToken: null,
     sceneIdentity: null,
     sourceMode: 'face',
+    sourceEmitterIds: [],
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,

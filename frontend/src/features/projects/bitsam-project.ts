@@ -339,7 +339,8 @@ function isLeakPreviewProjectState(
     isFiniteNumber(item.depthMm) &&
     isBoolean(item.reverse)
   return (
-    isOneOf(value.sourceMode, ['face', 'body']) &&
+    isOneOf(value.sourceMode, ['face', 'body', 'emitters']) &&
+    (value.sourceEmitterIds === undefined || isArrayOf(value.sourceEmitterIds, isString)) &&
     isIdArray(value.sourceFaceIds) &&
     isIdArray(value.sourceComponentIds) &&
     isSafeId(value.sourceBodyFaceCount) &&

@@ -8,7 +8,7 @@ import type {
   ScenePayload,
   Vec3,
 } from '@/api'
-import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter } from '@/features/raytracing'
+import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter, distributeIntegerBudget } from '@/features/raytracing/ray-tracing-model'
 import type {
   ComponentTransformRule,
   MaterialAssignment,
@@ -18,6 +18,8 @@ import {
   createLeakPreviewPointTransform,
   getLeakPreviewBounds,
 } from './leak-preview-geometry'
+
+import type { BsdfAsset } from '@/features/materials/bsdf-asset'
 
 export { getLeakPreviewBounds } from './leak-preview-geometry'
 
@@ -64,7 +66,8 @@ export interface LeakPreviewBlocker {
  * they are derived/transient state and must never be replayed as active work.
  */
 export interface LeakPreviewProjectState {
-  sourceMode: 'face' | 'body'
+  sourceMode: 'face' | 'body' | 'emitters'
+  sourceEmitterIds?: string[]
   sourceFaceIds: number[]
   sourceComponentIds: number[]
   sourceBodyFaceCount: number
@@ -120,6 +123,8 @@ export interface BuildLeakPreviewRequestOptions {
   excludedComponentIds: number[]
   deletedComponentIds: number[]
   blockers?: LeakPreviewBlocker[]
+  existingEmitters?: EmitterSpec[]
+  bsdfAssets?: BsdfAsset[]
   directions?: LeakPreviewDirection[]
 }
 
@@ -491,11 +496,11 @@ export function buildLeakPreviewRequest({
   excludedComponentIds,
   deletedComponentIds,
   blockers = [],
+  existingEmitters,
+  bsdfAssets = [],
   directions = allLeakPreviewDirections,
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
-  if (materialAssignments.some((assignment) => assignment.enabled && assignment.bsdfAssetId)) {
-    throw new Error('BSDF 표 계산은 Leak Preview에서 아직 지원하지 않습니다. Ray Tracing에서 CPU / Source sampling으로 실행하세요.')
-  }
+  const hasBsdf = materialAssignments.some((assignment) => assignment.enabled && assignment.bsdfAssetId)
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
     balanced: { rayCount: 500_000, maxDepth: 5 },
@@ -515,7 +520,7 @@ export function buildLeakPreviewRequest({
     termination_mode: 'russian_roulette',
     contribution_mode: 'summary',
     intersection_backend: 'auto',
-    compute_backend: computeBackend,
+    compute_backend: hasBsdf ? 'cpu' : computeBackend,
     // A bounded receiver-path sample lets Preview reconstruct the actual
     // model-envelope exit location rather than drawing every point on the
     // remote virtual detector plane.
@@ -525,15 +530,21 @@ export function buildLeakPreviewRequest({
     // Preview uses the selected exterior envelope as an importance target.
     // The MIS weights preserve energy while spending substantially more
     // samples on weak escape paths in the chosen viewing direction.
-    primary_sampling_strategy: 'receiver_mis',
+    primary_sampling_strategy: hasBsdf ? 'source' : 'receiver_mis',
     receiver_importance_fraction: 0.65,
-    bounce_sampling_strategy: 'receiver_mis',
+    bounce_sampling_strategy: hasBsdf ? 'source' : 'receiver_mis',
     bounce_receiver_importance_fraction: 0.55,
   }
+  const selectedEmitters = existingEmitters?.filter((emitter) => emitter.enabled)
+  if (selectedEmitters && selectedEmitters.length === 0) throw new Error('사용할 Ray Tracing Emitter를 하나 이상 선택하세요.')
+  const rayCounts = selectedEmitters ? distributeIntegerBudget(totalRays, selectedEmitters.map((emitter) => Math.max(1, emitter.ray_count))) : []
   const request = buildRayTraceRequest({
     scene,
+    bsdfAssets,
     projectName: 'Whole Set Leak Preview',
-    emitters: sourceComponentIds.length > 0
+    emitters: selectedEmitters
+      ? selectedEmitters.map((emitter, index) => ({ ...structuredClone(emitter), ray_count: rayCounts[index] }))
+      : sourceComponentIds.length > 0
       ? createLeakPreviewBodyPlaneEmitters(
           scene,
           sourceComponentIds,

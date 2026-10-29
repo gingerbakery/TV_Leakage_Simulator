@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { createDefaultLeakPreviewProjectState } from '@/features/leak-preview/leak-preview-store'
 import { createWorkspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
@@ -51,6 +52,14 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('round-trips selected Ray Tracing emitter IDs for Preview', () => {
+    const { project } = createProjectFixture()
+    project.leak_preview = { ...createDefaultLeakPreviewProjectState(), sourceMode: 'emitters', sourceEmitterIds: ['emitter_001'] }
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.leak_preview?.sourceMode).toBe('emitters')
+    expect(restored.leak_preview?.sourceEmitterIds).toEqual(['emitter_001'])
+  })
+
   it('round-trips workspace setup links and rejects malformed links', () => {
     const { project } = createProjectFixture()
     project.case_metadata = { ...project.case_metadata, setup_links: { blockers: 'source-case', accessoryCads: 'source-case' } }

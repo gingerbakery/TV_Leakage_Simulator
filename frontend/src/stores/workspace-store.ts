@@ -581,6 +581,7 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
 function blankLeakPreviewProjectState(): LeakPreviewProjectState {
   return {
     sourceMode: 'face',
+    sourceEmitterIds: [],
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,

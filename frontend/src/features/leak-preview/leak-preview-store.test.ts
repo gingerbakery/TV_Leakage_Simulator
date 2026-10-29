@@ -1,9 +1,25 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { leakPreviewStore } from './leak-preview-store'
+import { leakPreviewStore, snapshotLeakPreviewProjectState } from './leak-preview-store'
 import { workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
+  it('persists Ray Tracing Emitter selection and restores legacy projects with an empty selection', () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'emitter.step', displayName: 'Emitter' })
+    leakPreviewStore.getState().setSourceEmitters(['emitter_001', 'emitter_002', 'emitter_001'])
+    const saved = snapshotLeakPreviewProjectState()
+    expect(saved.sourceMode).toBe('emitters')
+    expect(saved.sourceEmitterIds).toEqual(['emitter_001', 'emitter_002'])
+    leakPreviewStore.getState().clear()
+    leakPreviewStore.getState().restoreProjectState(saved)
+    expect(leakPreviewStore.getState().sourceEmitterIds).toEqual(saved.sourceEmitterIds)
+    const legacy = { ...saved, sourceMode: 'face' as const }
+    delete legacy.sourceEmitterIds
+    leakPreviewStore.getState().restoreProjectState(legacy)
+    expect(leakPreviewStore.getState().sourceEmitterIds).toEqual([])
+  })
+
   beforeEach(() => {
     workspaceStore.getState().actions.resetWorkspace()
     leakPreviewStore.getState().clear()

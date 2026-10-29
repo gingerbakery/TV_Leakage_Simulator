@@ -10,9 +10,10 @@ import {
   useStartRayTraceMutation,
   useStopRayTraceMutation,
 } from '@/api'
+import { HelpTooltip } from '@/components/common/help-tooltip'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
-import { createFaceEmitter, nextSpecId } from '@/features/raytracing'
+import { createFaceEmitter, nextSpecId, rayObjectDisplayName } from '@/features/raytracing'
 import {
   groupRoiFacesByComponent,
 } from '@/features/roi'
@@ -82,6 +83,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
   const selectedComponentIds = useWorkspaceStore(workspaceSelectors.selectedComponentIds)
+  const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
   const materialAssignments = useWorkspaceStore(workspaceSelectors.materialAssignments)
   const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const excludedComponentIds = useWorkspaceStore(workspaceSelectors.excludedComponentIds)
@@ -93,6 +95,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const rayTraceConfig = useWorkspaceStore(workspaceSelectors.rayTraceConfig)
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const sourceFaceIds = useLeakPreviewStore((state) => state.sourceFaceIds)
+  const sourceEmitterIds = useLeakPreviewStore((state) => state.sourceEmitterIds)
+  const setSourceEmitters = useLeakPreviewStore((state) => state.setSourceEmitters)
   const sourceMode = useLeakPreviewStore((state) => state.sourceMode)
   const sourceComponentIds = useLeakPreviewStore((state) => state.sourceComponentIds)
   const sourceBodyFaceCount = useLeakPreviewStore((state) => state.sourceBodyFaceCount)
@@ -153,9 +157,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
   const isFinalizing = job?.status === 'running' &&
     (job.phase === 'aggregating' || job.phase === 'serializing')
-  const existingEmitterFaces = emitters
-    .filter((emitter) => emitter.enabled && emitter.emitter_type === 'face')
-    .flatMap((emitter) => emitter.face_indices)
+  const availableEmitters = emitters.filter((emitter) => emitter.enabled)
+  const selectedEmitters = availableEmitters.filter((emitter) => sourceEmitterIds.includes(emitter.emitter_id))
+  const hasPreviewSource = sourceMode === 'emitters'
+    ? selectedEmitters.length > 0 && selectedEmitters.length === sourceEmitterIds.length
+    : sourceMode === 'body' ? sourceComponentIds.length > 0 : sourceFaceIds.length > 0
+  const hasBsdf = materialAssignments.some((assignment) => assignment.enabled && assignment.bsdfAssetId)
   const sourceCadFaceCount = useMemo(
     () => cadFaceCount(scene, sourceFaceIds),
     [scene, sourceFaceIds],
@@ -166,9 +173,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     sourceMode,
     sourceComponentIds,
     sourceBodyFaceCount,
+    sourceEmitterIds,
+    existingEmitters: sourceMode === 'emitters' ? selectedEmitters : undefined,
     quality,
     directions,
     materialAssignments,
+    bsdfAssets: bsdfAssets.map((asset) => ({ id: asset.id, transport: asset.transport })),
     transformRules,
     excludedComponentIds,
     deletedComponentIds,
@@ -287,7 +297,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }
 
   const runPreview = async () => {
-    if (!scene || (sourceMode === 'body' ? sourceComponentIds.length === 0 : sourceFaceIds.length === 0)) return
+    if (!scene || !hasPreviewSource) return
     clearDetection()
     handledRunRef.current = null
     setMessage('전체 세트의 외부 유출광을 탐색하고 있습니다.')
@@ -301,6 +311,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           directions,
           computeBackend: rayTraceConfig.compute_backend,
           materialAssignments,
+          bsdfAssets,
+          existingEmitters: sourceMode === 'emitters' ? selectedEmitters : undefined,
           transformRules,
           excludedComponentIds,
           deletedComponentIds,
@@ -455,7 +467,13 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       </div>
 
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
-        <div className="text-sm font-semibold">Preview Light Source</div>
+        <div className="flex items-center gap-1 text-sm font-semibold">Preview Light Source
+          <HelpTooltip label="Preview 광원 도움말">
+            기존 Emitter 사용은 Ray Tracing에 등록된 활성 광원을 선택해 Face·Body·DATUM, 출력, 방향과 Aim을 재사용합니다.
+            Preview의 품질 설정에 맞춰 광선 수만 배분하며 원본 설정은 변경하지 않습니다.
+            CAD Face를 다시 선택하면 기존 선택을 유지하여 추가·해제할 수 있습니다.
+          </HelpTooltip>
+        </div>
         <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/25 p-1">
           {(['face', 'body'] as const).map((mode) => (
             <button
@@ -475,6 +493,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant={pickingTarget === 'source' ? 'default' : 'outline'}
+            disabled={isRunning || sourceMode === 'emitters'}
             onClick={() => {
               if (pickingTarget === 'source') {
                 void finishFaceSelection('source')
@@ -483,33 +502,56 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               finishIgnoreAreaSelection()
               finishBlockerAreaSelection()
               actions.setRoiBoxSelectionArmed(false)
-              actions.setSelectedFaceIds([])
-              actions.setSelectedComponentIds([])
+              if (sourceMode === 'face') {
+                actions.setFaceSelection(sourceFaceIds, [...new Set(sourceFaceIds.flatMap((faceId) => {
+                  const componentId = scene.mesh.face_component_ids[faceId]
+                  return componentId == null ? [] : [componentId]
+                }))])
+                actions.setEmitterSelectionTarget('surface')
+              } else {
+                actions.setSelectedComponentIds(sourceComponentIds)
+              }
               actions.setEmitterFaceSelectionArmed(sourceMode === 'face')
               setPickingTarget('source')
               setMessage(`3D Viewer에서 광원 ${sourceMode === 'face' ? 'CAD Face' : 'Body'}를 선택한 뒤 선택 완료를 누르세요.`)
             }}
           >
             {sourceMode === 'face' ? <LocateFixed /> : <Cuboid />}
-            {pickingTarget === 'source' ? '선택 완료' : `${sourceMode === 'face' ? 'CAD Face' : 'Body'} 선택`}
+            {pickingTarget === 'source' ? '선택 완료' : sourceMode === 'emitters' ? 'CAD 선택' : `${sourceMode === 'face' ? 'CAD Face' : 'Body'} 선택`}
           </Button>
           <Button
-            variant="outline"
-            disabled={existingEmitterFaces.length === 0}
+            disabled={isRunning || availableEmitters.length === 0 || pickingTarget === 'source'}
+            variant={sourceMode === 'emitters' ? 'default' : 'outline'}
             onClick={() => {
-              setSourceFaceIds(existingEmitterFaces)
+              setSourceEmitters(availableEmitters.map((emitter) => emitter.emitter_id))
               clearDetection()
-              setMessage(`기존 Emitter Face ${existingEmitterFaces.length}개를 사용합니다.`)
+              setMessage(`Ray Tracing Emitter ${availableEmitters.length}개를 사용합니다.`)
             }}
           >
             기존 Emitter 사용
           </Button>
         </div>
         <div className="rounded-md bg-muted/45 px-2.5 py-2 text-xs">
-          등록된 광원 {sourceMode === 'body'
+          등록된 광원 {sourceMode === 'emitters'
+            ? <>Emitter <strong>{selectedEmitters.length}</strong>개</>
+            : sourceMode === 'body'
             ? <><strong>Body {sourceComponentIds.length}</strong>개 · 가상 Plane <strong>{sourceComponentIds.length}</strong>개</>
             : <>CAD Face <strong>{sourceCadFaceCount}</strong>개</>}
         </div>
+        {sourceMode === 'emitters' ? <fieldset className="space-y-1" disabled={isRunning}>
+          {availableEmitters.map((emitter) => <label key={emitter.emitter_id} className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={sourceEmitterIds.includes(emitter.emitter_id)}
+              onChange={(event) => setSourceEmitters(event.currentTarget.checked
+                ? [...sourceEmitterIds, emitter.emitter_id]
+                : sourceEmitterIds.filter((id) => id !== emitter.emitter_id))} />
+            {rayObjectDisplayName('emitter', emitter.emitter_id)}
+          </label>)}
+        </fieldset> : null}
+        {sourceMode === 'emitters' && sourceEmitterIds.length > selectedEmitters.length
+          ? <div role="alert" className="text-xs text-amber-700 dark:text-amber-400">삭제·비활성화된 Emitter가 있습니다. 기존 Emitter 사용을 다시 눌러 선택하세요.</div> : null}
+        {hasBsdf ? <div className="flex items-center gap-1 text-xs font-medium">BSDF · CPU / Source sampling
+          <HelpTooltip label="Preview BSDF 계산 도움말">BSDF 재질을 유지하여 CPU와 Source sampling으로 계산합니다. Preview에만 적용되며 Ray Tracing 설정은 변경하지 않습니다. Receiver MIS보다 약한 빛샘 탐색에 더 많은 광선이 필요할 수 있습니다.</HelpTooltip>
+        </div> : null}
       </section>
 
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
@@ -568,7 +610,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <StopCircle /> Preview Stop
           </Button>
         ) : (
-          <Button className="w-full" disabled={sourceMode === 'body' ? sourceComponentIds.length === 0 : sourceFaceIds.length === 0} onClick={() => void runPreview()}>
+          <Button className="w-full" disabled={!hasPreviewSource} onClick={() => void runPreview()}>
             <Play /> Run Leak Preview
           </Button>
         )}
