@@ -788,6 +788,7 @@ class ApiRuntime:
             trusted_sources: list[Path] = []
             trusted_display_names: dict[Path, str] = {}
             response_cases: list[dict[str, Any]] = []
+            shared_accessories: dict[tuple[str, str, str, str], Path] = {}
             for item in validated:
                 case_directory = destination / item["relative_directory"]
                 payload = self._load_portable_scene(case_directory)
@@ -798,6 +799,13 @@ class ApiRuntime:
                 visible_paths: list[Path] = []
                 for accessory in metadata["accessories"]:
                     accessory_path = (destination / accessory["entry"]).resolve()
+                    identity = (
+                        accessory["accessory_id"],
+                        entry_metadata[accessory["entry"]]["sha256"],
+                        accessory_path.suffix.lower(),
+                        accessory["display_name"],
+                    )
+                    accessory_path = shared_accessories.setdefault(identity, accessory_path)
                     accessory_cads.append({
                         "accessoryId": accessory["accessory_id"],
                         "cad": {

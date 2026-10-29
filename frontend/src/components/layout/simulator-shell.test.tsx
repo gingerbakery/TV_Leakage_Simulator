@@ -387,7 +387,7 @@ describe('SimulatorShell', () => {
     }
   })
 
-  it('replaces the current Workspace and restores every Case state', async () => {
+  it.each([false, true])('restores every Case state with linked accessories: %s', async (linkedAccessories) => {
     const scene = createSceneFixture()
     apiHookState.scene = scene
     const existingActions = workspaceStore.getState().actions
@@ -405,7 +405,8 @@ describe('SimulatorShell', () => {
       ...firstStore.getState().rayTraceConfig,
       ray_count: 12_000,
     })
-    const firstProject = createBitsamProject(scene, firstStore.getState())
+    const firstResult = createCompletedRayTraceJobFixture().result!
+    const firstProject = createBitsamProject(scene, firstStore.getState(), new Date(), firstResult)
     const secondStore = createWorkspaceStore()
     secondStore.getState().actions.setActiveCad({
       path: 'b.step',
@@ -422,7 +423,9 @@ describe('SimulatorShell', () => {
       new Date(),
       result,
     )
-    secondProject.case_metadata = { setup_links: { blockers: 'saved-a' } }
+    secondProject.case_metadata = { setup_links: {
+      blockers: 'saved-a', ...(linkedAccessories ? { accessoryCads: 'saved-a' } : {}),
+    } }
     const load = vi.spyOn(
       portableProjects,
       'loadPortableBundle',
@@ -455,7 +458,11 @@ describe('SimulatorShell', () => {
           name: 'Shield',
           note: 'active',
           visible: true,
-          accessoryCads: [],
+          accessoryCads: linkedAccessories ? [{
+            accessoryId: 'saved-hidden-board',
+            cad: { path: 'restored/board.step', displayName: 'Board.step' },
+            visible: false,
+          }] : [],
           project: secondProject,
           scene,
           cad: { path: 'restored/b.step', displayName: 'b.step' },
@@ -507,6 +514,16 @@ describe('SimulatorShell', () => {
       expect(restored.rayTraceConfig.ray_count).toBe(34_000)
       expect(restored.restoredRayTraceResult?.run_id).toBe(result.run_id)
       expect(restored.cadCases[1].setupLinks?.blockers).toBe(restored.cadCases[0].caseId)
+      expect(restored.cadCases[0].latestResult).toEqual(firstResult)
+      expect(restored.cadCases[1].latestResult).toEqual(result)
+      if (linkedAccessories) {
+        expect(restored.cadCases[1].accessoryCads).toEqual(restored.cadCases[0].accessoryCads)
+        expect(restored.cadCases[1].setupLinks?.accessoryCads).toBe(restored.cadCases[0].caseId)
+        act(() => restored.actions.setActiveCadCase(restored.cadCases[0].caseId))
+        expect(workspaceStore.getState().cadCases[0].latestResult).toEqual(firstResult)
+        act(() => restored.actions.setActiveCadCase(restored.cadCases[1].caseId))
+        expect(workspaceStore.getState().cadCases[1].latestResult).toEqual(result)
+      }
       const sourcePreview = structuredClone(restored.cadCases[0].leakPreviewState ?? createDefaultLeakPreviewProjectState())
       sourcePreview.blockers = [{ id: 'restored-block', label: 'Restored block', enabled: true,
         baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],

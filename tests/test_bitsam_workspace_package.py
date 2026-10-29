@@ -237,6 +237,38 @@ class BitsamWorkspacePackageTests(unittest.TestCase):
                 "shield-cad",
             )
 
+    def test_linked_accessories_restore_shared_identity_and_cached_results(self) -> None:
+        source, target = self.request["cases"]
+        source["accessory_paths"] = copy.deepcopy(target["accessory_paths"])
+        source["project"] = project_fixture("case-one", face_count=4, vertex_count=8, component_count=2)
+        source["project"]["analysis_result"] = {"summary": {"receiver_hits": 13}}
+        target["project"]["case_metadata"] = {"setup_links": {"accessoryCads": "case-1"}}
+        package = self.exported_path()
+        loader = Mock(side_effect=AssertionError("restored linked CAD must use combined cache"))
+        runtime = ApiRuntime(self.root / "linked-restore", scene_loader=loader)
+        restored = runtime.import_project(package)
+        first, second = restored["cases"]
+        self.assertEqual(first["accessory_cads"], second["accessory_cads"])
+        for original, actual in zip(self.request["cases"], restored["cases"]):
+            self.assertEqual(actual["project"], original["project"])
+            payload = runtime.load_composite_scene([
+                actual["cad"]["path"], first["accessory_cads"][0]["cad"]["path"],
+            ])
+            self.assertEqual(payload["metadata"]["component_count"], 2)
+        loader.assert_not_called()
+
+    def test_same_accessory_id_and_name_do_not_alias_different_content(self) -> None:
+        source, target = self.request["cases"]
+        source["accessory_paths"] = copy.deepcopy(target["accessory_paths"])
+        source["accessory_paths"][0]["path"] = self.first_path
+        source["project"] = project_fixture("case-one", face_count=4, vertex_count=8, component_count=2)
+        runtime = ApiRuntime(self.root / "different-restore", scene_loader=scene_fixture)
+        first, second = runtime.import_project(self.exported_path())["cases"]
+        first_path = Path(first["accessory_cads"][0]["cad"]["path"])
+        second_path = Path(second["accessory_cads"][0]["cad"]["path"])
+        self.assertNotEqual(first_path, second_path)
+        self.assertNotEqual(first_path.read_bytes(), second_path.read_bytes())
+
     def test_hidden_accessory_is_preserved_and_can_be_enabled_after_restore(self) -> None:
         request = copy.deepcopy(self.request)
         request["active_case_id"] = "case-2"

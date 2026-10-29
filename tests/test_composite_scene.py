@@ -1,10 +1,11 @@
+from pathlib import Path
+import tempfile
+import unittest
+
 from leakage_simulator.composite_scene import merge_scene_payloads
 from leakage_simulator.api import ApiRuntime
 from leakage_simulator.geometry import TriangleMesh
 from leakage_simulator.roi import _FaceSourceIds, _MeshMaterialIds, _TriangleFaceRows
-
-import pytest
-
 
 def _scene(name: str, component_id: int, x: float) -> dict:
     mesh = {
@@ -35,7 +36,7 @@ def _scene(name: str, component_id: int, x: float) -> dict:
     }
 
 
-def test_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity():
+def _assert_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity():
     merged, component_maps, source_offsets = merge_scene_payloads(
         [_scene("Main", 7, 0), _scene("Board", 7, 10)],
         ["main.step", "power-board.step"],
@@ -53,8 +54,7 @@ def test_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity(
     assert source_offsets == [0, 1]
 
 
-@pytest.mark.parametrize("deferred", [False, True])
-def test_accessory_import_with_live_mesh_sequences(tmp_path, deferred):
+def _assert_accessory_import_with_live_mesh_sequences(tmp_path, deferred):
     payloads = []
     trace_calls = []
 
@@ -94,3 +94,13 @@ def test_accessory_import_with_live_mesh_sequences(tmp_path, deferred):
     assert list(payloads[0]["mesh"]["faces"]) == [(0, 1, 2)]
     combined["components"][0]["face_indices"].append(99)
     assert payloads[0]["components"][0]["face_indices"] == [0]
+
+
+class CompositeSceneTests(unittest.TestCase):
+    def test_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity(self):
+        _assert_merge_scene_payloads_offsets_geometry_and_preserves_accessory_identity()
+
+    def test_accessory_import_with_live_mesh_sequences(self):
+        for deferred in (False, True):
+            with self.subTest(deferred=deferred), tempfile.TemporaryDirectory() as directory:
+                _assert_accessory_import_with_live_mesh_sequences(Path(directory), deferred)

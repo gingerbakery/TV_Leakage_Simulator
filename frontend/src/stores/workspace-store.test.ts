@@ -758,6 +758,7 @@ describe('workspace store', () => {
     expect(getCase(untouchedId).accessoryCads).toEqual([])
     expect(getCase(untouchedId).leakPreviewState?.blockers).toEqual([])
     actions.setActiveCadCase(targetId)
+    actions.setRayTraceConfig({ ...store.getState().rayTraceConfig, apply_preview_blockers: true })
     actions.setActiveCadCaseResult(createRayTraceResultFixture())
     actions.setCadCaseLeakPreviewState(sourceId, { ...preview, blockers: [{ ...preview.blockers[0], widthMm: 25 }] })
     expect(getCase(targetId).latestResult).toBeNull()
@@ -779,6 +780,45 @@ describe('workspace store', () => {
     actions.removeCadCase(sourceId)
     expect(getCase(otherId).setupLinks?.accessoryCads).toBeUndefined()
     expect(getCase(otherId).accessoryCads).toHaveLength(2)
+  })
+
+  it.each([[true, true], [false, true], [true, false], [false, false]])(
+    'keeps linked display-only results, active: %s, enabled: %s', (activeTarget, constraintsEnabled) => {
+    const store = createWorkspaceStore()
+    const actions = store.getState().actions
+    actions.addCadCase({ path: 'source.step', displayName: 'Source' })
+    const sourceId = store.getState().activeCadCaseId!
+    const preview = structuredClone(store.getState().cadCases[0].leakPreviewState!)
+    preview.blockers = [{ id: 'block', label: 'Block', enabled: true,
+      baseCenter: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], normal: [0, 0, 1],
+      widthMm: 10, heightMm: 10, offsetMm: 0, depthMm: 1, reverse: false }]
+    preview.ignoreAreas = [{ id: 'allowed', label: 'Allowed', enabled: true, regions: [] }]
+    actions.setCadCaseLeakPreviewState(sourceId, preview)
+    actions.addCadCase({ path: 'target.step', displayName: 'Target' })
+    const targetId = store.getState().activeCadCaseId!
+    actions.setRayTraceConfig({ ...store.getState().rayTraceConfig,
+      apply_preview_blockers: constraintsEnabled, apply_allowed_areas: constraintsEnabled })
+    actions.setActiveCadCase(sourceId)
+    actions.copyActiveSetupToCases([{ caseId: targetId, componentIdMap: {} }], ['blockers', 'allowedAreas'])
+    actions.setActiveCadCase(targetId)
+    const result = createRayTraceResultFixture()
+    actions.setActiveCadCaseResult(result)
+    if (!activeTarget) actions.setActiveCadCase(sourceId)
+    const getTarget = () => store.getState().cadCases.find((item) => item.caseId === targetId)!
+    const before = snapshotCadCasesForRayTrace(store.getState(), [targetId])[0].setupHash
+    actions.setCadCaseLeakPreviewState(sourceId, { ...preview, blockersVisible: false, ignoreAreasVisible: false })
+    expect(getTarget().latestResult).toEqual(result)
+    expect(getTarget().setupLinks).toEqual({ blockers: sourceId, allowedAreas: sourceId })
+    expect(getTarget().leakPreviewState?.blockersVisible).toBe(false)
+    expect(snapshotCadCasesForRayTrace(store.getState(), [targetId])[0].setupHash).toBe(before)
+    actions.setCadCaseLeakPreviewState(sourceId, { ...preview, blockers: [{ ...preview.blockers[0], widthMm: 25 }] })
+    if (constraintsEnabled) {
+      expect(getTarget().latestResult).toBeNull()
+      expect(snapshotCadCasesForRayTrace(store.getState(), [targetId])[0].setupHash).not.toBe(before)
+    } else {
+      expect(getTarget().latestResult).toEqual(result)
+      expect(snapshotCadCasesForRayTrace(store.getState(), [targetId])[0].setupHash).toBe(before)
+    }
   })
 
   it('copies analysis setup while requiring CAD Surface Emitter face reselection', () => {

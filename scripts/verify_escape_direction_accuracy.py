@@ -18,7 +18,7 @@ from leakage_simulator.raytracer import DirectRayTraceInput, run_direct_ray_trac
 from leakage_simulator.types import EmitterSpec, ReceiverSpec, OpticalProfile, RayTraceConfig
 
 
-def build_case(angle, rays, backend, reflected=False, face=False, bsdf=False):
+def build_case(angle, rays, backend, reflected=False, face=False, bsdf=False, boundary=False):
     mesh = TriangleMesh()
     points = ((-40,-40,0), (-39,-40,0), (-40,-39,0))
     ids = [mesh.add_vertex(p) for p in points]
@@ -32,9 +32,13 @@ def build_case(angle, rays, backend, reflected=False, face=False, bsdf=False):
         u_axis=(math.cos(a),0,math.sin(a)), v_axis=(0,-1,0), width_mm=.1, height_mm=.1,
         direction_distribution="gaussian", gaussian_sigma_deg=.1, ray_count=rays, power_lumen=1., seed=20261029)
     if face:
-        ids = [mesh.add_vertex(p) for p in ((-.5,-.5,0),(-.5,.5,0),(.5,.5,0),(.5,-.5,0))]
+        height = -50. if boundary else 0.
+        ids = [mesh.add_vertex(p) for p in ((-.5,-.5,height),(-.5,.5,height),(.5,.5,height),(.5,-.5,height))]
         source.face_indices = [mesh.add_face(ids[0],ids[1],ids[2],"default"),mesh.add_face(ids[0],ids[2],ids[3],"default")]
         source.emitter_type = "face"
+    if boundary:
+        source.center = (0., 0., -50.)
+        source.direction_distribution = "lambertian"
     detectors = []
     for axis, name in enumerate("xyz"):
         for sign, prefix in ((1,"pos_"),(-1,"neg_")):
@@ -75,11 +79,11 @@ def compare(left, right, path=""):
     return [] if left==right else [path]
 
 
-def verify_case(name, angle, rays, reflected=False, face=False, bsdf=False):
-    cpu = run_direct_ray_trace(build_case(angle,rays,"cpu",reflected,face,bsdf))
+def verify_case(name, angle, rays, reflected=False, face=False, bsdf=False, boundary=False):
+    cpu = run_direct_ray_trace(build_case(angle,rays,"cpu",reflected,face,bsdf,boundary))
     reference = cpu.metrics["_escape_direction_summary"]
     runs = []
-    gpu_trace = build_case(angle,rays,"gpu_cuda",reflected,face,bsdf)
+    gpu_trace = build_case(angle,rays,"gpu_cuda",reflected,face,bsdf,boundary)
     for repeat in range(3):
         started = time.perf_counter()
         gpu = run_direct_ray_trace(gpu_trace)
@@ -99,13 +103,19 @@ def verify_case(name, angle, rays, reflected=False, face=False, bsdf=False):
             for s in (reference, actual)
         )
         contract = reference.get("sample_contract")==actual.get("sample_contract")=="escape_shared_counter_rng_batch_v1"
+        boundary_conservation = not boundary or all(
+            summary["selected_count"] == rays and math.isclose(
+                sum(bin["flux_lumen"] for bin in summary["bins"]), 1., rel_tol=1e-9, abs_tol=1e-12,
+            ) for summary in (reference, actual)
+        )
         keys = ("compute_execution_state","compute_execution_reason","gpu_cuda_device_name","gpu_cuda_gpu_attempt_count",
             "gpu_cuda_gpu_success_count","gpu_cuda_hybrid_cpu_success_count","intersection_fallback_count","intersection_fallback_reason")
         runs.append({"run":repeat+1,"kind":"first" if repeat==0 else "warm","wall_sec":elapsed,
             "gpu_execution_proven":proven,"sample_contract_valid":contract,"count_integrity":integrity,"difference_count":len(issues),
             "differences":issues[:20],"execution":{key:perf.get(key) for key in keys},
             "selected_count":actual["selected_count"],"bins":actual["bins"],
-            "passed":not issues and proven and contract and integrity and actual["selected_count"]>=30})
+            "boundary_conservation":boundary_conservation,
+            "passed":not issues and proven and contract and integrity and boundary_conservation and actual["selected_count"]>=30})
     return {"name":name,"emitter_types":["face" if face else "datum_plane"],"rays":rays,"cpu_runtime_sec":cpu.runtime_sec,
         "cpu_bins":reference["bins"],"runs":runs,"passed":all(run["passed"] for run in runs)}
 
@@ -126,7 +136,8 @@ def main():
         "preflight_passed":ready,"cases":[],"passed":False}
     if ready:
         report["cases"]=[verify_case("rear_0",0,args.rays),verify_case("rear_45",45,args.rays),
-            verify_case("rear_extreme_89_9",89.9,args.rays),verify_case("reflected",0,args.rays,True),verify_case("face_source",0,args.rays,face=True),verify_case("bsdf_reflected",0,args.rays,True,bsdf=True)]
+            verify_case("rear_extreme_89_9",89.9,args.rays),verify_case("reflected",0,args.rays,True),verify_case("face_source",0,args.rays,face=True),verify_case("bsdf_reflected",0,args.rays,True,bsdf=True),
+            verify_case("boundary_datum",0,args.rays,boundary=True),verify_case("boundary_face",0,args.rays,face=True,boundary=True)]
         report["passed"]=all(case["passed"] for case in report["cases"])
     payload=json.dumps(report,ensure_ascii=False,indent=2)
     if args.json_out:

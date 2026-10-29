@@ -44,6 +44,9 @@ class EscapeCollector:
         self.total_flux = self.excluded_flux = 0.0
 
     def _exit(self, origin, direction):
+        if all(self.minimum[axis] - self.tolerance <= origin[axis] <= self.maximum[axis] + self.tolerance
+               for axis in range(3)):
+            origin = [max(self.minimum[axis], min(self.maximum[axis], origin[axis])) for axis in range(3)]
         enter, leave = -math.inf, math.inf
         face_axis, face_sign = 0, 1
         for i in range(3):

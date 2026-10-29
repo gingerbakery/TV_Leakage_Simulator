@@ -1364,6 +1364,7 @@ function synchronizeCaseSetup(previous: WorkspaceStore, next: WorkspaceStore): W
   const oldCases = new Map(previous.cadCases.map((item) => [item.caseId, item]))
   const resolved = new Set<string>()
   const visiting = new Set<string>()
+  const invalidated = new Set<string>()
   const resolve = (id: string, section: LinkedSetupSection): CadCase => {
     const key = `${id}:${section}`
     if (resolved.has(key)) return cases.get(id)!
@@ -1381,13 +1382,17 @@ function synchronizeCaseSetup(previous: WorkspaceStore, next: WorkspaceStore): W
       } else {
         const source = resolve(sourceId, section)
         if (!sameSerializableValue(linkedSetupValue(source, section), linkedSetupValue(item, section))) {
+          const before = item
+          const workspaceState = effectiveCadCaseProjectState(next, item)
           const preview = structuredClone(item.leakPreviewState ?? blankLeakPreviewProjectState())
           const sourcePreview = source.leakPreviewState ?? blankLeakPreviewProjectState()
           if (section === 'accessoryCads') {
             item = { ...item, accessoryCads: structuredClone(source.accessoryCads) }
-            preview.sourceFaceIds = []
-            preview.sourceComponentIds = []
-            preview.sourceBodyFaceCount = 0
+            if (!sameSerializableValue(cadCaseRayTraceSourcePaths(before), cadCaseRayTraceSourcePaths(item))) {
+              preview.sourceFaceIds = []
+              preview.sourceComponentIds = []
+              preview.sourceBodyFaceCount = 0
+            }
           } else if (section === 'allowedAreas') {
             preview.ignoreAreas = structuredClone(sourcePreview.ignoreAreas)
             preview.ignoreAreasVisible = sourcePreview.ignoreAreasVisible
@@ -1395,7 +1400,16 @@ function synchronizeCaseSetup(previous: WorkspaceStore, next: WorkspaceStore): W
             preview.blockers = structuredClone(sourcePreview.blockers)
             preview.blockersVisible = sourcePreview.blockersVisible
           }
-          item = { ...item, leakPreviewState: preview, latestJobId: null, latestResult: null }
+          const traceInputsChanged =
+            !sameSerializableValue(cadCaseRayTraceSourcePaths(before), cadCaseRayTraceSourcePaths(item)) ||
+            !sameSerializableValue(
+              effectiveLeakPreviewTraceInputs(before.leakPreviewState, workspaceState.rayTraceConfig),
+              effectiveLeakPreviewTraceInputs(preview, workspaceState.rayTraceConfig),
+            )
+          if (traceInputsChanged) invalidated.add(id)
+          item = { ...item, leakPreviewState: preview,
+            ...(traceInputsChanged ? { latestJobId: null, latestResult: null } : {}),
+          }
         }
       }
     }
@@ -1408,10 +1422,8 @@ function synchronizeCaseSetup(previous: WorkspaceStore, next: WorkspaceStore): W
     for (const item of next.cadCases) resolve(item.caseId, section)
   }
   const cadCases = next.cadCases.map((item) => cases.get(item.caseId)!)
-  const active = cadCases.find((item) => item.caseId === next.activeCadCaseId)
-  const beforeActive = next.cadCases.find((item) => item.caseId === next.activeCadCaseId)
   return { ...next, cadCases,
-    ...(active !== beforeActive && active?.latestResult === null
+    ...(next.activeCadCaseId && invalidated.has(next.activeCadCaseId)
       ? { activeRayTraceJobId: null, restoredRayTraceResult: null } : {}),
   }
 }

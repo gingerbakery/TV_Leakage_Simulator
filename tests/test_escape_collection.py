@@ -32,6 +32,28 @@ def collector(regions=None):
 
 
 class EscapeCollectionTests(unittest.TestCase):
+    def test_boundary_normal_offset_preserves_grazing_escapes_on_every_axis(self):
+        for axis in range(3):
+            for sign in (-1, 1):
+                for angle in (0, 60, 80, 89.9, 90):
+                    with self.subTest(axis=axis, sign=sign, angle=angle):
+                        detectors = receivers()
+                        direction_name = ("pos_" if sign > 0 else "neg_") + "xyz"[axis]
+                        subject = EscapeCollector({"minimum": [-10.] * 3, "maximum": [10.] * 3,
+                            "direction": direction_name}, detectors,
+                            {detector.receiver_id: ReceiverGrid.empty(detector) for detector in detectors},
+                            epsilon_mm=.001)
+                        origin, direction = [0.] * 3, [0.] * 3
+                        origin[axis] = sign * 10.001
+                        direction[axis] = sign * math.cos(math.radians(angle))
+                        direction[(axis + 1) % 3] = math.sin(math.radians(angle))
+                        self.assertTrue(subject.record(origin, direction, .25, 0))
+                        self.assertEqual(subject.summary()["selected_count"], 1)
+                        self.assertAlmostEqual(subject.summary()["escaped_flux_lumen"], .25)
+                        origin[axis] = sign * 10.01
+                        self.assertFalse(subject.record(origin, direction, .25, 0))
+                        self.assertEqual(subject.summary()["escaped_count"], 1)
+
     def test_all_extreme_angles_including_exact_90_reach_direction_bins(self):
         c = collector()
         for angle in (0, 29, 30, 59, 60, 79, 80, 89.9, 90):
