@@ -17,11 +17,12 @@ export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState 
   return {
     sourceMode: 'face',
     sourceEmitterIds: [],
+    detectionMode: 'escape_directions',
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
     quality: 'balanced',
-    directions: ['pos_z'],
+    directions: ['neg_z'],
     visualizationVisible: true,
     ignoreAreasVisible: true,
     blockersVisible: true,
@@ -33,6 +34,7 @@ export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState 
 function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState {
   return structuredClone({
     sourceMode: state.sourceMode,
+    detectionMode: state.detectionMode,
     sourceEmitterIds: state.sourceEmitterIds,
     sourceFaceIds: state.sourceFaceIds,
     sourceComponentIds: state.sourceComponentIds,
@@ -51,6 +53,7 @@ interface LeakPreviewState {
   sceneToken: string | null
   sceneIdentity: string | null
   sourceMode: LeakPreviewProjectState['sourceMode']
+  detectionMode: 'escape_directions' | 'planar'
   sourceEmitterIds: string[]
   sourceFaceIds: number[]
   sourceComponentIds: number[]
@@ -77,6 +80,7 @@ interface LeakPreviewState {
   setSourceFaceIds(faceIds: number[]): void
   setSourceBody(componentIds: number[], faceCount: number): void
   setSourceMode(mode: LeakPreviewProjectState['sourceMode']): void
+  setDetectionMode(mode: 'escape_directions' | 'planar'): void
   setQuality(quality: LeakPreviewQuality): void
   toggleDirection(direction: LeakPreviewDirection): void
   setJobId(jobId: string | null): void
@@ -136,12 +140,13 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   sceneToken: null,
   sceneIdentity: null,
   sourceMode: 'face',
+  detectionMode: 'escape_directions',
   sourceEmitterIds: [],
   sourceFaceIds: [],
   sourceComponentIds: [],
   sourceBodyFaceCount: 0,
   quality: 'balanced',
-  directions: ['pos_z'],
+  directions: ['neg_z'],
   jobId: null,
   result: null,
   points: [],
@@ -180,7 +185,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           sourceComponentIds: [],
           sourceBodyFaceCount: 0,
           quality: 'balanced',
-          directions: ['pos_z'],
+          directions: ['neg_z'],
           jobId: null,
           result: null,
           points: [],
@@ -216,6 +221,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     sourceBodyFaceCount: Math.max(0, Math.trunc(sourceBodyFaceCount)),
   }),
   setSourceMode: (sourceMode) => setAndPersist({ sourceMode }),
+  setDetectionMode: (detectionMode) => setAndPersist({ detectionMode }),
   setQuality: (quality) => setAndPersist({ quality }),
   toggleDirection: (direction) => setAndPersist({ directions: [direction] }),
   setJobId: (jobId) => set({ jobId }),
@@ -307,6 +313,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     set({
       ...structuredClone(restored),
       sourceEmitterIds: restored.sourceEmitterIds ?? [],
+      detectionMode: restored.detectionMode ?? 'planar',
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,
@@ -321,6 +328,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     })
   },
   clear: () => set({
+    detectionMode: 'escape_directions',
     sceneToken: null,
     sceneIdentity: null,
     sourceMode: 'face',
@@ -329,7 +337,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
     quality: 'balanced',
-    directions: ['pos_z'],
+    directions: ['neg_z'],
     jobId: null,
     result: null,
     points: [],

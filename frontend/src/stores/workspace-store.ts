@@ -581,12 +581,13 @@ export const defaultRayTraceConfig: RayTraceConfigRequest = {
 function blankLeakPreviewProjectState(): LeakPreviewProjectState {
   return {
     sourceMode: 'face',
+    detectionMode: 'escape_directions',
     sourceEmitterIds: [],
     sourceFaceIds: [],
     sourceComponentIds: [],
     sourceBodyFaceCount: 0,
     quality: 'balanced',
-    directions: ['pos_z'],
+    directions: ['neg_z'],
     visualizationVisible: true,
     ignoreAreasVisible: true,
     blockersVisible: true,

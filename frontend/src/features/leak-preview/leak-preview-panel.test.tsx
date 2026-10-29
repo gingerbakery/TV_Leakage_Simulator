@@ -3,22 +3,25 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
+import { act } from '@testing-library/react'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
+import { createLeakPreviewReceivers } from './leak-preview-model'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
 import { leakPreviewStore } from './leak-preview-store'
 import { LeakPreviewPanel } from './leak-preview-panel'
 
-const mocks = vi.hoisted(() => ({ start: vi.fn() }))
+const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown }))
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api')
   return { ...actual,
     useStartRayTraceMutation: () => ({ mutateAsync: mocks.start, isPending: false }),
     useStopRayTraceMutation: () => ({ mutateAsync: vi.fn(), isPending: false }),
-    useRayTraceJobQuery: () => ({ data: undefined }),
+    useRayTraceJobQuery: () => ({ data: mocks.job }),
   }
 })
-afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset() })
+afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined })
 
 it('enables Ray Tracing datum emitters and starts a BSDF Preview using CPU Source without changing the original', async () => {
   const actions = workspaceStore.getState().actions
@@ -36,7 +39,7 @@ it('enables Ray Tracing datum emitters and starts a BSDF Preview using CPU Sourc
   const existing = screen.getByRole('button', { name: '기존 Emitter 사용' }) as HTMLButtonElement
   expect(existing.disabled).toBe(false)
   fireEvent.click(existing)
-  expect(screen.getByText('BSDF · CPU / Source sampling')).toBeTruthy()
+  expect((screen.getByLabelText('Preview 검출 방식') as HTMLSelectElement).selectedOptions[0].textContent).toContain('Source sampling')
   fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
   const request = mocks.start.mock.calls[0][0].request
@@ -54,4 +57,58 @@ it('keeps earlier CAD source faces selected when reopening the selection', () =>
   render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
   fireEvent.click(screen.getByRole('button', { name: 'CAD Face 선택' }))
   expect(workspaceStore.getState().selectedFaceIds).toEqual([0, 1])
+})
+
+
+it('invalidates old Preview results after Allowed Area changes and includes the regions in the next request', async () => {
+  leakPreviewStore.getState().setDetectionMode('planar')
+  const actions = workspaceStore.getState().actions
+  actions.addCadCase({ path: 'allowed.step', displayName: 'Allowed' })
+  actions.upsertEmitter(createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0]))
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'preview-test' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button', { name: '기존 Emitter 사용' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
+  const result = createRayTraceResultFixture()
+  const receiver = createLeakPreviewReceivers(scene, [], ['pos_z'])[0]
+  result.receivers = [receiver]
+  result.receiver_grids = [{ receiver_id: receiver.receiver_id, resolution: [1, 1], flux_lumen: [[1]], bin_area_mm2: 1, hit_count: 1 }]
+  result.stored_paths = []
+  mocks.job = { job_id: 'preview-test', status: 'completed', phase: 'completed', result }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  await waitFor(() => expect(leakPreviewStore.getState().candidates.length).toBeGreaterThan(0))
+  act(() => {
+    leakPreviewStore.getState().beginIgnoreAreaSelection()
+    leakPreviewStore.getState().addIgnoreAreaRegion({ plane: 'xy', xMin: 1000, xMax: 1001, yMin: 1000, yMax: 1001, zMin: 0, zMax: 20 })
+    leakPreviewStore.getState().finishIgnoreAreaSelection()
+  })
+  expect(leakPreviewStore.getState().candidates).toEqual([])
+  expect(screen.getByText('Preview 재실행 필요')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledTimes(2))
+  expect(mocks.start.mock.calls[1][0].request.preview_blockers).toHaveLength(2)
+})
+
+
+it('shows extreme-angle counts and reports CPU fallback instead of implying GPU execution', () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'direction.step', displayName: 'Direction' })
+  const scene = createSceneFixture()
+  const result = createRayTraceResultFixture()
+  const receiver = createLeakPreviewReceivers(scene, [], ['neg_z'])[0]
+  result.config.compute_backend = 'gpu_cuda'
+  result.receivers = [receiver]
+  result.receiver_grids = [{ receiver_id: receiver.receiver_id, resolution: [1, 1], flux_lumen: [[1]], bin_area_mm2: 1, hit_count: 37 }]
+  result.metrics._performance_summary = { compute_execution_state: 'gpu_requested_cpu_only', gpu_cuda_gpu_success_count: 0 }
+  result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count: 37, selected_count: 37, excluded_count: 0,
+    bins: [0,30,60,80].map((min_deg, i) => ({ min_deg, max_deg: [30,60,80,90][i], count: [1,2,3,31][i], flux_lumen: .25 })),
+    cells: [{ receiver_id: receiver.receiver_id, row: 0, column: 0, position: receiver.center,
+      count: 37, grazing_count: 34, min_depth: 0, max_depth: 1, angle_sum_deg: 3000 }] }
+  leakPreviewStore.getState().setDetection(result, [], [])
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  expect(screen.getByText('80–90°')).toBeTruthy()
+  expect(screen.getByText('31')).toBeTruthy()
+  expect(screen.getByRole('alert').textContent).toContain('CPU 대체 실행')
 })

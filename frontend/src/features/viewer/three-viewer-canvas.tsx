@@ -2676,7 +2676,8 @@ export function ThreeViewerCanvas({
           camera,
         )
         const point = boxRaycaster.ray.intersectPlane(projectionPlane, new Vector3())
-        if (point) points.push([point.x, point.y, point.z])
+        if (!point) return null
+        points.push([point.x, point.y, point.z])
       }
       return resizeLeakPreviewBlockerOnFace(blocker, points)
     }

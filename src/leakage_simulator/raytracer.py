@@ -185,6 +185,7 @@ class DirectRayTraceInput:
     optical_assignments: List[OpticalAssignment] = field(default_factory=list)
     geometry_cache_hit: bool = False
     bsdf_assets: List[Dict] = field(default_factory=list)
+    escape_collection: Optional[Dict] = None
 
 
 @dataclass(slots=True)
@@ -314,6 +315,7 @@ class _MultiBounceWavefrontRay:
 class _IntersectionDispatchStats:
     intersection_backend: str = "auto"
     requested_provider: str = "auto"
+    escape_collector: Optional[object] = field(default=None, repr=False)
     scalar_query_count: int = 0
     reference_scalar_query_count: int = 0
     batch_count: int = 0
@@ -2153,6 +2155,23 @@ def run_direct_ray_trace(
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
 ) -> RayTraceResult:
+    if trace_input.escape_collection is not None:
+        if trace_input.config.primary_sampling_strategy != "source" or trace_input.config.bounce_sampling_strategy != "source":
+            raise ValueError("Directional escape collection requires Source sampling")
+        scalar_reference = intersection_dispatch == "scalar"
+        if scalar_reference and trace_input.config.compute_backend != "cpu":
+            raise ValueError("Scalar escape reference requires CPU")
+        if not scalar_reference and intersection_batch_size is None:
+            intersection_batch_size = 8192
+        intersection_dispatch = "scalar" if scalar_reference else "batch"
+        intersection_provider = "gpu_cuda" if trace_input.config.compute_backend == "gpu_cuda" else "python_cpu"
+        wavefront_pipeline = "object_reference" if scalar_reference else "soa_event_tape"
+        wavefront_planner = wavefront_reducer = "python_cpu"
+        wavefront_rng = "per_primary_seeded_v1" if scalar_reference else "counter_rng_v2"
+        wavefront_reducer_commit = "per_tape"
+        # The existing CUDA BVH accelerates intersections; transport and exact
+        # escape reductions share the host implementation for CPU/GPU parity.
+        wavefront_residency = "host_roundtrip"
     bound_profiles, bsdf_models = bind_bsdf_profiles(
         trace_input.optical_profiles, trace_input.bsdf_assets, trace_input.config,
     )
@@ -2376,6 +2395,12 @@ def run_direct_ray_trace(
         for receiver in trace_input.receivers
         if receiver.enabled
     }
+    escape_collector = None
+    if trace_input.escape_collection is not None:
+        from .escape_collection import EscapeCollector
+        escape_collector = EscapeCollector(trace_input.escape_collection, trace_input.receivers, receiver_grids, trace_input.config.epsilon_mm)
+        intersection_stats.escape_collector = escape_collector
+        receiver_frames = []  # Do not terminate transport at an envelope's first crossing.
     stored_paths: List[List[RayHit]] = []
     total_rays = 0
     fast_primary_ray_count = 0
@@ -2962,7 +2987,7 @@ def run_direct_ray_trace(
             previous_lobe: Optional[str] = None
             path_events: List[RayHit] = [emitter_event] if emitter_event is not None else []
 
-            if trace_input.config.max_depth <= 1:
+            if trace_input.config.max_depth <= 1 and escape_collector is None:
                 fast_receiver_hits, fast_surface_hits, fast_terminated = _trace_single_bounce_fast(
                     trace_input.mesh,
                     origin,
@@ -3061,7 +3086,13 @@ def run_direct_ray_trace(
                                 trace_input.config.max_stored_paths,
                             )
                     else:
-                        terminated_ray_count += 1
+                        collected_escape = escape_collector is not None and escape_collector.record(
+                            current_origin, current_direction, current_power, current_depth,
+                        )
+                        if collected_escape:
+                            receiver_hit_count += 1
+                        else:
+                            terminated_ray_count += 1
                         if current_depth > 0:
                             _record_reflection_outcome(
                                 reflection_summary,
@@ -3275,6 +3306,11 @@ def run_direct_ray_trace(
         total_rays,
         [receiver for receiver in trace_input.receivers if receiver.enabled],
     )
+    if escape_collector is not None:
+        metrics["_escape_direction_summary"] = escape_collector.summary()
+        metrics["_escape_direction_summary"]["sample_contract"] = (
+            "escape_shared_counter_rng_batch_v1" if intersection_dispatch == "batch" else "escape_scalar_reference_v1"
+        )
     metrics["_optical_summary"] = optical_summary
     metrics["_reflection_summary"] = reflection_summary
     metrics["_termination_summary"] = termination_summary(
@@ -7425,6 +7461,8 @@ def _try_fused_cpu_transport(
     intersection_stats, planner_stats, wavefront_summary, bounce_sampling_stats,
     bounce_sampling_enabled,
 ):
+    if intersection_stats.escape_collector is not None:
+        return None
     requested_mode = os.environ.get("LEAKAGE_CPU_TRANSPORT", "auto")
     if (
         requested_mode not in {"auto", "fused"}
@@ -7583,6 +7621,8 @@ def _trace_multi_bounce_wavefront_soa_batch(
     bounce_sampling_stats: _BounceSamplingStats,
     bounce_sampling_enabled: bool,
 ) -> Tuple[int, int, int]:
+    escape_collector = intersection_stats.escape_collector
+    escape_start = escape_collector.selected_count if escape_collector is not None else 0
     ray_count = len(origins)
     if ray_count == 0:
         return 0, 0, 0
@@ -8073,6 +8113,9 @@ def _trace_multi_bounce_wavefront_soa_batch(
                 incoming_power_lumen=active.powers_lumen[receiver_rows],
             )
         if len(escaped_rows):
+            if escape_collector is not None:
+                for row in escaped_rows:
+                    escape_collector.record(active.origins[row], active.directions[row], float(active.powers_lumen[row]), depth)
             tape_builder.set_nonreceiver_terminals(
                 primary_slots=active.primary_slots[escaped_rows],
                 terminal_kind=TAPE_TERMINAL_ESCAPED,
@@ -8117,7 +8160,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
     tape_seal_started = time.perf_counter()
     tape = tape_builder.seal()
     tape_seal_elapsed = time.perf_counter() - tape_seal_started
-    return _commit_wavefront_event_tape(
+    counts = _commit_wavefront_event_tape(
         tape, mesh, config, receivers, receiver_grids, optical_summary,
         reflection_summary, contribution_summary, face_contribution_cache,
         resolved_optical_by_face, detailed_contributions, stored_paths,
@@ -8125,6 +8168,10 @@ def _trace_multi_bounce_wavefront_soa_batch(
         tape_builder.validation_mode, tape_builder.validation_sec,
         tape_builder.copy_bytes, "builder_owned_materialization_v1",
     )
+    if escape_collector is not None:
+        accepted = escape_collector.selected_count - escape_start
+        counts = (counts[0] + accepted, counts[1], counts[2] - accepted)
+    return counts
 
 
 def _commit_wavefront_event_tape(

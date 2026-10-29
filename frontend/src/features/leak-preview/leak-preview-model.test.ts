@@ -4,10 +4,14 @@ import { createEmitterAim } from '@/features/raytracing/emitter-aim'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { createDatumEmitter, createFaceEmitter } from '@/features/raytracing/ray-tracing-model'
 import type { RayTraceResult } from '@/api'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
   buildLeakPreviewRequest,
+  getLeakPreviewBounds,
+  createEscapeEnclosureReceivers,
+  escapeDirectionSummary,
   createCandidateReceiver,
   createLeakPreviewBlockerFromFaces,
   createLeakPreviewReceivers,
@@ -50,6 +54,81 @@ describe('whole-set leak preview', () => {
     expect(request.bsdf_assets).toEqual([asset])
     expect(request.optical_profiles.some((profile) => profile.bsdf_asset_id === asset.id)).toBe(true)
     expect(() => buildLeakPreviewRequest({ ...options, bsdfAssets: [] })).toThrow('BSDF')
+  })
+
+  it('requests full final-escape collection with the requested compute device and no physical Allowed blockers', () => {
+    const request = buildLeakPreviewRequest({ scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast', computeBackend: 'gpu_cuda',
+      detectionMode: 'escape_directions', directions: ['neg_z'], materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [],
+      allowedAreas: [{ id: 'hole', label: 'Hole', enabled: true, regions: [{ plane: 'xy', xMin: 1, xMax: 2, yMin: 1, yMax: 2 }] }],
+    })
+    expect(request.escape_collection?.direction).toBe('neg_z')
+    expect(request.escape_collection?.allowed_regions).toHaveLength(1)
+    expect(request.preview_blockers).toEqual([])
+    expect(request.receivers).toHaveLength(6)
+    expect(request.config).toMatchObject({ compute_backend: 'gpu_cuda', primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
+  })
+
+  it('uses exact all-ray escape positions and extreme-angle bins even when no paths are stored', () => {
+    const scene = createSceneFixture()
+    const result = createRayTraceResultFixture()
+    result.receivers = createEscapeEnclosureReceivers(scene)
+    result.receiver_grids = result.receivers.map((receiver, index) => ({ receiver_id: receiver.receiver_id,
+      resolution: [1, 1] as [number, number], bin_area_mm2: 1, flux_lumen: [[index === 0 ? 1 : 0]], hit_count: index === 0 ? 1 : 0 }))
+    result.stored_paths = []
+    const position = result.receivers[0].center
+    result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+      escaped_count: 1, selected_count: 1, excluded_count: 0,
+      bins: [0,30,60,80].map((min_deg, i) => ({ min_deg, max_deg: [30,60,80,90][i], count: i === 3 ? 1 : 0, flux_lumen: i === 3 ? 1 : 0 })),
+      cells: [{ receiver_id: result.receivers[0].receiver_id, row: 0, column: 0, position, count: 1, grazing_count: 1, min_depth: 0, max_depth: 0, angle_sum_deg: 90 }],
+    }
+    const detection = detectLeakPreviewCandidates(scene, result)
+    expect(detection.points).toHaveLength(1)
+    expect(detection.points[0].position).toEqual(position)
+    expect(detection.candidates[0].meanExitAngleDeg).toBe(90)
+    expect(escapeDirectionSummary(result)?.bins[3].count).toBe(1)
+    ;(result.metrics._escape_direction_summary as { selected_count: number }).selected_count = 2
+    expect(escapeDirectionSummary(result)).toBeNull()
+  })
+
+  it('detects a rear 45-degree path independently of the screen camera', () => {
+    const scene = createSceneFixture()
+    const bounds = getLeakPreviewBounds(scene)
+    const receiver = createLeakPreviewReceivers(scene, [], ['neg_z'])[0]
+    const minimumZ = bounds.center[2] - bounds.size[2] / 2
+    const margin = minimumZ - receiver.center[2]
+    const offset = Math.max(1, bounds.size[2] / 4)
+    const result = createRayTraceResultFixture()
+    result.receivers = [receiver]
+    result.receiver_grids = [{ receiver_id: receiver.receiver_id, resolution: [1, 1], bin_area_mm2: 1, flux_lumen: [[1]], hit_count: 1 }]
+    const source = result.stored_paths[0][0]
+    result.stored_paths = [[
+      { ...source, point: [bounds.center[0] - offset, bounds.center[1], minimumZ + offset], event_type: 'emitter', depth: 0 },
+      { ...source, point: [bounds.center[0] + margin, bounds.center[1], receiver.center[2]], event_type: 'receiver', receiver_id: receiver.receiver_id, depth: 0 },
+    ]]
+    expect(receiver.acceptance_angle_deg).toBe(90)
+    const detection = detectLeakPreviewCandidates(scene, result)
+    expect(detection.candidates).toHaveLength(1)
+    expect(detection.candidates[0].meanExitAngleDeg).toBeCloseTo(45)
+    expect(detection.candidates[0].center[2]).toBeCloseTo(minimumZ)
+    const ignored = detectLeakPreviewCandidates(scene, result, { ignoreAreas: [{
+      id: 'rear-hole', label: 'Rear hole', enabled: true,
+      regions: [{ plane: 'xy', xMin: bounds.center[0] - 1, xMax: bounds.center[0] + 1,
+        yMin: bounds.center[1] - 1, yMax: bounds.center[1] + 1, zMin: minimumZ, zMax: minimumZ }],
+    }] })
+    expect(ignored.points).toHaveLength(0)
+    expect(ignored.candidates).toHaveLength(0)
+  })
+
+  it('passes active Allowed Areas into tracing before receiver aggregation', () => {
+    const request = buildLeakPreviewRequest({ scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast', computeBackend: 'cpu',
+      materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [],
+      allowedAreas: [{ id: 'assembly-hole', label: 'Assembly hole', enabled: true, regions: [{
+        plane: 'xy', xMin: -5, xMax: 5, yMin: -5, yMax: 5, zMin: 0, zMax: 20,
+      }] }],
+    })
+    expect(request.preview_blockers).toHaveLength(2)
+    expect(request.preview_blockers?.map((item) => item.center[2])).toEqual([0, 20])
+    expect(request.preview_blockers?.every((item) => item.blocker_id.startsWith('precision-allowed-area:assembly-hole:'))).toBe(true)
   })
 
   it('builds an isolated two-sided source and six automatic enclosure receivers', () => {
@@ -205,6 +284,38 @@ describe('whole-set leak preview', () => {
     expect(resized).not.toBeNull()
     expect(resized?.widthMm).toBeCloseTo(10)
     expect(resized?.heightMm).toBeCloseTo(4)
+  })
+
+  it('aligns a dragged blocker with the rectangle instead of the CAD triangle diagonal', () => {
+    const blocker = createLeakPreviewBlockerFromFaces(createSceneFixture(), [0], 1)!
+    const diagonal = Math.SQRT1_2
+    blocker.uAxis = [diagonal, diagonal, 0]
+    blocker.vAxis = [-diagonal, diagonal, 0]
+    blocker.normal = [0, 0, 1]
+    blocker.baseCenter = [0, 0, 5]
+    const resized = resizeLeakPreviewBlockerOnFace(blocker, [
+      [2, 3, 5], [12, 3, 5], [12, 7, 5], [2, 7, 5],
+    ])
+    expect(resized).toMatchObject({
+      uAxis: [1, 0, 0], vAxis: [0, 1, 0],
+      baseCenter: [7, 5, 5], widthMm: 10, heightMm: 4,
+    })
+    expect(blocker.uAxis).toEqual([diagonal, diagonal, 0])
+  })
+
+  it('aligns a dragged blocker on a tilted CAD plane', () => {
+    const blocker = createLeakPreviewBlockerFromFaces(createSceneFixture(), [0], 1)!
+    const d = Math.SQRT1_2
+    blocker.normal = [0, -d, d]
+    blocker.baseCenter = [0, 0, 0]
+    const resized = resizeLeakPreviewBlockerOnFace(blocker, [
+      [0, 0, 0], [10, 0, 0], [10, 4 * d, 4 * d], [0, 4 * d, 4 * d],
+    ])!
+    expect(resized.uAxis).toEqual([1, 0, 0])
+    expect(resized.vAxis![1]).toBeCloseTo(d)
+    expect(resized.vAxis![2]).toBeCloseTo(d)
+    expect(resized.widthMm).toBeCloseTo(10)
+    expect(resized.heightMm).toBeCloseTo(4)
   })
 
   it('turns exterior receiver cells into ranked 3D candidates', () => {

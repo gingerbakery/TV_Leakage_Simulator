@@ -206,6 +206,12 @@ export interface RayTraceRequest {
   project_name: string
   /** Preview runs may use the already-loaded display tessellation. */
   geometry_mode?: 'precision' | 'preview'
+  escape_collection?: {
+    direction: 'pos_x' | 'neg_x' | 'pos_y' | 'neg_y' | 'pos_z' | 'neg_z'
+    minimum: Vec3
+    maximum: Vec3
+    allowed_regions: import('@/stores').RoiClipBox[]
+  }
   preview_blockers?: Array<{
     blocker_id: string
     center: Vec3

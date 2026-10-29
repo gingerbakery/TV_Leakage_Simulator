@@ -621,15 +621,20 @@ class ApiRuntime:
                 "bitsam-project.v1",
                 "bitsam-project.v1-bsdf1",
                 "bitsam-project.v1-preview1",
+                "bitsam-project.v1-escape1",
             }
             or not isinstance(project.get("workspace"), dict)
         ):
             raise ValueError("Invalid BITSAM settings")
         has_preview = isinstance(project.get("leak_preview"), dict)
         if (
-            project.get("schema_version") == "bitsam-project.v1-preview1"
+            project.get("schema_version") in {"bitsam-project.v1-preview1", "bitsam-project.v1-escape1"}
         ) != has_preview:
             raise ValueError("Invalid BITSAM Leak Preview settings")
+        if (project.get("schema_version") == "bitsam-project.v1-escape1") != (
+            has_preview and project["leak_preview"].get("detectionMode") == "escape_directions"
+        ):
+            raise ValueError("Directional escape settings require bitsam-project.v1-escape1")
         cad = project.get("cad")
         if not isinstance(cad, dict):
             raise ValueError("Invalid BITSAM CAD settings")

@@ -10,6 +10,7 @@ import {
   useStartRayTraceMutation,
   useStopRayTraceMutation,
 } from '@/api'
+import { ComputeExecutionStatus } from '@/features/results/compute-execution-status'
 import { HelpTooltip } from '@/components/common/help-tooltip'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
@@ -22,6 +23,7 @@ import { useWorkspaceStore, workspaceSelectors } from '@/stores'
 
 import {
   buildLeakPreviewRequest,
+  escapeDirectionSummary,
   createLeakPreviewBlockerFromFaces,
   createLeakPreviewBodyPlaneEmitters,
   createCandidateReceiver,
@@ -102,6 +104,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const sourceBodyFaceCount = useLeakPreviewStore((state) => state.sourceBodyFaceCount)
   const ensureScene = useLeakPreviewStore((state) => state.ensureScene)
   const rebindSceneToken = useLeakPreviewStore((state) => state.rebindSceneToken)
+  const detectionMode = useLeakPreviewStore((state) => state.detectionMode)
+  const setDetectionMode = useLeakPreviewStore((state) => state.setDetectionMode)
+  const previewResult = useLeakPreviewStore((state) => state.result)
+  const angularSummary = previewResult ? escapeDirectionSummary(previewResult) : null
   const quality = useLeakPreviewStore((state) => state.quality)
   const directions = useLeakPreviewStore((state) => state.directions)
   const jobId = useLeakPreviewStore((state) => state.jobId)
@@ -176,6 +182,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     sourceEmitterIds,
     existingEmitters: sourceMode === 'emitters' ? selectedEmitters : undefined,
     quality,
+    detectionMode,
     directions,
     materialAssignments,
     bsdfAssets: bsdfAssets.map((asset) => ({ id: asset.id, transport: asset.transport })),
@@ -183,6 +190,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     excludedComponentIds,
     deletedComponentIds,
     blockers,
+    allowedAreas: ignoreAreas,
   })
   const previewInputSignature = inputSignatureForSceneToken(
     scene?.metadata.scene_token ?? null,
@@ -201,8 +209,14 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }, [actions, finishBlockerAreaSelection, finishIgnoreAreaSelection])
 
   useEffect(() => {
-    if (!scene || job?.status !== 'completed' || !job.result) return
-    const detectionKey = `${job.job_id}:${JSON.stringify(ignoreAreas)}`
+    if (!scene || !jobId || job?.job_id !== jobId || job.status !== 'completed' || !job.result) return
+    if (runSignature && runSignature !== previewInputSignature) return
+    if (detectionMode === 'escape_directions' && !escapeDirectionSummary(job.result)) {
+      clearDetection()
+      setMessage('방향별 유출 집계 결과가 없습니다. 서버를 최신 버전으로 업데이트한 뒤 다시 실행하세요.')
+      return
+    }
+    const detectionKey = `${job.job_id}:${detectionMode}:${JSON.stringify(ignoreAreas)}`
     if (handledRunRef.current === detectionKey) return
     handledRunRef.current = detectionKey
     const detection = detectLeakPreviewCandidates(scene, job.result, {
@@ -218,7 +232,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         ? `빛샘 후보 ${detection.candidates.length}개를 찾았습니다.`
         : '외부 유출광이 검출되지 않았습니다. Balanced 모드로 다시 확인해 보세요.',
     )
-  }, [ignoreAreas, job, quality, scene, setDetection, transformRules])
+  }, [clearDetection, detectionMode, ignoreAreas, job, jobId, previewInputSignature, quality, runSignature, scene, setDetection, transformRules])
 
   useEffect(() => {
     if (job?.status !== 'cancelled') return
@@ -308,6 +322,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           sourceFaceIds,
           sourceComponentIds: sourceMode === 'body' ? sourceComponentIds : [],
           quality,
+          detectionMode,
           directions,
           computeBackend: rayTraceConfig.compute_backend,
           materialAssignments,
@@ -317,6 +332,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           excludedComponentIds,
           deletedComponentIds,
           blockers,
+          allowedAreas: ignoreAreas,
         }),
       })
       let started
@@ -549,16 +565,23 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </fieldset> : null}
         {sourceMode === 'emitters' && sourceEmitterIds.length > selectedEmitters.length
           ? <div role="alert" className="text-xs text-amber-700 dark:text-amber-400">삭제·비활성화된 Emitter가 있습니다. 기존 Emitter 사용을 다시 눌러 선택하세요.</div> : null}
-        {hasBsdf ? <div className="flex items-center gap-1 text-xs font-medium">BSDF · CPU / Source sampling
+        {hasBsdf && detectionMode !== 'escape_directions' ? <div className="flex items-center gap-1 text-xs font-medium">BSDF · CPU / Source sampling
           <HelpTooltip label="Preview BSDF 계산 도움말">BSDF 재질을 유지하여 CPU와 Source sampling으로 계산합니다. Preview에만 적용되며 Ray Tracing 설정은 변경하지 않습니다. Receiver MIS보다 약한 빛샘 탐색에 더 많은 광선이 필요할 수 있습니다.</HelpTooltip>
         </div> : null}
       </section>
 
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-semibold">Detection Direction</span>
-          <span className="text-xs text-muted-foreground">1 View</span>
+          <span className="flex items-center gap-1 text-sm font-semibold">Detection Direction
+            <HelpTooltip label="Preview 검출 방향 도움말">유출 방향: Ray Tracing에서 선택한 CPU 또는 GPU를 사용하며, GPU 선택 시 교차 판정은 CUDA BVH, 방향·광량 집계는 CPU에서 수행합니다. 모델 전체의 경계 상자를 최종적으로 벗어나는 광선을 선택 축 기준 0~90°로 집계합니다. 반구 반경이나 화면 카메라에 의존하지 않습니다. 위치는 경계 상자 출구 기준이며 실제 홀 표면의 정확한 좌표와 다를 수 있습니다. 평면: 기존 유한 사각 Receiver 방식입니다. 두 방식 모두 광선 수와 최대 반사 횟수에 따라 미약한 빛샘을 놓칠 수 있습니다.</HelpTooltip>
+          </span>
+          <span className="text-xs text-muted-foreground">{detectionMode === 'escape_directions' ? '0–90°' : '1 View'}</span>
         </div>
+        <select aria-label="Preview 검출 방식" className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+          value={detectionMode} disabled={isRunning} onChange={(event) => setDetectionMode(event.currentTarget.value === 'planar' ? 'planar' : 'escape_directions')}>
+          <option value="escape_directions">유출 방향 · Source sampling</option>
+          <option value="planar">평면 Receiver</option>
+        </select>
         <div className="grid grid-cols-3 gap-1.5">
           {previewDirectionOptions.map((option) => {
             const selected = directions.includes(option.id)
@@ -790,7 +813,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
       <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-semibold">Allowed Area</span>
+          <span className="flex items-center gap-1 text-sm font-semibold">Allowed Area
+            <HelpTooltip label="Allowed Area 적용 도움말">ON인 영역을 Preview 추적과 후보 표시에서 제외합니다. 영역을 변경하면 Preview를 다시 실행해야 합니다. 이미 생성된 ROI·Receiver는 자동 삭제되지 않습니다. Ray Tracing에는 Run Options의 Allowed Area도 ON이어야 합니다.</HelpTooltip>
+          </span>
           <div className="flex items-center gap-1">
             <Button
               size="sm"
@@ -826,7 +851,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         {ignoreAreas.map((area) => (
           <div key={area.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5">
             <span className="min-w-0 flex-1 truncate text-xs font-medium">
-              {area.label} · {area.regions.length}개 영역
+              {area.label} · {area.regions.length}개 영역 · {area.enabled ? 'ON' : 'OFF'}
             </span>
             <Button
               size="icon-xs"
@@ -864,6 +889,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         ))}
       </section>
 
+      {previewResult ? <ComputeExecutionStatus configuredBackend={previewResult.config.compute_backend ?? 'cpu'}
+        performance={(previewResult.metrics._performance_summary ?? {}) as Record<string, unknown>} /> : null}
+      {angularSummary ? <section className="space-y-2 rounded-lg border border-border p-3">
+        <div className="text-sm font-semibold">{previewDirectionOptions.find((item) => item.id === angularSummary.direction)?.label} · 방향별 유출광</div>
+        <div className="text-xs text-muted-foreground">선택 방향 {angularSummary.selected_count.toLocaleString()} rays · 제외 {angularSummary.excluded_count.toLocaleString()} rays</div>
+        <table className="w-full text-right text-xs"><thead><tr><th className="text-left">각도</th><th>Rays</th><th>Flux (lm)</th></tr></thead>
+          <tbody>{angularSummary.bins.map((bin) => <tr key={bin.min_deg}><td className="py-1 text-left">{bin.min_deg}–{bin.max_deg}°</td><td>{bin.count.toLocaleString()}</td><td>{bin.flux_lumen.toExponential(3)}</td></tr>)}</tbody>
+        </table>
+      </section> : null}
       {candidates.length > 0 ? (
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold">

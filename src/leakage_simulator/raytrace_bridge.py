@@ -160,6 +160,7 @@ def build_direct_trace_input(
         optical_assignments=optical_assignments,
         geometry_cache_hit=geometry_cache_hit,
         bsdf_assets=request_payload.get("bsdf_assets", []),
+        escape_collection=request_payload.get("escape_collection"),
     )
 
 

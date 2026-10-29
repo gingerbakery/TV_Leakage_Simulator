@@ -34,6 +34,7 @@ export const bitsamFileExtension = '.bitsam'
 export const bitsamSchemaVersion = 'bitsam-project.v1'
 export const bitsamBsdfSchemaVersion = 'bitsam-project.v1-bsdf1'
 export const bitsamPreviewSchemaVersion = 'bitsam-project.v1-preview1'
+export const bitsamEscapeSchemaVersion = 'bitsam-project.v1-escape1'
 
 /** Older builds ignore BSDF references. A distinct schema makes them reject these projects. */
 export function projectSchemaVersion(
@@ -42,6 +43,7 @@ export function projectSchemaVersion(
 ) {
   // Preview constraints change physical trace geometry. Older builds must
   // reject, rather than silently run with the apply flag but no saved boxes.
+  if (leakPreviewState?.detectionMode === 'escape_directions') return bitsamEscapeSchemaVersion
   if (leakPreviewState) return bitsamPreviewSchemaVersion
   return (workspace.bsdfAssets?.length || workspace.materialAssignments.some((item) => Boolean(item.bsdfAssetId)) ||
     workspace.customOpticalProfiles?.some((item) => Boolean(item.bsdfAssetId))) ? bitsamBsdfSchemaVersion : bitsamSchemaVersion
@@ -70,6 +72,7 @@ export interface BitsamProject {
     | typeof bitsamSchemaVersion
     | typeof bitsamBsdfSchemaVersion
     | typeof bitsamPreviewSchemaVersion
+    | typeof bitsamEscapeSchemaVersion
   application_version: string
   saved_at: string
   project_name: string
@@ -340,6 +343,7 @@ function isLeakPreviewProjectState(
     isBoolean(item.reverse)
   return (
     isOneOf(value.sourceMode, ['face', 'body', 'emitters']) &&
+    (value.detectionMode === undefined || isOneOf(value.detectionMode, ['escape_directions', 'planar'])) &&
     (value.sourceEmitterIds === undefined || isArrayOf(value.sourceEmitterIds, isString)) &&
     isIdArray(value.sourceFaceIds) &&
     isIdArray(value.sourceComponentIds) &&
@@ -810,7 +814,8 @@ export function parseBitsamProject(source: string): BitsamProject {
   if (
     parsed.schema_version !== bitsamSchemaVersion &&
     parsed.schema_version !== bitsamBsdfSchemaVersion &&
-    parsed.schema_version !== bitsamPreviewSchemaVersion
+    parsed.schema_version !== bitsamPreviewSchemaVersion &&
+    parsed.schema_version !== bitsamEscapeSchemaVersion
   ) {
     throw new BitsamProjectError(
       `지원하지 않는 BITSAM 버전입니다: ${String(parsed.schema_version)}`,
@@ -846,12 +851,15 @@ export function parseBitsamProject(source: string): BitsamProject {
     throw new BitsamProjectError('BSDF 데이터를 포함한 프로젝트에는 BSDF 확장 버전 표시가 필요합니다.')
   }
   if (
-    (parsed.schema_version === bitsamPreviewSchemaVersion) !==
+    ([bitsamPreviewSchemaVersion, bitsamEscapeSchemaVersion].includes(parsed.schema_version as typeof bitsamPreviewSchemaVersion | typeof bitsamEscapeSchemaVersion)) !==
       (parsed.leak_preview !== undefined)
   ) {
     throw new BitsamProjectError(
       'Leak Preview 조건과 프로젝트 버전 표시가 일치하지 않습니다.',
     )
+  }
+  if ((parsed.schema_version === bitsamEscapeSchemaVersion) !== (isRecord(parsed.leak_preview) && parsed.leak_preview.detectionMode === 'escape_directions')) {
+    throw new BitsamProjectError('유출 방향 검출 방식과 프로젝트 버전 표시가 일치하지 않습니다.')
   }
   return structuredClone(parsed) as unknown as BitsamProject
 }

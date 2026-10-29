@@ -84,6 +84,19 @@ class BitsamPackageTests(unittest.TestCase):
         self.assertEqual(scene["components"], self.scene["components"])
         self.assertEqual(json.loads((destination / "project.json").read_text(encoding="utf-8")), self.project)
 
+    def test_directional_escape_schema_is_preserved_and_cannot_be_downgraded(self):
+        project = copy.deepcopy(self.project)
+        project["schema_version"] = "bitsam-project.v1-escape1"
+        project["leak_preview"] = {"detectionMode": "escape_directions"}
+        write_package(self.package, project, self.source, self.scene, self.scene["mesh"])
+        restored = self.root / "escape-restored"
+        extract_package(self.package, restored)
+        saved = json.loads((restored / "project.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["leak_preview"]["detectionMode"], "escape_directions")
+        project["schema_version"] = "bitsam-project.v1-preview1"
+        with self.assertRaisesRegex(ValueError, "Directional escape"):
+            write_package(self.package, project, self.source, self.scene, self.scene["mesh"])
+
     def test_preview_settings_schema_round_trips_and_fails_closed(self):
         preview = copy.deepcopy(self.project)
         preview["schema_version"] = "bitsam-project.v1-preview1"

@@ -20,6 +20,7 @@ import {
 } from './leak-preview-geometry'
 
 import type { BsdfAsset } from '@/features/materials/bsdf-asset'
+import { buildPrecisionPreviewConstraints } from '@/features/raytracing/precision-preview-constraints'
 
 export { getLeakPreviewBounds } from './leak-preview-geometry'
 
@@ -68,6 +69,7 @@ export interface LeakPreviewBlocker {
 export interface LeakPreviewProjectState {
   sourceMode: 'face' | 'body' | 'emitters'
   sourceEmitterIds?: string[]
+  detectionMode?: 'escape_directions' | 'planar'
   sourceFaceIds: number[]
   sourceComponentIds: number[]
   sourceBodyFaceCount: number
@@ -123,6 +125,8 @@ export interface BuildLeakPreviewRequestOptions {
   excludedComponentIds: number[]
   deletedComponentIds: number[]
   blockers?: LeakPreviewBlocker[]
+  allowedAreas?: LeakPreviewIgnoreArea[]
+  detectionMode?: 'escape_directions' | 'planar'
   existingEmitters?: EmitterSpec[]
   bsdfAssets?: BsdfAsset[]
   directions?: LeakPreviewDirection[]
@@ -266,15 +270,19 @@ export function leakPreviewBlockerCenter(blocker: LeakPreviewBlocker): Vec3 {
   return addScaled(blocker.baseCenter, direction, blocker.offsetMm + blocker.depthMm / 2)
 }
 
-/** Resize/reposition a blocker from four world-space points projected onto
- * its reference CAD surface. The normal, offset and depth remain unchanged. */
+/** Resize/reposition a blocker from ordered screen-rectangle corners projected
+ * onto its CAD surface. Align its in-plane axes with the drag, preserving the
+ * normal, offset and depth. */
 export function resizeLeakPreviewBlockerOnFace(
   blocker: LeakPreviewBlocker,
   points: Vec3[],
 ): Partial<LeakPreviewBlocker> | null {
   if (points.length < 2) return null
-  const uAxis = normalized(blocker.uAxis)
-  const vAxis = normalized(blocker.vAxis)
+  const normal = normalized(blocker.normal)
+  const horizontal = points.length === 4 ? subtract(points[1], points[0]) : blocker.uAxis
+  const uAxis = normalized(subtract(horizontal, addScaled([0, 0, 0], normal, dot(horizontal, normal))))
+  const vAxis = normalized(cross(normal, uAxis))
+  if (Math.hypot(...uAxis) < 0.5 || Math.hypot(...vAxis) < 0.5) return null
   const coordinates = points.map((point) => {
     const relative = subtract(point, blocker.baseCenter)
     return [dot(relative, uAxis), dot(relative, vAxis)] as const
@@ -290,6 +298,8 @@ export function resizeLeakPreviewBlockerOnFace(
   const heightMm = maxV - minV
   if (widthMm < 0.1 || heightMm < 0.1) return null
   return {
+    uAxis,
+    vAxis,
     baseCenter: addScaled(
       addScaled(blocker.baseCenter, uAxis, (minU + maxU) / 2),
       vAxis,
@@ -373,6 +383,52 @@ export function createLeakPreviewReceivers(
   ].filter((receiver) =>
     enabledDirections.has(receiver.receiver_id.replace('__leak_preview_', '') as LeakPreviewDirection),
   )
+}
+
+/** These six grids localize final escapes; the tracer does not intersect them. */
+export function createEscapeEnclosureReceivers(scene: ScenePayload, transforms: ComponentTransformRule[] = []): ReceiverSpec[] {
+  const bounds = getLeakPreviewBounds(scene, transforms)
+  const size = bounds.size.map((value) => Math.max(value, 0.001)) as Vec3
+  return createLeakPreviewReceivers(scene, transforms).map((receiver, index) => {
+    const axis = Math.floor(index / 2)
+    const sign = index % 2 === 0 ? 1 : -1
+    const center = [...bounds.center] as Vec3
+    center[axis] += sign * size[axis] / 2
+    const width = receiver.u_axis!.reduce((sum, value, i) => sum + Math.abs(value) * size[i], 0)
+    const height = receiver.v_axis!.reduce((sum, value, i) => sum + Math.abs(value) * size[i], 0)
+    return { ...receiver, center, base_center: center, width_mm: width, height_mm: height,
+      resolution: [48, 48] as [number, number] }
+  })
+}
+
+export interface EscapeDirectionSummary {
+  contract: 'final_escape_directions_v1'
+  direction: LeakPreviewDirection
+  escaped_count: number
+  selected_count: number
+  excluded_count: number
+  bins: Array<{ min_deg: number; max_deg: number; count: number; flux_lumen: number }>
+  cells: Array<{ receiver_id: string; row: number; column: number; position: Vec3; count: number;
+    grazing_count: number; min_depth: number; max_depth: number; angle_sum_deg: number }>
+}
+
+export function escapeDirectionSummary(result: RayTraceResult): EscapeDirectionSummary | null {
+  const value = result.metrics._escape_direction_summary as EscapeDirectionSummary | undefined
+  if (!value || value.contract !== 'final_escape_directions_v1' || !Array.isArray(value.bins) || !Array.isArray(value.cells)) return null
+  const count = (n: number) => Number.isSafeInteger(n) && n >= 0
+  if (!allLeakPreviewDirections.includes(value.direction) || !count(value.escaped_count) || !count(value.selected_count) || !count(value.excluded_count)) return null
+  const edges = [0, 30, 60, 80, 90]
+  if (value.bins.length !== 4 || !value.bins.every((bin, i) => bin && bin.min_deg === edges[i] && bin.max_deg === edges[i + 1] && count(bin.count) && Number.isFinite(bin.flux_lumen) && bin.flux_lumen >= 0)) return null
+  if (value.bins.reduce((sum, bin) => sum + bin.count, 0) !== value.selected_count) return null
+  const grids = new Map(result.receiver_grids.map((grid) => [grid.receiver_id, grid]))
+  if (!value.cells.every((cell) => {
+    const grid = cell && grids.get(cell.receiver_id)
+    return grid && count(cell.row) && count(cell.column) && cell.row < grid.resolution[1] && cell.column < grid.resolution[0] &&
+      Array.isArray(cell.position) && cell.position.length === 3 && cell.position.every(Number.isFinite) &&
+      count(cell.count) && cell.count > 0 && count(cell.grazing_count) && cell.grazing_count <= cell.count &&
+      count(cell.min_depth) && count(cell.max_depth) && cell.max_depth >= cell.min_depth && Number.isFinite(cell.angle_sum_deg)
+  })) return null
+  return value
 }
 
 function previewEmitter(
@@ -496,10 +552,13 @@ export function buildLeakPreviewRequest({
   excludedComponentIds,
   deletedComponentIds,
   blockers = [],
+  allowedAreas = [],
   existingEmitters,
+  detectionMode = 'planar',
   bsdfAssets = [],
-  directions = allLeakPreviewDirections,
+  directions = detectionMode === 'escape_directions' ? ['neg_z'] : allLeakPreviewDirections,
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
+  const directional = detectionMode === 'escape_directions'
   const hasBsdf = materialAssignments.some((assignment) => assignment.enabled && assignment.bsdfAssetId)
   const qualityConfig = {
     fast: { rayCount: 100_000, maxDepth: 3 },
@@ -520,7 +579,7 @@ export function buildLeakPreviewRequest({
     termination_mode: 'russian_roulette',
     contribution_mode: 'summary',
     intersection_backend: 'auto',
-    compute_backend: hasBsdf ? 'cpu' : computeBackend,
+    compute_backend: hasBsdf && !directional ? 'cpu' : computeBackend,
     // A bounded receiver-path sample lets Preview reconstruct the actual
     // model-envelope exit location rather than drawing every point on the
     // remote virtual detector plane.
@@ -530,9 +589,9 @@ export function buildLeakPreviewRequest({
     // Preview uses the selected exterior envelope as an importance target.
     // The MIS weights preserve energy while spending substantially more
     // samples on weak escape paths in the chosen viewing direction.
-    primary_sampling_strategy: hasBsdf ? 'source' : 'receiver_mis',
+    primary_sampling_strategy: hasBsdf || directional ? 'source' : 'receiver_mis',
     receiver_importance_fraction: 0.65,
-    bounce_sampling_strategy: hasBsdf ? 'source' : 'receiver_mis',
+    bounce_sampling_strategy: hasBsdf || directional ? 'source' : 'receiver_mis',
     bounce_receiver_importance_fraction: 0.55,
   }
   const selectedEmitters = existingEmitters?.filter((emitter) => emitter.enabled)
@@ -556,7 +615,7 @@ export function buildLeakPreviewRequest({
           previewEmitter('__leak_preview_source_a', sourceFaceIds, [], false, perSide),
           previewEmitter('__leak_preview_source_b', sourceFaceIds, [], true, totalRays - perSide),
         ],
-    receivers: createLeakPreviewReceivers(scene, transformRules, directions),
+    receivers: directional ? createEscapeEnclosureReceivers(scene, transformRules) : createLeakPreviewReceivers(scene, transformRules, directions),
     materialAssignments,
     transformRules,
     excludedComponentIds,
@@ -583,6 +642,18 @@ export function buildLeakPreviewRequest({
       depth_mm: blocker.depthMm,
       enabled: true,
     }))
+  // Exclude allowed openings before receiver binning; display-only filtering
+  // cannot undo oblique paths or mixed/unsampled receiver cells reliably.
+  if (directional) {
+    const bounds = getLeakPreviewBounds(scene, transformRules)
+    const extent = bounds.size.map((value) => Math.max(value, 0.001)) as Vec3
+    request.escape_collection = {
+      direction: directions[0] ?? 'neg_z',
+      minimum: bounds.center.map((value, i) => value - extent[i] / 2) as Vec3,
+      maximum: bounds.center.map((value, i) => value + extent[i] / 2) as Vec3,
+      allowed_regions: allowedAreas.filter((area) => area.enabled).flatMap((area) => area.regions),
+    }
+  } else request.preview_blockers.push(...buildPrecisionPreviewConstraints([], allowedAreas, false, true))
   // The production tracer deliberately treats unassigned surfaces as perfect
   // absorbers. Preview needs a neutral fallback so a novice can still locate
   // reflected leak paths without first completing Material Assignment.
@@ -896,6 +967,13 @@ function sampledEscapeLocations(
   minimum: Vec3,
   maximum: Vec3,
 ): Map<string, LeakPreviewEscapeSample> {
+  const summary = escapeDirectionSummary(result)
+  if (summary) return new Map(summary.cells.map((cell) => [
+    `${cell.receiver_id}:${cell.row}:${cell.column}`,
+    { position: cell.position, sampleCount: cell.count, grazingSampleCount: cell.grazing_count,
+      minReflectionCount: cell.min_depth, maxReflectionCount: cell.max_depth,
+      meanExitAngleDeg: cell.angle_sum_deg / Math.max(1, cell.count) },
+  ]))
   const accumulated = new Map<string, AccumulatedEscapeSample>()
   for (const path of result.stored_paths) {
     const receiverHit = path.at(-1)
@@ -962,6 +1040,7 @@ export function detectLeakPreviewCandidates(
   result: RayTraceResult,
   options: LeakPreviewDetectionOptions = {},
 ): LeakPreviewDetection {
+  const directionalSummary = escapeDirectionSummary(result)
   const receivers = new Map(result.receivers.map((item) => [item.receiver_id, item]))
   const globalMaximum = Math.max(
     0,
@@ -988,7 +1067,7 @@ export function detectLeakPreviewCandidates(
     balanced: { global: 0.006, local: 0.025 },
     deep: { global: 0.002, local: 0.01 },
   }[options.quality ?? 'balanced']
-  const ignoreAreas = options.ignoreAreas ?? []
+  const ignoreAreas = directionalSummary ? [] : options.ignoreAreas ?? []
   const points: LeakPreviewPoint[] = []
   const candidates: LeakPreviewCandidate[] = []
   for (const grid of result.receiver_grids) {
@@ -1004,9 +1083,9 @@ export function detectLeakPreviewCandidates(
       for (let column = 0; column < grid.resolution[0]; column += 1) {
         const flux = Number(grid.flux_lumen[row]?.[column]) || 0
         const sample = escapeLocations.get(`${grid.receiver_id}:${row}:${column}`)
-        const preserveFrontGrazingPath = grid.receiver_id === '__leak_preview_pos_z' &&
+        const preserveGrazingPath = (directionalSummary !== null || grid.receiver_id === '__leak_preview_pos_z') &&
           (sample?.grazingSampleCount ?? 0) > 0
-        if (flux < threshold && !preserveFrontGrazingPath) continue
+        if (flux < threshold && !preserveGrazingPath) continue
         // The automatic Receiver sits outside the CAD. Move its bin back near
         // the model envelope so the glow reads as a leak on the product, not
         // as a detached heatmap plane floating around it.

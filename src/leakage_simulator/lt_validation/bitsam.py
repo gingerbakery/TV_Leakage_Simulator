@@ -19,6 +19,7 @@ SETTINGS_SCHEMAS = {
     "bitsam-project.v1",
     "bitsam-project.v1-bsdf1",
     "bitsam-project.v1-preview1",
+    "bitsam-project.v1-escape1",
 }
 CACHE_CONTRACT = "bitsam-lossless-scene.v1"
 

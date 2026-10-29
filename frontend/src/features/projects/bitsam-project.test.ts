@@ -52,6 +52,16 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('uses an explicit schema for directional escape settings to prevent old builds silently running planar Preview', () => {
+    const { project } = createProjectFixture()
+    project.leak_preview = { ...createDefaultLeakPreviewProjectState(), detectionMode: 'escape_directions' }
+    const serialized = serializeBitsamProject(project)
+    expect(parseBitsamProject(serialized).schema_version).toBe('bitsam-project.v1-escape1')
+    const stale = JSON.parse(serialized)
+    stale.schema_version = 'bitsam-project.v1-preview1'
+    expect(() => parseBitsamProject(JSON.stringify(stale))).toThrow('검출 방식')
+  })
+
   it('round-trips selected Ray Tracing emitter IDs for Preview', () => {
     const { project } = createProjectFixture()
     project.leak_preview = { ...createDefaultLeakPreviewProjectState(), sourceMode: 'emitters', sourceEmitterIds: ['emitter_001'] }
