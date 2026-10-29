@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import math
 
@@ -15,6 +15,8 @@ class PreparedTraceGeometry:
     mesh: TriangleMesh
     source_to_trace_face: Dict[int, List[int]]
     roi_is_active: bool
+    emission_scope: Dict = field(default_factory=dict)
+    detection_boxes: List = field(default_factory=list)
 
 
 def _emitter_source_faces(
@@ -79,7 +81,26 @@ def build_prepared_trace_geometry(
         preview_blockers=request_payload.get("preview_blockers", []),
         should_stop=should_stop,
     )
+    original_mesh = mesh
     roi_faces = request_payload.get("roi_faces")
+    analysis_roi = request_payload.get("analysis_roi")
+    if analysis_roi is not None and not isinstance(analysis_roi, dict):
+        raise ValueError("Invalid analysis ROI")
+    scope_faces = (analysis_roi or {}).get("face_indices", roi_faces or [])
+    raw_scope_boxes = (analysis_roi or {}).get("clip_boxes", request_payload.get("roi_clip_boxes", []))
+    if analysis_roi is not None and not scope_faces and not raw_scope_boxes:
+        raise ValueError("ROI 해석 범위가 비어 있습니다.")
+    for raw in raw_scope_boxes:
+        try:
+            values = [float(raw[key]) for key in ("x_min","x_max","y_min","y_max","z_min","z_max")]
+            valid = all(math.isfinite(value) for value in values) and all(abs(values[2*i+1]-values[2*i]) > 1e-9 for i in range(3))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise ValueError("ROI 좌표 박스가 비어 있거나 잘못되었습니다.")
+    scope_boxes = _normalize_roi_clip_boxes(raw_scope_boxes)
+    if raw_scope_boxes and not scope_boxes:
+        raise ValueError("ROI 좌표 박스가 비어 있거나 잘못되었습니다.")
     roi_is_active = bool(roi_faces)
     if roi_is_active:
         mesh, source_to_trace_face = filter_mesh_to_roi(
@@ -95,12 +116,18 @@ def build_prepared_trace_geometry(
                 mesh.metadata(face_index).get("source_face_index", face_index)
             )
             source_to_trace_face.setdefault(source_face_index, []).append(face_index)
+    emission_scope = {}
+    if scope_faces or scope_boxes:
+        from .roi_scope import prepare_emission_scope
+        emission_scope = prepare_emission_scope(mesh, original_mesh, request_payload.get("emitters", []),
+            lambda item: _emitter_source_faces(scene_mesh, item, component_cache), source_to_trace_face,
+            scope_boxes, set(scope_faces), context_retained=not roi_is_active)
     # Prepared geometry caches a BVH acceleration structure for both CPU and
     # CUDA consumers.  Compute-device selection remains request-local in
     # RayTraceConfig and is deliberately not encoded in this geometry cache.
     mesh.set_acceleration_structure("bvh")
     mesh.prepare_acceleration(should_stop)
-    return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active)
+    return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active, emission_scope, scope_boxes)
 
 
 def build_direct_trace_input(
@@ -121,6 +148,9 @@ def build_direct_trace_input(
     component_cache: Dict[Tuple[int, ...], List[int]] = {}
     for item in request_payload.get("emitters", []):
         normalized = dict(item)
+        scope = geometry.emission_scope.get(normalized["emitter_id"])
+        if scope is not None and not scope["face_indices"]:
+            continue
         if str(normalized.get("emitter_type") or "face") == "face":
             source_faces = _emitter_source_faces(scene_mesh, normalized, component_cache)
             normalized["face_indices"] = [
@@ -133,11 +163,21 @@ def build_direct_trace_input(
                 if roi_is_active:
                     raise ValueError("Face emitter has no faces left inside the selected ROI")
                 raise ValueError("Face emitter has no traceable faces after component exclusion")
+        if scope is not None:
+            normalized["face_indices"] = scope["face_indices"]
+            if scope["virtual_normal"] is not None:
+                normalized.update(emitter_type="face", normal_mode="custom", custom_normal=scope["virtual_normal"],
+                    surface_construction="rectangular_fit", polygon_vertices=[])
+            # Cropping must not concentrate the entire original lamp power.
+            if normalized.get("power_mode", "total") == "total":
+                normalized["power_lumen"] = float(normalized.get("power_lumen", 1.))*scope["fraction"]
         normalized.pop("source_component_ids", None)
         emitter_payloads.append(normalized)
     emitters = [EmitterSpec.from_dict(item) for item in emitter_payloads]
     receivers = [ReceiverSpec.from_dict(dict(item)) for item in request_payload.get("receivers", [])]
     if not emitters:
+        if geometry.emission_scope:
+            raise ValueError("ROI 안에 발광면이 없습니다 (no faces left inside the selected ROI). ROI 또는 Emitter 위치를 확인하세요.")
         raise ValueError("Direct ray tracing requires at least one emitter")
     if not receivers:
         raise ValueError("Direct ray tracing requires at least one receiver")
@@ -161,6 +201,10 @@ def build_direct_trace_input(
         geometry_cache_hit=geometry_cache_hit,
         bsdf_assets=request_payload.get("bsdf_assets", []),
         escape_collection=request_payload.get("escape_collection"),
+        observer_probe=request_payload.get("observer_probe"),
+        analysis_roi={"contract": "roi_source_detection_v1", "emission_scope": geometry.emission_scope,
+                      "detection_boxes": geometry.detection_boxes, "receiver_scope": "orthogonal_projection",
+                      "context_geometry_retained": not geometry.roi_is_active} if geometry.emission_scope else None,
     )
 
 
@@ -180,7 +224,8 @@ def _normalize_roi_clip_boxes(
         if x1 - x0 <= 1e-9 or y1 - y0 <= 1e-9 or z1 - z0 <= 1e-9:
             continue
         boxes.append((x0, x1, y0, y1, z0, z1))
-    return boxes
+    from .roi_scope import disjoint_boxes
+    return disjoint_boxes(boxes)
 
 
 def _clip_polygon_axis(
@@ -289,7 +334,7 @@ def filter_mesh_to_roi(
         )):
             continue
         triangles = [mesh.face_vertices(face_index)]
-        if normalized_boxes and source_face_index in roi_set:
+        if normalized_boxes and (source_face_index in roi_set or source_face_index in preserved_set):
             triangles = _clip_triangle_to_box_union(triangles[0], normalized_boxes)
         for v0, v1, v2 in triangles:
             new_v0 = trimmed.add_vertex(v0)

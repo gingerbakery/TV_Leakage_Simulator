@@ -1,9 +1,33 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { leakPreviewStore, snapshotLeakPreviewProjectState } from './leak-preview-store'
+import { createSceneFixture } from '@/test/scene-fixture'
+import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
+import { createEscapeEnclosureReceivers, detectLeakPreviewCandidates } from './leak-preview-model'
 import { workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
+  it('deletes only the selected candidate and its points, including overlapping ROI bounds', () => {
+    const scene = createSceneFixture()
+    const result = createRayTraceResultFixture()
+    result.receivers = [createEscapeEnclosureReceivers(scene)[0]]
+    result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [3, 1], bin_area_mm2: 1, flux_lumen: [[1, 0, 1]], hit_count: 2 }]
+    result.stored_paths = []
+    const detection = detectLeakPreviewCandidates(scene, result)
+    expect(detection.candidates).toHaveLength(2)
+    expect(detection.points).toHaveLength(2)
+    leakPreviewStore.getState().setDetection(result, detection.points, detection.candidates)
+    const [first, second] = detection.candidates
+    leakPreviewStore.getState().removeCandidate(first.id)
+    expect(leakPreviewStore.getState().candidates.map((candidate) => candidate.id)).toEqual([second.id])
+    expect(leakPreviewStore.getState().points.map((point) => point.candidateId)).toEqual([second.id])
+    expect(leakPreviewStore.getState().selectedCandidateId).toBe(second.id)
+    expect(leakPreviewStore.getState().result).toBe(result)
+    leakPreviewStore.getState().removeCandidate(second.id)
+    expect(leakPreviewStore.getState().points).toEqual([])
+    expect(leakPreviewStore.getState().selectedCandidateId).toBeNull()
+  })
+
   it('persists Ray Tracing Emitter selection and restores legacy projects with an empty selection', () => {
     const actions = workspaceStore.getState().actions
     actions.addCadCase({ path: 'emitter.step', displayName: 'Emitter' })

@@ -146,6 +146,10 @@ describe('Emitter Aim geometry and persistence', () => {
     expect(positions.count).toBe(8)
     const caster = new Raycaster(new Vector3(), new Vector3(0, 0, 1))
     expect(caster.intersectObject(overlay, true)).toEqual([])
+    emitter.visible = false
+    expect(createEmitterAimOverlay(emitter, [0, 0, 0])).toBeNull()
+    expect(emitter.enabled).toBe(true)
+    emitter.visible = true
     emitter.aim.show_in_viewer = false
     expect(createEmitterAimOverlay(emitter, [0, 0, 0])).toBeNull()
     emitter.aim.enabled = false

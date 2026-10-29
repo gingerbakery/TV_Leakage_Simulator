@@ -15,6 +15,8 @@ import {
   Activity,
   Aperture,
   Camera,
+  Eye,
+  EyeOff,
   CircleDot,
   Lightbulb,
   ListChecks,
@@ -475,6 +477,7 @@ function EmitterDialog({
       normal_flip: normalFlip,
       emission_direction: emissionDirection,
       enabled: initialEmitter?.enabled ?? true,
+      visible: initialEmitter?.visible ?? true,
     }
     if (mode === 'body') return {
       ...createFaceEmitter(previewId, []),
@@ -483,6 +486,7 @@ function EmitterDialog({
       normal_flip: normalFlip,
       emission_direction: emissionDirection,
       enabled: initialEmitter?.enabled ?? true,
+      visible: initialEmitter?.visible ?? true,
     }
     const emitter = createDatumEmitter(previewId, center, rotation)
     const axes = planeAxesFromRotation(rotation)
@@ -498,6 +502,7 @@ function EmitterDialog({
       emission_direction: emissionDirection,
       aim,
       enabled: initialEmitter?.enabled ?? true,
+      visible: initialEmitter?.visible ?? true,
     }
   }, [
     aim,
@@ -592,6 +597,7 @@ function EmitterDialog({
         emission_direction: emissionDirection,
         aim: localAim,
         enabled: baseEmitter?.enabled ?? true,
+        visible: baseEmitter?.visible ?? true,
       }
     }
 
@@ -2269,10 +2275,13 @@ export function RayTracingPanel({
               빛이 나오는 발광면입니다. CAD surface는 기존 모델의 face를
               그대로 발광면으로 쓰고, Datum plane은 좌표를 직접 입력해
               CAD와 무관한 평면을 새로 배치합니다. 여러 개를 등록하고
-              체크박스로 개별적으로 켜고 끌 수 있습니다.
+              체크박스로 해석 적용을 켜고 끌 수 있습니다. 눈 아이콘은 면·방향·분포 표시만 바꾸며 숨겨도 해석에는 사용됩니다. ROI 미리보기에서는 표시도 ROI 경계로 잘립니다.
             </HelpTooltip>
           </div>
-          <Badge variant="outline">{emitters.length}</Badge>
+          <div className="flex items-center gap-1"><Button size="sm" variant="outline" disabled={emitters.length === 0} onClick={() => {
+            const visible = emitters.every((emitter) => emitter.visible === false)
+            emitters.forEach((emitter) => actions.setEmitterVisible(emitter.emitter_id, visible))
+          }}>{emitters.every((emitter) => emitter.visible === false) ? <EyeOff /> : <Eye />}{emitters.every((emitter) => emitter.visible === false) ? 'Show All' : 'Hide All'}</Button><Badge variant="outline">{emitters.length}</Badge></div>
         </div>
         <div className="grid grid-cols-3 gap-1.5">
           <Button
@@ -2357,6 +2366,7 @@ export function RayTracingPanel({
                         {' · '}{emitter.ray_count.toLocaleString()} Rays
                       </div>
                     </div>
+                    <Button variant="ghost" size="icon-xs" aria-label={`${emitter.visible !== false ? 'Hide' : 'Show'} ${rayObjectDisplayName('emitter', emitter.emitter_id)}`} onClick={() => actions.setEmitterVisible(emitter.emitter_id, emitter.visible === false)}>{emitter.visible !== false ? <Eye /> : <EyeOff />}</Button>
                     <Button variant="ghost" size="icon-xs" aria-label={`Edit ${rayObjectDisplayName('emitter', emitter.emitter_id)}`} disabled={isRunning}
                       onClick={() => {
                         actions.setEmitterFaceSelectionArmed(false)
@@ -2389,6 +2399,7 @@ export function RayTracingPanel({
                       <div className="truncate text-sm font-semibold">LED Array {groupNumber}</div>
                       <div className="text-xs text-muted-foreground">{row.emitters.length} LEDs · {totalRays.toLocaleString()} Rays</div>
                     </div>
+                    <Button variant="ghost" size="icon-xs" aria-label={`${row.emitters.some((emitter) => emitter.visible !== false) ? 'Hide' : 'Show'} LED Array ${groupNumber}`} onClick={(event) => { event.preventDefault(); const visible = row.emitters.every((emitter) => emitter.visible === false); row.emitters.forEach((emitter) => actions.setEmitterVisible(emitter.emitter_id, visible)) }}>{row.emitters.some((emitter) => emitter.visible !== false) ? <Eye /> : <EyeOff />}</Button>
                     <Button variant="ghost" size="icon-xs" aria-label={`Edit LED Array ${groupNumber}`} disabled={isRunning}
                       onClick={(event) => {
                         event.preventDefault()
@@ -2409,6 +2420,7 @@ export function RayTracingPanel({
                     {row.emitters.map((emitter, index) => (
                       <div key={emitter.emitter_id} className="flex items-center gap-2 rounded-md bg-background/60 px-2 py-1.5">
                         <span className="min-w-0 flex-1 truncate text-xs font-medium">LED {index + 1} · {rayObjectDisplayName('emitter', emitter.emitter_id)}</span>
+                        <Button variant="ghost" size="icon-xs" aria-label={`${emitter.visible !== false ? 'Hide' : 'Show'} LED ${index + 1} in Array ${groupNumber}`} onClick={() => actions.setEmitterVisible(emitter.emitter_id, emitter.visible === false)}>{emitter.visible !== false ? <Eye /> : <EyeOff />}</Button>
                         <Button variant="ghost" size="icon-xs" aria-label={`Edit LED ${index + 1} in Array ${groupNumber}`} disabled={isRunning}
                           onClick={() => {
                             setEditingEmitterGroupId(null)
@@ -3059,6 +3071,12 @@ export function RayTracingPanel({
           Rays {enabledEmitterRayCount.toLocaleString()} · ROI{' '}
           {roiScopes.filter((scope) => scope.active).length} scope
         </p>
+        {latestResult && roiScopes.some((scope) => scope.active) &&
+          (latestResult.metrics._roi_scope_summary as { contract?: string } | undefined)?.contract !== 'roi_source_detection_v1'
+          ? <div role="alert" className="text-xs text-amber-700 dark:text-amber-400">ROI 발광·검출 제한 미확인 · 서버 업데이트 후 다시 실행하세요.</div> : null}
+        {roiScopes.some((scope) => scope.active && scope.observerView) ? <div className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">시야각 ROI · 외부 형상 유지
+          <HelpTooltip label="시야각 ROI 형상 유지 도움말">발광면은 ROI 안으로 자르고 Receiver는 ROI 투영 범위에서만 집계합니다. 관찰 경로에 필요한 ROI 밖 차폐물과 반사면은 유지합니다. 이 ROI가 활성화된 경우 ROI 절단을 적용하지 않으므로 작은 ROI도 전체 CAD 준비 시간이 필요합니다. Receiver는 Preview와 같은 방향의 외부 관찰 평면에 놓이지만 유한 면적 입사 광량을 측정하므로 평행 관찰의 밝기와 동일한 값은 아닙니다.</HelpTooltip>
+        </div> : null}
 
         {job ? (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">

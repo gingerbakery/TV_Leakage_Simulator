@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createDefaultLeakPreviewProjectState } from '@/features/leak-preview/leak-preview-store'
+import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
 import { createWorkspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
@@ -60,6 +61,27 @@ describe('BITSAM project format', () => {
     const stale = JSON.parse(serialized)
     stale.schema_version = 'bitsam-project.v1-preview1'
     expect(() => parseBitsamProject(JSON.stringify(stale))).toThrow('검출 방식')
+  })
+
+  it('round-trips observer settings and rejects invalid angles', () => {
+    const { project } = createProjectFixture()
+    project.leak_preview = createDefaultLeakPreviewProjectState()
+    project.leak_preview.observer = { enabled: true, horizontal_deg: -89.9, vertical_deg: 25,
+      range_deg: 1, step_deg: .5, resolution: 32, samples_per_cell: 2 }
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.leak_preview?.observer).toEqual(project.leak_preview.observer)
+    const invalid = JSON.parse(serializeBitsamProject(project))
+    invalid.leak_preview.observer.horizontal_deg = 90
+    expect(() => parseBitsamProject(JSON.stringify(invalid))).toThrow(BitsamProjectError)
+  })
+
+  it('round-trips independent hidden-but-applied Emitter and Allowed states', () => {
+    const { project } = createProjectFixture()
+    project.workspace.emitters = [{ ...createDatumEmitter('hidden', [0,0,0], [0,0,0]), enabled: true, visible: false }]
+    project.leak_preview = { ...createDefaultLeakPreviewProjectState(), ignoreAreas: [{ id: 'a', label: 'A', enabled: true, visible: false, regions: [{ plane: 'xy', xMin: 0, xMax: 1, yMin: 0, yMax: 1 }] }] }
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.workspace.emitters[0]).toMatchObject({ enabled: true, visible: false })
+    expect(restored.leak_preview?.ignoreAreas[0]).toMatchObject({ enabled: true, visible: false })
   })
 
   it('round-trips selected Ray Tracing emitter IDs for Preview', () => {

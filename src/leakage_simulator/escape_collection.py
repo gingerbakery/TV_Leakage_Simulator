@@ -63,12 +63,43 @@ class EscapeCollector:
         face = ("pos_" if face_sign > 0 else "neg_") + "xyz"[face_axis]
         return point, face
 
-    def _allowed(self, point):
+    def _allowed(self, origin, direction, exit_point):
+        # Test the final, unobstructed ray segment against the actual Allowed
+        # boundary. Testing only the enclosure exit displaces oblique holes.
+        distance = sum((exit_point[i] - origin[i]) * direction[i] for i in range(3))
         for region in self.regions:
             axes = {"xy": (0, 1), "yz": (1, 2), "zx": (2, 0), "xyz": (0, 1, 2)}[region["plane"]]
-            if all(((region.get("xyz"[i] + "Min") if region.get("xyz"[i] + "Min") is not None else -math.inf) - 5 <= point[i] <=
-                    (region.get("xyz"[i] + "Max") if region.get("xyz"[i] + "Max") is not None else math.inf) + 5) for i in axes):
-                return True
+            def inside(point):
+                return all((region.get("xyz"[i] + "Min", -math.inf) if region.get("xyz"[i] + "Min") is not None else -math.inf) - self.tolerance <= point[i] <=
+                           (region.get("xyz"[i] + "Max", math.inf) if region.get("xyz"[i] + "Max") is not None else math.inf) + self.tolerance for i in axes)
+            if region["plane"] == "xyz":
+                enter, leave = 0., max(0., distance)
+                for i in range(3):
+                    lo, hi = region.get("xyz"[i] + "Min"), region.get("xyz"[i] + "Max")
+                    lo = -math.inf if lo is None else lo
+                    hi = math.inf if hi is None else hi
+                    if abs(direction[i]) < 1e-15:
+                        if not lo - self.tolerance <= origin[i] <= hi + self.tolerance:
+                            leave = -math.inf
+                            break
+                    else:
+                        a, b = (lo - origin[i]) / direction[i], (hi - origin[i]) / direction[i]
+                        enter, leave = max(enter, min(a, b)), min(leave, max(a, b))
+                if leave >= enter - self.tolerance:
+                    return True
+                continue
+            normal = next(i for i in range(3) if i not in axes)
+            if abs(direction[normal]) < 1e-15:
+                continue
+            for suffix, fallback in (("Min", self.minimum[normal]), ("Max", self.maximum[normal])):
+                coordinate = region.get("xyz"[normal] + suffix)
+                if coordinate is None:
+                    coordinate = fallback
+                t = (coordinate - origin[normal]) / direction[normal]
+                if -self.tolerance <= t <= distance + self.tolerance:
+                    point = [origin[i] + t * direction[i] for i in range(3)]
+                    if inside(point):
+                        return True
         return False
 
     def record(self, origin, direction, power, depth):
@@ -81,7 +112,7 @@ class EscapeCollector:
         cosine = sum(direction[i] * self.axis[i] for i in range(3))
         if cosine < -1e-12:
             return False
-        if self._allowed(point):
+        if self._allowed(origin, direction, point):
             self.excluded_count += 1
             self.excluded_flux += power
             return False

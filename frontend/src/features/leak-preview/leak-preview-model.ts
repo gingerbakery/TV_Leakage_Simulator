@@ -44,9 +44,11 @@ export interface LeakPreviewIgnoreArea {
   label: string
   regions: RoiClipBox[]
   enabled: boolean
+  visible?: boolean
 }
 
 export interface LeakPreviewBlocker {
+  visible?: boolean
   id: string
   label: string
   enabled: boolean
@@ -66,10 +68,26 @@ export interface LeakPreviewBlocker {
  * save/load. Runtime jobs, sampled points, and selection gestures are omitted:
  * they are derived/transient state and must never be replayed as active work.
  */
+export interface LeakPreviewObserverSettings {
+  enabled: boolean
+  horizontal_deg: number
+  vertical_deg: number
+  range_deg: number
+  step_deg: number
+  resolution: number
+  samples_per_cell: number
+}
+
+export const defaultObserverSettings: LeakPreviewObserverSettings = {
+  enabled: false, horizontal_deg: 85, vertical_deg: 0, range_deg: 1, step_deg: 1,
+  resolution: 64, samples_per_cell: 2,
+}
+
 export interface LeakPreviewProjectState {
   sourceMode: 'face' | 'body' | 'emitters'
   sourceEmitterIds?: string[]
   detectionMode?: 'escape_directions' | 'planar'
+  observer?: LeakPreviewObserverSettings
   sourceFaceIds: number[]
   sourceComponentIds: number[]
   sourceBodyFaceCount: number
@@ -83,11 +101,13 @@ export interface LeakPreviewProjectState {
 }
 
 export interface LeakPreviewPoint {
+  candidateId?: string
   position: Vec3
   relativeStrength: number
 }
 
 export interface LeakPreviewCandidate {
+  sourceCandidateIds?: string[]
   id: string
   label: string
   receiverId: string
@@ -107,6 +127,7 @@ export interface LeakPreviewCandidate {
   maxReflectionCount: number | null
   meanExitAngleDeg: number | null
   clipBox: RoiClipBox
+  observerEvidence?: { horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3 }
 }
 
 export interface LeakPreviewDetection {
@@ -127,6 +148,7 @@ export interface BuildLeakPreviewRequestOptions {
   blockers?: LeakPreviewBlocker[]
   allowedAreas?: LeakPreviewIgnoreArea[]
   detectionMode?: 'escape_directions' | 'planar'
+  observer?: LeakPreviewObserverSettings
   existingEmitters?: EmitterSpec[]
   bsdfAssets?: BsdfAsset[]
   directions?: LeakPreviewDirection[]
@@ -555,6 +577,7 @@ export function buildLeakPreviewRequest({
   allowedAreas = [],
   existingEmitters,
   detectionMode = 'planar',
+  observer,
   bsdfAssets = [],
   directions = detectionMode === 'escape_directions' ? ['neg_z'] : allLeakPreviewDirections,
 }: BuildLeakPreviewRequestOptions): RayTraceRequest {
@@ -647,6 +670,22 @@ export function buildLeakPreviewRequest({
   if (directional) {
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const extent = bounds.size.map((value) => Math.max(value, 0.001)) as Vec3
+    if (observer?.enabled) {
+      const { enabled: _enabled, ...settings } = observer
+      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
+        const value = settings[key]
+        if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
+      }
+      const offsets = new Set([0, -settings.range_deg, settings.range_deg])
+      for (let i = -Math.floor(settings.range_deg / settings.step_deg); i <= Math.floor(settings.range_deg / settings.step_deg); i += 1) offsets.add(i * settings.step_deg)
+      const horizontal = new Set([...offsets].map((x) => Math.max(-89.9, Math.min(89.9, settings.horizontal_deg + x)).toFixed(8)))
+      const vertical = new Set([...offsets].map((x) => Math.max(-89.9, Math.min(89.9, settings.vertical_deg + x)).toFixed(8)))
+      const views = horizontal.size * vertical.size
+      if (views > 121 || views * settings.resolution ** 2 * settings.samples_per_cell * 2 > 500_000) {
+        throw new Error('역추적 탐색 한도 초과: 주변 범위·해상도·셀 반복을 줄이세요.')
+      }
+      request.observer_probe = settings
+    }
     request.escape_collection = {
       direction: directions[0] ?? 'neg_z',
       minimum: bounds.center.map((value, i) => value - extent[i] / 2) as Vec3,
@@ -841,6 +880,7 @@ function mergeCornerCandidates(
     ) as Vec3
     target.fluxLumen = totalFlux
     target.peakFluxLumen = Math.max(target.peakFluxLumen, candidate.peakFluxLumen)
+    target.sourceCandidateIds = [...(target.sourceCandidateIds ?? [target.id]), ...(candidate.sourceCandidateIds ?? [candidate.id])]
     target.cellCount += candidate.cellCount
     const combinedSampleCount = target.sampledPathCount + candidate.sampledPathCount
     target.meanExitAngleDeg = combinedSampleCount > 0
@@ -1035,6 +1075,96 @@ function sampledEscapeLocations(
   ]))
 }
 
+interface ObserverProbeView {
+  horizontal_deg: number; vertical_deg: number; direct_count: number; reflected_count: number
+  direction: Vec3; observer_center: Vec3; u_axis: Vec3; v_axis: Vec3; spacing_mm: [number, number]
+}
+interface ObserverProbeCell {
+  view_index: number; row: number; column: number; position: Vec3
+  direct_count: number; reflected_count: number; min_depth: number; max_depth: number
+}
+export interface ObserverProbeSummary {
+  contract: 'observer_path_support_v1'; execution_backend: 'cpu' | 'gpu_cuda'; requested_backend?: 'cpu' | 'gpu_cuda'; performance?: Record<string, unknown>; sample_contract?: string; measure: 'path_support_counts'
+  settings: Omit<LeakPreviewObserverSettings, 'enabled'>
+  attempted_count: number; planned_count: number; direct_count: number; reflected_count: number
+  excluded_count: number; depth_limited_count: number; complete: boolean; stopped: boolean; runtime_sec: number
+  views: ObserverProbeView[]; cells: ObserverProbeCell[]
+}
+
+export function observerProbeSummary(result: RayTraceResult): ObserverProbeSummary | null {
+  const raw = result.metrics._observer_probe_summary as unknown
+  if (!raw || typeof raw !== 'object') return null
+  const summary = raw as ObserverProbeSummary
+  const count = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
+  const vector = (x: unknown, size = 3): boolean => Array.isArray(x) && x.length === size && x.every((v) => typeof v === 'number' && Number.isFinite(v))
+  if (summary.contract !== 'observer_path_support_v1' || !['cpu', 'gpu_cuda'].includes(summary.execution_backend) || summary.measure !== 'path_support_counts' ||
+    !summary.settings || !count(summary.settings.resolution) || summary.settings.resolution < 8 || summary.settings.resolution > 256 ||
+    ![summary.attempted_count, summary.planned_count, summary.direct_count, summary.reflected_count, summary.excluded_count, summary.depth_limited_count].every(count) ||
+    summary.attempted_count > summary.planned_count || summary.direct_count + summary.reflected_count + summary.excluded_count > summary.attempted_count ||
+    typeof summary.complete !== 'boolean' || typeof summary.stopped !== 'boolean' || summary.complete === summary.stopped ||
+    !Array.isArray(summary.views) || summary.views.length > 121 || !Array.isArray(summary.cells)) return null
+  if (summary.execution_backend === 'gpu_cuda' && (summary.requested_backend !== 'gpu_cuda' || summary.sample_contract !== 'observer_per_ray_seed_batch_v1' || !summary.performance ||
+    !['gpu_active', 'gpu_mixed'].includes(String(summary.performance.compute_execution_state)) ||
+    !(Number(summary.performance.gpu_cuda_gpu_success_count) > 0))) return null
+  if (summary.views.some((view) => !vector(view.direction) || !vector(view.observer_center) || !vector(view.u_axis) || !vector(view.v_axis) || !vector(view.spacing_mm, 2) ||
+    !Number.isFinite(view.horizontal_deg) || !Number.isFinite(view.vertical_deg) || !count(view.direct_count) || !count(view.reflected_count))) return null
+  if (summary.cells.some((cell) => !count(cell.view_index) || cell.view_index >= summary.views.length || !vector(cell.position) ||
+    !count(cell.row) || !count(cell.column) || cell.row >= summary.settings.resolution || cell.column >= summary.settings.resolution ||
+    !count(cell.direct_count) || !count(cell.reflected_count) || cell.direct_count + cell.reflected_count <= 0 ||
+    !count(cell.min_depth) || !count(cell.max_depth) || cell.min_depth > cell.max_depth)) return null
+  for (const key of ['direct_count', 'reflected_count'] as const) {
+    if (summary.cells.reduce((sum, cell) => sum + cell[key], 0) !== summary[key] || summary.views.reduce((sum, view) => sum + view[key], 0) !== summary[key]) return null
+  }
+  return summary
+}
+
+function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, options: LeakPreviewDetectionOptions): LeakPreviewDetection {
+  const summary = observerProbeSummary(result)
+  if (!summary) return { points: [], candidates: [] }
+  const points: LeakPreviewPoint[] = []
+  const candidates: LeakPreviewCandidate[] = []
+  const modelDepth = Math.max(...getLeakPreviewBounds(scene, options.transformRules).size, 1) * .18
+  const maximum = Math.max(1, ...summary.cells.map((cell) => cell.direct_count + cell.reflected_count))
+  summary.views.forEach((view, viewIndex) => {
+    const cells = summary.cells.filter((cell) => cell.view_index === viewIndex)
+    const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.position, flux: cell.direct_count + cell.reflected_count }))
+    const lookup = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]))
+    const resolution = summary.settings.resolution
+    const receiver = { ...result.receivers[0], receiver_id: `observer-${viewIndex}`, center: [0, 0, 0] as Vec3,
+      normal: view.direction.map((x) => -x) as Vec3, u_axis: view.u_axis, v_axis: view.v_axis,
+      width_mm: view.spacing_mm[0] * resolution, height_mm: view.spacing_mm[1] * resolution }
+    const grid = { resolution: [resolution, resolution] } as ReceiverGrid
+
+    connectedClusters(active).forEach((cluster, index) => {
+      const candidateId = `observer-${viewIndex}-${index}`
+      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / maximum, candidateId }))
+      const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
+      const directCount = evidence.reduce((sum, cell) => sum + cell.direct_count, 0)
+      const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)
+      const count = directCount + reflectedCount
+      const center = [0, 1, 2].map((axis) => cluster.reduce((sum, cell) => sum + cell.position[axis] * cell.flux, 0) / count) as Vec3
+      const columns = cluster.map((cell) => cell.column), rows = cluster.map((cell) => cell.row)
+      const angle = Math.acos(Math.max(-1, Math.min(1, dot(view.direction, directionVector(result.metrics._escape_direction_summary))))) * 180 / Math.PI
+      candidates.push({ id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
+        receiverId: receiver.receiver_id, center, normal: receiver.normal, uAxis: view.u_axis, vAxis: view.v_axis,
+        widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0] + 10),
+        heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1] + 10),
+        fluxLumen: 0, peakFluxLumen: 0, relativeStrength: Math.max(...cluster.map((cell) => cell.flux)) / maximum,
+        cellCount: cluster.length, sampledPathCount: count, grazingPathCount: angle >= 60 ? count : 0,
+        minReflectionCount: Math.min(...evidence.map((cell) => cell.min_depth)), maxReflectionCount: Math.max(...evidence.map((cell) => cell.max_depth)),
+        meanExitAngleDeg: angle, clipBox: candidateClipBox(cluster, receiver, grid, modelDepth),
+        observerEvidence: { horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg, directCount, reflectedCount, direction: view.direction, receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)) },
+      })
+    })
+  })
+  return { points, candidates }
+}
+
+function directionVector(raw: unknown): Vec3 {
+  const name = (raw as { direction?: LeakPreviewDirection } | undefined)?.direction ?? 'neg_z'
+  return ({ pos_x: [1,0,0], neg_x: [-1,0,0], pos_y: [0,1,0], neg_y: [0,-1,0], pos_z: [0,0,1], neg_z: [0,0,-1] } as Record<LeakPreviewDirection, Vec3>)[name] ?? [0,0,-1]
+}
+
 export function detectLeakPreviewCandidates(
   scene: ScenePayload,
   result: RayTraceResult,
@@ -1046,7 +1176,8 @@ export function detectLeakPreviewCandidates(
     0,
     ...result.receiver_grids.flatMap((grid) => grid.flux_lumen.flat()),
   )
-  if (globalMaximum <= 0) return { points: [], candidates: [] }
+  const observerDetection = detectObserverCandidates(scene, result, options)
+  if (globalMaximum <= 0) return observerDetection
 
   const bounds = getLeakPreviewBounds(scene, options.transformRules)
   const boundsMinimum = bounds.center.map((value, axis) => value - bounds.size[axis] / 2) as Vec3
@@ -1085,7 +1216,7 @@ export function detectLeakPreviewCandidates(
         const sample = escapeLocations.get(`${grid.receiver_id}:${row}:${column}`)
         const preserveGrazingPath = (directionalSummary !== null || grid.receiver_id === '__leak_preview_pos_z') &&
           (sample?.grazingSampleCount ?? 0) > 0
-        if (flux < threshold && !preserveGrazingPath) continue
+        if (flux <= 0 || (!directionalSummary && flux < threshold && !preserveGrazingPath)) continue
         // The automatic Receiver sits outside the CAD. Move its bin back near
         // the model envelope so the glow reads as a leak on the product, not
         // as a detached heatmap plane floating around it.
@@ -1096,10 +1227,12 @@ export function detectLeakPreviewCandidates(
         )
         if (ignoreAreas.some((area) => pointInIgnoreArea(position, area))) continue
         active.push({ row, column, flux, position, sample })
-        points.push({ position, relativeStrength: flux / globalMaximum })
+
       }
     }
     for (const cluster of connectedClusters(active)) {
+      const candidateId = `${grid.receiver_id}:${Math.min(...cluster.map((cell) => cell.row))}:${Math.min(...cluster.map((cell) => cell.column))}`
+      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / globalMaximum, candidateId }))
       const fluxLumen = cluster.reduce((sum, cell) => sum + cell.flux, 0)
       const weightedCenter = cluster.reduce<Vec3>(
         (sum, cell) => [
@@ -1157,7 +1290,7 @@ export function detectLeakPreviewCandidates(
         0.35 * (candidate.fluxLumen / strongestFlux),
     }))
     .sort((left, right) => right.relativeStrength - left.relativeStrength)
-  const topCandidates = rankedCandidates.slice(0, 8)
+  const topCandidates = directionalSummary ? rankedCandidates : rankedCandidates.slice(0, 8)
   const strongestFrontGrazing = rankedCandidates.find((candidate) =>
     candidate.receiverId === '__leak_preview_pos_z' && candidate.grazingPathCount > 0,
   )
@@ -1165,14 +1298,15 @@ export function detectLeakPreviewCandidates(
     topCandidates.splice(Math.max(0, topCandidates.length - 1), 1, strongestFrontGrazing)
     topCandidates.sort((left, right) => right.relativeStrength - left.relativeStrength)
   }
+  const candidateIds = new Map(topCandidates.flatMap((candidate, index) => (candidate.sourceCandidateIds ?? [candidate.id]).map((id) => [id, `leak-candidate-${index + 1}`] as const)))
   return {
-    points: points
+    points: [...observerDetection.points, ...points.map((point) => ({ ...point, candidateId: point.candidateId ? candidateIds.get(point.candidateId) ?? point.candidateId : undefined }))]
       .sort((left, right) => right.relativeStrength - left.relativeStrength)
-      .slice(0, 800),
-    candidates: topCandidates.map((candidate, index) => ({
+      .slice(0, directionalSummary ? undefined : 800),
+    candidates: [...observerDetection.candidates, ...topCandidates.map((candidate, index) => ({
       ...candidate,
       id: `leak-candidate-${index + 1}`,
-    })),
+    }))],
   }
 }
 
@@ -1276,7 +1410,7 @@ export function createCandidateReceiver(
   const centeredOnRoi = [...candidate.center] as Vec3
   if (uDimension >= 0) centeredOnRoi[uDimension] = (uBounds[0] + uBounds[1]) / 2
   if (vDimension >= 0) centeredOnRoi[vDimension] = (vBounds[0] + vBounds[1]) / 2
-  const center = addScaled(
+  const center = candidate.observerEvidence?.receiverCenter ?? addScaled(
     centeredOnRoi,
     outwardNormal,
     leakPreviewReceiverDistanceMm,
@@ -1288,15 +1422,15 @@ export function createCandidateReceiver(
       receiverNormal,
       candidate.uAxis,
       candidate.vAxis,
-      widthMm,
-      heightMm,
+      candidate.observerEvidence ? Math.max(1, candidate.widthMm - leakPreviewReceiverOffsetMm * 2) : widthMm,
+      candidate.observerEvidence ? Math.max(1, candidate.heightMm - leakPreviewReceiverOffsetMm * 2) : heightMm,
     ),
     receiver_id: `preview_receiver_${String(index).padStart(3, '0')}`,
     display_name: `Preview Receiver ${index}`,
     reference_mode: 'leak_preview_candidate',
     view_distance_mm: leakPreviewReceiverDistanceMm,
-    base_center: [...candidate.center],
-    position_offset_mm: centeredOnRoi.map((value, axis) => value - candidate.center[axis]) as Vec3,
+    base_center: candidate.observerEvidence ? addScaled(center, outwardNormal, -leakPreviewReceiverDistanceMm) : [...candidate.center],
+    position_offset_mm: candidate.observerEvidence ? [0, 0, 0] : centeredOnRoi.map((value, axis) => value - candidate.center[axis]) as Vec3,
     base_u_axis: [...candidate.uAxis],
     base_v_axis: [...candidate.vAxis],
     base_normal: [...receiverNormal],

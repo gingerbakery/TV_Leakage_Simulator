@@ -313,6 +313,8 @@ function isRoiScope(value: unknown): value is RoiScope {
     isArrayOf(value.components, isRoiComponentClip) &&
     isBoolean(value.active) &&
     (value.clipBox === undefined || isRoiClipBox(value.clipBox)) &&
+    (value.observerView === undefined || (isRecord(value.observerView) &&
+      isFiniteNumber(value.observerView.horizontalDeg) && isFiniteNumber(value.observerView.verticalDeg) && isVec3(value.observerView.direction))) &&
     (value.point === undefined || isVector3Value(value.point))
   )
 }
@@ -326,11 +328,13 @@ function isLeakPreviewProjectState(
     isString(item.id) &&
     isString(item.label) &&
     isArrayOf(item.regions, isRoiClipBox) &&
+    (item.visible === undefined || isBoolean(item.visible)) &&
     isBoolean(item.enabled)
   const isBlocker = (item: unknown): item is LeakPreviewBlocker =>
     isRecord(item) &&
     isString(item.id) &&
     isString(item.label) &&
+    (item.visible === undefined || isBoolean(item.visible)) &&
     isBoolean(item.enabled) &&
     isVec3(item.baseCenter) &&
     isVec3(item.uAxis) &&
@@ -344,6 +348,7 @@ function isLeakPreviewProjectState(
   return (
     isOneOf(value.sourceMode, ['face', 'body', 'emitters']) &&
     (value.detectionMode === undefined || isOneOf(value.detectionMode, ['escape_directions', 'planar'])) &&
+    (value.observer === undefined || isObserverSettings(value.observer)) &&
     (value.sourceEmitterIds === undefined || isArrayOf(value.sourceEmitterIds, isString)) &&
     isIdArray(value.sourceFaceIds) &&
     isIdArray(value.sourceComponentIds) &&
@@ -360,6 +365,16 @@ function isLeakPreviewProjectState(
     isArrayOf(value.ignoreAreas, isIgnoreArea) &&
     isArrayOf(value.blockers, isBlocker)
   )
+}
+
+function isObserverSettings(value: unknown): boolean {
+  if (!isRecord(value) || !isBoolean(value.enabled)) return false
+  return ([['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10],
+    ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const).every(([key, lo, hi]) => {
+      const number = value[key]
+      return isFiniteNumber(number) && number >= lo && number <= hi &&
+        (!['resolution', 'samples_per_cell'].includes(key) || Number.isInteger(number))
+    })
 }
 
 function isEmitterAim(value: unknown): boolean {
@@ -384,6 +399,7 @@ function isEmitterAim(value: unknown): boolean {
 function isEmitterSpec(value: unknown): value is EmitterSpec {
   return (
     isRecord(value) &&
+    (value.visible === undefined || isBoolean(value.visible)) &&
     isString(value.emitter_id) &&
     (value.array_group_id === undefined || value.array_group_id === null || isString(value.array_group_id)) &&
     (value.array_index === undefined || value.array_index === null || isSafeId(value.array_index)) &&
