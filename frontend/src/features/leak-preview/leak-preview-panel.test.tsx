@@ -5,7 +5,7 @@ import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
 import { act } from '@testing-library/react'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
-import { createLeakPreviewReceivers } from './leak-preview-model'
+import { defaultObserverSettings, createEscapeEnclosureReceivers, detectLeakPreviewCandidates, createLeakPreviewReceivers } from './leak-preview-model'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
@@ -143,7 +143,7 @@ it('accepts extreme compound observer angles and sends the sweep without changin
   expect(active?.leakPreviewState?.observer).toMatchObject({ enabled: true, horizontal_deg: -89.9, vertical_deg: 20 })
 })
 
-it('separates Allowed/Block application from individual visibility and exposes candidate delete', () => {
+it('migrates Allowed Areas to Block groups with independent visibility and application', () => {
   workspaceStore.getState().actions.addCadCase({ path: 'visibility.step', displayName: 'Visibility' })
   const store = leakPreviewStore.getState()
   store.beginIgnoreAreaSelection()
@@ -151,14 +151,67 @@ it('separates Allowed/Block application from individual visibility and exposes c
   store.finishIgnoreAreaSelection()
   store.addBlocker({ id: 'block', label: 'Block', enabled: true, baseCenter: [0,0,0], uAxis: [1,0,0], vAxis: [0,1,0], normal: [0,0,1], widthMm: 1, heightMm: 1, offsetMm: 0, depthMm: 1, reverse: false })
   render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
-  fireEvent.click(screen.getByLabelText('Allowed Area 01 Hide'))
+  fireEvent.click(screen.getByLabelText('Block 2 Hide'))
   fireEvent.click(screen.getByLabelText('Block Hide'))
-  expect(leakPreviewStore.getState().ignoreAreas[0]).toMatchObject({ enabled: true, visible: false })
+  expect(leakPreviewStore.getState().blockers[1]).toMatchObject({ label: 'Block 2', enabled: true, visible: false })
+  expect(leakPreviewStore.getState().ignoreAreas).toEqual([])
   expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: true, visible: false })
-  fireEvent.click(screen.getByLabelText('Allowed Area 01 적용'))
+  fireEvent.click(screen.getByLabelText('Block 2 적용'))
   fireEvent.click(screen.getByLabelText('Block 적용'))
-  expect(leakPreviewStore.getState().ignoreAreas[0]).toMatchObject({ enabled: false, visible: false })
+  expect(leakPreviewStore.getState().blockers[1]).toMatchObject({ enabled: false, visible: false })
   expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: false, visible: false })
   fireEvent.click(screen.getByLabelText('Block Show'))
   expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: false, visible: true })
+})
+
+it('connects both angle tables to viewer highlights and deletes their candidate glow points', () => {
+  const scene = createSceneFixture()
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  const result = createRayTraceResultFixture()
+  result.receivers = createEscapeEnclosureReceivers(scene)
+  result.receiver_grids = result.receivers.map((receiver, index) => ({ receiver_id: receiver.receiver_id,
+    resolution: [1, 1], bin_area_mm2: 1, flux_lumen: [[index === 0 ? 1 : 0]], hit_count: index === 0 ? 1 : 0 }))
+  result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count: 1, selected_count: 1, excluded_count: 0,
+    bins: [0, 30, 60, 80].map((min_deg, index) => ({ min_deg, max_deg: [30, 60, 80, 90][index], count: index === 3 ? 1 : 0, flux_lumen: index === 3 ? 1 : 0 })),
+    cells: [{ receiver_id: result.receivers[0].receiver_id, row: 0, column: 0, position: [60, 30, 5], count: 1, grazing_count: 1, min_depth: 0, max_depth: 0, angle_sum_deg: 85, angle_bin_counts: [0, 0, 0, 1] }] }
+  result.metrics._observer_probe_summary = { contract: 'observer_path_support_v1', execution_backend: 'cpu', measure: 'path_support_counts',
+    settings: { ...defaultObserverSettings, resolution: 8 }, attempted_count: 64, planned_count: 64,
+    direct_count: 1, reflected_count: 0, excluded_count: 0, depth_limited_count: 0, complete: true, stopped: false, runtime_sec: 0,
+    views: [{ horizontal_deg: 10, vertical_deg: 20, direct_count: 1, reflected_count: 0, direction: [0, 0, 1], observer_center: [30, 30, 100], u_axis: [1, 0, 0], v_axis: [0, 1, 0], spacing_mm: [5, 5] }],
+    cells: [{ view_index: 0, row: 0, column: 0, position: [30, 30, 10], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }] }
+  const detection = detectLeakPreviewCandidates(scene, result)
+  act(() => leakPreviewStore.getState().setDetection(result, detection.points, detection.candidates))
+  fireEvent.click(screen.getByRole('button', { name: '10 / 20' }))
+  expect(leakPreviewStore.getState().highlight).toEqual({ kind: 'observer', horizontal: 10, vertical: 20 })
+  expect(screen.getByRole('button', { name: '10 / 20' }).getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(screen.getByRole('button', { name: '80–90°' }))
+  expect(leakPreviewStore.getState().highlight).toEqual({ kind: 'escape', bin: 3 })
+  fireEvent.click(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0])
+  expect(workspaceStore.getState().roiScopes[0]?.clipBox).toMatchObject({ plane: 'xy', zUnbounded: true })
+  const deletedId = leakPreviewStore.getState().candidates[0].id
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Candidate 1' }))
+  expect(leakPreviewStore.getState().points.some((point) => point.candidateId === deletedId)).toBe(false)
+})
+
+it('automatically budgets sampling and blocks excessive angles before starting', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'auto.step', displayName: 'Auto' })
+  workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0]))
+  mocks.start.mockResolvedValue({ job_id: 'auto-job' })
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button', { name: '기존 Emitter 사용' }))
+  fireEvent.click(screen.getByLabelText('시야각 역추적 사용'))
+  expect(screen.getByRole('button', { name: '기본' }).getAttribute('aria-pressed')).toBe('true')
+  const advanced = screen.getByText('고급 설정').closest('details')!
+  expect(advanced.open).toBe(false)
+  act(() => leakPreviewStore.getState().setObserver({ horizontal_deg: 0, vertical_deg: 0, range_deg: 2, step_deg: .5 }))
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
+  expect(mocks.start.mock.calls[0][0].request.observer_probe).toMatchObject({ resolution: 43, samples_per_cell: 1, step_deg: .5 })
+  act(() => leakPreviewStore.getState().setObserver({ range_deg: 10, step_deg: .1 }))
+  expect(screen.getByRole('alert').textContent).toContain('각도 조합')
+  expect((screen.getByRole('button', { name: 'Run Leak Preview' }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: /간격 자동 조정/ }))
+  expect(leakPreviewStore.getState().observer.step_deg).toBe(2)
+  expect((screen.getByRole('button', { name: 'Run Leak Preview' }) as HTMLButtonElement).disabled).toBe(false)
 })

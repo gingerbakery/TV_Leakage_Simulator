@@ -1,9 +1,11 @@
+import { migrateAllowedAreas } from './blocker-groups'
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
 import type { RayTraceResult } from '@/api'
 import type {
   LeakPreviewCandidate,
+  LeakPreviewHighlight,
   LeakPreviewBlocker,
   LeakPreviewIgnoreArea,
   LeakPreviewPoint,
@@ -71,6 +73,8 @@ interface LeakPreviewState {
   visualizationVisible: boolean
   ignoreAreasVisible: boolean
   blockersVisible: boolean
+  highlight: LeakPreviewHighlight | null
+  setHighlight(highlight: LeakPreviewState['highlight']): void
   selectedCandidateId: string | null
   ignoreAreaSelectionArmed: boolean
   activeIgnoreAreaId: string | null
@@ -103,6 +107,10 @@ interface LeakPreviewState {
   setIgnoreAreaEnabled(areaId: string, enabled: boolean): void
   setIgnoreAreaVisible(areaId: string, visible: boolean): void
   removeIgnoreArea(areaId: string): void
+  migrateAllowedAreas(): void
+  appendBlockerRegion(blockerId: string, patch: Partial<LeakPreviewBlocker>): void
+  updateBlockerRegion(blockerId: string, regionId: string, patch: Partial<LeakPreviewBlocker>): void
+  removeBlockerRegion(blockerId: string, regionId: string): void
   addBlocker(blocker: LeakPreviewBlocker): void
   updateBlocker(blockerId: string, patch: Partial<LeakPreviewBlocker>): void
   removeBlocker(blockerId: string): void
@@ -162,6 +170,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   visualizationVisible: true,
   ignoreAreasVisible: true,
   blockersVisible: true,
+  highlight: null,
   selectedCandidateId: null,
   ignoreAreaSelectionArmed: false,
   activeIgnoreAreaId: null,
@@ -187,7 +196,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       return {
           sceneToken,
           sceneIdentity,
-          observer: { ...defaultObserverSettings, ...preserved?.observer },
+          observer: { ...defaultObserverSettings, ...preserved?.observer, sampling: preserved?.observer ? preserved.observer.sampling ?? 'manual' : 'balanced' },
           detectionMode: 'escape_directions',
           sourceMode: 'face',
           sourceEmitterIds: [],
@@ -203,6 +212,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           visualizationVisible: true,
           ignoreAreasVisible: preserved?.ignoreAreasVisible ?? true,
           blockersVisible: preserved?.blockersVisible ?? true,
+          highlight: null,
           selectedCandidateId: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
@@ -240,9 +250,10 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   setDetection: (result, points, candidates) => set({
     result,
     points,
-    candidates,
+    candidates: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength),
+    highlight: null,
     visualizationVisible: true,
-    selectedCandidateId: candidates[0]?.id ?? null,
+    selectedCandidateId: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength)[0]?.id ?? null,
   }),
   removeCandidate: (candidateId) => set((state) => {
     const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
@@ -254,13 +265,15 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     result: null,
     points: [],
     candidates: [],
+    highlight: null,
     selectedCandidateId: null,
     runSignature: null,
   }),
   setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
   setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
   setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
-  selectCandidate: (selectedCandidateId) => set({ selectedCandidateId }),
+  setHighlight: (highlight) => set({ highlight, selectedCandidateId: null, visualizationVisible: true }),
+  selectCandidate: (selectedCandidateId) => set({ selectedCandidateId, highlight: null, visualizationVisible: true }),
   beginIgnoreAreaSelection: (areaId) => setAndPersist((state) => {
     if (areaId && state.ignoreAreas.some((area) => area.id === areaId)) {
       return { ignoreAreaSelectionArmed: true, activeIgnoreAreaId: areaId }
@@ -307,6 +320,29 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       ? { activeIgnoreAreaId: null, ignoreAreaSelectionArmed: false }
       : {}),
   })),
+  migrateAllowedAreas: () => setAndPersist((state) => state.ignoreAreas.length ? {
+    blockers: migrateAllowedAreas(state.blockers, state.ignoreAreas, state.ignoreAreasVisible), ignoreAreas: [],
+  } : {}),
+  appendBlockerRegion: (blockerId, patch) => setAndPersist((state) => ({
+    blockers: state.blockers.map((group) => group.id !== blockerId ? group : {
+      ...group,
+      baseCenter: patch.baseCenter ?? group.baseCenter, normal: patch.normal ?? group.normal,
+      uAxis: patch.uAxis ?? group.uAxis, vAxis: patch.vAxis ?? group.vAxis,
+      regions: [...(group.regions ?? [{ ...group, regions: undefined }]), {
+        ...group, ...patch, regions: undefined, enabled: true, visible: true, id: crypto.randomUUID(),
+      }],
+    }),
+  })),
+  updateBlockerRegion: (blockerId, regionId, patch) => setAndPersist((state) => ({
+    blockers: state.blockers.map((group) => group.id !== blockerId ? group : {
+      ...group, regions: (group.regions ?? []).map((region) => region.id === regionId ? { ...region, ...patch, id: region.id } : region),
+    }),
+  })),
+  removeBlockerRegion: (blockerId, regionId) => setAndPersist((state) => ({
+    blockers: state.blockers.map((group) => group.id !== blockerId ? group : {
+      ...group, regions: group.regions?.filter((region) => region.id !== regionId),
+    }),
+  })),
   addBlocker: (blocker) => setAndPersist((state) => ({
     blockers: [...state.blockers, blocker],
   })),
@@ -326,20 +362,25 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       ? blockerId
       : null,
   })),
-  finishBlockerAreaSelection: () => set({ blockerAreaSelectionId: null }),
+  finishBlockerAreaSelection: () => setAndPersist((state) => ({
+    blockerAreaSelectionId: null, blockers: state.blockers.filter((blocker) => blocker.regions?.length !== 0),
+  })),
   restoreProjectState: (projectState) => {
     const restored = projectState ?? createDefaultLeakPreviewProjectState()
     set({
       ...structuredClone(restored),
+      blockers: structuredClone(migrateAllowedAreas(restored.blockers, restored.ignoreAreas, restored.ignoreAreasVisible)),
+      ignoreAreas: [],
       sourceEmitterIds: restored.sourceEmitterIds ?? [],
       detectionMode: restored.detectionMode ?? 'planar',
-      observer: { ...defaultObserverSettings, ...restored.observer },
+      observer: { ...defaultObserverSettings, ...restored.observer, sampling: restored.observer ? restored.observer.sampling ?? 'manual' : 'balanced' },
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,
       result: null,
       points: [],
       candidates: [],
+      highlight: null,
       selectedCandidateId: null,
       ignoreAreaSelectionArmed: false,
       activeIgnoreAreaId: null,
@@ -366,6 +407,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     visualizationVisible: true,
     ignoreAreasVisible: true,
     blockersVisible: true,
+    highlight: null,
     selectedCandidateId: null,
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,

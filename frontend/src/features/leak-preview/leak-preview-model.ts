@@ -1,3 +1,4 @@
+import { planObserverSampling, type ObserverSamplingMode } from './observer-sampling'
 import type {
   EmitterSpec,
   RayTraceConfigRequest,
@@ -20,6 +21,7 @@ import {
 } from './leak-preview-geometry'
 
 import type { BsdfAsset } from '@/features/materials/bsdf-asset'
+import { expandBlockerGroups } from './blocker-groups'
 import { buildPrecisionPreviewConstraints } from '@/features/raytracing/precision-preview-constraints'
 
 export { getLeakPreviewBounds } from './leak-preview-geometry'
@@ -48,6 +50,9 @@ export interface LeakPreviewIgnoreArea {
 }
 
 export interface LeakPreviewBlocker {
+  sequence?: number
+  shape?: 'box' | 'ellipse'
+  regions?: LeakPreviewBlocker[]
   visible?: boolean
   id: string
   label: string
@@ -69,6 +74,7 @@ export interface LeakPreviewBlocker {
  * they are derived/transient state and must never be replayed as active work.
  */
 export interface LeakPreviewObserverSettings {
+  sampling?: ObserverSamplingMode
   enabled: boolean
   horizontal_deg: number
   vertical_deg: number
@@ -79,7 +85,7 @@ export interface LeakPreviewObserverSettings {
 }
 
 export const defaultObserverSettings: LeakPreviewObserverSettings = {
-  enabled: false, horizontal_deg: 85, vertical_deg: 0, range_deg: 1, step_deg: 1,
+  enabled: false, sampling: 'balanced', horizontal_deg: 85, vertical_deg: 0, range_deg: 1, step_deg: 1,
   resolution: 64, samples_per_cell: 2,
 }
 
@@ -100,8 +106,18 @@ export interface LeakPreviewProjectState {
   blockers: LeakPreviewBlocker[]
 }
 
+export type LeakPreviewHighlight = { kind: 'observer'; horizontal: number; vertical: number } | { kind: 'escape'; bin: number }
+
+export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight: LeakPreviewHighlight | null, candidateId: string | null): boolean {
+  if (highlight?.kind === 'observer') return point.observerAngles?.[0] === highlight.horizontal && point.observerAngles?.[1] === highlight.vertical
+  if (highlight?.kind === 'escape') return (point.angleBins?.[highlight.bin] ?? 0) > 0
+  return candidateId !== null && point.candidateId === candidateId
+}
+
 export interface LeakPreviewPoint {
   candidateId?: string
+  observerAngles?: [number, number]
+  angleBins?: number[]
   position: Vec3
   relativeStrength: number
 }
@@ -199,7 +215,6 @@ export function createLeakPreviewBlockerFromFaces(
   faceIds: number[],
   sequence: number,
 ): LeakPreviewBlocker | null {
-  const suggestedLabels = ['Main Board', 'Power Board', 'Speaker']
   let normal: Vec3 = [0, 0, 0]
   let referenceNormal: Vec3 | null = null
   let planeOrigin: Vec3 | null = null
@@ -271,7 +286,7 @@ export function createLeakPreviewBlockerFromFaces(
   )
   return {
     id: `preview-blocker-${Date.now()}-${sequence}`,
-    label: suggestedLabels[sequence - 1] ?? `Preview Blocker ${String(sequence).padStart(2, '0')}`,
+    label: `Block ${sequence}`,
     enabled: true,
     baseCenter,
     uAxis,
@@ -431,7 +446,7 @@ export interface EscapeDirectionSummary {
   excluded_count: number
   bins: Array<{ min_deg: number; max_deg: number; count: number; flux_lumen: number }>
   cells: Array<{ receiver_id: string; row: number; column: number; position: Vec3; count: number;
-    grazing_count: number; min_depth: number; max_depth: number; angle_sum_deg: number }>
+    grazing_count: number; min_depth: number; max_depth: number; angle_sum_deg: number; angle_bin_counts?: number[] }>
 }
 
 export function escapeDirectionSummary(result: RayTraceResult): EscapeDirectionSummary | null {
@@ -448,7 +463,9 @@ export function escapeDirectionSummary(result: RayTraceResult): EscapeDirectionS
     return grid && count(cell.row) && count(cell.column) && cell.row < grid.resolution[1] && cell.column < grid.resolution[0] &&
       Array.isArray(cell.position) && cell.position.length === 3 && cell.position.every(Number.isFinite) &&
       count(cell.count) && cell.count > 0 && count(cell.grazing_count) && cell.grazing_count <= cell.count &&
-      count(cell.min_depth) && count(cell.max_depth) && cell.max_depth >= cell.min_depth && Number.isFinite(cell.angle_sum_deg)
+      count(cell.min_depth) && count(cell.max_depth) && cell.max_depth >= cell.min_depth && Number.isFinite(cell.angle_sum_deg) &&
+      (cell.angle_bin_counts === undefined || (Array.isArray(cell.angle_bin_counts) && cell.angle_bin_counts.length === 4 &&
+        cell.angle_bin_counts.every(count) && cell.angle_bin_counts.reduce((sum, n) => sum + n, 0) === cell.count))
   })) return null
   return value
 }
@@ -650,10 +667,11 @@ export function buildLeakPreviewRequest({
   // solve. Reuse the display tessellation so a large STEP does not have to
   // materialize its precision trace mesh before the first Preview ray.
   request.geometry_mode = 'preview'
-  request.preview_blockers = blockers
+  request.preview_blockers = expandBlockerGroups(blockers)
     .filter((blocker) => blocker.enabled)
     .map((blocker) => ({
       blocker_id: blocker.id,
+      shape: blocker.shape ?? 'box',
       center: leakPreviewBlockerCenter(blocker),
       u_axis: blocker.uAxis,
       v_axis: blocker.vAxis,
@@ -671,18 +689,13 @@ export function buildLeakPreviewRequest({
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const extent = bounds.size.map((value) => Math.max(value, 0.001)) as Vec3
     if (observer?.enabled) {
-      const { enabled: _enabled, ...settings } = observer
+      const plan = planObserverSampling(observer, request.emitters.length)
+      if (plan.error) throw new Error(`역추적 탐색 한도 초과: ${plan.error}`)
+      const { enabled: _enabled, sampling: _sampling, ...rawSettings } = observer
+      const settings = { ...rawSettings, resolution: plan.resolution, samples_per_cell: plan.samples_per_cell }
       for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
         const value = settings[key]
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
-      }
-      const offsets = new Set([0, -settings.range_deg, settings.range_deg])
-      for (let i = -Math.floor(settings.range_deg / settings.step_deg); i <= Math.floor(settings.range_deg / settings.step_deg); i += 1) offsets.add(i * settings.step_deg)
-      const horizontal = new Set([...offsets].map((x) => Math.max(-89.9, Math.min(89.9, settings.horizontal_deg + x)).toFixed(8)))
-      const vertical = new Set([...offsets].map((x) => Math.max(-89.9, Math.min(89.9, settings.vertical_deg + x)).toFixed(8)))
-      const views = horizontal.size * vertical.size
-      if (views > 121 || views * settings.resolution ** 2 * settings.samples_per_cell * 2 > 500_000) {
-        throw new Error('역추적 탐색 한도 초과: 주변 범위·해상도·셀 반복을 줄이세요.')
       }
       request.observer_probe = settings
     }
@@ -962,6 +975,7 @@ interface LeakPreviewEscapeSample {
   minReflectionCount: number
   maxReflectionCount: number
   meanExitAngleDeg: number
+  angleBins?: number[]
 }
 
 interface AccumulatedEscapeSample {
@@ -1012,7 +1026,7 @@ function sampledEscapeLocations(
     `${cell.receiver_id}:${cell.row}:${cell.column}`,
     { position: cell.position, sampleCount: cell.count, grazingSampleCount: cell.grazing_count,
       minReflectionCount: cell.min_depth, maxReflectionCount: cell.max_depth,
-      meanExitAngleDeg: cell.angle_sum_deg / Math.max(1, cell.count) },
+      meanExitAngleDeg: cell.angle_sum_deg / Math.max(1, cell.count), angleBins: cell.angle_bin_counts },
   ]))
   const accumulated = new Map<string, AccumulatedEscapeSample>()
   for (const path of result.stored_paths) {
@@ -1085,7 +1099,7 @@ interface ObserverProbeCell {
 }
 export interface ObserverProbeSummary {
   contract: 'observer_path_support_v1'; execution_backend: 'cpu' | 'gpu_cuda'; requested_backend?: 'cpu' | 'gpu_cuda'; performance?: Record<string, unknown>; sample_contract?: string; measure: 'path_support_counts'
-  settings: Omit<LeakPreviewObserverSettings, 'enabled'>
+  settings: Omit<LeakPreviewObserverSettings, 'enabled' | 'sampling'>
   attempted_count: number; planned_count: number; direct_count: number; reflected_count: number
   excluded_count: number; depth_limited_count: number; complete: boolean; stopped: boolean; runtime_sec: number
   views: ObserverProbeView[]; cells: ObserverProbeCell[]
@@ -1137,7 +1151,7 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
 
     connectedClusters(active).forEach((cluster, index) => {
       const candidateId = `observer-${viewIndex}-${index}`
-      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / maximum, candidateId }))
+      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / maximum, candidateId, observerAngles: [view.horizontal_deg, view.vertical_deg] }))
       const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
       const directCount = evidence.reduce((sum, cell) => sum + cell.direct_count, 0)
       const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)
@@ -1232,7 +1246,7 @@ export function detectLeakPreviewCandidates(
     }
     for (const cluster of connectedClusters(active)) {
       const candidateId = `${grid.receiver_id}:${Math.min(...cluster.map((cell) => cell.row))}:${Math.min(...cluster.map((cell) => cell.column))}`
-      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / globalMaximum, candidateId }))
+      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / globalMaximum, candidateId, angleBins: cell.sample?.angleBins }))
       const fluxLumen = cluster.reduce((sum, cell) => sum + cell.flux, 0)
       const weightedCenter = cluster.reduce<Vec3>(
         (sum, cell) => [
@@ -1318,8 +1332,8 @@ function boxesOverlap(
   return !(
     maximum[0] < clip.xMin || minimum[0] > clip.xMax ||
     maximum[1] < clip.yMin || minimum[1] > clip.yMax ||
-    maximum[2] < (clip.zMin ?? -Infinity) ||
-    minimum[2] > (clip.zMax ?? Infinity)
+    (!clip.zUnbounded && (maximum[2] < (clip.zMin ?? -Infinity) ||
+    minimum[2] > (clip.zMax ?? Infinity)))
   )
 }
 
@@ -1439,4 +1453,46 @@ export function createCandidateReceiver(
       Math.max(8, Math.min(120, Math.round(heightMm / pixelSize))),
     ],
   }
+}
+
+/** Include the actual preview emission surfaces, in world coordinates. */
+export function candidateRoiWithSources(scene: ScenePayload, candidate: LeakPreviewCandidate,
+  emitters: EmitterSpec[], transforms: ComponentTransformRule[] = []): RoiClipBox {
+  const clip: RoiClipBox = { ...candidate.clipBox, plane: 'xy', zUnbounded: true }
+  const bounds = getLeakPreviewBounds(scene, transforms)
+  clip.zMin = Math.min(clip.zMin ?? Infinity, bounds.center[2] - bounds.size[2] / 2 - 0.01)
+  clip.zMax = Math.max(clip.zMax ?? -Infinity, bounds.center[2] + bounds.size[2] / 2 + 0.01)
+  const transform = createLeakPreviewPointTransform(scene, transforms)
+  const include = (point: Vec3) => {
+    clip.xMin = Math.min(clip.xMin, point[0] - 0.01)
+    clip.xMax = Math.max(clip.xMax, point[0] + 0.01)
+    clip.yMin = Math.min(clip.yMin, point[1] - 0.01)
+    clip.yMax = Math.max(clip.yMax, point[1] + 0.01)
+    clip.zMin = Math.min(clip.zMin ?? Infinity, point[2] - 0.01)
+    clip.zMax = Math.max(clip.zMax ?? -Infinity, point[2] + 0.01)
+  }
+  for (const emitter of emitters.filter((item) => item.enabled)) {
+    if (emitter.emitter_type === 'face') {
+      const sourceComponents = new Set(emitter.source_component_ids ?? [])
+      const faceIds = new Set([...emitter.face_indices, ...scene.mesh.face_component_ids.flatMap((id, index) =>
+        id != null && sourceComponents.has(id) ? [index] : [])])
+      for (const faceId of faceIds) {
+        const component = scene.mesh.face_component_ids[faceId]
+        for (const vertexId of scene.mesh.faces[faceId] ?? []) {
+          const vertex = scene.mesh.vertices[vertexId]
+          if (vertex) include(component == null ? vertex : transform(component, vertex))
+        }
+      }
+    } else if (emitter.surface_construction === 'polygon_auto' && emitter.polygon_vertices?.length) {
+      emitter.polygon_vertices.forEach(include)
+    } else if (emitter.center && emitter.width_mm != null && emitter.height_mm != null) {
+      const uAxis = normalized(emitter.u_axis ?? [1, 0, 0])
+      const rawV = emitter.v_axis ?? [0, 1, 0]
+      const vAxis = normalized(subtract(rawV, addScaled([0, 0, 0], uAxis, dot(rawV, uAxis))))
+      for (const u of [-1, 1]) for (const v of [-1, 1]) include(addScaled(addScaled(
+        emitter.center, uAxis, u * emitter.width_mm / 2),
+        vAxis, v * emitter.height_mm / 2))
+    }
+  }
+  return clip
 }

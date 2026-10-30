@@ -36,6 +36,11 @@ describe('ray tracing model', () => {
     expect(request.roi_clip_boxes).toBeUndefined()
     expect(request.analysis_roi).toEqual({ face_indices: [0], clip_boxes: [{ x_min: 0, x_max: 1, y_min: 0, y_max: 1, z_min: 0, z_max: 1 }] })
     expect(buildRayTraceRequest({ ...options, roiScopes: [{ ...roi, observerView: undefined }] }).roi_faces).toEqual([0])
+    const unlimited = buildRayTraceRequest({ ...options, roiScopes: [{ ...roi, observerView: undefined,
+      clipBox: { ...roi.clipBox, plane: 'xy', zUnbounded: true } }] })
+    expect(unlimited.analysis_roi?.clip_boxes[0].z_unbounded).toBe(true)
+    expect(unlimited.roi_clip_boxes?.[0].z_unbounded).toBe(true)
+
   })
 
   it('weights termination losses across unequal segments and preserves unavailable diagnostics', () => {

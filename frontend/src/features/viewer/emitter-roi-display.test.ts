@@ -56,3 +56,16 @@ it('leaves the full display shader unchanged when ROI is disabled', () => {
   clipEmitterDisplayToRoi(root, [])
   expect(material.onBeforeCompile).toBe(compile)
 })
+
+it('has no positive or negative Z cutoff in CPU predicates or GLSL for unbounded ROI', () => {
+  const unlimited: RoiClipBox[] = [{ ...boxes[0], plane: 'xyz', zUnbounded: true }]
+  expect(emitterPointInRoi(new Vector3(.5, .5, 1e30), unlimited)).toBe(true)
+  expect(emitterPointInRoi(new Vector3(.5, .5, -1e30), unlimited)).toBe(true)
+  const material = new MeshBasicMaterial()
+  clipEmitterDisplayToRoi(new Mesh(new BoxGeometry(), material), unlimited)
+  const shader = { uniforms: {}, vertexShader: ShaderLib.basic.vertexShader, fragmentShader: ShaderLib.basic.fragmentShader } as Parameters<Material['onBeforeCompile']>[0]
+  material.onBeforeCompile(shader, {} as Parameters<Material['onBeforeCompile']>[1])
+  expect(shader.fragmentShader).not.toContain('vEmitterRoiWorld.z >=')
+  expect(shader.fragmentShader).not.toContain('Infinity')
+  expect(shader.fragmentShader).toContain('vEmitterRoiWorld.x >=')
+})

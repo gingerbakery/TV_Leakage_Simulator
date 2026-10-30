@@ -15,6 +15,7 @@ import {
   observerProbeSummary,
   defaultObserverSettings,
   createCandidateReceiver,
+  candidateRoiWithSources,
   createLeakPreviewBlockerFromFaces,
   createLeakPreviewReceivers,
   detectLeakPreviewCandidates,
@@ -702,4 +703,37 @@ describe('whole-set leak preview', () => {
     expect(transformed[0].center[0]).toBeCloseTo(162)
     expect(transformed[1].display_name).toBe('Preview Left')
   })
+})
+
+it('extends a detector ROI to contain face, body and distant virtual emission surfaces', () => {
+  const scene = createSceneFixture()
+  const result = createRayTraceResultFixture()
+  result.receivers = [createEscapeEnclosureReceivers(scene)[0]]
+  result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [1, 1], bin_area_mm2: 1, flux_lumen: [[1]], hit_count: 1 }]
+  const candidate = detectLeakPreviewCandidates(scene, result).candidates[0]
+  const original = structuredClone(candidate.clipBox)
+  const face = createFaceEmitter('face', [0])
+  const body = { ...createFaceEmitter('body', []), source_component_ids: [2] }
+  const plane = { ...createDatumEmitter('plane', [-100, -100, -100], [0, 0, 0]), width_mm: 20, height_mm: 10 }
+  const clip = candidateRoiWithSources(scene, candidate, [face, body, plane])
+  expect(clip.xMin).toBeLessThanOrEqual(-110)
+  expect(clip.yMin).toBeLessThanOrEqual(-105)
+  expect(clip.zMin).toBeLessThan(-100)
+  expect(clip.zMax).toBeGreaterThan(20)
+  expect(clip.xMax).toBeGreaterThan(60)
+  expect(candidate.clipBox).toEqual(original)
+})
+
+it('creates Preview ROI with unlimited Z even without result emitter metadata', () => {
+  const scene = createSceneFixture()
+  const result = createRayTraceResultFixture()
+  result.receivers = [createEscapeEnclosureReceivers(scene)[0]]
+  result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [1, 1], bin_area_mm2: 1, flux_lumen: [[1]], hit_count: 1 }]
+  const candidate = detectLeakPreviewCandidates(scene, result).candidates[0]
+  candidate.clipBox = { plane: 'xyz', xMin: 0, xMax: 60, yMin: 0, yMax: 60, zMin: 0, zMax: 1 }
+  const clip = candidateRoiWithSources(scene, candidate, [])
+  expect(clip).toMatchObject({ plane: 'xy', zUnbounded: true, xMin: 0, xMax: 60, yMin: 0, yMax: 60 })
+  expect(clip.zMax).toBeGreaterThan(20)
+  // Even stale display depths must not exclude deep CAD faces.
+  expect(resolveLeakPreviewRoiFaces(scene, { ...clip, zMin: 0, zMax: 1 }, [], [])).toEqual([0, 1, 2, 3, 4])
 })

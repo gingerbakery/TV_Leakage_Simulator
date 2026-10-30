@@ -61,6 +61,7 @@ class EscapeCollectionTests(unittest.TestCase):
             self.assertTrue(c.record((0, 0, 0), (math.sin(rad), 0, -math.cos(rad)), 1., 0))
         summary = c.summary()
         self.assertEqual(summary["selected_count"], 9)
+        self.assertEqual([sum(cell["angle_bin_counts"][i] for cell in summary["cells"]) for i in range(4)], [2, 2, 2, 3])
         self.assertEqual([b["count"] for b in summary["bins"]], [2, 2, 2, 3])
         self.assertAlmostEqual(sum(b["flux_lumen"] for b in summary["bins"]), 9.)
         self.assertFalse(c.record((0, 0, 0), (0, 0, 1), 1., 0))

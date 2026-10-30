@@ -1,6 +1,9 @@
+import { planObserverSampling } from './observer-sampling'
+import { expandBlockerGroups } from './blocker-groups'
+import { BlockerEditor } from './blocker-editor'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { BoxSelect, Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Pencil, Play, Plus, ScanSearch, Square, StopCircle, Trash2, X } from 'lucide-react'
+import { Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Play, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
 
 import {
   apiClient,
@@ -25,9 +28,9 @@ import {
   buildLeakPreviewRequest,
   escapeDirectionSummary,
   observerProbeSummary,
-  createLeakPreviewBlockerFromFaces,
   createLeakPreviewBodyPlaneEmitters,
   createCandidateReceiver,
+  candidateRoiWithSources,
   detectLeakPreviewCandidates,
   resolveLeakPreviewRoiFaces,
   type LeakPreviewCandidate,
@@ -103,6 +106,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const sourceMode = useLeakPreviewStore((state) => state.sourceMode)
   const sourceComponentIds = useLeakPreviewStore((state) => state.sourceComponentIds)
   const sourceBodyFaceCount = useLeakPreviewStore((state) => state.sourceBodyFaceCount)
+  const migrateAllowedAreas = useLeakPreviewStore((state) => state.migrateAllowedAreas)
   const ensureScene = useLeakPreviewStore((state) => state.ensureScene)
   const rebindSceneToken = useLeakPreviewStore((state) => state.rebindSceneToken)
   const detectionMode = useLeakPreviewStore((state) => state.detectionMode)
@@ -118,14 +122,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const candidates = useLeakPreviewStore((state) => state.candidates)
   const previewPointCount = useLeakPreviewStore((state) => state.points.length)
   const visualizationVisible = useLeakPreviewStore((state) => state.visualizationVisible)
-  const ignoreAreasVisible = useLeakPreviewStore((state) => state.ignoreAreasVisible)
-  const blockersVisible = useLeakPreviewStore((state) => state.blockersVisible)
   const selectedCandidateId = useLeakPreviewStore((state) => state.selectedCandidateId)
-  const ignoreAreaSelectionArmed = useLeakPreviewStore((state) => state.ignoreAreaSelectionArmed)
-  const activeIgnoreAreaId = useLeakPreviewStore((state) => state.activeIgnoreAreaId)
   const ignoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const blockers = useLeakPreviewStore((state) => state.blockers)
-  const blockerAreaSelectionId = useLeakPreviewStore((state) => state.blockerAreaSelectionId)
   const runSignature = useLeakPreviewStore((state) => state.runSignature)
   const setSourceFaceIds = useLeakPreviewStore((state) => state.setSourceFaceIds)
   const setSourceBody = useLeakPreviewStore((state) => state.setSourceBody)
@@ -137,19 +136,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const setDetection = useLeakPreviewStore((state) => state.setDetection)
   const clearDetection = useLeakPreviewStore((state) => state.clearDetection)
   const setVisualizationVisible = useLeakPreviewStore((state) => state.setVisualizationVisible)
-  const setIgnoreAreasVisible = useLeakPreviewStore((state) => state.setIgnoreAreasVisible)
-  const setBlockersVisible = useLeakPreviewStore((state) => state.setBlockersVisible)
   const selectCandidate = useLeakPreviewStore((state) => state.selectCandidate)
-  const beginIgnoreAreaSelection = useLeakPreviewStore((state) => state.beginIgnoreAreaSelection)
   const finishIgnoreAreaSelection = useLeakPreviewStore((state) => state.finishIgnoreAreaSelection)
   const removeCandidate = useLeakPreviewStore((state) => state.removeCandidate)
-  const setIgnoreAreaVisible = useLeakPreviewStore((state) => state.setIgnoreAreaVisible)
-  const setIgnoreAreaEnabled = useLeakPreviewStore((state) => state.setIgnoreAreaEnabled)
-  const removeIgnoreArea = useLeakPreviewStore((state) => state.removeIgnoreArea)
-  const addBlocker = useLeakPreviewStore((state) => state.addBlocker)
-  const updateBlocker = useLeakPreviewStore((state) => state.updateBlocker)
-  const removeBlocker = useLeakPreviewStore((state) => state.removeBlocker)
-  const beginBlockerAreaSelection = useLeakPreviewStore((state) => state.beginBlockerAreaSelection)
   const finishBlockerAreaSelection = useLeakPreviewStore((state) => state.finishBlockerAreaSelection)
   const startMutation = useStartRayTraceMutation()
   const stopMutation = useStopRayTraceMutation()
@@ -157,13 +146,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const job = jobQuery.data
   const handledRunRef = useRef<string | null>(null)
   const [message, setMessage] = useState('광원으로 사용할 CAD Face를 선택하세요.')
-  const [pickingTarget, setPickingTarget] = useState<'source' | 'blocker' | null>(null)
-  const [editingBlockerId, setEditingBlockerId] = useState<string | null>(null)
-  const [blockerCreationPending, setBlockerCreationPending] = useState(false)
+  const [pickingTarget, setPickingTarget] = useState<'source' | null>(null)
 
   useEffect(() => {
-    if (scene) ensureScene(scene.metadata.scene_token)
-  }, [ensureScene, scene])
+    if (scene) { ensureScene(scene.metadata.scene_token); migrateAllowedAreas() }
+  }, [ensureScene, migrateAllowedAreas, scene])
 
   const isRunning = startMutation.isPending || job?.status === 'queued' || job?.status === 'running'
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
@@ -179,7 +166,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     () => cadFaceCount(scene, sourceFaceIds),
     [scene, sourceFaceIds],
   )
-  const analysisOnly = <T extends { visible?: boolean }>(items: T[]) => items.map(({ visible: _visible, ...item }) => item)
+  const observerPlan = planObserverSampling(observer, sourceMode === 'emitters' ? selectedEmitters.length : sourceMode === 'body' ? sourceComponentIds.length*2 : 2)
+  const analysisOnly = <T extends { visible?: boolean; label?: string }>(items: T[]) => items.map(({ visible: _visible, label: _label, ...item }) => item)
   const inputSignatureForSceneToken = (sceneToken: string | null) => JSON.stringify({
     sceneToken,
     sourceFaceIds,
@@ -197,7 +185,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     transformRules,
     excludedComponentIds,
     deletedComponentIds,
-    blockers: analysisOnly(blockers),
+    blockers: analysisOnly(expandBlockerGroups(blockers)),
     allowedAreas: analysisOnly(ignoreAreas),
   })
   const previewInputSignature = inputSignatureForSceneToken(
@@ -263,37 +251,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     setMessage(`Preview 실행 실패: ${job.error}`)
   }, [job])
 
-  const finishFaceSelection = async (target: 'source' | 'blocker') => {
-    if (target === 'blocker' && selectedFaceIds.length === 0) {
-      setMessage('3D Viewer에서 CAD Face를 하나 이상 선택하세요.')
-      return
-    }
-    if (target === 'blocker') {
-      if (!scene) return
-      setBlockerCreationPending(true)
-      setMessage('선택한 CAD Surface에서 Blocker를 생성하고 있습니다.')
-      // Paint the pending state before processing a potentially dense face.
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-      try {
-        const blocker = createLeakPreviewBlockerFromFaces(scene, selectedFaceIds, blockers.length + 1)
-        if (!blocker) {
-          setMessage('하나의 평평한 CAD Surface를 다시 선택하세요.')
-          return
-        }
-        addBlocker(blocker)
-        setEditingBlockerId(blocker.id)
-        beginBlockerAreaSelection(blocker.id)
-        setPickingTarget(null)
-        actions.setSelectedFaceIds([])
-        actions.setEmitterFaceSelectionArmed(false)
-        actions.setRoiBoxSelectionArmed(true)
-        clearDetection()
-        setMessage(`${blocker.label} 기준 Face 위에서 Blocker 영역을 드래그하세요.`)
-      } finally {
-        setBlockerCreationPending(false)
-      }
-      return
-    }
+  const finishFaceSelection = async () => {
     if (sourceMode === 'body') {
       if (selectedComponentIds.length === 0) {
         setMessage('3D Viewer에서 광원 Body를 하나 이상 선택하세요.')
@@ -325,6 +283,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
   const runPreview = async () => {
     if (!scene || !hasPreviewSource) return
+    finishBlockerAreaSelection()
+    actions.setRoiBoxSelectionArmed(false)
     clearDetection()
     handledRunRef.current = null
     setMessage('전체 세트의 외부 유출광을 탐색하고 있습니다.')
@@ -394,12 +354,16 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     }
   }
 
+  const highlight = useLeakPreviewStore((state) => state.highlight)
+  const setHighlight = useLeakPreviewStore((state) => state.setHighlight)
+
   const createRoi = (candidate: LeakPreviewCandidate, precision: boolean) => {
     if (!scene) return
     setMessage('ROI 후보에 포함되는 CAD Face를 찾고 있습니다.')
+    const clipBox = candidateRoiWithSources(scene, candidate, [...(previewResult?.emitters ?? []), ...emitters.filter((item) => item.enabled)], transformRules)
     const faceIds = resolveLeakPreviewRoiFaces(
       scene,
-      candidate.clipBox,
+      clipBox,
       hiddenComponentIds,
       deletedComponentIds,
       transformRules,
@@ -415,7 +379,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       source: 'box',
       view: 'coordinate',
       components,
-      clipBox: candidate.clipBox,
+      clipBox,
       observerView: candidate.observerEvidence ? {
         horizontalDeg: candidate.observerEvidence.horizontalDeg, verticalDeg: candidate.observerEvidence.verticalDeg,
         direction: candidate.observerEvidence.direction,
@@ -531,7 +495,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             disabled={isRunning || sourceMode === 'emitters'}
             onClick={() => {
               if (pickingTarget === 'source') {
-                void finishFaceSelection('source')
+                void finishFaceSelection()
                 return
               }
               finishIgnoreAreaSelection()
@@ -633,13 +597,23 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               ['vertical_deg', '상하 시야각 (°)', -89.9, 89.9, .1],
               ['range_deg', '주변 범위 (±°)', 0, 10, .1],
               ['step_deg', '각도 간격 (°)', .1, 10, .1],
-              ['resolution', '해상도 / 축', 8, 256, 1],
-              ['samples_per_cell', '셀 반복', 1, 16, 1],
             ] as const).map(([key, label, min, max, step]) => <label key={key} className="space-y-1 text-xs">
               <span>{label}</span><NumberInput aria-label={label} className="h-8 w-full rounded border border-border bg-background px-2" value={observer[key]} min={min} max={max} step={step} disabled={isRunning}
-                onValueChange={(value) => setObserver({ [key]: step === 1 ? Math.round(Math.max(min, Math.min(max, value))) : Math.max(min, Math.min(max, value)) })} />
+                onValueChange={(value) => setObserver({ [key]: Math.max(min, Math.min(max, value)) })} />
             </label>)}
           </div>
+          <div className="space-y-1">
+            <span className="flex items-center gap-1 text-xs font-medium">검사 수준<HelpTooltip label="역추적 검사 수준 도움말">각도 수와 광원 수에 맞춰 해상도·셀 반복을 자동 배분합니다. 빠르게는 위치 탐색, 기본은 일반 확인, 세밀하게는 추가 탐색용입니다. 등급은 정확도 보장이 아니며 미검출은 빛샘 없음의 판정이 아닙니다. 각도 간격은 임의로 바꾸지 않습니다.</HelpTooltip></span>
+            <div className="grid grid-cols-3 gap-1">{([['fast', '빠르게'], ['balanced', '기본'], ['fine', '세밀하게']] as const).map(([sampling, label]) => <Button key={sampling} size="sm" variant={(observer.sampling ?? 'manual') === sampling ? 'default' : 'outline'} aria-pressed={(observer.sampling ?? 'manual') === sampling} disabled={isRunning} onClick={() => setObserver({ sampling })}>{label}</Button>)}</div>
+          </div>
+          {!observerPlan.error ? <div className="text-xs text-muted-foreground">{observer.sampling && observer.sampling !== 'manual' ? '자동 배분' : '직접 설정'} · {observerPlan.views}방향 · 표본 {observerPlan.plannedCount.toLocaleString()}개</div> : <div className="space-y-1"><div role="alert" className="text-xs text-amber-700 dark:text-amber-400">{observerPlan.error}</div>{observerPlan.views > 121 ? <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ step_deg: observerPlan.suggestedStep })}>간격 자동 조정 · {observerPlan.suggestedStep}°</Button> : null}</div>}
+          <details className="rounded-md border border-border p-2">
+            <summary className="cursor-pointer text-xs font-medium">고급 설정</summary>
+            <div className="mt-2 space-y-2">
+              <label className="flex items-center gap-1 text-xs"><input aria-label="역추적 직접 설정" type="checkbox" checked={(observer.sampling ?? 'manual') === 'manual'} disabled={isRunning} onChange={(event) => setObserver({ sampling: event.currentTarget.checked ? 'manual' : 'balanced', resolution: observerPlan.resolution, samples_per_cell: observerPlan.samples_per_cell })} />직접 설정<HelpTooltip label="역추적 샘플링 도움말">해상도/축은 모델 투영 영역의 가로·세로 격자 수입니다. 셀 반복은 각 칸에서 검사할 위치 수로, 첫 검사는 중심이고 추가 검사는 칸 안의 다른 위치입니다. 해상도를 두 배로 하면 격자 표본은 네 배, 반복을 두 배로 하면 두 배가 됩니다.</HelpTooltip></label>
+              <div className="grid grid-cols-2 gap-2">{([['resolution', '해상도 / 축', 8, 256], ['samples_per_cell', '셀 반복', 1, 16]] as const).map(([key, label, min, max]) => <label key={key} className="space-y-1 text-xs"><span>{label}</span><NumberInput aria-label={label} className="h-8 w-full rounded border border-border bg-background px-2" value={observerPlan[key]} min={min} max={max} disabled={isRunning || (observer.sampling ?? 'manual') !== 'manual'} onValueChange={(value) => setObserver({ [key]: Math.round(Math.max(min, Math.min(max, value))) })} /></label>)}</div>
+            </div>
+          </details>
           <div className="flex gap-1"><Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ horizontal_deg: 85, vertical_deg: 0, range_deg: 4, step_deg: 2 })}>좌우 극각</Button>
             <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ horizontal_deg: 0, vertical_deg: 85, range_deg: 4, step_deg: 2 })}>상하 극각</Button></div>
           <div className="text-xs text-muted-foreground">역추적 {rayTraceConfig.compute_backend === 'gpu_cuda' ? 'NVIDIA GPU 요청' : 'CPU'} · 직광 / 반사광</div>
@@ -679,7 +653,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <StopCircle /> Preview Stop
           </Button>
         ) : (
-          <Button className="w-full" disabled={!hasPreviewSource} onClick={() => void runPreview()}>
+          <Button className="w-full" disabled={!hasPreviewSource || (detectionMode === 'escape_directions' && observer.enabled && observerPlan.error !== null)} onClick={() => void runPreview()}>
             <Play /> Run Leak Preview
           </Button>
         )}
@@ -712,231 +686,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
       </section>
 
-      <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1.5 text-sm font-semibold">
-            <Cuboid className="size-4 text-slate-500" /> Preview Blockers
-            <HelpTooltip label="Block 적용 및 표시 도움말">체크박스는 해석 적용 ON/OFF, 눈 아이콘은 화면 표시입니다. 숨겨도 ON인 Block은 해석에 적용됩니다.</HelpTooltip>
-          </span>
-          <div className="flex items-center gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={blockers.length === 0}
-              onClick={() => setBlockersVisible(!blockersVisible)}
-            >
-              {blockersVisible ? <Eye /> : <EyeOff />}
-              {blockersVisible ? 'Hide All' : 'Show All'}
-            </Button>
-            {pickingTarget !== 'blocker' ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={isRunning}
-                onClick={() => {
-                  finishIgnoreAreaSelection()
-                  finishBlockerAreaSelection()
-                  actions.setRoiBoxSelectionArmed(false)
-                  actions.setSelectedFaceIds([])
-                  actions.setEmitterFaceSelectionArmed(true)
-                  setPickingTarget('blocker')
-                  setMessage('3D Viewer에서 Blocker 기준 CAD Surface를 선택하세요.')
-                }}
-              >
-                <Cuboid /> Add Blocker
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        {pickingTarget === 'blocker' ? (
-          <div className="rounded-md border border-sky-300 bg-sky-50/70 p-2 dark:border-sky-700 dark:bg-sky-950/25">
-            <div className="mb-2 text-xs font-medium">
-              {selectedFaceIds.length > 0 ? 'CAD Surface 선택됨' : 'CAD Surface를 선택하세요'}
-            </div>
-            <div className="grid grid-cols-2 gap-1.5">
-              <Button
-                size="sm"
-                disabled={selectedFaceIds.length === 0 || blockerCreationPending}
-                onClick={() => void finishFaceSelection('blocker')}
-              >
-                <Cuboid /> {blockerCreationPending ? '생성 중' : 'Blocker 생성'}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={blockerCreationPending}
-                onClick={() => {
-                  actions.setSelectedFaceIds([])
-                  actions.setEmitterFaceSelectionArmed(false)
-                  finishBlockerAreaSelection()
-                  actions.setRoiBoxSelectionArmed(false)
-                  setPickingTarget(null)
-                  setMessage('Blocker 추가를 취소했습니다.')
-                }}
-              >
-                <X /> 취소
-              </Button>
-            </div>
-          </div>
-        ) : null}
-        {blockers.map((blocker) => {
-          const editing = editingBlockerId === blocker.id
-          const fieldClass = 'mt-1 h-8 w-full rounded-md border border-border bg-background/70 px-2 text-xs outline-none focus:border-primary/60'
-          return (
-            <div key={blocker.id} className="rounded-md border border-border p-2">
-              <div className="flex items-center gap-1">
-                <input
-                  aria-label={`${blocker.label} name`}
-                  className="h-8 min-w-0 flex-1 rounded-md bg-transparent px-1 text-xs font-semibold outline-none focus:bg-muted/50"
-                  value={blocker.label}
-                  onChange={(event) => updateBlocker(blocker.id, { label: event.currentTarget.value })}
-                />
-                <label className="flex items-center gap-1 text-xs"><input type="checkbox" aria-label={`${blocker.label} 적용`} checked={blocker.enabled} disabled={isRunning} onChange={(event) => updateBlocker(blocker.id, { enabled: event.currentTarget.checked })} />{blocker.enabled ? 'ON' : 'OFF'}</label>
-                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} ${blocker.visible !== false ? 'Hide' : 'Show'}`} onClick={() => updateBlocker(blocker.id, { visible: blocker.visible === false })}>
-                  {blocker.visible !== false ? <Eye /> : <EyeOff />}
-                </Button>
-                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} Edit`} onClick={() => setEditingBlockerId(editing ? null : blocker.id)}>
-                  <Pencil />
-                </Button>
-                <Button
-                  size="icon-xs"
-                  variant={blockerAreaSelectionId === blocker.id ? 'default' : 'ghost'}
-                  aria-label={`${blocker.label} Draw area`}
-                  title="Draw area on CAD Face"
-                  onClick={() => {
-                    finishIgnoreAreaSelection()
-                    actions.setEmitterFaceSelectionArmed(false)
-                    actions.setSelectedFaceIds([])
-                    beginBlockerAreaSelection(blocker.id)
-                    actions.setRoiBoxSelectionArmed(true)
-                    setEditingBlockerId(blocker.id)
-                    setMessage(`${blocker.label} 기준 Face 위에서 Blocker 영역을 드래그하세요.`)
-                  }}
-                >
-                  <BoxSelect />
-                </Button>
-                <Button size="icon-xs" variant="ghost" aria-label={`${blocker.label} Delete`} onClick={() => {
-                  if (blockerAreaSelectionId === blocker.id) actions.setRoiBoxSelectionArmed(false)
-                  removeBlocker(blocker.id)
-                }}>
-                  <Trash2 />
-                </Button>
-              </div>
-              {editing ? (
-                <div className="mt-2 space-y-2">
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(['x', 'y', 'z'] as const).map((axis, axisIndex) => (
-                      <label key={axis} className="text-[11px] font-medium text-muted-foreground">
-                        {axis.toUpperCase()} (mm)
-                        <NumberInput value={blocker.baseCenter[axisIndex]} decimals={1} className={fieldClass} onValueChange={(value) => {
-                          const baseCenter = [...blocker.baseCenter] as [number, number, number]
-                          baseCenter[axisIndex] = value
-                          updateBlocker(blocker.id, { baseCenter })
-                        }} />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {([
-                      ['Width', 'widthMm', blocker.widthMm],
-                      ['Height', 'heightMm', blocker.heightMm],
-                      ['Offset', 'offsetMm', blocker.offsetMm],
-                      ['Depth H', 'depthMm', blocker.depthMm],
-                    ] as const).map(([label, key, value]) => (
-                      <label key={key} className="text-[11px] font-medium text-muted-foreground">
-                        {label} (mm)
-                        <NumberInput value={value} min={key === 'offsetMm' ? undefined : 0.1} decimals={1} className={fieldClass} onValueChange={(next) => updateBlocker(blocker.id, { [key]: next })} />
-                      </label>
-                    ))}
-                  </div>
-                  <Button size="sm" variant={blocker.reverse ? 'default' : 'outline'} className="w-full" onClick={() => updateBlocker(blocker.id, { reverse: !blocker.reverse })}>
-                    Reverse
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          )
-        })}
-      </section>
-
-      <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1 text-sm font-semibold">Allowed Area
-            <HelpTooltip label="Allowed Area 적용 도움말">체크박스 ON인 영역을 Preview 추적과 후보 표시에서 제외합니다. 눈 아이콘은 표시만 바꾸며 숨겨도 해석에 적용됩니다. 영역을 변경하면 Preview를 다시 실행해야 합니다. 이미 생성된 ROI·Receiver는 자동 삭제되지 않습니다. Ray Tracing에는 Run Options의 Allowed Area도 ON이어야 합니다.</HelpTooltip>
-          </span>
-          <div className="flex items-center gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={ignoreAreas.length === 0}
-              onClick={() => setIgnoreAreasVisible(!ignoreAreasVisible)}
-            >
-              {ignoreAreasVisible ? <Eye /> : <EyeOff />}
-              {ignoreAreasVisible ? 'Hide All' : 'Show All'}
-            </Button>
-            <Button
-              size="sm"
-              variant={ignoreAreaSelectionArmed ? 'default' : 'outline'}
-              disabled={!scene || isRunning}
-              onClick={() => {
-                if (ignoreAreaSelectionArmed) {
-                  finishIgnoreAreaSelection()
-                  actions.setRoiBoxSelectionArmed(false)
-                  return
-                }
-                actions.setEmitterFaceSelectionArmed(false)
-                actions.setSelectedFaceIds([])
-                setPickingTarget(null)
-                finishBlockerAreaSelection()
-                beginIgnoreAreaSelection()
-                actions.setRoiBoxSelectionArmed(true)
-              }}
-            >
-              <BoxSelect /> {ignoreAreaSelectionArmed ? '선택 완료' : 'Add Area'}
-            </Button>
-          </div>
-        </div>
-        {ignoreAreas.map((area) => (
-          <div key={area.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5">
-            <label className="flex items-center gap-1 text-xs"><input type="checkbox" aria-label={`${area.label} 적용`} checked={area.enabled} disabled={isRunning} onChange={(event) => setIgnoreAreaEnabled(area.id, event.currentTarget.checked)} /></label>
-            <span className="min-w-0 flex-1 truncate text-xs font-medium">
-              {area.label} · {area.regions.length}개 영역 · {area.enabled ? 'ON' : 'OFF'}
-            </span>
-            <Button
-              size="icon-xs"
-              variant={activeIgnoreAreaId === area.id ? 'default' : 'ghost'}
-              aria-label={`${area.label} 영역 추가`}
-              disabled={isRunning}
-              onClick={() => {
-                actions.setEmitterFaceSelectionArmed(false)
-                actions.setSelectedFaceIds([])
-                setPickingTarget(null)
-                finishBlockerAreaSelection()
-                beginIgnoreAreaSelection(area.id)
-                actions.setRoiBoxSelectionArmed(true)
-              }}
-            >
-              <Plus />
-            </Button>
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`${area.label} ${area.visible !== false ? 'Hide' : 'Show'}`}
-              onClick={() => setIgnoreAreaVisible(area.id, area.visible === false)}
-            >
-              {area.visible !== false ? <Eye /> : <EyeOff />}
-            </Button>
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`${area.label} Delete`}
-              onClick={() => removeIgnoreArea(area.id)}
-            >
-              <Trash2 />
-            </Button>
-          </div>
-        ))}
-      </section>
+      <BlockerEditor scene={scene} disabled={isRunning} onStart={() => {
+        finishIgnoreAreaSelection()
+        actions.setEmitterFaceSelectionArmed(false)
+        actions.setSelectedFaceIds([])
+        setPickingTarget(null)
+      }} />
 
       {previewResult ? <ComputeExecutionStatus configuredBackend={previewResult.config.compute_backend ?? 'cpu'}
         performance={(previewResult.metrics._performance_summary ?? {}) as Record<string, unknown>} /> : null}
@@ -945,14 +700,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         <ComputeExecutionStatus configuredBackend={observerSummary.requested_backend ?? 'cpu'} performance={observerSummary.performance ?? { compute_execution_state: 'cpu' }} />
         <div className="text-xs">{observerSummary.complete ? '탐색 완료' : '중지 · 부분 결과'} · {observerSummary.attempted_count.toLocaleString()} / {observerSummary.planned_count.toLocaleString()} 경로 · 제외 {observerSummary.excluded_count.toLocaleString()}</div>
         <div className="text-xs">직광 {observerSummary.direct_count.toLocaleString()} · 반사광 {observerSummary.reflected_count.toLocaleString()} · 반사 한도 종료 {observerSummary.depth_limited_count.toLocaleString()}</div>
-        <div className="max-h-48 overflow-auto"><table className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th></tr></thead><tbody>{observerSummary.views.map((view, i) => <tr key={i}><td>{view.horizontal_deg} / {view.vertical_deg}</td><td>{view.direct_count}</td><td>{view.reflected_count}</td></tr>)}</tbody></table></div>
+        <div className="max-h-48 overflow-auto"><table className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th></tr></thead><tbody>{observerSummary.views.map((view, i) => <tr key={i} className={cn(highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg && 'bg-orange-500/20')}><td><button type="button" className="w-full py-1 text-right" aria-pressed={highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg} onClick={() => setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })}>{view.horizontal_deg} / {view.vertical_deg}</button></td><td>{view.direct_count}</td><td>{view.reflected_count}</td></tr>)}</tbody></table></div>
         {observerSummary.direct_count + observerSummary.reflected_count === 0 ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">현재 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.</div> : null}
       </section> : null}
       {angularSummary ? <section className="space-y-2 rounded-lg border border-border p-3">
         <div className="text-sm font-semibold">{previewDirectionOptions.find((item) => item.id === angularSummary.direction)?.label} · 방향별 유출광</div>
         <div className="text-xs text-muted-foreground">선택 방향 {angularSummary.selected_count.toLocaleString()} rays · 제외 {angularSummary.excluded_count.toLocaleString()} rays</div>
+        {angularSummary.cells.some((cell) => !cell.angle_bin_counts) ? <div role="status" className="text-xs text-amber-700">각도별 위치 정보 없음 · Preview 재실행 필요</div> : null}
         <table className="w-full text-right text-xs"><thead><tr><th className="text-left">각도</th><th>Rays</th><th>Flux (lm)</th></tr></thead>
-          <tbody>{angularSummary.bins.map((bin) => <tr key={bin.min_deg}><td className="py-1 text-left">{bin.min_deg}–{bin.max_deg}°</td><td>{bin.count.toLocaleString()}</td><td>{bin.flux_lumen.toExponential(3)}</td></tr>)}</tbody>
+          <tbody>{angularSummary.bins.map((bin, index) => <tr key={bin.min_deg} className={cn(highlight?.kind === 'escape' && highlight.bin === index && 'bg-orange-500/20')}><td className="py-1 text-left"><button type="button" className="w-full text-left" aria-pressed={highlight?.kind === 'escape' && highlight.bin === index} disabled={angularSummary.cells.some((cell) => !cell.angle_bin_counts)} onClick={() => setHighlight({ kind: 'escape', bin: index })}>{bin.min_deg}–{bin.max_deg}°</button></td><td>{bin.count.toLocaleString()}</td><td>{bin.flux_lumen.toExponential(3)}</td></tr>)}</tbody>
         </table>
       </section> : null}
       {candidates.length > 0 ? (

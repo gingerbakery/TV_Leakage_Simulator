@@ -67,7 +67,7 @@ export interface RoiClippedGeometryOptions {
 }
 
 function roiPlane(box: RoiClipBox): RoiProjectionPlane {
-  return box.plane ?? 'xy'
+  return box.zUnbounded ? 'xy' : box.plane ?? 'xy'
 }
 
 function planeAxes(plane: RoiProjectionPlane): AxisIndex[] {
@@ -122,6 +122,7 @@ export function normalizeRoiClipBoxes(
       const plane = roiPlane(box)
       return {
         plane,
+        ...(box.zUnbounded ? { zUnbounded: true } : {}),
         xMin: Number(box.xMin),
         xMax: Number(box.xMax),
         yMin: Number(box.yMin),

@@ -32,6 +32,46 @@ def setup():
 
 
 class RoiEmissionDetectionTests(unittest.TestCase):
+    def test_unbounded_z_retains_distant_plane_sources_and_xy_crop(self):
+        scene, payload = setup()
+        box = payload["analysis_roi"]["clip_boxes"][0]
+        box["z_unbounded"] = True
+        payload["emitters"] = [plane("deep", (0, 0, -10000)), plane("outside_xy", (20, 0, -10000))]
+        original = copy.deepcopy(payload)
+        trace = build_direct_trace_input(scene, payload)
+        self.assertEqual(payload, original)
+        self.assertEqual([emitter.emitter_id for emitter in trace.emitters], ["deep"])
+        self.assertAlmostEqual(sum(trace.mesh.area(i) for i in trace.emitters[0].face_indices), 4.)
+        result = run_direct_ray_trace(trace)
+        origins = [path[0].point for path in result.stored_paths]
+        self.assertTrue(origins)
+        self.assertTrue(all(abs(point[2] + 10000) < .01 for point in origins))
+        self.assertGreater(result.receiver_hit_count, 0)
+
+    def test_unbounded_z_includes_sources_in_both_directions_and_rejects_outside_xy(self):
+        scene, payload = setup()
+        payload["analysis_roi"]["clip_boxes"][0]["z_unbounded"] = True
+        payload["emitters"] = [plane("negative", (0,0,-10000)), plane("positive", (0,0,10000)), plane("outside_xy", (20,0,10000))]
+        trace = build_direct_trace_input(scene, payload)
+        self.assertEqual([emitter.emitter_id for emitter in trace.emitters], ["negative", "positive"])
+        for emitter, depth in zip(trace.emitters, (-10000, 10000)):
+            self.assertTrue(all(abs(point[2]-depth) < 1e-6 for index in emitter.face_indices for point in trace.mesh.face_vertices(index)))
+        low, high = trace.analysis_roi["detection_boxes"][0][4:6]
+        self.assertLess(low, -10000)
+        self.assertGreater(high, 10000)
+
+    def test_unbounded_z_retains_face_sources_in_transport_roi(self):
+        scene, payload = setup()
+        scene = {"vertices": [[-1,-1,-5000],[1,-1,-5000],[0,1,-5000]], "faces": [[0,1,2]], "face_component_ids": [1]}
+        box = payload["analysis_roi"]["clip_boxes"][0]
+        box["z_unbounded"] = True
+        payload.update(roi_faces=[0], roi_clip_boxes=[dict(box)])
+        payload["emitters"] = [{"emitter_id": "face", "face_indices": [0], "power_lumen": 1, "ray_count": 10}]
+        trace = build_direct_trace_input(scene, payload)
+        self.assertEqual(len(trace.emitters), 1)
+        self.assertAlmostEqual(sum(trace.mesh.area(i) for i in trace.emitters[0].face_indices), 2.)
+        self.assertTrue(all(math.isfinite(value) for box in trace.analysis_roi["detection_boxes"] for value in box))
+
     def test_virtual_emitter_is_really_cut_and_total_power_does_not_concentrate(self):
         scene, payload = setup()
         original = copy.deepcopy(payload)
@@ -161,6 +201,11 @@ class RoiEmissionDetectionTests(unittest.TestCase):
             self.assertNotEqual(key,runtime._trace_geometry_cache_key(scene,altered))
             altered = copy.deepcopy(payload); altered["emitters"][0].update(power_lumen=200,ray_count=512)
             self.assertEqual(key,runtime._trace_geometry_cache_key(scene,altered))
+            payload["analysis_roi"]["clip_boxes"][0]["z_unbounded"] = True
+            unlimited_key = runtime._trace_geometry_cache_key(scene,payload)
+            altered = copy.deepcopy(payload); altered["receivers"][0]["center"][2] = 10000
+            self.assertNotEqual(unlimited_key,runtime._trace_geometry_cache_key(scene,altered))
+
 
     def test_invalid_or_empty_roi_never_silently_uses_the_full_source(self):
         scene, payload = setup()

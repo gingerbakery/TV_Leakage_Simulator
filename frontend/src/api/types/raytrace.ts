@@ -209,7 +209,7 @@ export interface RayTraceRequest {
   /** Preview runs may use the already-loaded display tessellation. */
   geometry_mode?: 'precision' | 'preview'
   analysis_roi?: { face_indices: number[]; clip_boxes: NonNullable<RayTraceRequest['roi_clip_boxes']> }
-  observer_probe?: Omit<import('@/features/leak-preview/leak-preview-model').LeakPreviewObserverSettings, 'enabled'>
+  observer_probe?: Omit<import('@/features/leak-preview/leak-preview-model').LeakPreviewObserverSettings, 'enabled' | 'sampling'>
   escape_collection?: {
     direction: 'pos_x' | 'neg_x' | 'pos_y' | 'neg_y' | 'pos_z' | 'neg_z'
     minimum: Vec3
@@ -217,6 +217,7 @@ export interface RayTraceRequest {
     allowed_regions: import('@/stores').RoiClipBox[]
   }
   preview_blockers?: Array<{
+    shape?: 'box' | 'ellipse'
     blocker_id: string
     center: Vec3
     u_axis: Vec3
@@ -238,6 +239,7 @@ export interface RayTraceRequest {
   /** Exact axis-aligned ROI volumes. The backend clips boundary triangles to
    * these boxes so viewer highlighting and emitted ray origins agree. */
   roi_clip_boxes?: Array<{
+    z_unbounded?: boolean
     x_min: number
     x_max: number
     y_min: number

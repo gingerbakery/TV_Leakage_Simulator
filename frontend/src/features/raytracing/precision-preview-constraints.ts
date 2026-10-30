@@ -1,3 +1,4 @@
+import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
 import type { RayTraceRequest, Vec3 } from '@/api'
 import type {
   LeakPreviewBlocker,
@@ -34,10 +35,11 @@ export function buildPrecisionPreviewConstraints(
 ): TraceBlocker[] {
   const result: TraceBlocker[] = []
   if (applyBlockers) {
-    result.push(...blockers
+    result.push(...expandBlockerGroups(blockers)
       .filter((blocker) => blocker.enabled)
       .map((blocker) => ({
         blocker_id: `precision-blocker:${blocker.id}`,
+        shape: blocker.shape ?? 'box',
         center: blockerCenter(blocker),
         u_axis: blocker.uAxis,
         v_axis: blocker.vAxis,

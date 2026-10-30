@@ -66,7 +66,7 @@ function triangleIntersectsRoiVolume(
 }
 
 function roiPlane(box: RoiClipBox): RoiProjectionPlane {
-  return box.plane ?? 'xy'
+  return box.zUnbounded ? 'xy' : box.plane ?? 'xy'
 }
 
 function roiBoxBounds2d(

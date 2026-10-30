@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { leakPreviewStore, snapshotLeakPreviewProjectState } from './leak-preview-store'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
-import { createEscapeEnclosureReceivers, detectLeakPreviewCandidates } from './leak-preview-model'
+import { isLeakPreviewPointHighlighted, createEscapeEnclosureReceivers, detectLeakPreviewCandidates } from './leak-preview-model'
 import { workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
@@ -196,11 +196,33 @@ describe('leak preview Allowed Area groups', () => {
     leakPreviewStore.getState().restoreProjectState(saved)
     expect(leakPreviewStore.getState()).toMatchObject({
       sceneToken: null,
-      blockers: [{ id: 'saved-blocker' }],
-      ignoreAreas: [{ regions: [{ plane: 'xy' }] }],
+      blockers: [{ id: 'saved-blocker' }, { label: 'Block 2', regions: [{ baseCenter: [1, 5, 8], widthMm: 2, heightMm: 2, depthMm: 1 }] }],
+      ignoreAreas: [],
       jobId: null,
       points: [],
       candidates: [],
     })
   })
+})
+
+it('highlights exact view angles and every matching angular bin, and removes deleted glow points', () => {
+  const scene = createSceneFixture()
+  const result = createRayTraceResultFixture()
+  result.receivers = [createEscapeEnclosureReceivers(scene)[0]]
+  result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [3, 1], bin_area_mm2: 1, flux_lumen: [[1, 0, 2]], hit_count: 2 }]
+  const detection = detectLeakPreviewCandidates(scene, result)
+  const [low, high] = [...detection.candidates].sort((a, b) => a.relativeStrength - b.relativeStrength)
+  const points = detection.points.map((point) => ({ ...point, angleBins: [1, 0, 0, 2], observerAngles: [10, 20] as [number, number] }))
+  leakPreviewStore.getState().setDetection(result, points, [low, high])
+  expect(leakPreviewStore.getState().candidates.map((item) => item.id)).toEqual([high.id, low.id])
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe(high.id)
+  leakPreviewStore.getState().setHighlight({ kind: 'escape', bin: 3 })
+  expect(points.every((point) => isLeakPreviewPointHighlighted(point, leakPreviewStore.getState().highlight, null))).toBe(true)
+  expect(isLeakPreviewPointHighlighted(points[0], { kind: 'escape', bin: 1 }, null)).toBe(false)
+  expect(isLeakPreviewPointHighlighted(points[0], { kind: 'observer', horizontal: 10, vertical: 20 }, null)).toBe(true)
+  expect(isLeakPreviewPointHighlighted(points[0], { kind: 'observer', horizontal: 10, vertical: 0 }, null)).toBe(false)
+  leakPreviewStore.getState().removeCandidate(high.id)
+  expect(leakPreviewStore.getState().points.every((point) => point.candidateId === low.id)).toBe(true)
+  leakPreviewStore.getState().selectCandidate(low.id)
+  expect(leakPreviewStore.getState().highlight).toBeNull()
 })

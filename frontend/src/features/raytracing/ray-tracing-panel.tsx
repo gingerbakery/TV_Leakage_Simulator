@@ -1828,9 +1828,6 @@ export function RayTracingPanel({
   const enabledPreviewBlockerCount = previewBlockers.filter(
     (blocker) => blocker.enabled,
   ).length
-  const enabledAllowedAreaCount = previewAllowedAreas
-    .filter((area) => area.enabled)
-    .reduce((sum, area) => sum + area.regions.length, 0)
   const precisionPreviewConstraints = useMemo(
     () => buildPrecisionPreviewConstraints(
       previewBlockers,
@@ -2575,7 +2572,7 @@ export function RayTracingPanel({
           </summary>
           <div className="space-y-3 border-t border-border p-3">
             <div className="grid grid-cols-1 gap-2.5">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <label className="rounded-lg border border-border bg-background/45 p-2.5 text-sm">
               <span className="flex items-center gap-2 font-semibold">
                 <input
@@ -2588,7 +2585,7 @@ export function RayTracingPanel({
                 />
                 Blocker
                 <HelpTooltip label="정밀해석 Blocker 도움말">
-                  Preview에서 활성화한 Blocker를 정밀해석의 완전 흡수형
+                  Preview에서 활성화한 사각 블록과 홀 마개를 정밀해석의 완전 흡수형
                   차폐 형상으로 적용합니다.
                 </HelpTooltip>
               </span>
@@ -2596,26 +2593,7 @@ export function RayTracingPanel({
                 {config.apply_preview_blockers ? 'ON' : 'OFF'} · {enabledPreviewBlockerCount}개
               </span>
             </label>
-            <label className="rounded-lg border border-border bg-background/45 p-2.5 text-sm">
-              <span className="flex items-center gap-2 font-semibold">
-                <input
-                  type="checkbox"
-                  checked={Boolean(config.apply_allowed_areas)}
-                  disabled={isRunning}
-                  onChange={(event) => updateConfig({
-                    apply_allowed_areas: event.currentTarget.checked,
-                  })}
-                />
-                Allowed Area
-                <HelpTooltip label="정밀해석 Allowed Area 도움말">
-                  Preview에서 활성화한 Allowed Area를 평가 제외 영역으로
-                  적용하여, 해당 영역을 통과한 빛을 Receiver 결과에 포함하지 않습니다.
-                </HelpTooltip>
-              </span>
-              <span className="mt-1 block text-xs text-muted-foreground">
-                {config.apply_allowed_areas ? 'ON' : 'OFF'} · {enabledAllowedAreaCount}개 영역
-              </span>
-            </label>
+
           </div>
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2.5">
             <NumberField

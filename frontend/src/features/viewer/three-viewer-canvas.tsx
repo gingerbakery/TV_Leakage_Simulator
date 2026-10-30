@@ -1,3 +1,6 @@
+import { leakPreviewPointsInRoi } from './leak-preview-roi'
+import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
+import { isLeakPreviewPointHighlighted } from '@/features/leak-preview/leak-preview-model'
 import { clipEmitterDisplayToRoi, emitterPointInRoi } from './emitter-roi-display'
 import { HelpTooltip } from '@/components/common/help-tooltip'
 import { applyRayObjectOcclusion } from './ray-object-display'
@@ -487,10 +490,10 @@ function clipSectionPolygon(
     { axis: 'y', bound: clipBox.yMin, keepGreater: true },
     { axis: 'y', bound: clipBox.yMax, keepGreater: false },
   ]
-  if (clipBox.zMin !== undefined) {
+  if (!clipBox.zUnbounded && clipBox.zMin !== undefined) {
     boundaries.push({ axis: 'z', bound: clipBox.zMin, keepGreater: true })
   }
-  if (clipBox.zMax !== undefined) {
+  if (!clipBox.zUnbounded && clipBox.zMax !== undefined) {
     boundaries.push({ axis: 'z', bound: clipBox.zMax, keepGreater: false })
   }
   let polygon = source.map((point) => point.clone())
@@ -1990,6 +1993,10 @@ export function ThreeViewerCanvas({
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
+  const visibleLeakPreviewPoints = useMemo(
+    () => leakPreviewPointsInRoi(leakPreviewPoints, roiScopes),
+    [leakPreviewPoints, roiScopes],
+  )
   const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
   const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
   const leakPreviewSourceComponentIds = useLeakPreviewStore(
@@ -1998,6 +2005,7 @@ export function ThreeViewerCanvas({
   const leakPreviewVisualizationVisible = useLeakPreviewStore(
     (state) => state.visualizationVisible,
   )
+  const leakHighlight = useLeakPreviewStore((state) => state.highlight)
   const selectedLeakCandidateId = useLeakPreviewStore(
     (state) => state.selectedCandidateId,
   )
@@ -2659,10 +2667,18 @@ export function ThreeViewerCanvas({
       const maxX = Math.max(selection.startX, selection.currentX)
       const minY = Math.min(selection.startY, selection.currentY)
       const maxY = Math.max(selection.startY, selection.currentY)
-      const normal = new Vector3(...blocker.normal).normalize()
+      const rectPoints = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]]
+      const marginX = (maxX-minX)*.05, marginY = (maxY-minY)*.05
+      const samples = [...rectPoints, [minX-marginX, minY-marginY], [maxX+marginX, minY-marginY],
+        [maxX+marginX, maxY+marginY], [minX-marginX, maxY+marginY]]
+      const surface = samples.map(([x, y]) => resolveSurfaceHit(rect.left + x, rect.top + y))
+        .filter((hit) => hit?.normal)
+        .sort((a, b) => new Vector3(...a!.point).distanceToSquared(camera.position) - new Vector3(...b!.point).distanceToSquared(camera.position))[0]
+      const template = surface?.normal ? { ...blocker, baseCenter: surface.point, normal: surface.normal } : blocker
+      const normal = new Vector3(...template.normal).normalize()
       const projectionPlane = new Plane().setFromNormalAndCoplanarPoint(
         normal,
-        new Vector3(...blocker.baseCenter),
+        new Vector3(...template.baseCenter),
       )
       const boxRaycaster = new Raycaster()
       const points: [number, number, number][] = []
@@ -2680,7 +2696,8 @@ export function ThreeViewerCanvas({
         if (!point) return null
         points.push([point.x, point.y, point.z])
       }
-      return resizeLeakPreviewBlockerOnFace(blocker, points)
+      const patch = resizeLeakPreviewBlockerOnFace(template, points)
+      return patch ? { ...patch, normal: template.normal } : null
     }
 
     const resolveSurfaceHit = (clientX: number, clientY: number) => {
@@ -3229,14 +3246,13 @@ export function ThreeViewerCanvas({
         if (blockerId) {
           const patch = resolveBlockerAreaSelection(completedSelection, blockerId)
           if (patch) {
-            leakPreviewStore.getState().updateBlocker(blockerId, patch)
+            leakPreviewStore.getState().appendBlockerRegion(blockerId, patch)
             leakPreviewStore.getState().clearDetection()
-            onStatusMessage('Blocker 영역을 적용했습니다.')
+            onStatusMessage('Blocker 영역 추가 · 계속 드래그하거나 선택 완료를 누르세요.')
           } else {
             onStatusMessage('기준 CAD Face가 보이는 상태에서 영역을 다시 드래그하세요.')
           }
-          leakPreviewStore.getState().finishBlockerAreaSelection()
-          actions.setRoiBoxSelectionArmed(false)
+          actions.setRoiBoxSelectionArmed(true)
           return
         }
 
@@ -3788,18 +3804,16 @@ export function ThreeViewerCanvas({
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
-    for (const blocker of leakPreviewBlockersVisible ? leakPreviewBlockers : []) {
+    for (const blocker of leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : []) {
       if (blocker.visible === false) continue
       const normal = new Vector3(...blocker.normal)
         .normalize()
         .multiplyScalar(blocker.reverse ? -1 : 1)
       const center = new Vector3(...blocker.baseCenter)
         .addScaledVector(normal, blocker.offsetMm + blocker.depthMm / 2)
-      const geometry = new BoxGeometry(
-        Math.max(blocker.widthMm, 0.1),
-        Math.max(blocker.heightMm, 0.1),
-        Math.max(blocker.depthMm, 0.1),
-      )
+      const geometry = blocker.shape === 'ellipse'
+        ? new CylinderGeometry(1, 1, Math.max(blocker.depthMm, .01), 48).rotateX(Math.PI / 2).scale(blocker.widthMm / 2, blocker.heightMm / 2, 1)
+        : new BoxGeometry(Math.max(blocker.widthMm, .01), Math.max(blocker.heightMm, .01), Math.max(blocker.depthMm, .01))
       const orientation = new Matrix4().makeBasis(
         new Vector3(...blocker.uAxis).normalize(),
         new Vector3(...blocker.vAxis).normalize(),
@@ -3868,17 +3882,28 @@ export function ThreeViewerCanvas({
       }
     }
 
-    if (!leakPreviewVisualizationVisible || leakPreviewPoints.length === 0) return
-    const positions = new Float32Array(leakPreviewPoints.length * 3)
-    const haloColors = new Float32Array(leakPreviewPoints.length * 3)
-    const coreColors = new Float32Array(leakPreviewPoints.length * 3)
+    if (!leakPreviewVisualizationVisible || visibleLeakPreviewPoints.length === 0) return
+    const positions = new Float32Array(visibleLeakPreviewPoints.length * 3)
+    const haloColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
+    const coreColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
     const haloLow = new Color(0xfbbf24)
     const haloHigh = new Color(0xfef08a)
     const coreLow = new Color(0xdc2626)
     const coreHigh = new Color(0xff1f0f)
-    leakPreviewPoints.forEach((point, index) => {
+    visibleLeakPreviewPoints.forEach((point, index) => {
       positions.set(point.position, index * 3)
       const strength = Math.max(0, Math.min(1, point.relativeStrength))
+      const emphasized = isLeakPreviewPointHighlighted(point, leakHighlight, selectedLeakCandidateId)
+      if (emphasized) {
+        haloColors.set(new Color(0x00ffff).toArray(), index * 3)
+        coreColors.set(new Color(0xffffff).toArray(), index * 3)
+        return
+      }
+      if (leakHighlight || selectedLeakCandidateId) {
+        haloColors.set(new Color(0x392619).toArray(), index * 3)
+        coreColors.set(new Color(0x542819).toArray(), index * 3)
+        return
+      }
       haloColors.set(haloLow.clone().lerp(haloHigh, strength).toArray(), index * 3)
       coreColors.set(coreLow.clone().lerp(coreHigh, strength).toArray(), index * 3)
     })
@@ -3929,7 +3954,7 @@ export function ThreeViewerCanvas({
     const selected = leakPreviewCandidates.find(
       (candidate) => candidate.id === selectedLeakCandidateId,
     )
-    if (selected) {
+    if (selected && visibleLeakPreviewPoints.some((point) => point.candidateId === selected.id)) {
       const clip = selected.clipBox
       const sizeX = Math.max(clip.xMax - clip.xMin, markerSize)
       const sizeY = Math.max(clip.yMax - clip.yMin, markerSize)
@@ -3956,7 +3981,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakPreviewBlockers, leakPreviewBlockersVisible, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, leakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+  }, [leakHighlight, leakPreviewBlockers, leakPreviewBlockersVisible, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

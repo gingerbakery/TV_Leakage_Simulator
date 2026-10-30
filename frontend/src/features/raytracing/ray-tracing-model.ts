@@ -1068,6 +1068,7 @@ function activeRoiClipBoxes(scopes: RoiScope[]) {
       x_max: Math.max(box.xMin, box.xMax),
       y_min: Math.min(box.yMin, box.yMax),
       y_max: Math.max(box.yMin, box.yMax),
+      ...(box.zUnbounded ? { z_unbounded: true } : {}),
       z_min: Math.min(zMin, zMax),
       z_max: Math.max(zMin, zMax),
     }]

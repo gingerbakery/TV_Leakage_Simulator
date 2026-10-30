@@ -87,7 +87,14 @@ def build_prepared_trace_geometry(
     if analysis_roi is not None and not isinstance(analysis_roi, dict):
         raise ValueError("Invalid analysis ROI")
     scope_faces = (analysis_roi or {}).get("face_indices", roi_faces or [])
+    # Resolve the unbounded axis against every participating surface. Finite
+    # internal bounds keep JSON reports and numerical clipping well-defined;
+    # no geometry, emission surface or receiver is cut along Z.
     raw_scope_boxes = (analysis_roi or {}).get("clip_boxes", request_payload.get("roi_clip_boxes", []))
+    transport_boxes = request_payload.get("roi_clip_boxes", [])
+    resolved_boxes = _resolve_roi_z_depth([*raw_scope_boxes, *transport_boxes], mesh, request_payload)
+    transport_boxes = resolved_boxes[len(raw_scope_boxes):]
+    raw_scope_boxes = resolved_boxes[:len(raw_scope_boxes)]
     if analysis_roi is not None and not scope_faces and not raw_scope_boxes:
         raise ValueError("ROI 해석 범위가 비어 있습니다.")
     for raw in raw_scope_boxes:
@@ -107,7 +114,7 @@ def build_prepared_trace_geometry(
             mesh,
             [int(value) for value in roi_faces],
             preserved_source_face_indices=emitter_only_source_faces,
-            clip_boxes=request_payload.get("roi_clip_boxes"),
+            clip_boxes=transport_boxes,
         )
     else:
         source_to_trace_face: Dict[int, List[int]] = {}
@@ -206,6 +213,28 @@ def build_direct_trace_input(
                       "detection_boxes": geometry.detection_boxes, "receiver_scope": "orthogonal_projection",
                       "context_geometry_retained": not geometry.roi_is_active} if geometry.emission_scope else None,
     )
+
+
+def _resolve_roi_z_depth(raw_boxes, mesh, payload):
+    if not any(box.get("z_unbounded") is True for box in raw_boxes):
+        return raw_boxes
+    from .roi_scope import virtual_triangles
+    depths = [point[2] for point in mesh.vertices]
+    for item in payload.get("emitters", []):
+        if str(item.get("emitter_type") or "face") == "face":
+            continue
+        triangles, _ = virtual_triangles(item)
+        depths.extend(point[2] for triangle in triangles for point in triangle)
+    from .raytracer import _build_receiver_frame
+    for item in payload.get("receivers", []):
+        receiver = ReceiverSpec.from_dict(dict(item))
+        frame = _build_receiver_frame(receiver)
+        half_depth = abs(frame.u_axis[2])*receiver.width_mm/2 + abs(frame.v_axis[2])*receiver.height_mm/2
+        depths.extend((receiver.center[2]-half_depth, receiver.center[2]+half_depth))
+    low, high = min(depths, default=0.), max(depths, default=0.)
+    padding = max(1., (high-low)*.01)
+    return [dict(box, z_min=low-padding, z_max=high+padding)
+            if box.get("z_unbounded") is True else dict(box) for box in raw_boxes]
 
 
 def _normalize_roi_clip_boxes(
@@ -500,10 +529,28 @@ def _append_preview_blockers(
                     center[1] + u_axis[1] * half_width * u_sign + v_axis[1] * half_height * v_sign + normal[1] * half_depth * depth_sign,
                     center[2] + u_axis[2] * half_width * u_sign + v_axis[2] * half_height * v_sign + normal[2] * half_depth * depth_sign,
                 ))
+        local_triangles = triangles
+        if blocker.get("shape", "box") == "ellipse":
+            count = 48
+            corners = []
+            for depth_sign in (-1., 1.):
+                for index in range(count):
+                    angle = 2*math.pi*index/count
+                    u, v = half_width*math.cos(angle), half_height*math.sin(angle)
+                    corners.append(tuple(center[axis] + u_axis[axis]*u + v_axis[axis]*v +
+                                         normal[axis]*half_depth*depth_sign for axis in range(3)))
+            corners.extend(tuple(center[axis] + normal[axis]*half_depth*sign for axis in range(3)) for sign in (-1., 1.))
+            local_triangles = []
+            for index in range(count):
+                following = (index+1) % count
+                local_triangles.extend(((2*count, following, index), (2*count+1, count+index, count+following),
+                                        (index, following, count+following), (index, count+following, count+index)))
+        elif blocker.get("shape", "box") != "box":
+            raise ValueError("Unknown blocker shape")
         vertex_indices = [mesh.add_vertex(point) for point in corners]
         component_id = -1_000_000 - blocker_index
         blocker_id = str(blocker.get("blocker_id") or "preview-blocker")
-        for triangle in triangles:
+        for triangle in local_triangles:
             mesh.add_face(
                 vertex_indices[triangle[0]],
                 vertex_indices[triangle[1]],

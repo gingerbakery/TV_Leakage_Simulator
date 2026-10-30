@@ -1109,6 +1109,10 @@ class ApiRuntime:
                 "emitter_id", "emitter_type", "face_indices", "source_component_ids", "center", "u_axis", "v_axis",
                 "width_mm", "height_mm", "surface_construction", "polygon_vertices")}
                 for item in request_payload.get("emitters", [])] if request_payload.get("analysis_roi") or request_payload.get("roi_faces") else [],
+            "roi_depth_receivers": request_payload.get("receivers", []) if any(
+                box.get("z_unbounded") is True for box in [
+                    *request_payload.get("roi_clip_boxes", []),
+                    *(request_payload.get("analysis_roi") or {}).get("clip_boxes", [])]) else [],
             "preserved_emitter_faces": preserved_emitter_faces,
             "preserved_emitter_components": preserved_emitter_components,
             "preview_blockers": request_payload.get("preview_blockers", []),

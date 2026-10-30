@@ -140,7 +140,7 @@ class EscapeCollector:
         key = (receiver_id, row, column)
         cell = self.cells.setdefault(key, {"receiver_id": receiver_id, "row": row, "column": column,
             "position_sum": [0., 0., 0.], "flux_lumen": 0., "count": 0, "grazing_count": 0,
-            "min_depth": depth, "max_depth": depth, "angle_sum_deg": 0.})
+            "min_depth": depth, "max_depth": depth, "angle_sum_deg": 0., "angle_bin_counts": [0, 0, 0, 0]})
         for i in range(3):
             cell["position_sum"][i] += point[i] * power
         cell["flux_lumen"] += power
@@ -149,6 +149,7 @@ class EscapeCollector:
         cell["min_depth"] = min(cell["min_depth"], depth)
         cell["max_depth"] = max(cell["max_depth"], depth)
         cell["angle_sum_deg"] += angle
+        cell["angle_bin_counts"][index] += 1
         return True
 
     def summary(self):

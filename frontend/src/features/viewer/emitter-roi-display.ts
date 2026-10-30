@@ -2,11 +2,11 @@ import type { Material, Object3D, Vector3 } from 'three'
 import type { RoiClipBox } from '@/stores'
 
 function limits(box: RoiClipBox): [number, number][] {
-  const plane = box.plane ?? 'xy'
+  const plane = box.zUnbounded ? 'xy' : box.plane ?? 'xy'
   return [
-    plane === 'yz' ? [-1e20, 1e20] : [box.xMin, box.xMax],
-    plane === 'zx' ? [-1e20, 1e20] : [box.yMin, box.yMax],
-    plane === 'xy' ? [-1e20, 1e20] : [box.zMin ?? 0, box.zMax ?? 0],
+    plane === 'yz' ? [-Infinity, Infinity] : [box.xMin, box.xMax],
+    plane === 'zx' ? [-Infinity, Infinity] : [box.yMin, box.yMax],
+    plane === 'xy' ? [-Infinity, Infinity] : [box.zMin ?? 0, box.zMax ?? 0],
   ]
 }
 
@@ -25,8 +25,10 @@ export function clipEmitterDisplayToRoi(root: Object3D, boxes: RoiClipBox[]): vo
   root.userData.emitterRoiBoxes = boxes
   if (boxes.length === 0) return
   const number = (value: number) => value.toExponential(12)
-  const inside = boxes.map((box) => '(' + limits(box).map(([lo, hi], axis) =>
-    `(vEmitterRoiWorld.${'xyz'[axis]} >= ${number(lo)} && vEmitterRoiWorld.${'xyz'[axis]} <= ${number(hi)})`,
+  const inside = boxes.map((box) => '(' + limits(box).flatMap(([lo, hi], axis) =>
+    Number.isFinite(lo) && Number.isFinite(hi)
+      ? [`(vEmitterRoiWorld.${'xyz'[axis]} >= ${number(lo)} && vEmitterRoiWorld.${'xyz'[axis]} <= ${number(hi)})`]
+      : [],
   ).join(' && ') + ')').join(' || ')
   const visited = new Set<Material>()
   root.traverse((object) => {

@@ -413,7 +413,7 @@ export function RoiSelectionPanel({
                     <div className="mt-2 rounded-md border border-primary/15 bg-background/55 p-2">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
                         <span className="text-xs font-semibold text-foreground">
-                          ROI 좌표 (mm)
+                          ROI 좌표 (mm){scope.clipBox?.zUnbounded ? ' · Z ±∞' : ''}
                         </span>
                         <Button
                           type="button"

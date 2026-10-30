@@ -133,6 +133,7 @@ export type RoiView =
   | 'coordinate'
 
 export interface RoiClipBox {
+  zUnbounded?: boolean
   plane?: RoiProjectionPlane
   xMin: number
   xMax: number
@@ -517,7 +518,7 @@ function normalizeRoiClipBox(
 ): RoiClipBox | undefined {
   if (!clipBox) return undefined
 
-  const plane = clipBox.plane ?? 'xy'
+  const plane = clipBox.zUnbounded ? 'xy' : clipBox.plane ?? 'xy'
   const values =
     plane === 'xyz'
       ? [
@@ -539,6 +540,7 @@ function normalizeRoiClipBox(
 
   return {
     plane,
+    ...(clipBox.zUnbounded ? { zUnbounded: true } : {}),
     xMin: Math.min(clipBox.xMin, clipBox.xMax),
     xMax: Math.max(clipBox.xMin, clipBox.xMax),
     yMin: Math.min(clipBox.yMin, clipBox.yMax),

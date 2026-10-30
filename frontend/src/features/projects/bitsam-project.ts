@@ -276,6 +276,7 @@ function isRoiClipBox(value: unknown): value is RoiClipBox {
     isFiniteNumber(value.xMax) &&
     isFiniteNumber(value.yMin) &&
     isFiniteNumber(value.yMax) &&
+    (value.zUnbounded === undefined || isBoolean(value.zUnbounded)) &&
     (value.zMin === undefined || isFiniteNumber(value.zMin)) &&
     (value.zMax === undefined || isFiniteNumber(value.zMax))
   )
@@ -330,7 +331,7 @@ function isLeakPreviewProjectState(
     isArrayOf(item.regions, isRoiClipBox) &&
     (item.visible === undefined || isBoolean(item.visible)) &&
     isBoolean(item.enabled)
-  const isBlocker = (item: unknown): item is LeakPreviewBlocker =>
+  const isBlockerRegion = (item: unknown): item is LeakPreviewBlocker =>
     isRecord(item) &&
     isString(item.id) &&
     isString(item.label) &&
@@ -344,7 +345,12 @@ function isLeakPreviewProjectState(
     isFiniteNumber(item.heightMm) &&
     isFiniteNumber(item.offsetMm) &&
     isFiniteNumber(item.depthMm) &&
-    isBoolean(item.reverse)
+    isBoolean(item.reverse) &&
+    (item.shape === undefined || isOneOf(item.shape, ['box', 'ellipse'])) &&
+    (item.sequence === undefined || (isSafeId(item.sequence) && item.sequence > 0))
+  const isBlocker = (item: unknown): item is LeakPreviewBlocker =>
+    isBlockerRegion(item) && (item.regions === undefined || isArrayOf(item.regions, (region): region is LeakPreviewBlocker =>
+      isBlockerRegion(region) && region.regions === undefined))
   return (
     isOneOf(value.sourceMode, ['face', 'body', 'emitters']) &&
     (value.detectionMode === undefined || isOneOf(value.detectionMode, ['escape_directions', 'planar'])) &&
@@ -369,6 +375,7 @@ function isLeakPreviewProjectState(
 
 function isObserverSettings(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled)) return false
+  if (value.sampling !== undefined && !isOneOf(value.sampling, ['fast', 'balanced', 'fine', 'manual'])) return false
   return ([['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10],
     ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const).every(([key, lo, hi]) => {
       const number = value[key]
