@@ -12,6 +12,14 @@ $RequirementsDev = Join-Path $Root "requirements-dev.txt"
 $RequirementsGpu = Join-Path $Root "requirements-gpu-cuda.txt"
 $RequirementsMarker = Join-Path $VenvDirectory ".leakage-requirements.sha256"
 $BootToken = [System.Guid]::NewGuid().ToString("N")
+$ServerInvoked = $false
+$ServerLogPath = $null
+
+function Format-ServerExitCode([long]$Code) {
+    $HexCode = '{0:X8}' -f ($Code -band 0xFFFFFFFFL)
+    $Detail = if ($HexCode -eq 'C0000005') { '; ACCESS_VIOLATION: native process crash' } else { '' }
+    return "$Code (0x$HexCode$Detail)"
+}
 
 function Invoke-Checked {
     param(
@@ -187,18 +195,27 @@ try {
     Write-Host "[READY] Keep this window open and confirm the result's Compute row after every run."
     Write-Host ""
 
-    # Keep Python's native-crash traceback enabled. OCP/Numba/CUDA faults can
-    # terminate the interpreter without a normal exception; faulthandler
-    # prints the active Python stack so the last CAD/GPU stage is diagnosable.
-    & $VenvPython -X faulthandler (Join-Path $Root "run_web.py") --port $Port --strict-port
+    $LogDirectory = Join-Path $Root "outputs\gpu-runtime"
+    $ServerLogPath = Join-Path $LogDirectory "server-$BootToken.log"
+    Write-Host "[SERVER LOG] Console output and native-crash stacks: $ServerLogPath"
+    # Log inside Python so native-crash stacks are flushed to a real file;
+    # a PowerShell stderr pipeline can otherwise interrupt native commands.
+    $ServerInvoked = $true
+    & $VenvPython -X faulthandler (Join-Path $Root "scripts\run_logged_server.py") --log-file $ServerLogPath --entrypoint (Join-Path $Root "run_web.py") --port $Port --strict-port
     if ($LASTEXITCODE -ne 0) {
-        throw "Server stopped with exit code $LASTEXITCODE."
+        throw "Server process exited with code $(Format-ServerExitCode $LASTEXITCODE)."
     }
 }
 catch {
     Write-Host ""
     Write-Host "[GPU SOURCE FAILED] $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "[ACTION] The GPU server was not started. Fix the reported item and rerun run_web_gpu.bat." -ForegroundColor Yellow
+    if ($ServerInvoked) {
+        Write-Host "[ACTION] The server process exited during startup or execution. Preserve the log before retrying: $ServerLogPath" -ForegroundColor Yellow
+        Write-Host "[ACTION] For 0xC0000005, inspect the last stack and the Windows Application Error faulting module. The exit code alone does not prove a driver or GPU memory issue." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "[ACTION] The GPU server was not started. Fix the reported item and rerun run_web_gpu.bat." -ForegroundColor Yellow
+    }
     Write-Host "[GUIDE] Prerequisite installation and AI workflow: docs\WINDOWS_GPU_SETUP.md" -ForegroundColor Yellow
     Write-Host "[ACTION] Use run_web.bat only when intentional CPU fallback is acceptable." -ForegroundColor Yellow
     exit 1

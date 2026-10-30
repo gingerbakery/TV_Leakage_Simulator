@@ -1,3 +1,4 @@
+import { createViewAngleReceiver, defaultReceiverView, receiverViewDirections, receiverViewAnglePairs } from './receiver-view'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type {
@@ -8,6 +9,7 @@ import type {
   RayTraceJob,
   RayTraceResult,
   ReceiverSpec,
+  ReceiverViewAngles,
   ScenePayload,
   Vec3,
 } from '@/api'
@@ -80,6 +82,7 @@ import { ComputeDeviceSelector } from './compute-device-selector'
 import { isGpuCudaStatusReady } from './gpu-cuda-status'
 import { createEmitterAim, isEmitterAimValid } from './emitter-aim'
 import { EmitterAimEditor } from './emitter-aim-editor'
+import { getLeakPreviewBounds } from '@/features/leak-preview/leak-preview-geometry'
 import { buildPrecisionPreviewConstraints } from './precision-preview-constraints'
 
 export interface RayObjectEditRequest {
@@ -95,11 +98,14 @@ interface RayTracingPanelProps {
   batchRayTracingRunning?: boolean
   batchRayTracingProgress?: number
   onOpenBatchRayTracing?(): void
+  onRunReceiverViewSweep?(receiverId: string): void
+  onOpenReceiverViewSweep?(): void
+  receiverViewSweepRunning?: boolean
   onEditRequestHandled?(): void
 }
 
 type EmitterCreationMode = 'face' | 'body' | 'datum_plane'
-type ReceiverCreationMode = 'datum_plane' | 'current_view'
+type ReceiverCreationMode = 'datum_plane' | 'current_view' | 'view_angle'
 type FaceEmitterGrouping = 'combined' | 'per_cad_face'
 type ArrayPowerBasis = 'total_array' | 'per_led'
 
@@ -1060,6 +1066,8 @@ function ReceiverDialog({
   onApply(receiver: ReceiverSpec): void
 }) {
   const defaultCenter = useMemo(() => sceneCenter(scene), [scene])
+  const [viewAngles, setViewAngles] = useState<ReceiverViewAngles>(defaultReceiverView)
+  const transforms = useWorkspaceStore(workspaceSelectors.transformRules)
   const [displayName, setDisplayName] = useState('')
   const [center, setCenter] = useState<Vec3>(defaultCenter)
   const [rotation, setRotation] = useState<Vec3>([0, 0, 0])
@@ -1098,12 +1106,13 @@ function ReceiverDialog({
   useEffect(() => {
     if (!open) return
     const initialDistance =
-      initialReceiver?.view_distance_mm ?? currentViewDefaultDistanceMm
+      initialReceiver?.view_distance_mm ?? (mode === 'view_angle' ? 3 : currentViewDefaultDistanceMm)
+    setViewAngles(initialReceiver?.view_angles ?? { ...defaultReceiverView })
     setDisplayName(initialReceiver?.display_name ?? '')
     setCenter(
       initialReceiver?.base_center ??
         initialReceiver?.center ??
-        defaultCenter,
+        (mode === 'view_angle' && scene ? getLeakPreviewBounds(scene, transforms).center : defaultCenter),
     )
     setRotation(
       rotationFromPlaneAxes(
@@ -1129,7 +1138,7 @@ function ReceiverDialog({
     setViewDistance(initialDistance)
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
     setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
-    setNormalFlip(initialReceiver?.normal_flip ?? true)
+    setNormalFlip(initialReceiver?.normal_flip ?? (mode !== 'view_angle'))
     setDatumFaceAssigned(Boolean(initialReceiver))
     const initialSourceFaceIds = initialReceiver?.source_face_indices ?? []
     setReceiverSourceFaceIds(initialSourceFaceIds)
@@ -1161,6 +1170,8 @@ function ReceiverDialog({
   }, [
     actions,
     defaultCenter,
+    scene,
+    transforms,
     initialReceiver,
     mode,
     open,
@@ -1201,7 +1212,11 @@ function ReceiverDialog({
     actions.setDatumFacePickArmed(false)
   }, [actions, open])
 
-  const canApply = mode === 'datum_plane' || capturedFrame !== null
+  const anglePlan = useMemo(() => {
+    try { return { count: receiverViewAnglePairs(viewAngles).length, error: null } }
+    catch (error) { return { count: 0, error: error instanceof Error ? error.message : String(error) } }
+  }, [viewAngles])
+  const canApply = mode === 'view_angle' ? Boolean(scene) && !anglePlan.error : mode === 'datum_plane' || capturedFrame !== null
   const isLeakPreviewReceiver =
     initialReceiver?.reference_mode === 'leak_preview_candidate'
   const updatePixelSizeFromResolution = (
@@ -1224,7 +1239,7 @@ function ReceiverDialog({
     setResolutionY(Math.max(1, Math.round(height / pitch)))
   }
   const previewReceiver = useMemo(() => {
-    if (!open) return null
+    if (!open || (mode === 'view_angle' && anglePlan.error)) return null
     const datumAxes = planeAxesFromRotation(rotation)
     const datumCenter: Vec3 = isLeakPreviewReceiver
       ? [
@@ -1234,7 +1249,9 @@ function ReceiverDialog({
         ]
       : center
     const receiver =
-      mode === 'current_view' && capturedFrame
+      mode === 'view_angle' && scene
+        ? createViewAngleReceiver(initialReceiver?.receiver_id ?? '__placement_preview_receiver__', scene, center, viewAngles, viewDistance, transforms, positionOffset)
+        : mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
             initialReceiver?.receiver_id ??
               '__placement_preview_receiver__',
@@ -1258,6 +1275,10 @@ function ReceiverDialog({
       enabled: initialReceiver?.enabled ?? true,
     }
   }, [
+    anglePlan.error,
+    viewAngles,
+    scene,
+    transforms,
     capturedFrame,
     center,
     height,
@@ -1296,7 +1317,9 @@ function ReceiverDialog({
         ]
       : center
     const receiver =
-      mode === 'current_view' && capturedFrame
+      mode === 'view_angle' && scene
+        ? createViewAngleReceiver(receiverId, scene, center, viewAngles, viewDistance, transforms, positionOffset)
+        : mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
             receiverId,
             capturedFrame,
@@ -1354,12 +1377,16 @@ function ReceiverDialog({
               initialReceiver.receiver_id,
               initialReceiver.display_name,
             )}`
-          : mode === 'current_view'
+          : mode === 'view_angle'
+            ? '시야각 Receiver'
+            : mode === 'current_view'
             ? 'Current View Receiver'
             : 'Datum Plane Receiver'
       }
       help={
-        mode === 'current_view'
+        mode === 'view_angle'
+          ? 'Preview 실행 없이 기준 방향과 좌우·상하 각도로 수광면을 배치합니다. 수광면은 선택 각도 방향의 전체 CAD 경계 밖에 놓입니다. 관찰 기준점은 수광면이 바라볼 위치입니다. 크기·격자·Acceptance Angle은 별도로 유지하며 평행 관찰 역추적과 같은 밝기 값은 아닙니다. 주변 범위가 있으면 각도별 독립 정밀해석으로 실행합니다.'
+          : mode === 'current_view'
           ? '현재 3D Viewer의 카메라 위치와 방향을 기준으로 Receiver를 생성합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
           : 'CAD Face 또는 중심 좌표와 Receiver Tilt로 사각 수광면을 배치합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
       }
@@ -1464,7 +1491,14 @@ function ReceiverDialog({
           value={rotation}
           onChange={setRotation}
         />
-        </> : (
+        </> : mode === 'view_angle' ? <div className="space-y-3">
+          <label className={fieldLabelClassName}><span>기준 방향</span><select aria-label="Receiver 시야각 기준 방향" className={inputClassName} value={viewAngles.axis} onChange={(event) => setViewAngles({ ...viewAngles, axis: event.currentTarget.value as ReceiverViewAngles['axis'] })}>{receiverViewDirections.map(([axis, label]) => <option key={axis} value={axis}>{label}</option>)}</select></label>
+          <div className="grid grid-cols-2 gap-2">{([['horizontal_deg','좌우 시야각 (°)',-89.9,89.9],['vertical_deg','상하 시야각 (°)',-89.9,89.9],['range_deg','주변 범위 (±°)',0,10],['step_deg','각도 간격 (°)',.1,10]] as const).map(([key,label,min,max]) => <NumberField key={key} label={label} ariaLabel={`Receiver ${label}`} value={viewAngles[key]} min={min} max={max} decimals={1} step={.1} onChange={(value) => setViewAngles({ ...viewAngles, [key]: Math.max(min,Math.min(max,value)) })} />)}</div>
+          <div className="flex items-center justify-between gap-1"><span className="flex items-center gap-1 text-xs">{anglePlan.count}개 각도<HelpTooltip label="Receiver 시야각 범위 도움말">Preview와 같은 평행 관찰 방향 규칙입니다. 후면 −Z에서 좌우 +는 +X, 상하 +는 +Y입니다. 범위는 두 축에 각각 적용하고 중심·끝점을 포함합니다. 각도마다 Receiver 한 개로 독립 실행하므로 총 계산량도 각도 수만큼 증가합니다. Preview 검사 수준·해상도·셀 반복은 정밀해석 조건에 적용되지 않습니다.</HelpTooltip></span><Button size="sm" variant="outline" onClick={() => { const preview = leakPreviewStore.getState(); setViewAngles({ axis: preview.directions[0] ?? 'neg_z', horizontal_deg: preview.observer.horizontal_deg, vertical_deg: preview.observer.vertical_deg, range_deg: preview.observer.range_deg, step_deg: preview.observer.step_deg }) }}>Preview 각도 가져오기</Button></div>
+          {anglePlan.error ? <div role="alert" className="text-xs text-destructive">{anglePlan.error}</div> : null}
+          <VectorFields label="관찰 기준점 (mm)" help="Receiver 중심을 투영할 모델 좌표입니다. 기본값은 변환된 전체 모델 중심입니다. 수광면은 이 지점에서 관찰 방향으로 투영해 CAD 경계 밖에 배치합니다." labels={['X','Y','Z']} ariaLabels={['Receiver target X','Receiver target Y','Receiver target Z']} value={center} decimals={2} onChange={setCenter} />
+          <NumberField label="외부 여유 (mm)" ariaLabel="Receiver 시야각 외부 여유" description="관찰 방향의 전체 CAD 경계에서 수광면까지의 거리입니다. 시야각을 바꿔도 모델 밖에 배치합니다." value={viewDistance} min={.001} decimals={2} step={.1} onChange={setViewDistance} />
+        </div> : (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Camera className="size-3.5 text-primary" />
@@ -1672,6 +1706,9 @@ export function RayTracingPanel({
   batchRayTracingRunning = false,
   batchRayTracingProgress = 0,
   onOpenBatchRayTracing,
+  onRunReceiverViewSweep,
+  onOpenReceiverViewSweep,
+  receiverViewSweepRunning = false,
   onEditRequestHandled,
 }: RayTracingPanelProps) {
   const accelerationStructureId = useId()
@@ -1842,7 +1879,15 @@ export function RayTracingPanel({
       previewBlockers,
     ],
   )
+  const enabledViewReceivers = receivers.filter((receiver) => receiver.enabled && receiver.view_angles)
+  let viewRunCount = 1
+  let viewRunError: string | null = null
+  try { if (enabledViewReceivers.length) viewRunCount = Math.max(...enabledViewReceivers.map((receiver) => receiverViewAnglePairs(receiver.view_angles!).length)) }
+  catch (error) { viewRunError = error instanceof Error ? error.message : String(error) }
+  if (viewRunCount > 1 && enabledReceiverCount !== 1) viewRunError = '각도별 해석에는 시야각 Receiver 하나만 활성화하세요.'
+  if (viewRunCount > 1 && !onRunReceiverViewSweep) viewRunError = '각도별 해석은 메인 화면에서 실행하세요.'
   const canRun =
+    viewRunError === null &&
     scene !== undefined &&
     enabledEmitterCount > 0 &&
     enabledReceiverCount > 0 &&
@@ -2104,6 +2149,8 @@ export function RayTracingPanel({
       workspaceStore.getState().batchRayTraceActive ||
       workspaceStore.getState().singleRayTraceRun !== null
     ) return
+    if (viewRunError) { setAutoConvergenceStatus(viewRunError); return }
+    if (viewRunCount > 1 && enabledViewReceivers[0]) { onRunReceiverViewSweep?.(enabledViewReceivers[0].receiver_id); return }
     autoConvergenceActiveRef.current = config.auto_convergence ?? false
     autoRetryJobIdRef.current = null
     autoRetryAbortControllerRef.current?.abort()
@@ -2476,6 +2523,7 @@ export function RayTracingPanel({
             <Camera />
             Current View
           </Button>
+          <Button variant="outline" size="sm" aria-label="Add View Angle Receiver" disabled={!scene || isRunning || batchRayTraceActive} onClick={() => { setEditingReceiverId(null); setReceiverMode('view_angle') }}><Aperture />시야각</Button>
         </div>
         {receivers.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
@@ -2513,7 +2561,7 @@ export function RayTracingPanel({
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {receiver.placement_mode === 'current_view'
+                    {receiver.view_angles ? '시야각' : receiver.placement_mode === 'current_view'
                       ? 'Current View'
                       : 'Datum Plane'}
                     {' · '}
@@ -2978,6 +3026,8 @@ export function RayTracingPanel({
       </section>
 
       <section className="space-y-2 border-t border-border pt-3">
+        {viewRunError ? <div role="alert" className="text-xs text-destructive">{viewRunError}</div> : viewRunCount > 1 ? <div className="flex items-center gap-1 text-xs">{viewRunCount}각도 · 각도별 {enabledEmitterRayCount.toLocaleString()} Ray · 기본 합계 {(viewRunCount*enabledEmitterRayCount).toLocaleString()} Ray<HelpTooltip label="각도별 해석 계산량 도움말">각도별 Ray 수는 현재 활성 광원의 합입니다. 자동 수렴을 켜면 각 각도에서 추가 실행할 수 있어 실제 합계는 더 커집니다. Receiver 크기·해상도·재질·광원 설정은 유지합니다.</HelpTooltip></div> : null}
+        {onOpenReceiverViewSweep ? <Button size="sm" variant="outline" onClick={onOpenReceiverViewSweep}>{receiverViewSweepRunning ? '각도별 해석 진행 보기' : '각도별 결과 보기'}</Button> : null}
         {isRunning && executionJobId ? (
           <Button
             className="w-full"
@@ -3052,7 +3102,7 @@ export function RayTracingPanel({
         {latestResult && roiScopes.some((scope) => scope.active) &&
           (latestResult.metrics._roi_scope_summary as { contract?: string } | undefined)?.contract !== 'roi_source_detection_v1'
           ? <div role="alert" className="text-xs text-amber-700 dark:text-amber-400">ROI 발광·검출 제한 미확인 · 서버 업데이트 후 다시 실행하세요.</div> : null}
-        {roiScopes.some((scope) => scope.active && scope.observerView) ? <div className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">시야각 ROI · 외부 형상 유지
+        {roiScopes.some((scope) => scope.active) && (roiScopes.some((scope) => scope.active && scope.observerView) || enabledViewReceivers.length > 0) ? <div className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">시야각 ROI · 외부 형상 유지
           <HelpTooltip label="시야각 ROI 형상 유지 도움말">발광면은 ROI 안으로 자르고 Receiver는 ROI 투영 범위에서만 집계합니다. 관찰 경로에 필요한 ROI 밖 차폐물과 반사면은 유지합니다. 이 ROI가 활성화된 경우 ROI 절단을 적용하지 않으므로 작은 ROI도 전체 CAD 준비 시간이 필요합니다. Receiver는 Preview와 같은 방향의 외부 관찰 평면에 놓이지만 유한 면적 입사 광량을 측정하므로 평행 관찰의 밝기와 동일한 값은 아닙니다.</HelpTooltip>
         </div> : null}
 
@@ -3229,7 +3279,9 @@ export function RayTracingPanel({
       <ReceiverDialog
         open={receiverMode !== null || editingReceiver !== null}
         mode={
-          editingReceiver?.placement_mode === 'current_view'
+          editingReceiver?.view_angles
+            ? 'view_angle'
+            : editingReceiver?.placement_mode === 'current_view'
             ? 'current_view'
             : receiverMode ?? 'datum_plane'
         }

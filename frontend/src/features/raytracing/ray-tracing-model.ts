@@ -1090,7 +1090,8 @@ export function buildRayTraceRequest({
   bsdfAssets = [],
 }: RayTraceRequestSource): RayTraceRequest {
   const enabledEmitters = emitters.filter((emitter) => emitter.enabled).map(({ visible: _visible, ...emitter }) => emitter)
-  const enabledReceivers = receivers.filter((receiver) => receiver.enabled)
+  if (receivers.some((receiver) => receiver.enabled && (receiver.view_angles?.range_deg ?? 0) > 0)) throw new Error('시야각 범위가 설정된 Receiver는 각도별 해석으로 실행하세요.')
+  const enabledReceivers = receivers.filter((receiver) => receiver.enabled).map(({ view_angles: _viewAngles, ...receiver }) => receiver)
   const totalRayCount = enabledEmitters.reduce(
     (sum, emitter) => sum + Math.max(1, emitter.ray_count),
     0,
@@ -1112,7 +1113,7 @@ export function buildRayTraceRequest({
   const deleted = new Set(deletedComponentIds)
   // Observer-discovered paths can reflect/occlude far outside the local ROI.
   // Keep the full transport scene instead of silently inventing open paths.
-  const hasObserverRoi = roiScopes.some((scope) => scope.active && scope.observerView)
+  const hasObserverRoi = roiScopes.some((scope) => scope.active && scope.observerView) || receivers.some((receiver) => receiver.enabled && receiver.view_angles)
   const analysisRoiFaces = activeRoiFaces(roiScopes, deleted)
   const roiFaces = hasObserverRoi ? [] : analysisRoiFaces
   const roiClipBoxes = activeRoiClipBoxes(roiScopes)

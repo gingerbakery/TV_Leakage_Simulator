@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   BoxSelect,
   Check,
@@ -6,6 +6,7 @@ import {
   Copy,
   Crosshair,
   MapPin,
+  Pencil,
   Trash2,
 } from 'lucide-react'
 
@@ -49,7 +50,14 @@ export function RoiSelectionPanel({
   })
   const [coordinateResult, setCoordinateResult] = useState('')
   const [copiedScopeId, setCopiedScopeId] = useState<string | null>(null)
+  const [coordinateEdit, setCoordinateEdit] = useState<{
+    scopeId: string
+    values: string[][]
+    error: string
+  } | null>(null)
   const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
+  useEffect(() => setCoordinateEdit(null), [activeCadCaseId, scene])
   const roiBoxSelectionArmed = useWorkspaceStore(
     workspaceSelectors.roiBoxSelectionArmed,
   )
@@ -173,6 +181,47 @@ export function RoiSelectionPanel({
     } catch {
       setCoordinateResult('ROI 좌표를 붙여넣지 못했습니다.')
     }
+  }
+
+  const applyCoordinateEdit = () => {
+    const scope = roiScopes.find((item) => item.id === coordinateEdit?.scopeId)
+    if (!scene || !scope?.clipBox || !coordinateEdit) return
+    const plane = scope.clipBox.zUnbounded ? 'xy' : scope.clipBox.plane ?? 'xy'
+    const axes = plane === 'xyz' ? [0, 1, 2]
+      : plane === 'xy' ? [0, 1] : plane === 'yz' ? [1, 2] : [0, 2]
+    const values = coordinateEdit.values.map((point) => point.map(Number))
+    if (axes.some((axis) =>
+      coordinateEdit.values.some((point) => !point[axis].trim()) ||
+      values.some((point) => !Number.isFinite(point[axis])) ||
+      values[0][axis] === values[1][axis],
+    )) {
+      setCoordinateEdit({
+        ...coordinateEdit,
+        error: '각 축의 시작·끝 좌표를 서로 다른 유한한 숫자로 입력하세요.',
+      })
+      return
+    }
+    const clipBox = { ...scope.clipBox }
+    for (const axis of axes) {
+      const key = (['x', 'y', 'z'] as const)[axis]
+      clipBox[`${key}Min`] = Math.min(values[0][axis], values[1][axis])
+      clipBox[`${key}Max`] = Math.max(values[0][axis], values[1][axis])
+    }
+    const faceIds = resolveFacesInRoiBox(
+      scene, clipBox, [], deletedComponentIds, roiPointTransform,
+    )
+    if (!faceIds.length) {
+      setCoordinateEdit({ ...coordinateEdit, error: '입력한 좌표 범위에서 ROI를 찾지 못했습니다.' })
+      return
+    }
+    actions.setRoiScopes(roiScopes.map((item) => item.id === scope.id ? {
+      ...item,
+      clipBox,
+      components: groupRoiFacesByComponent(
+        scene, faceIds, componentNameOverrides, roiPointTransform,
+      ),
+    } : item))
+    setCoordinateEdit(null)
   }
 
   return (
@@ -365,6 +414,9 @@ export function RoiSelectionPanel({
                       ),
                   }
                 : null
+              const editing = coordinateEdit?.scopeId === scope.id
+              const plane = scope.clipBox?.zUnbounded ? 'xy' : scope.clipBox?.plane ?? 'xy'
+              const depthAxis = plane === 'xyz' ? -1 : plane === 'xy' ? 2 : plane === 'yz' ? 0 : 1
 
               return (
                 <article
@@ -412,9 +464,24 @@ export function RoiSelectionPanel({
                   {boxCoordinates ? (
                     <div className="mt-2 rounded-md border border-primary/15 bg-background/55 p-2">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-foreground">
+                        <span className="flex items-center gap-1 text-xs font-semibold text-foreground">
                           ROI 좌표 (mm){scope.clipBox?.zUnbounded ? ' · Z ±∞' : ''}
+                          <HelpTooltip label={`${scope.scopeId} ROI 좌표 수정 도움말`}>
+                            수정 후 적용하면 포함 면과 Viewer 표시를 다시 계산합니다. 평면 ROI의 깊이 방향은 제한하지 않으며, 자동 생성 ROI의 Z ±∞ 설정과 관찰 각도는 유지합니다. 취소하면 기존 좌표가 유지됩니다.
+                          </HelpTooltip>
                         </span>
+                        <div className="flex items-center gap-1">
+                          {!editing ? (
+                            <Button type="button" size="sm" variant="ghost"
+                              className="h-6 gap-1 px-1.5 text-xs"
+                              aria-label={`${scope.scopeId} ROI 좌표 수정`} disabled={!scene}
+                              onClick={() => setCoordinateEdit({ scopeId: scope.id, error: '', values: [
+                                [boxCoordinates.xMin, boxCoordinates.yMin, boxCoordinates.zMin].map(String),
+                                [boxCoordinates.xMax, boxCoordinates.yMax, boxCoordinates.zMax].map(String),
+                              ] })}>
+                              <Pencil className="size-3" />수정
+                            </Button>
+                          ) : null}
                         <Button
                           type="button"
                           size="sm"
@@ -435,6 +502,7 @@ export function RoiSelectionPanel({
                           )}
                           {copiedScopeId === scope.id ? '복사됨' : '복사'}
                         </Button>
+                        </div>
                       </div>
                       <div className="space-y-1.5 text-xs">
                         {[
@@ -467,10 +535,21 @@ export function RoiSelectionPanel({
                             {point.values.map((value, axisIndex) => (
                               <input
                                 key={axisIndex}
-                                readOnly
+                                readOnly={!editing || axisIndex === depthAxis}
+                                inputMode={editing ? 'decimal' : undefined}
                                 aria-label={`${scope.scopeId} ${['X', 'Y', 'Z'][axisIndex]}${point.pointIndex}`}
-                                value={formatCoordinate(value)}
+                                value={editing
+                                  ? axisIndex === depthAxis
+                                    ? point.pointIndex === 1 ? '−∞' : '+∞'
+                                    : coordinateEdit.values[point.pointIndex - 1][axisIndex]
+                                  : formatCoordinate(value)}
                                 className="h-7 min-w-0 rounded border border-border bg-background px-1.5 text-right font-mono text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/25"
+                                onChange={(event) => {
+                                  if (!editing || axisIndex === depthAxis) return
+                                  const next = coordinateEdit.values.map((point) => [...point])
+                                  next[point.pointIndex - 1][axisIndex] = event.currentTarget.value
+                                  setCoordinateEdit({ ...coordinateEdit, values: next, error: '' })
+                                }}
                                 onFocus={(event) =>
                                   event.currentTarget.select()
                                 }
@@ -479,6 +558,13 @@ export function RoiSelectionPanel({
                           </div>
                         ))}
                       </div>
+                      {editing ? <div className="mt-2 space-y-2">
+                        {coordinateEdit.error ? <div role="alert" className="text-xs text-destructive">{coordinateEdit.error}</div> : null}
+                        <div className="flex justify-end gap-1">
+                          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" aria-label={`${scope.scopeId} 좌표 수정 취소`} onClick={() => setCoordinateEdit(null)}>취소</Button>
+                          <Button type="button" size="sm" className="h-7 text-xs" aria-label={`${scope.scopeId} 좌표 적용`} onClick={applyCoordinateEdit}>적용</Button>
+                        </div>
+                      </div> : null}
                     </div>
                   ) : null}
                 </article>

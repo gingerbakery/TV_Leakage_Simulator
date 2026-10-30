@@ -839,6 +839,7 @@ describe('batch Ray Tracing controller', () => {
     expect(finalState.status).toBe('completed')
     expect(startRayTrace.mock.calls[0][0].preview_blockers).toEqual([{
       blocker_id: 'precision-blocker:batch-blocker',
+      shape: 'box',
       center: [0, 0, 0.5],
       u_axis: [1, 0, 0],
       v_axis: [0, 1, 0],

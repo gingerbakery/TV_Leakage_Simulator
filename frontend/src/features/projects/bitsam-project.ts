@@ -459,11 +459,18 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
   )
 }
 
+function isReceiverViewAngles(value: unknown): boolean {
+  if (!isRecord(value) || !isOneOf(value.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z'])) return false
+  return ([['horizontal_deg',-89.9,89.9],['vertical_deg',-89.9,89.9],['range_deg',0,10],['step_deg',.1,10]] as const)
+    .every(([key,low,high]) => isFiniteNumber(value[key]) && value[key] >= low && value[key] <= high)
+}
+
 function isReceiverSpec(value: unknown): value is ReceiverSpec {
   return (
     isRecord(value) &&
     isString(value.receiver_id) &&
     value.receiver_type === 'rectangle' &&
+    (value.view_angles === undefined || isReceiverViewAngles(value.view_angles)) &&
     isString(value.display_name) &&
     isOneOf(value.placement_mode, [
       'datum_plane',

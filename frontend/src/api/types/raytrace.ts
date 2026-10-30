@@ -80,7 +80,17 @@ export type ReceiverPlacementMode =
   | 'reference_plane'
   | 'current_view'
 
+export interface ReceiverViewAngles {
+  axis: 'pos_x' | 'neg_x' | 'pos_y' | 'neg_y' | 'pos_z' | 'neg_z'
+  horizontal_deg: number
+  vertical_deg: number
+  range_deg: number
+  step_deg: number
+}
+
 export interface ReceiverSpec {
+  /** Frontend placement/sweep settings; resolved to physical planes before tracing. */
+  view_angles?: ReceiverViewAngles
   receiver_id: string
   receiver_type: ReceiverType
   display_name: string

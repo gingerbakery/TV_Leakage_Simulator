@@ -148,6 +148,16 @@ CPU scalar. Record all hybrid/fallback counts rather than hiding them.
 
 ## 8. Benchmark and report
 
+For a source-server crash, first preserve the per-launch `[SERVER LOG]` file
+under `outputs/gpu-runtime`. `Server process exited` means the server process
+was invoked and exited during startup or execution, not that prerequisite
+setup necessarily failed. Exit code `-1073741819` (`0xC0000005`) identifies a
+Windows access violation; it does not identify CUDA, VRAM exhaustion, a driver,
+or OCP as the cause. Inspect the final Python fault-handler thread stacks and
+Windows Application Error faulting module before attributing the crash.
+Do not restart a user's running server or repeat a large workload just to
+collect evidence. No actual GPU success or crash fix is proven by logger tests.
+
 Use the same scene, `.bitsam`, emitter set, ray count, depth, and app session.
 Record the first run and two or three warm runs because CUDA JIT and upload can
 make the first run slower. Never generalize one ray-tracing result to CAD

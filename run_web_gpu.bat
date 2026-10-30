@@ -15,7 +15,7 @@ set "EXITCODE=%ERRORLEVEL%"
 
 if not "%EXITCODE%"=="0" (
   echo.
-  echo [GPU SOURCE FAILED] The GPU server was not started.
+  echo [GPU SOURCE FAILED] The GPU launcher or server exited with an error.
   echo Review the first [ACTION] message above and docs\WINDOWS_GPU_SETUP.md.
   echo CPU-only users can run run_web.bat only when CPU fallback is intentional.
   pause

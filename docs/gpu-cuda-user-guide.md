@@ -61,8 +61,9 @@ run_web_gpu.bat
 [GPU VERIFIED] The production Ray/BVH CUDA kernel passed. The server is now starting.
 ```
 
-`[GPU FAILED]` 또는 `[GPU SOURCE FAILED]`이면 GPU 서버가 시작되지 않는다.
-가장 가까운 `[ACTION]` 문구를 처리하고 다시 실행한다. CPU 사용이 목적일 때만
+사전 준비 중 `[GPU FAILED]` 또는 `[GPU SOURCE FAILED]`이면 서버가 시작되지 않는다.
+`Server process exited`는 서버 프로세스를 실행한 뒤 시작 또는 해석 도중 종료된 경우다.
+가장 가까운 `[ACTION]` 문구와 runtime log를 확인한다. CPU 사용이 목적일 때만
 별도 `run_web.bat`을 사용한다.
 
 ## B. GPU CUDA ZIP에서 실행
@@ -270,6 +271,16 @@ PERF-3D GPU build의 비교다. CPU와 GPU를 직접 비교한 수치가 아니�
 | CAD import·BVH build만 비교 | GPU ray-tracing 속도 증거가 아님 |
 
 ## F. 문제 해결
+
+Source launcher는 서버 실행마다 `[SERVER LOG]`에
+`outputs\gpu-runtime\server-<실행별 ID>.log` 경로를 출력한다. Python 콘솔 출력과
+native crash 당시 전체 Python thread stack을 이 파일에 즉시 기록한다.
+서버가 종료되어도 로그는 유지되며 다음 실행이 이전 로그를 덮어쓰지 않는다.
+`-1073741819 (0xC0000005)`는 Windows access violation이다. 코드만으로 GPU 메모리
+부족이나 driver 문제를 확정하지 않는다. 로그의 마지막 `[RAY]`/`[CAD]` 단계와
+`Windows fatal exception`/`Current thread`부터의 stack, Windows 이벤트 뷰어의
+`Windows 로그 > 응용 프로그램 > Application Error`의 오류 모듈 이름·경로를 함께 확인한다.
+이 증거가 없으면 CUDA, OCP, LLVM/Numba 등 어느 native 경로에서 실패했는지 미확인으로 보고한다.
 
 Driver, CUDA Toolkit, Python 또는 Node.js 자체가 없거나 버전이 맞지 않으면
 [`WINDOWS_GPU_SETUP.md`](WINDOWS_GPU_SETUP.md)의 RTX A4000/일반 Windows 설치

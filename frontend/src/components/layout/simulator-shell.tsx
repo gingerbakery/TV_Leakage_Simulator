@@ -1,3 +1,5 @@
+import { useReceiverViewSweepManager } from '@/features/raytracing/receiver-view-sweep-manager'
+import { ReceiverViewSweepDialog } from '@/features/raytracing/receiver-view-sweep-dialog'
 import {
   useEffect,
   useMemo,
@@ -158,6 +160,7 @@ function workspaceProjectName(cases: CadCase[]): string {
 export function SimulatorShell() {
   const queryClient = useQueryClient()
   const batchRayTracing = useBatchRayTracingManager()
+  const receiverViewSweep = useReceiverViewSweepManager()
   const [projectProgress, setProjectProgress] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     window.localStorage.getItem('tv-leakage-theme') === 'dark'
@@ -1247,6 +1250,7 @@ export function SimulatorShell() {
           </Badge>
         </div>
         <div className="flex items-center gap-2">
+          {receiverViewSweep.state ? <Button size="sm" variant="outline" onClick={() => receiverViewSweep.setOpen(true)}>{receiverViewSweep.isRunning ? `시야각 ${Math.round((receiverViewSweep.state.progress ?? 0)*100)}%` : '시야각 결과'}</Button> : null}
           <input
             ref={projectFileInputRef}
             type="file"
@@ -1260,7 +1264,7 @@ export function SimulatorShell() {
             size="sm"
             aria-label="Save BITSAM project"
             disabled={
-              !!projectProgress || batchRayTracing.isRunning ||
+              !!projectProgress || batchRayTracing.isRunning || receiverViewSweep.isRunning ||
               singleRayTraceRunning ||
               ((!activeCad || !scene) && !canReuseLoadedProjectReference)
             }
@@ -1283,7 +1287,7 @@ export function SimulatorShell() {
             size="sm"
             aria-label="Copy Setup"
             disabled={
-              batchRayTracing.isRunning ||
+              batchRayTracing.isRunning || receiverViewSweep.isRunning ||
               singleRayTraceRunning ||
               !activeCadCaseId ||
               cadCases.length < 2
@@ -1302,7 +1306,7 @@ export function SimulatorShell() {
             size="sm"
             aria-label="Load BITSAM project"
             disabled={
-              !!projectProgress || batchRayTracing.isRunning ||
+              !!projectProgress || batchRayTracing.isRunning || receiverViewSweep.isRunning ||
               singleRayTraceRunning
             }
             title=".bitsam 시뮬레이션 파일 불러오기"
@@ -1386,15 +1390,19 @@ export function SimulatorShell() {
           rayTraceJob={rayTraceJob}
           rayTraceResult={displayedRayTraceResult}
           autoConvergenceCancelToken={autoConvergenceCancelToken}
-          batchRayTracingRunning={batchRayTracing.isRunning}
-          batchRayTracingProgress={batchRayTracing.state.progress}
-          onOpenBatchRayTracing={() =>
+          batchRayTracingRunning={batchRayTracing.isRunning || receiverViewSweep.isRunning}
+          receiverViewSweepRunning={receiverViewSweep.isRunning}
+          onRunReceiverViewSweep={(id) => { if (scene) void receiverViewSweep.run(id, scene) }}
+          onOpenReceiverViewSweep={receiverViewSweep.state ? () => receiverViewSweep.setOpen(true) : undefined}
+          batchRayTracingProgress={receiverViewSweep.isRunning ? receiverViewSweep.state?.progress ?? 0 : batchRayTracing.state.progress}
+          onOpenBatchRayTracing={() => {
+            if (receiverViewSweep.isRunning) { receiverViewSweep.setOpen(true); return }
             batchRayTracing.openDialog(
               [...cadCases]
                 .sort((left, right) => left.order - right.order)
                 .map((item) => item.caseId),
             )
-          }
+          }}
           rayObjectEditRequest={rayObjectEditRequest}
           onRayObjectEditRequestHandled={() =>
             setRayObjectEditRequest(null)
@@ -1494,6 +1502,7 @@ export function SimulatorShell() {
 
       <LtValidationDialog open={ltValidationOpen} onOpenChange={setLtValidationOpen} />
 
+      <ReceiverViewSweepDialog manager={receiverViewSweep} />
       <BatchRayTracingDialog
         manager={batchRayTracing}
         singleRayTraceRunning={singleRayTraceRunning}

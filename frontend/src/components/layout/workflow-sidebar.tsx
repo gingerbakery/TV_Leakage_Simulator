@@ -92,6 +92,9 @@ interface WorkflowSidebarProps {
   batchRayTracingRunning?: boolean
   batchRayTracingProgress?: number
   onOpenBatchRayTracing?(): void
+  onRunReceiverViewSweep?(receiverId: string): void
+  onOpenReceiverViewSweep?(): void
+  receiverViewSweepRunning?: boolean
   onRayObjectEditRequestHandled?(): void
   onOpenRayTraceResult(): void
   onOpenLtValidation?(): void
@@ -275,6 +278,9 @@ export function WorkflowSidebar({
   batchRayTracingRunning = false,
   batchRayTracingProgress = 0,
   onOpenBatchRayTracing,
+  onRunReceiverViewSweep,
+  onOpenReceiverViewSweep,
+  receiverViewSweepRunning,
   onRayObjectEditRequestHandled,
   onOpenRayTraceResult,
   onOpenLtValidation,
@@ -424,6 +430,9 @@ export function WorkflowSidebar({
           batchRayTracingRunning={batchRayTracingRunning}
           batchRayTracingProgress={batchRayTracingProgress}
           onOpenBatchRayTracing={onOpenBatchRayTracing}
+          onRunReceiverViewSweep={onRunReceiverViewSweep}
+          onOpenReceiverViewSweep={onOpenReceiverViewSweep}
+          receiverViewSweepRunning={receiverViewSweepRunning}
           onEditRequestHandled={onRayObjectEditRequestHandled}
         />
       )

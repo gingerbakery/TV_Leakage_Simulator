@@ -41,7 +41,7 @@ class GpuSourceBootstrapTests(unittest.TestCase):
         script = BOOTSTRAP_BAT.read_text(encoding="utf-8")
         self.assertIn("run_web_gpu.ps1", script)
         self.assertIn('-Port "%PORT%"', script)
-        self.assertIn("The GPU server was not started", script)
+        self.assertIn("The GPU launcher or server exited with an error", script)
         self.assertIn("run_web.bat", script)
         self.assertIn("docs\\WINDOWS_GPU_SETUP.md", script)
 
@@ -64,6 +64,11 @@ class GpuSourceBootstrapTests(unittest.TestCase):
             "--mode device --human",
             "PreflightOnly",
             "run_web.py",
+            "run_logged_server.py",
+            "--log-file",
+            "outputs\\gpu-runtime",
+            "Format-ServerExitCode",
+            "ACCESS_VIOLATION",
         )
         for token in expected_tokens:
             with self.subTest(token=token):
@@ -99,6 +104,22 @@ class GpuSourceBootstrapTests(unittest.TestCase):
         self.assertLess(token_creation, token_environment)
         self.assertLess(token_environment, token_argument)
         self.assertLess(token_argument, opener)
+
+    @unittest.skipUnless(sys.platform == "win32", "PowerShell scripts are Windows-only")
+    def test_native_crash_code_is_reported_without_guessing_its_cause(self) -> None:
+        script = BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        formatter = script[script.index("function Format-ServerExitCode"):script.index("function Invoke-Checked")]
+        process = subprocess.run(
+            [str(WINDOWS_POWERSHELL), "-NoProfile", "-Command", formatter +
+             '\nFormat-ServerExitCode -1073741819; Format-ServerExitCode 1'],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("-1073741819 (0xC0000005; ACCESS_VIOLATION: native process crash)", process.stdout)
+        self.assertIn("1 (0x00000001)", process.stdout)
+        self.assertIn('if ($ServerInvoked)', script)
+        self.assertIn('exited during startup or execution', script)
+        self.assertIn('does not prove a driver or GPU memory issue', script)
 
     def test_boot_token_readiness_requires_exact_generation(self) -> None:
         opener = load_script_module(OPENER_SCRIPT, "boot_token_opener_check")
