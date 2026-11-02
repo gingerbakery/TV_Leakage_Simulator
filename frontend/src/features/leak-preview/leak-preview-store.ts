@@ -81,6 +81,8 @@ interface LeakPreviewState {
   ignoreAreas: LeakPreviewIgnoreArea[]
   blockers: LeakPreviewBlocker[]
   blockerAreaSelectionId: string | null
+  selectedBlocker: { groupId: string; regionId: string | null } | null
+  selectBlocker(groupId: string | null, regionId?: string | null): void
   runSignature: string | null
   ensureScene(sceneToken: string): void
   rebindSceneToken(sceneToken: string): void
@@ -177,6 +179,12 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   ignoreAreas: [],
   blockers: [],
   blockerAreaSelectionId: null,
+  selectedBlocker: null,
+  selectBlocker: (groupId, regionId = null) => set((state) => ({ selectedBlocker:
+    groupId && state.blockers.some((group) => group.id === groupId &&
+      (regionId === null || group.regions?.some((region) => region.id === regionId)))
+      ? { groupId, regionId } : null,
+  })),
   runSignature: null,
   ensureScene: (sceneToken) => {
     const sceneIdentity = activeSceneIdentity(sceneToken)
@@ -219,6 +227,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           ignoreAreas: structuredClone(preserved?.ignoreAreas ?? []),
           blockers: structuredClone(preserved?.blockers ?? []),
           blockerAreaSelectionId: null,
+          selectedBlocker: null,
           runSignature: null,
         }
     })
@@ -339,6 +348,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     }),
   })),
   removeBlockerRegion: (blockerId, regionId) => setAndPersist((state) => ({
+    selectedBlocker: state.selectedBlocker?.groupId === blockerId && state.selectedBlocker.regionId === regionId
+      ? { groupId: blockerId, regionId: null } : state.selectedBlocker,
     blockers: state.blockers.map((group) => group.id !== blockerId ? group : {
       ...group, regions: group.regions?.filter((region) => region.id !== regionId),
     }),
@@ -352,17 +363,20 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     ),
   })),
   removeBlocker: (blockerId) => setAndPersist((state) => ({
+    selectedBlocker: state.selectedBlocker?.groupId === blockerId ? null : state.selectedBlocker,
     blockers: state.blockers.filter((blocker) => blocker.id !== blockerId),
     ...(state.blockerAreaSelectionId === blockerId
       ? { blockerAreaSelectionId: null }
       : {}),
   })),
   beginBlockerAreaSelection: (blockerId) => set((state) => ({
+    selectedBlocker: state.blockers.some((blocker) => blocker.id === blockerId) ? { groupId: blockerId, regionId: null } : null,
     blockerAreaSelectionId: state.blockers.some((blocker) => blocker.id === blockerId)
       ? blockerId
       : null,
   })),
   finishBlockerAreaSelection: () => setAndPersist((state) => ({
+    selectedBlocker: state.blockers.some((group) => group.id === state.selectedBlocker?.groupId && group.regions?.length !== 0) ? state.selectedBlocker : null,
     blockerAreaSelectionId: null, blockers: state.blockers.filter((blocker) => blocker.regions?.length !== 0),
   })),
   restoreProjectState: (projectState) => {
@@ -385,6 +399,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       ignoreAreaSelectionArmed: false,
       activeIgnoreAreaId: null,
       blockerAreaSelectionId: null,
+      selectedBlocker: null,
       runSignature: null,
     })
   },
@@ -414,6 +429,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     ignoreAreas: [],
     blockers: [],
     blockerAreaSelectionId: null,
+    selectedBlocker: null,
     runSignature: null,
   }),
 })})

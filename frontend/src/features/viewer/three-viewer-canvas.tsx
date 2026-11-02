@@ -1,5 +1,7 @@
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
+import { findCadHoleLoops, pickRoundCadHole, type CadHoleLoop } from '@/features/leak-preview/hole-recognition'
+import { createBlockerDisplay, createBlockerSectionCap, pickBlocker } from './blocker-display'
 import { isLeakPreviewPointHighlighted } from '@/features/leak-preview/leak-preview-model'
 import { clipEmitterDisplayToRoi, emitterPointInRoi } from './emitter-roi-display'
 import { HelpTooltip } from '@/components/common/help-tooltip'
@@ -226,6 +228,8 @@ interface ComponentRenderNode {
 }
 
 interface ViewerRuntime {
+  blockerRoot: Group
+  blockerSectionRoot: Group
   axisScalePercent: number
   camera: PerspectiveCamera
   controls: ViewerTrackballControls
@@ -2011,6 +2015,7 @@ export function ThreeViewerCanvas({
   )
   const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
+  const selectedBlocker = useLeakPreviewStore((state) => state.selectedBlocker)
   const leakPreviewIgnoreAreasVisible = useLeakPreviewStore((state) => state.ignoreAreasVisible)
   const leakPreviewBlockersVisible = useLeakPreviewStore((state) => state.blockersVisible)
   const blockerAreaSelectionId = useLeakPreviewStore((state) => state.blockerAreaSelectionId)
@@ -2198,6 +2203,10 @@ export function ThreeViewerCanvas({
     const modelRoot = new Group()
     const leakPreviewRoot = new Group()
     leakPreviewRoot.name = 'whole-set-leak-preview-root'
+    const blockerRoot = new Group()
+    blockerRoot.name = 'preview-blocker-root'
+    const blockerSectionRoot = new Group()
+    blockerSectionRoot.name = 'preview-blocker-section-root'
     const placementRoot = new Group()
     placementRoot.name = 'ray-tracing-placement-root'
     const rayPathRoot = new Group()
@@ -2221,6 +2230,8 @@ export function ThreeViewerCanvas({
     threeScene.add(
       modelRoot,
       leakPreviewRoot,
+      blockerRoot,
+      blockerSectionRoot,
       roiPreviewRoot,
       roiSelectionRoot,
       roiBoundsMarker,
@@ -2263,6 +2274,8 @@ export function ThreeViewerCanvas({
       camera,
       controls,
       leakPreviewRoot,
+      blockerRoot,
+      blockerSectionRoot,
       globalOriginAxes,
       modelRoot,
       nodes,
@@ -2653,6 +2666,30 @@ export function ThreeViewerCanvas({
       }
     }
 
+    let holeCache: { rules: ComponentTransformRule[]; holes: CadHoleLoop[] } | null = null
+    const resolveHolePointSelection = (clientX:number, clientY:number) => {
+      const rules = transformRulesRef.current
+      if (!holeCache || holeCache.rules !== rules) holeCache = { rules, holes:findCadHoleLoops(scene,rules) }
+      const rect = canvas.getBoundingClientRect()
+      camera.updateMatrixWorld(true)
+      const project = (point:Vec3) => {
+        const p = new Vector3(...point).project(camera)
+        return { x:rect.left+(p.x+1)*rect.width/2, y:rect.top+(1-p.y)*rect.height/2, z:p.z }
+      }
+      return pickRoundCadHole(holeCache.holes, { x:clientX,y:clientY }, project, (hole) => {
+        if (!nodes.get(hole.componentId)?.group.visible) return false
+        const center = new Vector3(...hole.placement.baseCenter)
+        if (sectionViewRef.current.enabled && sectionClippingPlaneRef.current.distanceToPoint(center) < -1e-6) return false
+        const front = resolveSurfaceHit(clientX,clientY)
+        const projectedCenter = project(hole.placement.baseCenter)
+        if (front && project(front.point).z < projectedCenter.z-1e-7) return false
+        return hole.points.some((point,index) => {
+          if (index % Math.max(1,Math.floor(hole.points.length/8))) return false
+          const p = project(point), hit = resolveSurfaceHit(p.x,p.y)
+          return hit?.componentId === hole.componentId && new Vector3(...hit.point).distanceTo(new Vector3(...point)) <= Math.max(.05,hole.placement.widthMm!*.005)
+        })
+      })
+    }
     const resolveBlockerAreaSelection = (
       selection: ViewerBoxDrag,
       blockerId: string,
@@ -2660,7 +2697,7 @@ export function ThreeViewerCanvas({
       const blocker = leakPreviewStore.getState().blockers.find(
         (item) => item.id === blockerId,
       )
-      if (!blocker) return null
+      if (!blocker || blocker.shape === 'ellipse') return null
       const rect = canvas.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return null
       const minX = Math.min(selection.startX, selection.currentX)
@@ -2724,6 +2761,7 @@ export function ThreeViewerCanvas({
       const hits = runtime.raycaster.intersectObjects(candidates, false)
 
       for (const hit of hits) {
+        if (sectionViewRef.current.enabled && sectionClippingPlaneRef.current.distanceToPoint(hit.point) < -1e-6) continue
         if (!(hit.object instanceof Mesh)) continue
         const hitFaceIndex = hit.faceIndex
         if (hitFaceIndex === null || hitFaceIndex === undefined) continue
@@ -2987,6 +3025,18 @@ export function ThreeViewerCanvas({
     }
 
     let pointerDown: { x: number; y: number } | null = null
+    const selectBlockerAt = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect()
+      runtime.raycaster.setFromCamera(new Vector2(((clientX-rect.left)/Math.max(rect.width,1))*2-1,
+        -((clientY-rect.top)/Math.max(rect.height,1))*2+1), camera)
+      const blocker = pickBlocker([runtime.blockerRoot, runtime.blockerSectionRoot], runtime.raycaster,
+        sectionViewRef.current.enabled ? sectionClippingPlaneRef.current : null)
+      if (!blocker) return false
+      leakPreviewStore.getState().selectBlocker(blocker.groupId, blocker.regionId)
+      const label = leakPreviewStore.getState().blockers.find((group) => group.id === blocker.groupId)?.label ?? 'Blocker'
+      onStatusMessage(`${label} 선택됨`)
+      return true
+    }
     let rightPointerDown: { x: number; y: number } | null = null
     let rightPointerMoved = false
     let emitterSurfaceBoxDrag: 'add' | 'remove' | null = null
@@ -3217,6 +3267,7 @@ export function ThreeViewerCanvas({
             )
             return
           } else {
+            if (blockerAreaSelectionIdRef.current && selectBlockerAt(event.clientX, event.clientY)) return
             leakPreviewStore.getState().finishBlockerAreaSelection()
             actions.setRoiBoxSelectionArmed(false)
             onStatusMessage('영역 선택을 취소했습니다.')
@@ -3272,6 +3323,21 @@ export function ThreeViewerCanvas({
       )
       pointerDown = null
       if (movement > 5) return
+
+      if (!pivotPickArmedRef.current && !datumFacePickArmedRef.current && !emitterFaceSelectionArmedRef.current && !materialFacePickArmedRef.current) {
+        if (selectBlockerAt(event.clientX, event.clientY)) return
+        const group = leakPreviewStore.getState().blockers.find((item) => item.id === blockerAreaSelectionIdRef.current)
+        if (group?.shape === 'ellipse') {
+          const patch = resolveHolePointSelection(event.clientX,event.clientY)
+          if (patch) {
+            leakPreviewStore.getState().appendBlockerRegion(group.id,patch)
+            leakPreviewStore.getState().clearDetection()
+            onStatusMessage(`원형 홀 인식 · Z ${patch.baseCenter[2].toFixed(2)} mm · ±2.5 mm 마개 추가`)
+          } else onStatusMessage('원형 홀 미인식 · 보이는 홀 중심 근처를 클릭하세요.')
+          return
+        }
+        leakPreviewStore.getState().selectBlocker(null)
+      }
 
       const hit = resolveSurfaceHit(event.clientX, event.clientY)
       const additive = event.ctrlKey || event.metaKey || event.shiftKey
@@ -3804,54 +3870,6 @@ export function ThreeViewerCanvas({
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
-    for (const blocker of leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : []) {
-      if (blocker.visible === false) continue
-      const normal = new Vector3(...blocker.normal)
-        .normalize()
-        .multiplyScalar(blocker.reverse ? -1 : 1)
-      const center = new Vector3(...blocker.baseCenter)
-        .addScaledVector(normal, blocker.offsetMm + blocker.depthMm / 2)
-      const geometry = blocker.shape === 'ellipse'
-        ? new CylinderGeometry(1, 1, Math.max(blocker.depthMm, .01), 48).rotateX(Math.PI / 2).scale(blocker.widthMm / 2, blocker.heightMm / 2, 1)
-        : new BoxGeometry(Math.max(blocker.widthMm, .01), Math.max(blocker.heightMm, .01), Math.max(blocker.depthMm, .01))
-      const orientation = new Matrix4().makeBasis(
-        new Vector3(...blocker.uAxis).normalize(),
-        new Vector3(...blocker.vAxis).normalize(),
-        normal,
-      )
-      const solid = new Mesh(
-        geometry,
-        new MeshBasicMaterial({
-          color: 0x050505,
-          transparent: true,
-          opacity: 0.28,
-          depthTest: false,
-          depthWrite: false,
-          side: DoubleSide,
-          toneMapped: false,
-        }),
-      )
-      solid.position.copy(center)
-      solid.setRotationFromMatrix(orientation)
-      solid.name = `${blocker.id}-solid`
-      solid.renderOrder = 214
-      const outline = new LineSegments(
-        new EdgesGeometry(geometry),
-        new LineBasicMaterial({
-          color: 0x050505,
-          transparent: true,
-          opacity: 1,
-          depthTest: false,
-          depthWrite: false,
-          toneMapped: false,
-        }),
-      )
-      outline.position.copy(center)
-      outline.setRotationFromMatrix(orientation)
-      outline.name = `${blocker.id}-outline`
-      outline.renderOrder = 215
-      runtime.leakPreviewRoot.add(solid, outline)
-    }
     for (const area of leakPreviewIgnoreAreasVisible ? leakPreviewIgnoreAreas : []) {
       if (area.visible === false) continue
       for (const [regionIndex, clip] of area.regions.entries()) {
@@ -3981,7 +3999,18 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakHighlight, leakPreviewBlockers, leakPreviewBlockersVisible, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+  }, [leakHighlight, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.blockerRoot)
+    for (const blocker of leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : []) {
+      if (blocker.visible === false) continue
+      runtime.blockerRoot.add(createBlockerDisplay(blocker, selectedBlocker,
+        sectionView.enabled ? sectionClippingPlaneRef.current : null))
+    }
+  }, [leakPreviewBlockers, leakPreviewBlockersVisible, selectedBlocker, sectionView.enabled, scene])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -4047,6 +4076,9 @@ export function ThreeViewerCanvas({
     if (!runtime) return
 
     runtime.controls.noRotate = roiBoxSelectionArmed
+    if (blockerAreaSelectionId && leakPreviewStore.getState().blockers.find((group) => group.id === blockerAreaSelectionId)?.shape === 'ellipse') {
+      onStatusMessage('홀 선택 중 · 원형 홀 중심 근처 클릭')
+    }
     if (roiBoxSelectionArmed) {
       if (!runtime.roiSelectionCameraPose) {
         runtime.roiSelectionCameraPose = {
@@ -5278,6 +5310,7 @@ export function ThreeViewerCanvas({
       runtime.receiverHeatmapRoot,
       runtime.rayPathRoot,
       runtime.placementRoot,
+      runtime.blockerRoot,
     ]
     const sharedClippingPlane = sectionClippingPlaneRef.current
     if (!sectionView.enabled) {
@@ -5356,6 +5389,18 @@ export function ThreeViewerCanvas({
     sectionView.offsetRatio,
     sectionView.reverse,
   ])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearGroup(runtime.blockerSectionRoot)
+    if (!sectionView.enabled) return
+    runtime.blockerRoot.traverse((object) => {
+      if (!(object instanceof Mesh) || !object.userData.blockerSolid || !(object.material instanceof MeshBasicMaterial)) return
+      const cap = createBlockerSectionCap(object, sectionClippingPlaneRef.current)
+      if (cap) runtime.blockerSectionRoot.add(cap)
+    })
+  }, [leakPreviewBlockers, leakPreviewBlockersVisible, selectedBlocker, sectionView.axis, sectionView.enabled, sectionView.offsetRatio, sectionView.reverse, scene, transformRules, roiScopes, hiddenComponentIds, deletedComponentIds, componentColorOverrides, faceDisplayColors, materialAssignments, renderMode, roiFaceIds, selectedComponentIds, selectedFaceIds, surfaceOpacity])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -5677,7 +5722,7 @@ export function ThreeViewerCanvas({
       <canvas
         ref={canvasRef}
         className={`absolute inset-0 size-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
-          roiBoxSelectionArmed ? 'cursor-crosshair' : ''
+          roiBoxSelectionArmed || blockerAreaSelectionId ? 'cursor-crosshair' : ''
         } ${
           emitterFaceSelectionArmed ? 'cursor-crosshair' : ''
         } ${materialFacePickArmed ? 'cursor-crosshair' : ''} ${

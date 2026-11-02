@@ -36,7 +36,7 @@ export function attachViewerNavigationShortcuts(
     mode = null
   }
   const editable = (element: Element | null) => element?.closest(
-    'input,textarea,select,button,[contenteditable="true"],[role="textbox"],[role="dialog"]',
+    'input,textarea,select,[contenteditable="true"],[role="textbox"]',
   )
   const enter = (event: PointerEvent) => {
     hovered = true

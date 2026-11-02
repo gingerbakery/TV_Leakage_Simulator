@@ -80,7 +80,32 @@ it('keeps supplementary help closed and opens it by click or keyboard', () => {
   expect(screen.queryByRole('dialog')).toBeNull()
   const help = screen.getByRole('button', { name: 'Blocker 도움말' })
   fireEvent.click(help)
-  expect(screen.getByRole('dialog').textContent).toContain('CAD 홀 윤곽을 자동 인식하지 않으므로')
+  expect(screen.getByRole('dialog').textContent).toContain('홀 중심 근처를 클릭')
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
   expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('keeps hole plugs in point mode and synchronizes group/region selections with the viewer state', () => {
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button', { name:'홀 막기' }))
+  const group = leakPreviewStore.getState().blockers[0]
+  expect(workspaceStore.getState().roiBoxSelectionArmed).toBe(false)
+  expect(group).toMatchObject({ depthMm:5, offsetMm:-2.5, normal:[0,0,1] })
+  act(() => {
+    leakPreviewStore.getState().appendBlockerRegion(group.id, { baseCenter:[1,2,3] })
+    leakPreviewStore.getState().appendBlockerRegion(group.id, { baseCenter:[4,5,6] })
+    leakPreviewStore.getState().finishBlockerAreaSelection()
+  })
+  expect(screen.queryByLabelText('Block 1 Edit')).toBeNull()
+  expect(screen.queryByLabelText('Block 1 새 영역 깊이')).toBeNull()
+  const regions = leakPreviewStore.getState().blockers[0].regions!
+  fireEvent.click(screen.getByLabelText('Block 1 홀 1 선택'))
+  expect(leakPreviewStore.getState().selectedBlocker).toEqual({ groupId:group.id, regionId:regions[0].id })
+  act(() => leakPreviewStore.getState().selectBlocker(group.id, regions[1].id))
+  expect(screen.getByLabelText('Block 1 홀 2 선택').getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByRole('group', { name:'Block 1 목록' }).getAttribute('data-selected')).toBe('true')
+  fireEvent.click(screen.getByLabelText('Block 1 홀 2 삭제'))
+  expect(leakPreviewStore.getState().selectedBlocker).toEqual({ groupId:group.id, regionId:null })
+  fireEvent.click(screen.getByLabelText('Block 1 Delete'))
+  expect(leakPreviewStore.getState().selectedBlocker).toBeNull()
 })

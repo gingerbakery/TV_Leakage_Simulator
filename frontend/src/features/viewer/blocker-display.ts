@@ -1,0 +1,79 @@
+import { BoxGeometry, BufferGeometry, CylinderGeometry, DoubleSide, EdgesGeometry, Float32BufferAttribute, Group, LineBasicMaterial, LineSegments, Matrix4, Mesh, MeshBasicMaterial, Plane, Raycaster, Vector3, type Object3D } from 'three'
+import type { ExpandedBlocker } from '@/features/leak-preview/blocker-groups'
+
+export interface BlockerSelection { groupId: string; regionId: string | null }
+export function blockerIsSelected(blocker: ExpandedBlocker, selected: BlockerSelection | null): boolean {
+  return selected?.groupId === blocker.groupId && (selected.regionId === null || selected.regionId === blocker.regionId)
+}
+
+export function createBlockerDisplay(blocker: ExpandedBlocker, selected: BlockerSelection | null, plane: Plane | null): Group {
+  const active = blockerIsSelected(blocker, selected), color = active ? 0xff7a00 : 0x050505
+  const group = new Group()
+  group.name = `${blocker.id}-display`
+  group.userData.blockerSelection = { groupId: blocker.groupId, regionId: blocker.regionId }
+  const normal = new Vector3(...blocker.normal).normalize().multiplyScalar(blocker.reverse ? -1 : 1)
+  group.position.set(...blocker.baseCenter).addScaledVector(normal, blocker.offsetMm + blocker.depthMm/2)
+  group.setRotationFromMatrix(new Matrix4().makeBasis(new Vector3(...blocker.uAxis).normalize(), new Vector3(...blocker.vAxis).normalize(), normal))
+  const geometry = blocker.shape === 'ellipse'
+    ? new CylinderGeometry(1, 1, Math.max(blocker.depthMm, .01), 48).rotateX(Math.PI/2).scale(blocker.widthMm/2, blocker.heightMm/2, 1)
+    : new BoxGeometry(Math.max(blocker.widthMm, .01), Math.max(blocker.heightMm, .01), Math.max(blocker.depthMm, .01))
+  const solid = new Mesh(geometry, new MeshBasicMaterial({ color, transparent: true, opacity: active ? .55 : .28,
+    depthTest: false, depthWrite: false, side: DoubleSide, toneMapped: false, clippingPlanes: plane ? [plane] : null }))
+  solid.name = `${blocker.id}-solid`
+  solid.userData.blockerSolid = true
+  solid.renderOrder = 214
+  const outline = new LineSegments(new EdgesGeometry(geometry), new LineBasicMaterial({ color, transparent: true, opacity: 1,
+    depthTest: false, depthWrite: false, toneMapped: false, clippingPlanes: plane ? [plane] : null }))
+  outline.name = `${blocker.id}-outline`
+  outline.renderOrder = 215
+  group.add(solid, outline)
+  return group
+}
+
+/** A convex Blocker has a convex planar section; draw a real cap so a cut
+ * cylinder remains visible and pickable instead of appearing hollow. */
+export function createBlockerSectionCap(solid: Mesh<BufferGeometry, MeshBasicMaterial>, plane: Plane): Mesh | null {
+  solid.updateWorldMatrix(true, false)
+  const positions = solid.geometry.getAttribute('position'), indices = solid.geometry.index
+  const points: Vector3[] = []
+  const add = (point: Vector3) => { if (!points.some((p) => p.distanceToSquared(point) < 1e-12)) points.push(point) }
+  for (let i = 0; i < (indices?.count ?? positions.count); i += 3) {
+    const vertices = [0,1,2].map((j) => new Vector3().fromBufferAttribute(positions, indices ? indices.getX(i+j) : i+j).applyMatrix4(solid.matrixWorld))
+    for (let j = 0; j < 3; j++) {
+      const a = vertices[j], b = vertices[(j+1)%3], da = plane.distanceToPoint(a), db = plane.distanceToPoint(b)
+      if (Math.abs(da) < 1e-7) add(a)
+      if (da*db < 0) add(a.clone().lerp(b, da/(da-db)))
+    }
+  }
+  if (points.length < 3) return null
+  const center = points.reduce((sum, p) => sum.add(p), new Vector3()).multiplyScalar(1/points.length)
+  const u = new Vector3().crossVectors(plane.normal, Math.abs(plane.normal.y) < .9 ? new Vector3(0,1,0) : new Vector3(0,0,1)).normalize()
+  const v = new Vector3().crossVectors(plane.normal, u)
+  points.sort((a,b) => {
+    const pa = a.clone().sub(center), pb = b.clone().sub(center)
+    return Math.atan2(pa.dot(v), pa.dot(u))-Math.atan2(pb.dot(v), pb.dot(u))
+  })
+  const triangles: number[] = []
+  for (let i = 0; i < points.length; i++) triangles.push(...center.toArray(), ...points[i].toArray(), ...points[(i+1)%points.length].toArray())
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new Float32BufferAttribute(triangles, 3))
+  const cap = new Mesh(geometry, new MeshBasicMaterial({ color: solid.material.color.clone(), side: DoubleSide,
+    depthTest: false, depthWrite: false, toneMapped: false }))
+  cap.name = `${solid.name}-section-cap`
+  cap.userData.blockerSelection = solid.parent?.userData.blockerSelection
+  cap.renderOrder = 216
+  return cap
+}
+
+export function pickBlocker(roots: Object3D[], raycaster: Raycaster, plane: Plane | null): BlockerSelection | null {
+  for (const hit of raycaster.intersectObjects(roots, true)) {
+    if (!(hit.object instanceof Mesh) || (plane && plane.distanceToPoint(hit.point) < -1e-6)) continue
+    let selection: BlockerSelection | null = null, visible = true
+    for (let object: Object3D | null = hit.object; object; object = object.parent) {
+      if (!object.visible) visible = false
+      selection ??= object.userData.blockerSelection ?? null
+    }
+    if (visible && selection) return selection
+  }
+  return null
+}
