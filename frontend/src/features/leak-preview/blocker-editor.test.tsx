@@ -11,6 +11,7 @@ import { buildPrecisionPreviewConstraints } from '@/features/raytracing/precisio
 import { BlockerEditor } from './blocker-editor'
 import { leakPreviewStore, snapshotLeakPreviewProjectState } from './leak-preview-store'
 import { expandBlockerGroups } from './blocker-groups'
+import { createBlockGroup } from './blocker-groups'
 
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear() })
 
@@ -108,4 +109,57 @@ it('keeps hole plugs in point mode and synchronizes group/region selections with
   expect(leakPreviewStore.getState().selectedBlocker).toEqual({ groupId:group.id, regionId:null })
   fireEvent.click(screen.getByLabelText('Block 1 Delete'))
   expect(leakPreviewStore.getState().selectedBlocker).toBeNull()
+})
+
+it('starts hole lists expanded, keeps collapsed rows compact and reveals a hole selected in the viewer', () => {
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button',{name:'홀 막기'}))
+  const store = leakPreviewStore.getState(), groupId = store.blockers[0].id
+  act(() => { store.appendBlockerRegion(groupId,{baseCenter:[1,2,3]}); store.finishBlockerAreaSelection() })
+  const regionId = leakPreviewStore.getState().blockers[0].regions![0].id
+  expect(screen.getByLabelText('Block 1 홀 목록 접기').getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(screen.getByLabelText('Block 1 홀 1 선택'))
+  fireEvent.click(screen.getByLabelText('Block 1 홀 목록 접기'))
+  expect(screen.queryByLabelText('Block 1 홀 1 선택')).toBeNull()
+  expect(screen.getByLabelText('Block 1 홀 목록 펼치기').getAttribute('aria-expanded')).toBe('false')
+  act(() => leakPreviewStore.getState().selectBlocker(groupId,regionId))
+  expect(screen.getByLabelText('Block 1 홀 1 선택').getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(screen.getByLabelText('Block 1 홀 목록 접기'))
+  fireEvent.click(screen.getByLabelText('Block 1 홀 목록 펼치기'))
+  expect(screen.getByLabelText('Block 1 홀 1 선택')).not.toBeNull()
+  expect(leakPreviewStore.getState().blockers[0].regions).toHaveLength(1)
+})
+
+it('applies only entered group dimensions to all blocks while retaining placement and other groups', () => {
+  const box = createBlockGroup('Block 1','box'), other = createBlockGroup('Block 2','box')
+  box.regions = [
+    {...box,id:'a',regions:undefined,baseCenter:[1,2,3],widthMm:11,heightMm:12,enabled:false,visible:false},
+    {...box,id:'b',regions:undefined,baseCenter:[4,5,6],widthMm:21,heightMm:22},
+  ]
+  act(() => { leakPreviewStore.getState().addBlocker(box); leakPreviewStore.getState().addBlocker(other) })
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 Edit'))
+  fireEvent.change(screen.getByLabelText('Block 1 그룹 깊이'),{target:{value:'7'}})
+  fireEvent.change(screen.getByLabelText('Block 1 그룹 Offset'),{target:{value:'-2'}})
+  fireEvent.click(screen.getByLabelText('Block 1 그룹 치수 전체 적용'))
+  const updated = leakPreviewStore.getState().blockers
+  expect(updated[0]).toMatchObject({depthMm:7,offsetMm:-2})
+  expect(updated[0].regions).toEqual(box.regions.map((region) => ({...region,depthMm:7,offsetMm:-2})))
+  expect(updated[1]).toEqual(other)
+  expect(screen.getByRole('status').textContent).toContain('2개 적용 완료')
+  const constraints = buildPrecisionPreviewConstraints(updated,[],true,false)
+  expect(constraints[0]).toMatchObject({width_mm:21,height_mm:22,depth_mm:7})
+})
+
+it('rejects invalid bulk dimensions without partially changing the group', () => {
+  const box = createBlockGroup('Block 1','box')
+  box.regions = [{...box,id:'a',regions:undefined}]
+  act(() => leakPreviewStore.getState().addBlocker(box))
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 Edit'))
+  fireEvent.change(screen.getByLabelText('Block 1 그룹 폭'),{target:{value:'10'}})
+  fireEvent.change(screen.getByLabelText('Block 1 그룹 깊이'),{target:{value:'-1'}})
+  fireEvent.click(screen.getByLabelText('Block 1 그룹 치수 전체 적용'))
+  expect(screen.getByRole('alert').textContent).toContain('0.01 mm')
+  expect(leakPreviewStore.getState().blockers[0]).toEqual(box)
 })

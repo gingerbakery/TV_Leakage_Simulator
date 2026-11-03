@@ -30,9 +30,70 @@ export function createBlockerDisplay(blocker: ExpandedBlocker, selected: Blocker
   return group
 }
 
+function disposeDisplay(object: Object3D): void {
+  object.removeFromParent()
+  object.traverse((child) => {
+    if (!(child instanceof Mesh) && !(child instanceof LineSegments)) return
+    child.geometry.dispose()
+    for (const material of Array.isArray(child.material) ? child.material : [child.material]) material.dispose()
+  })
+}
+
+/** Keep geometry and GPU buffers for unchanged plugs when adding/selecting
+ * another one. Display-only changes must not rebuild every cylinder. */
+export function syncBlockerDisplays(root: Group, blockers: ExpandedBlocker[], selected: BlockerSelection | null, plane: Plane | null): void {
+  const previous = new Map(root.children.map((child) => [child.userData.blockerId as string, child]))
+  for (const blocker of blockers) {
+    if (blocker.visible === false) continue
+    const key = JSON.stringify([blocker.shape,blocker.baseCenter,blocker.uAxis,blocker.vAxis,blocker.normal,
+      blocker.widthMm,blocker.heightMm,blocker.depthMm,blocker.offsetMm,blocker.reverse])
+    let display = previous.get(blocker.id)
+    previous.delete(blocker.id)
+    if (display && display.userData.geometryKey !== key) { disposeDisplay(display); display = undefined }
+    if (!display) {
+      display = createBlockerDisplay(blocker,selected,plane)
+      display.userData.blockerId = blocker.id; display.userData.geometryKey = key
+      root.add(display)
+    }
+    const active = blockerIsSelected(blocker,selected)
+    display.traverse((child) => {
+      if (!(child instanceof Mesh) && !(child instanceof LineSegments)) return
+      const material = child.material
+      if (!(material instanceof MeshBasicMaterial) && !(material instanceof LineBasicMaterial)) return
+      material.color.setHex(active ? 0xff7a00 : 0x050505)
+      if (child instanceof Mesh) material.opacity = active ? .55 : .28
+      if ((material.clippingPlanes?.[0] ?? null) !== plane) {
+        material.clippingPlanes = plane ? [plane] : null
+        material.needsUpdate = true
+      }
+    })
+  }
+  for (const stale of previous.values()) disposeDisplay(stale)
+}
+
+export function syncBlockerSectionCaps(root: Group, displays: Group, plane: Plane | null): void {
+  const previous = new Map(root.children.map((child) => [child.userData.sourceSolid as string,child]))
+  if (plane) displays.traverse((solid) => {
+    if (!(solid instanceof Mesh) || !solid.userData.blockerSolid || !(solid.material instanceof MeshBasicMaterial)) return
+    solid.updateWorldMatrix(true,false)
+    const key = JSON.stringify([...plane.normal.toArray(),plane.constant,...solid.matrixWorld.elements])
+    let cap = previous.get(solid.uuid) as Mesh<BufferGeometry,MeshBasicMaterial> | undefined
+    previous.delete(solid.uuid)
+    if (cap && cap.userData.sectionKey !== key) { disposeDisplay(cap); cap = undefined }
+    if (!cap) {
+      cap = createBlockerSectionCap(solid,plane) ?? undefined
+      if (!cap) return
+      cap.userData.sourceSolid = solid.uuid; cap.userData.sectionKey = key
+      root.add(cap)
+    }
+    cap.material.color.copy(solid.material.color)
+  })
+  for (const stale of previous.values()) disposeDisplay(stale)
+}
+
 /** A convex Blocker has a convex planar section; draw a real cap so a cut
  * cylinder remains visible and pickable instead of appearing hollow. */
-export function createBlockerSectionCap(solid: Mesh<BufferGeometry, MeshBasicMaterial>, plane: Plane): Mesh | null {
+export function createBlockerSectionCap(solid: Mesh<BufferGeometry, MeshBasicMaterial>, plane: Plane): Mesh<BufferGeometry,MeshBasicMaterial> | null {
   solid.updateWorldMatrix(true, false)
   const positions = solid.geometry.getAttribute('position'), indices = solid.geometry.index
   const points: Vector3[] = []

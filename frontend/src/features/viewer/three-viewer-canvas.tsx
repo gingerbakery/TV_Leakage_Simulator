@@ -1,7 +1,7 @@
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
 import { findCadHoleLoops, pickRoundCadHole, type CadHoleLoop } from '@/features/leak-preview/hole-recognition'
-import { createBlockerDisplay, createBlockerSectionCap, pickBlocker } from './blocker-display'
+import { syncBlockerDisplays, syncBlockerSectionCaps, pickBlocker } from './blocker-display'
 import { isLeakPreviewPointHighlighted } from '@/features/leak-preview/leak-preview-model'
 import { clipEmitterDisplayToRoi, emitterPointInRoi } from './emitter-roi-display'
 import { HelpTooltip } from '@/components/common/help-tooltip'
@@ -127,7 +127,9 @@ import { emitterSphereDirection } from '@/features/raytracing/emitter-aim'
 import { createRoiCapMaterial } from './roi-cap-material'
 import { roiSurfaceAppearance } from './roi-surface-appearance'
 import { applyFaceDisplayColors, resolveFaceDisplayColors, setDisplayVertexColors } from './face-display-colors'
-import { attachViewerNavigationShortcuts, ViewerTrackballControls } from './viewer-controls'
+import { attachBlockerBoxDrawing, attachViewerNavigationShortcuts, ViewerTrackballControls, type ViewerNavigationTarget } from './viewer-controls'
+import { attachViewerActionShortcuts } from './viewer-shortcuts'
+import { createSectionCapOutline } from './section-cap-outline'
 import {
   resolveCadFacePick,
   resolveViewerHighlight,
@@ -670,7 +672,7 @@ function addSectionCapGeometry(
     cap.name = `viewer-section-cap-component-${componentId ?? 'unknown'}`
     cap.renderOrder = 3
     cap.userData.componentId = componentId
-    sectionRoot.add(cap)
+    sectionRoot.add(cap,createSectionCapOutline(geometry,`viewer-section-outline-component-${componentId ?? 'unknown'}`))
   }
 }
 
@@ -2353,9 +2355,6 @@ export function ThreeViewerCanvas({
       if (controlsInteracting) return
       controlsInteracting = true
       lastMainFrameTime = -Infinity
-      if (sectionViewRef.current.enabled) {
-        runtime.sectionRoot.visible = false
-      }
       if (!largeScene) return
 
       renderer.setPixelRatio(interactivePixelRatio)
@@ -2676,11 +2675,12 @@ export function ThreeViewerCanvas({
         const p = new Vector3(...point).project(camera)
         return { x:rect.left+(p.x+1)*rect.width/2, y:rect.top+(1-p.y)*rect.height/2, z:p.z }
       }
+      let front: ReturnType<typeof resolveSurfaceHit> | undefined
       return pickRoundCadHole(holeCache.holes, { x:clientX,y:clientY }, project, (hole) => {
         if (!nodes.get(hole.componentId)?.group.visible) return false
         const center = new Vector3(...hole.placement.baseCenter)
         if (sectionViewRef.current.enabled && sectionClippingPlaneRef.current.distanceToPoint(center) < -1e-6) return false
-        const front = resolveSurfaceHit(clientX,clientY)
+        if (front === undefined) front = resolveSurfaceHit(clientX,clientY)
         const projectedCenter = project(hole.placement.baseCenter)
         if (front && project(front.point).z < projectedCenter.z-1e-7) return false
         return hole.points.some((point,index) => {
@@ -3025,6 +3025,7 @@ export function ThreeViewerCanvas({
     }
 
     let pointerDown: { x: number; y: number } | null = null
+    let activePointerId: number | null = null
     const selectBlockerAt = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect()
       runtime.raycaster.setFromCamera(new Vector2(((clientX-rect.left)/Math.max(rect.width,1))*2-1,
@@ -3058,6 +3059,7 @@ export function ThreeViewerCanvas({
       )
     }
     const handlePointerDown = (event: PointerEvent) => {
+      activePointerId = event.pointerId
       if (
         runtime.roiPreviewRoot.visible &&
         pointInPipViewport(canvasPoint(event)) &&
@@ -3118,11 +3120,11 @@ export function ThreeViewerCanvas({
         canvas.setPointerCapture(event.pointerId)
         return
       }
-      if (roiBoxSelectionArmedRef.current) {
+      if (roiBoxSelectionArmedRef.current && (!blockerAreaSelectionIdRef.current || event.ctrlKey || event.metaKey)) {
         // Shift/Alt+drag stays free to roll the camera even while armed -
         // orbit is locked so a plain drag always draws the box, but the
         // user still needs some way to reorient without disarming.
-        if (event.shiftKey || event.altKey) {
+        if (!blockerAreaSelectionIdRef.current && (event.shiftKey || event.altKey)) {
           event.preventDefault()
           pointerDown = null
           rollDrag = { lastX: event.clientX }
@@ -3131,6 +3133,7 @@ export function ThreeViewerCanvas({
         }
         event.preventDefault()
         pointerDown = null
+        controls.enabled = false
         const point = canvasPoint(event)
         const selection = {
           startX: point.x,
@@ -3192,6 +3195,7 @@ export function ThreeViewerCanvas({
       setBoxDrag(nextSelection)
     }
     const handlePointerUp = (event: PointerEvent) => {
+      activePointerId = null
       if (pipDrag) {
         pipDrag = null
         controls.enabled = true
@@ -3325,17 +3329,24 @@ export function ThreeViewerCanvas({
       if (movement > 5) return
 
       if (!pivotPickArmedRef.current && !datumFacePickArmedRef.current && !emitterFaceSelectionArmedRef.current && !materialFacePickArmedRef.current) {
-        if (selectBlockerAt(event.clientX, event.clientY)) return
         const group = leakPreviewStore.getState().blockers.find((item) => item.id === blockerAreaSelectionIdRef.current)
         if (group?.shape === 'ellipse') {
           const patch = resolveHolePointSelection(event.clientX,event.clientY)
           if (patch) {
+            const existing = expandBlockerGroups(leakPreviewStore.getState().blockers).find((blocker) => blocker.shape === 'ellipse' &&
+              blocker.baseCenter.every((value,index) => Math.abs(value-patch.baseCenter[index]) < .01))
+            if (existing) {
+              leakPreviewStore.getState().selectBlocker(existing.groupId,existing.regionId)
+              onStatusMessage(`${existing.label} · 기존 홀 선택됨`)
+              return
+            }
             leakPreviewStore.getState().appendBlockerRegion(group.id,patch)
             leakPreviewStore.getState().clearDetection()
             onStatusMessage(`원형 홀 인식 · Z ${patch.baseCenter[2].toFixed(2)} mm · ±2.5 mm 마개 추가`)
-          } else onStatusMessage('원형 홀 미인식 · 보이는 홀 중심 근처를 클릭하세요.')
+          } else if (!selectBlockerAt(event.clientX,event.clientY)) onStatusMessage('원형 홀 미인식 · 보이는 홀 중심 근처를 클릭하세요.')
           return
         }
+        if (selectBlockerAt(event.clientX, event.clientY)) return
         leakPreviewStore.getState().selectBlocker(null)
       }
 
@@ -3676,38 +3687,15 @@ export function ThreeViewerCanvas({
       runtime.pipUserAdjusted = true
       runtime.pipLastRenderTime = 0
     }
-    let pointerOverCanvas = false
     const handlePointerEnter = (event: PointerEvent) => {
-      pointerOverCanvas = true
       pointerInPip =
         runtime.roiPreviewRoot.visible &&
         pointInPipViewport(canvasPoint(event))
     }
     const handlePointerLeave = () => {
-      pointerOverCanvas = false
       pointerInPip = false
     }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // `event.key` becomes a Hangul character while the Korean IME is
-      // active. `event.code` keeps the physical F/H shortcuts reliable.
-      const fitShortcut = event.code === 'KeyF' || event.key.toLowerCase() === 'f'
-      const sectionShortcut = event.code === 'KeyH' || event.key.toLowerCase() === 'h'
-      if (!fitShortcut && !sectionShortcut) return
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (!pointerOverCanvas) return
-      const activeTag = document.activeElement?.tagName
-      if (
-        activeTag === 'INPUT' ||
-        activeTag === 'TEXTAREA' ||
-        activeTag === 'SELECT'
-      ) {
-        return
-      }
-      event.preventDefault()
-      if (sectionShortcut) {
-        toggleSectionViewRef.current()
-        return
-      }
+    const fitShortcut = () => {
       if (runtime.roiPreviewRoot.visible && pointerInPip) {
         runtime.pipUserAdjusted = false
         runtime.pipLastRenderTime = 0
@@ -3719,6 +3707,7 @@ export function ThreeViewerCanvas({
       onStatusMessage('Camera preset · Fit (F)')
     }
     const handlePointerCancel = () => {
+      activePointerId = null
       pointerDown = null
       rightPointerDown = null
       rightPointerMoved = false
@@ -3820,7 +3809,46 @@ export function ThreeViewerCanvas({
       event.stopPropagation()
     }
 
-    const detachNavigationShortcuts = attachViewerNavigationShortcuts(canvas, controls, () => !pointerInPip)
+    const prepareKeyboardNavigation = () => {
+      if (!boxDragRef.current && !rollDrag && !pipDrag) return false
+      const pointerId = activePointerId
+      boxDragRef.current = null
+      setBoxDrag(null)
+      emitterSurfaceBoxDrag = null
+      pointerDown = null
+      rollDrag = null
+      pipDrag = null
+      controls.enabled = true
+      // End Trackball's own pointer session too, so keyboard navigation
+      // never leaves a captured pointer or a deferred mouse rotation behind.
+      if (pointerId !== null) {
+        canvas.dispatchEvent(new PointerEvent('pointerup',{pointerId,pointerType:'mouse',button:0,buttons:0,bubbles:true}))
+        if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
+      }
+      onStatusMessage('드래그 취소 · 뷰어 단축키 조작')
+      return true
+    }
+    const pipNavigation: ViewerNavigationTarget = {
+      object:runtime.pipCamera,target:runtime.pipTarget,rotateSpeed:controls.rotateSpeed,zoomSpeed:controls.zoomSpeed,
+      minDistance:Math.max(runtime.originAxisBaseScale*.1,1e-3),maxDistance:runtime.originAxisBaseScale*1000,
+      dispatchEvent:(event) => controls.dispatchEvent(event),
+      update:() => {
+        if (fullViewCameraSyncRef.current) { fullViewCameraSyncRef.current = false; setFullViewCameraSync(false) }
+        runtime.pipDistance = runtime.pipCamera.position.distanceTo(runtime.pipTarget)
+        runtime.pipUserAdjusted = true
+        runtime.pipLastRenderTime = 0
+        runtime.pipCamera.lookAt(runtime.pipTarget)
+      },
+    }
+    const detachNavigationShortcuts = attachViewerNavigationShortcuts(canvas,controls,() => true,{
+      beforeNavigate:prepareKeyboardNavigation,
+      target:() => runtime.roiPreviewRoot.visible && pointerInPip ? pipNavigation : controls,
+      viewport:() => runtime.roiPreviewRoot.visible && pointerInPip && runtime.pipViewportRect
+        ? runtime.pipViewportRect : canvas.getBoundingClientRect(),
+    })
+    const detachActionShortcuts = attachViewerActionShortcuts(canvas,{fit:fitShortcut,section:() => toggleSectionViewRef.current()},prepareKeyboardNavigation)
+    const detachBlockerBoxDrawing = attachBlockerBoxDrawing(canvas, () => Boolean(roiBoxSelectionArmedRef.current && blockerAreaSelectionIdRef.current &&
+      !(runtime.roiPreviewRoot.visible && pointerInPip)), handlePointerDown)
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
@@ -3833,7 +3861,6 @@ export function ThreeViewerCanvas({
       capture: true,
       passive: false,
     })
-    window.addEventListener('keydown', handleKeyDown)
 
     return () => {
       window.cancelAnimationFrame(animationFrame)
@@ -3849,10 +3876,11 @@ export function ThreeViewerCanvas({
       canvas.removeEventListener('wheel', handlePipWheel, {
         capture: true,
       })
-      window.removeEventListener('keydown', handleKeyDown)
       controls.removeEventListener('start', handleControlsStart)
       controls.removeEventListener('end', handleControlsEnd)
       detachNavigationShortcuts()
+      detachActionShortcuts()
+      detachBlockerBoxDrawing()
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)
@@ -4004,12 +4032,8 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
-    clearGroup(runtime.blockerRoot)
-    for (const blocker of leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : []) {
-      if (blocker.visible === false) continue
-      runtime.blockerRoot.add(createBlockerDisplay(blocker, selectedBlocker,
-        sectionView.enabled ? sectionClippingPlaneRef.current : null))
-    }
+    syncBlockerDisplays(runtime.blockerRoot, leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : [],
+      selectedBlocker, sectionView.enabled ? sectionClippingPlaneRef.current : null)
   }, [leakPreviewBlockers, leakPreviewBlockersVisible, selectedBlocker, sectionView.enabled, scene])
 
   useEffect(() => {
@@ -4075,7 +4099,7 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
 
-    runtime.controls.noRotate = roiBoxSelectionArmed
+    runtime.controls.noRotate = roiBoxSelectionArmed && !blockerAreaSelectionId
     if (blockerAreaSelectionId && leakPreviewStore.getState().blockers.find((group) => group.id === blockerAreaSelectionId)?.shape === 'ellipse') {
       onStatusMessage('홀 선택 중 · 원형 홀 중심 근처 클릭')
     }
@@ -4099,7 +4123,7 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
       if (blockerAreaSelectionId) {
-        onStatusMessage('Blocker 영역 선택 · 기준 CAD Face 위를 왼쪽 드래그하세요.')
+        onStatusMessage('Block 선택 중 · Ctrl+드래그로 영역 추가')
         return
       }
       const preset = runtime.roiSelectionPreset ?? 'XY'
@@ -5393,13 +5417,7 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
-    clearGroup(runtime.blockerSectionRoot)
-    if (!sectionView.enabled) return
-    runtime.blockerRoot.traverse((object) => {
-      if (!(object instanceof Mesh) || !object.userData.blockerSolid || !(object.material instanceof MeshBasicMaterial)) return
-      const cap = createBlockerSectionCap(object, sectionClippingPlaneRef.current)
-      if (cap) runtime.blockerSectionRoot.add(cap)
-    })
+    syncBlockerSectionCaps(runtime.blockerSectionRoot,runtime.blockerRoot,sectionView.enabled ? sectionClippingPlaneRef.current : null)
   }, [leakPreviewBlockers, leakPreviewBlockersVisible, selectedBlocker, sectionView.axis, sectionView.enabled, sectionView.offsetRatio, sectionView.reverse, scene, transformRules, roiScopes, hiddenComponentIds, deletedComponentIds, componentColorOverrides, faceDisplayColors, materialAssignments, renderMode, roiFaceIds, selectedComponentIds, selectedFaceIds, surfaceOpacity])
 
   useEffect(() => {
@@ -5948,15 +5966,17 @@ export function ThreeViewerCanvas({
         className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur"
       >
         {roiBoxSelectionArmed
-          ? 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
+          ? blockerAreaSelectionId ? 'Block 선택 중' : 'ROI mode · Left drag select · Wheel zoom · Right drag pan'
           : emitterFaceSelectionArmed
             ? emitterSelectionTarget === 'body'
               ? 'Emitter body mode · Click add · Shift + click remove · Left drag rotate'
               : 'Emitter surface mode · Click/Ctrl drag add · Shift click/drag remove · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
         <HelpTooltip label="뷰어 단축키 도움말" triggerClassName="pointer-events-auto">
+          Block 만들기에서는 Ctrl+왼쪽 드래그로 영역을 추가하고 일반 왼쪽 드래그로 회전합니다. 우클릭 이동과 휠 확대도 계속 사용할 수 있습니다.
           마우스 버튼 없이 F1을 누른 채 이동하면 PAN, F2는 ZOOM, F3는 ROTATE입니다.
           키를 떼면 종료합니다. F4는 현재 방향에서 가장 가까운 기본 뷰로 정렬합니다.
+          뷰어 위에서는 입력칸에 포커스가 남아 있어도 F1~F4를 사용할 수 있으며 미니뷰 위에서는 미니뷰 카메라를 조작합니다. 선택 박스를 그리는 중에 단축키를 누르면 미완료 드래그만 취소하고 작업 모드는 유지합니다. F는 화면 맞춤, H는 Section이며 이름 등 문자 입력 중에는 F/H를 입력에 사용합니다.
           기존 마우스 버튼·휠 조작도 사용할 수 있습니다.
         </HelpTooltip>
       </div>

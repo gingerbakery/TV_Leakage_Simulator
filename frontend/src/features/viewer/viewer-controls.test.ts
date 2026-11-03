@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   attachViewerNavigationShortcuts,
+  attachBlockerBoxDrawing,
   DEFAULT_VIEWER_PAN_SPEED,
   projectionAwarePanSpeed,
   ViewerTrackballControls,
@@ -36,14 +37,18 @@ function createControls(fov: number, zoom = 1) {
 }
 
 function rightDrag(canvas: HTMLCanvasElement, dx: number, dy: number) {
+  pointerDrag(canvas,2,dx,dy)
+}
+function pointerDrag(canvas:HTMLCanvasElement,button:number,dx:number,dy:number,ctrlKey=false) {
   for (const [type, x, y] of [
     ['pointerdown', 600, 400],
     ['pointermove', 600 + dx, 400 + dy],
     ['pointerup', 600 + dx, 400 + dy],
   ] as const) {
     const event = new MouseEvent(type, {
-      button: 2,
-      buttons: type === 'pointerup' ? 0 : 2,
+      button,
+      buttons: type === 'pointerup' ? 0 : button === 2 ? 2 : 1,
+      ctrlKey,
       clientX: x,
       clientY: y,
       bubbles: true,
@@ -144,6 +149,43 @@ describe('projection-aware viewer panning', () => {
   })
 })
 
+describe('Block drawing with camera navigation', () => {
+  it('lets ordinary mouse drags rotate, right drags pan and the wheel zoom while only Ctrl drag draws a block', () => {
+    const {canvas,camera,controls} = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    const draw = vi.fn(() => { controls.enabled = false })
+    const detach = attachBlockerBoxDrawing(canvas,() => true,draw)
+    let before = camera.position.clone()
+    pointerDrag(canvas,0,40,20); controls.update()
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    before = controls.target.clone()
+    rightDrag(canvas,20,20); controls.update()
+    expect(controls.target.distanceTo(before)).toBeGreaterThan(0)
+    const distance = camera.position.distanceTo(controls.target)
+    wheel(canvas,120); controls.update()
+    expect(camera.position.distanceTo(controls.target)).not.toBe(distance)
+    before = camera.position.clone()
+    pointerDrag(canvas,0,50,50,true); controls.update()
+    expect(draw).toHaveBeenCalledOnce()
+    expect(camera.position).toEqual(before)
+    controls.enabled = true
+    detach(); controls.dispose()
+  })
+  it.each(['F1','F2','F3','F4'])('keeps %s working while Block drawing is armed', (code) => {
+    const {canvas,camera,controls} = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    const draw = vi.fn(), detachDraw = attachBlockerBoxDrawing(canvas,() => true,draw)
+    const detachNavigation = attachViewerNavigationShortcuts(canvas,controls)
+    canvas.dispatchEvent(new MouseEvent('pointerenter',{clientX:600,clientY:400}))
+    camera.position.set(10,20,100)
+    const before = camera.position.clone()
+    window.dispatchEvent(new KeyboardEvent('keydown',{code,key:code,cancelable:true}))
+    canvas.dispatchEvent(new MouseEvent('pointermove',{clientX:650,clientY:450,buttons:0}))
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    expect(draw).not.toHaveBeenCalled()
+    window.dispatchEvent(new KeyboardEvent('keyup',{code,key:code}))
+    detachDraw(); detachNavigation(); controls.dispose()
+  })
+})
+
 
 describe('held function-key navigation', () => {
   function setup() {
@@ -186,14 +228,14 @@ describe('held function-key navigation', () => {
     expect(controls.target.toArray()).toEqual([2, 3, 4])
     dispose()
   })
-  it('ignores shortcuts during text entry and cancels held navigation on blur', () => {
+  it('allows function keys with an input focused and cancels held navigation on blur', () => {
     const { camera, move, key, dispose } = setup()
     const input = document.createElement('input')
     document.body.append(input)
     input.focus()
     const before = camera.position.clone()
     key('F1'); move(650, 450)
-    expect(camera.position).toEqual(before)
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
     input.blur()
     key('F1'); move(700, 500)
     expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
@@ -224,5 +266,48 @@ describe('held function-key navigation', () => {
     key('F1'); move(650,450)
     expect(camera.position).toEqual(before)
     dispose()
+  })
+  it.each(['F1','F2','F3','F4'])('%s works with ROI rotation lock and Ctrl/Shift selection modifiers', (code) => {
+    const {camera,controls,canvas,move,dispose} = setup()
+    controls.noRotate = true
+    camera.position.set(10,20,100)
+    const input = document.createElement('input'); input.inputMode = 'decimal'; document.body.append(input); input.focus()
+    const before = camera.position.clone()
+    const event = new KeyboardEvent('keydown',{code,key:code,ctrlKey:true,shiftKey:true,cancelable:true})
+    window.dispatchEvent(event); move(650,450)
+    expect(event.defaultPrevented).toBe(true)
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    expect(controls.noRotate).toBe(true)
+    expect(document.activeElement).toBe(input)
+    expect(canvas).not.toBe(document.activeElement)
+    dispose()
+  })
+  it('ends an unfinished selection drag before navigating, then restores mouse controls on release', () => {
+    const {canvas,camera,controls} = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    const beforeNavigate = vi.fn(() => { controls.enabled = true; return true })
+    const detach = attachViewerNavigationShortcuts(canvas,controls,() => true,{beforeNavigate})
+    canvas.dispatchEvent(new MouseEvent('pointerenter',{clientX:600,clientY:400}))
+    controls.enabled = false
+    const before = camera.position.clone()
+    window.dispatchEvent(new KeyboardEvent('keydown',{code:'F1',ctrlKey:true,cancelable:true}))
+    canvas.dispatchEvent(new MouseEvent('pointermove',{clientX:650,clientY:450,buttons:1}))
+    expect(beforeNavigate).toHaveBeenCalledOnce()
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    window.dispatchEvent(new KeyboardEvent('keyup',{code:'F1'}))
+    expect(controls.enabled).toBe(true)
+    detach(); controls.dispose()
+  })
+  it.each(['F1','F2','F3','F4'])('%s navigates the selected mini-view camera without moving the main camera', (code) => {
+    const {canvas,camera,controls} = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    const mini = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    mini.camera.position.set(10,20,100)
+    const detach = attachViewerNavigationShortcuts(canvas,controls,() => true,{target:() => mini.controls,viewport:() => ({width:220,height:160})})
+    canvas.dispatchEvent(new MouseEvent('pointerenter',{clientX:600,clientY:400}))
+    const mainBefore = camera.position.clone(), miniBefore = mini.camera.position.clone()
+    window.dispatchEvent(new KeyboardEvent('keydown',{code,cancelable:true}))
+    canvas.dispatchEvent(new MouseEvent('pointermove',{clientX:620,clientY:420,buttons:0}))
+    expect(camera.position).toEqual(mainBefore)
+    expect(mini.camera.position.distanceTo(miniBefore)).toBeGreaterThan(0)
+    detach(); controls.dispose(); mini.controls.dispose()
   })
 })

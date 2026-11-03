@@ -4,6 +4,7 @@ import type { LeakPreviewBlocker, LeakPreviewIgnoreArea } from './leak-preview-m
 
 export interface ExpandedBlocker extends LeakPreviewBlocker { groupId: string; regionId: string | null }
 export const HOLE_PLUG_DEPTH_MM = 5
+export const HOLE_PLUG_DIAMETER_SCALE = 3
 
 export function expandBlockerGroups(groups: LeakPreviewBlocker[]): ExpandedBlocker[] {
   return groups.flatMap<ExpandedBlocker>((group) => group.regions === undefined ? [{ ...group, groupId: group.id, regionId: null }] : group.regions.map((region) => ({

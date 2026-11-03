@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import type { ScenePayload, Vec3 } from '@/api'
 import cadPlate from '@/test/fixtures/hole-plate.scene.json'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -100,7 +100,22 @@ it.each([100,-100])('point-picks a circular hole from either XY view at Z=%s wit
   expect(placement.baseCenter[1]).toBeCloseTo(0,4)
   expect(placement.baseCenter[2]).toBe(expectedZ)
   expect(placement.widthMm).toBe(placement.heightMm)
+  const entrance = holes.find((hole) => Math.abs(hole.placement.baseCenter[0]+10) < .01 && hole.placement.baseCenter[2] === expectedZ)!
+  expect(placement.widthMm).toBeCloseTo(entrance.placement.widthMm!*3, 8)
   expect(placement).toMatchObject({ uAxis:[1,0,0],vAxis:[0,1,0],normal:[0,0,1],depthMm:5,offsetMm:-2.5 })
   expect(pickRoundCadHole(holes,project([10,0,expectedZ]),project,() => true)).toBeNull()
   expect(pickRoundCadHole(holes,pointer,project,() => false)).toBeNull()
+})
+
+it('checks visibility lazily and still prefers the nearer entrance of the selected bore', () => {
+  const template = findCadHoleLoops(annulus())[0]
+  const holes = Array.from({ length:100 }, (_, index) => ({ ...template, componentId:index,
+    placement:{ ...template.placement, baseCenter:[10,20,index/1000] as Vec3 } }))
+  const visible = vi.fn(() => true)
+  expect(pickRoundCadHole(holes,{x:10,y:20},([x,y,z]) => ({x,y,z}),visible)).not.toBeNull()
+  expect(visible).toHaveBeenCalledTimes(1)
+  const front = { ...template, placement:{ ...template.placement,baseCenter:[10,20,-.5] as Vec3 } }
+  const blockedFront = vi.fn((hole) => hole !== front)
+  expect(pickRoundCadHole([template,front],{x:10,y:20},([x,y,z]) => ({x,y,z:z/10}),blockedFront)?.baseCenter).toEqual(template.placement.baseCenter)
+  expect(pickRoundCadHole([template,front],{x:10,y:20},([x,y,z]) => ({x,y,z:z/10}),() => true)?.baseCenter).toEqual(front.placement.baseCenter)
 })

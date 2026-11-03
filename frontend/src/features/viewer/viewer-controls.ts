@@ -2,6 +2,7 @@ import { MathUtils, PerspectiveCamera, Quaternion, Vector3 } from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
 import { DEFAULT_CAMERA_FOV_DEGREES } from './viewer-display'
+import { viewerShortcutAllowed } from './viewer-shortcuts'
 
 export const DEFAULT_VIEWER_PAN_SPEED = 0.16
 export const KEYBOARD_VIEWER_PAN_SPEED = 0.24
@@ -21,23 +22,44 @@ export class ViewerTrackballControls extends TrackballControls {
   }
 }
 
+/** Capture only Ctrl/Cmd + left drag before TrackballControls sees it.
+ * Ordinary drags and right/middle/wheel navigation keep their normal route. */
+export function attachBlockerBoxDrawing(
+  canvas:HTMLCanvasElement, enabled:()=>boolean, begin:(event:PointerEvent)=>void,
+):()=>void {
+  const down = (event:PointerEvent) => {
+    if (!enabled() || event.button !== 0 || !(event.ctrlKey || event.metaKey)) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    begin(event)
+  }
+  canvas.addEventListener('pointerdown',down,true)
+  return () => canvas.removeEventListener('pointerdown',down,true)
+}
+
 
 /** Add held-key navigation without synthesizing clicks or changing mouse bindings. */
 export function attachViewerNavigationShortcuts(
   canvas: HTMLCanvasElement,
   controls: ViewerTrackballControls,
   canNavigate: () => boolean = () => true,
+  options: {
+    beforeNavigate?():boolean
+    target?():ViewerNavigationTarget
+    viewport?():{width:number;height:number}
+  } = {},
 ): () => void {
   let hovered = false
   let mode: 'F1' | 'F2' | 'F3' | null = null
   let pointer: { x: number; y: number } | null = null
+  let navigation: ViewerNavigationTarget = controls
+  let suspendedPointer = false
+  let navigationViewport: {width:number;height:number} | undefined
   const stop = () => {
-    if (mode) controls.dispatchEvent({ type: 'end' })
+    if (suspendedPointer) { controls.enabled = true; suspendedPointer = false }
+    if (mode) navigation.dispatchEvent({ type: 'end' })
     mode = null
   }
-  const editable = (element: Element | null) => element?.closest(
-    'input,textarea,select,[contenteditable="true"],[role="textbox"]',
-  )
   const enter = (event: PointerEvent) => {
     hovered = true
     pointer = { x: event.clientX, y: event.clientY }
@@ -46,19 +68,22 @@ export function attachViewerNavigationShortcuts(
   const keydown = (event: KeyboardEvent) => {
     const key = event.code || event.key
     if (!['F1', 'F2', 'F3', 'F4'].includes(key)) return
-    if ((!hovered && document.activeElement !== canvas) || !controls.enabled || !canNavigate()) return
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || editable(document.activeElement)) return
-    if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
+    if (event.defaultPrevented || !viewerShortcutAllowed(canvas,hovered,true) || !canNavigate() || event.altKey || event.metaKey) return
     event.preventDefault()
     if (event.repeat) return
     stop()
+    const cancelledDrawing = options.beforeNavigate?.() ?? false
+    if (!controls.enabled) return
+    navigation = options.target?.() ?? controls
+    navigationViewport = options.viewport?.()
     if (key === 'F4') {
-      controls.dispatchEvent({ type: 'start' })
-      snapViewerToNearestView(controls)
-      controls.dispatchEvent({ type: 'end' })
+      navigation.dispatchEvent({ type: 'start' })
+      snapViewerToNearestView(navigation)
+      navigation.dispatchEvent({ type: 'end' })
     } else {
       mode = key as typeof mode
-      controls.dispatchEvent({ type: 'start' })
+      if (cancelledDrawing) { controls.enabled = false; suspendedPointer = true }
+      navigation.dispatchEvent({ type: 'start' })
     }
   }
   const keyup = (event: KeyboardEvent) => {
@@ -68,13 +93,14 @@ export function attachViewerNavigationShortcuts(
     const previous = pointer
     pointer = { x: event.clientX, y: event.clientY }
     if (!mode || !previous) return
-    if (!controls.enabled || !canNavigate() || event.buttons || editable(document.activeElement)) { stop(); return }
-    const bounds = canvas.getBoundingClientRect()
+    if ((!controls.enabled && !suspendedPointer) || !canNavigate() || (event.buttons && !suspendedPointer) ||
+      !viewerShortcutAllowed(canvas,hovered,true)) { stop(); return }
+    const bounds = navigationViewport ?? canvas.getBoundingClientRect()
     if (!bounds.width || !bounds.height) return
     const dx = (event.clientX - previous.x) / bounds.width
     const dy = (event.clientY - previous.y) / bounds.height
-    const camera = controls.object
-    const eye = camera.position.clone().sub(controls.target)
+    const camera = navigation.object
+    const eye = camera.position.clone().sub(navigation.target)
     const up = camera.up.clone().normalize()
     const right = new Vector3().crossVectors(up, eye).normalize()
     if (mode === 'F1') {
@@ -82,19 +108,19 @@ export function attachViewerNavigationShortcuts(
         * (KEYBOARD_VIEWER_PAN_SPEED / DEFAULT_VIEWER_PAN_SPEED)
       const pan = right.multiplyScalar(-dx).addScaledVector(up, dy).multiplyScalar(eye.length() * speed)
       camera.position.add(pan)
-      controls.target.add(pan)
+      navigation.target.add(pan)
     } else if (mode === 'F2') {
-      const factor = Math.exp(MathUtils.clamp(dy * controls.zoomSpeed, -2, 2))
-      eye.setLength(MathUtils.clamp(eye.length() * factor, Math.max(controls.minDistance, 1e-6), controls.maxDistance))
-      camera.position.copy(controls.target).add(eye)
+      const factor = Math.exp(MathUtils.clamp(dy * navigation.zoomSpeed, -2, 2))
+      eye.setLength(MathUtils.clamp(eye.length() * factor, Math.max(navigation.minDistance, 1e-6), navigation.maxDistance))
+      camera.position.copy(navigation.target).add(eye)
     } else {
-      const rotation = new Quaternion().setFromAxisAngle(up, -dx * Math.PI * controls.rotateSpeed)
-        .premultiply(new Quaternion().setFromAxisAngle(right, -dy * Math.PI * controls.rotateSpeed))
-      camera.position.copy(controls.target).add(eye.applyQuaternion(rotation))
+      const rotation = new Quaternion().setFromAxisAngle(up, -dx * Math.PI * navigation.rotateSpeed)
+        .premultiply(new Quaternion().setFromAxisAngle(right, -dy * Math.PI * navigation.rotateSpeed))
+      camera.position.copy(navigation.target).add(eye.applyQuaternion(rotation))
       camera.up.applyQuaternion(rotation).normalize()
     }
-    camera.lookAt(controls.target)
-    controls.update()
+    camera.lookAt(navigation.target)
+    navigation.update()
   }
   const down = () => stop()
   const visibility = () => { if (document.hidden) stop() }
@@ -119,7 +145,9 @@ export function attachViewerNavigationShortcuts(
   }
 }
 
-export function snapViewerToNearestView(controls: ViewerTrackballControls): void {
+export type ViewerNavigationTarget = Pick<ViewerTrackballControls,'object'|'target'|'rotateSpeed'|'zoomSpeed'|'minDistance'|'maxDistance'|'dispatchEvent'|'update'>
+
+export function snapViewerToNearestView(controls: Pick<ViewerNavigationTarget,'object'|'target'|'update'>): void {
   const camera = controls.object
   const eye = camera.position.clone().sub(controls.target)
   const distance = eye.length()

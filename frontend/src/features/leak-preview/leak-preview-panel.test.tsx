@@ -80,6 +80,14 @@ it('invalidates old Preview results after Allowed Area changes and includes the 
   view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
   await waitFor(() => expect(leakPreviewStore.getState().candidates.length).toBeGreaterThan(0))
   const previous = leakPreviewStore.getState().result
+  const candidates = leakPreviewStore.getState().candidates
+  fireEvent.click(screen.getByRole('button',{name:'Leak Candidates 접기'}))
+  expect(screen.getByRole('button',{name:'Leak Candidates 펼치기'}).getAttribute('aria-expanded')).toBe('false')
+  expect(screen.queryByRole('button',{name:'Delete Candidate 1'})).toBeNull()
+  expect(leakPreviewStore.getState().candidates).toBe(candidates)
+  expect(leakPreviewStore.getState().result).toBe(previous)
+  fireEvent.click(screen.getByRole('button',{name:'Leak Candidates 펼치기'}))
+  expect(screen.getByRole('button',{name:'Delete Candidate 1'})).toBeTruthy()
   act(() => actions.setEmitterVisible('emitter_001', false))
   expect(leakPreviewStore.getState().result).toBe(previous)
   expect(leakPreviewStore.getState().candidates.length).toBeGreaterThan(0)

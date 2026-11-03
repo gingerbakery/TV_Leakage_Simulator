@@ -1,7 +1,7 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { Box3, Group, Mesh, MeshBasicMaterial, Plane, Raycaster, Vector3 } from 'three'
 import { createBlockGroup, expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
-import { blockerIsSelected, createBlockerDisplay, createBlockerSectionCap, pickBlocker } from './blocker-display'
+import { blockerIsSelected, createBlockerDisplay, createBlockerSectionCap, pickBlocker, syncBlockerDisplays, syncBlockerSectionCaps } from './blocker-display'
 import { setObjectClippingPlane } from './section-view'
 
 function blocker() { return expandBlockerGroups([{ ...createBlockGroup('Block 1', 'ellipse'), id:'holes',
@@ -19,6 +19,41 @@ it('renders a symmetric 5 mm plug and shares selection identity with its group a
   expect(pickBlocker([display], ray, null)).toEqual({ groupId:'holes', regionId:'one' })
   display.visible = false
   expect(pickBlocker([display], ray, null)).toBeNull()
+})
+
+it('reuses existing mesh buffers when adding or highlighting plugs and disposes replaced/removed geometry', () => {
+  const root = new Group(), first = blocker(), second = { ...first,id:'two',regionId:'two',baseCenter:[20,0,0] as [number,number,number] }
+  syncBlockerDisplays(root,[first],null,null)
+  const original = root.children[0], solid = original.children[0] as Mesh
+  const dispose = vi.spyOn(solid.geometry,'dispose')
+  syncBlockerDisplays(root,[first,second],{groupId:first.groupId,regionId:first.regionId},null)
+  expect(root.children[0]).toBe(original)
+  expect((original.children[0] as Mesh).geometry).toBe(solid.geometry)
+  expect(dispose).not.toHaveBeenCalled()
+  syncBlockerDisplays(root,[{ ...first,widthMm:18 },second],null,null)
+  expect(dispose).toHaveBeenCalledOnce()
+  expect(root.children.some((child) => child === original)).toBe(false)
+  syncBlockerDisplays(root,[],null,null)
+  expect(root.children).toHaveLength(0)
+})
+
+it('reuses section caps for selection changes and rebuilds them only when the cut moves', () => {
+  const displays = new Group(), caps = new Group(), region = blocker(), plane = new Plane(new Vector3(0,0,-1),0)
+  syncBlockerDisplays(displays,[region],null,plane)
+  syncBlockerSectionCaps(caps,displays,plane)
+  const cap = caps.children[0] as Mesh<import('three').BufferGeometry,MeshBasicMaterial>
+  const dispose = vi.spyOn(cap.geometry,'dispose')
+  syncBlockerDisplays(displays,[region],{groupId:region.groupId,regionId:region.regionId},plane)
+  syncBlockerSectionCaps(caps,displays,plane)
+  expect(caps.children[0]).toBe(cap)
+  expect(cap.material.color.getHex()).toBe(0xff7a00)
+  expect(dispose).not.toHaveBeenCalled()
+  plane.constant = -1
+  syncBlockerSectionCaps(caps,displays,plane)
+  expect(caps.children[0]).not.toBe(cap)
+  expect(dispose).toHaveBeenCalledOnce()
+  syncBlockerSectionCaps(caps,displays,null)
+  expect(caps.children).toHaveLength(0)
 })
 
 it('clips both the solid and outline, picks the kept section cap, and ignores removed surfaces', () => {

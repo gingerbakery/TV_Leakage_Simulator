@@ -1,7 +1,7 @@
 import type { ScenePayload, Vec3 } from '@/api'
 import type { ComponentTransformRule } from '@/stores'
 import { createLeakPreviewPointTransform } from './leak-preview-geometry'
-import { HOLE_PLUG_DEPTH_MM } from './blocker-groups'
+import { HOLE_PLUG_DEPTH_MM, HOLE_PLUG_DIAMETER_SCALE } from './blocker-groups'
 import type { LeakPreviewBlocker } from './leak-preview-model'
 
 export interface CadHoleLoop {
@@ -27,19 +27,18 @@ export function pickRoundCadHole(
     const distance = Math.hypot(center.x-pointer.x, center.y-pointer.y)
     return distance <= Math.max(12, radius*.9) ? [{ hole, distance, depth:center.z }] : []
   }).sort((a,b) => a.distance-b.distance || a.depth-b.depth)
-  const visible = matches.filter(({ hole }) => isVisible(hole))
-  let chosen = visible[0]
+  let chosen = matches.find(({ hole }) => isVisible(hole))
   if (!chosen) return null
   // A through hole has front/back rims at the same XY location. Perspective
   // can move their projected centers by a few pixels; always anchor the
   // nearest visible entrance, rather than whichever center is a pixel closer.
-  for (const candidate of visible) {
+  for (const candidate of matches) {
     if (candidate.hole.componentId === chosen.hole.componentId && candidate.depth < chosen.depth &&
       Math.hypot(candidate.hole.placement.baseCenter[0]-chosen.hole.placement.baseCenter[0], candidate.hole.placement.baseCenter[1]-chosen.hole.placement.baseCenter[1]) < .01 &&
-      Math.abs(candidate.hole.placement.widthMm!-chosen.hole.placement.widthMm!) < .02) chosen = candidate
+      Math.abs(candidate.hole.placement.widthMm!-chosen.hole.placement.widthMm!) < .02 && isVisible(candidate.hole)) chosen = candidate
   }
   const match = chosen.hole
-  const diameter = Math.max(match.placement.widthMm!, match.placement.heightMm!)
+  const diameter = Math.max(match.placement.widthMm!, match.placement.heightMm!) * HOLE_PLUG_DIAMETER_SCALE
   return { ...match.placement, widthMm:diameter, heightMm:diameter,
     uAxis:[1,0,0], vAxis:[0,1,0], normal:[0,0,1], reverse:false }
 }
@@ -176,6 +175,7 @@ export function findCadHoleLoops(scene: ScenePayload, transforms: ComponentTrans
     }
   }
   if (!candidates.length) return []
+  const candidateComponentIds = new Set(candidates.map((hole) => hole.componentId))
   // Index candidate centers and rims. Each planar triangle tests the few holes
   // inside its XY bounds, rather than scanning the full mesh per hole.
   const cellSize = Math.max(.1, ...candidates.map((hole) => Math.max(hole.placement.widthMm!, hole.placement.heightMm!)))
@@ -191,7 +191,7 @@ export function findCadHoleLoops(scene: ScenePayload, transforms: ComponentTrans
   })
   scene.mesh.faces.forEach((face, faceId) => {
     const id = scene.mesh.face_component_ids[faceId]
-    if (id === null || !groups.has(id)) return
+    if (id === null || !candidateComponentIds.has(id)) return
     const triangle = face.map((index) => transform(id, scene.mesh.vertices[index]))
     if (Math.max(...triangle.map((p) => p[2]))-Math.min(...triangle.map((p) => p[2])) > tolerance) return
     const cross = (a: Vec3, b: Vec3, x: Vec3) => (b[0]-a[0])*(x[1]-a[1])-(b[1]-a[1])*(x[0]-a[0])

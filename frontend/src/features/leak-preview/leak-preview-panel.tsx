@@ -1,9 +1,9 @@
 import { planObserverSampling } from './observer-sampling'
 import { expandBlockerGroups } from './blocker-groups'
 import { BlockerEditor } from './blocker-editor'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Play, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
+import { Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, Minus, Play, Plus, ScanSearch, Square, StopCircle, Trash2 } from 'lucide-react'
 
 import {
   apiClient,
@@ -85,6 +85,8 @@ const previewDirectionOptions: Array<{ id: LeakPreviewDirection; label: string; 
 ]
 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
+  const [candidatesCollapsed,setCandidatesCollapsed] = useState(false)
+  const candidateListId = useId()
   const queryClient = useQueryClient()
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
@@ -714,10 +716,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       {candidates.length > 0 ? (
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold">
-            <ScanSearch className="size-4 text-orange-500" /> Leak Candidates
+            <ScanSearch className="size-4 text-orange-500" />
+            <Button size="sm" variant="ghost" className="h-7 gap-1 px-1 text-sm font-semibold"
+              aria-label={`Leak Candidates ${candidatesCollapsed ? '펼치기' : '접기'}`} aria-expanded={!candidatesCollapsed}
+              aria-controls={candidateListId} onClick={() => setCandidatesCollapsed(!candidatesCollapsed)}>
+              {candidatesCollapsed ? <Plus className="size-3" /> : <Minus className="size-3" />}Leak Candidates · {candidates.length}
+            </Button>
             <HelpTooltip label="후보 삭제 도움말">삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
           </div>
-          {candidates.map((candidate, index) => {
+          <div id={candidateListId} hidden={candidatesCollapsed} className="space-y-2">{candidates.map((candidate, index) => {
             const selected = candidate.id === selectedCandidateId
             return (
               <article
@@ -759,7 +766,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                 </div>
               </article>
             )
-          })}
+          })}</div>
         </section>
       ) : null}
     </div>
