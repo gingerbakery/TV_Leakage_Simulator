@@ -28,6 +28,26 @@ import {
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
+  it('accepts rectangular full-detail result bins and rejects an older server response without the spacing contract', () => {
+    const result = createRayTraceResultFixture(), scene = createSceneFixture()
+    result.receivers = createEscapeEnclosureReceivers(scene)
+    result.receiver_grids = result.receivers.map((receiver) => ({ receiver_id: receiver.receiver_id,
+      resolution: [1,1], bin_area_mm2: 1, flux_lumen: [[0]], hit_count: 0 }))
+    const probe = { contract: 'observer_path_support_v1', search_contract: 'observer_full_spacing_v1',
+      execution_backend: 'cpu', measure: 'path_support_counts', settings: { ...defaultObserverSettings,
+        search_mode: 'full_detail', spacing_mm: 1 }, attempted_count: 2_400_000, planned_count: 2_400_000,
+      direct_count: 1, reflected_count: 0, excluded_count: 0, depth_limited_count: 0, complete: true, stopped: false, runtime_sec: 1,
+      views: [{ horizontal_deg: 0, vertical_deg: 0, direction: [0,0,-1], observer_center: [30,30,-10],
+        u_axis: [1,0,0], v_axis: [0,-1,0], spacing_mm: [1,1], sample_spacing_mm: [1,1],
+        grid_resolution: [1000,600], sampling_resolution: [1000,600], display_stride: 1, direct_count: 1, reflected_count: 0 }],
+      cells: [{ view_index: 0, row: 500, column: 900, position: [30,30,0], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }] }
+    result.metrics._observer_probe_summary = probe
+    expect(observerProbeSummary(result)).not.toBeNull()
+    expect(detectLeakPreviewCandidates(scene, result).candidates).toHaveLength(1)
+    probe.search_contract = 'legacy'
+    expect(observerProbeSummary(result)).toBeNull()
+  })
+
   it('carries the detected observer angle to an editable single-view receiver without losing footprint coverage', () => {
     const scene = createSceneFixture(), result = createRayTraceResultFixture()
     const view = { axis: 'pos_x' as const, horizontal_deg: 80, vertical_deg: 20, range_deg: 0, step_deg: .5 }

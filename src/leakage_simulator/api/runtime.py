@@ -622,19 +622,24 @@ class ApiRuntime:
                 "bitsam-project.v1-bsdf1",
                 "bitsam-project.v1-preview1",
                 "bitsam-project.v1-escape1",
+                "bitsam-project.v1-detail1",
             }
             or not isinstance(project.get("workspace"), dict)
         ):
             raise ValueError("Invalid BITSAM settings")
         has_preview = isinstance(project.get("leak_preview"), dict)
         if (
-            project.get("schema_version") in {"bitsam-project.v1-preview1", "bitsam-project.v1-escape1"}
+            project.get("schema_version") in {"bitsam-project.v1-preview1", "bitsam-project.v1-escape1", "bitsam-project.v1-detail1"}
         ) != has_preview:
             raise ValueError("Invalid BITSAM Leak Preview settings")
-        if (project.get("schema_version") == "bitsam-project.v1-escape1") != (
+        if (project.get("schema_version") in {"bitsam-project.v1-escape1", "bitsam-project.v1-detail1"}) != (
             has_preview and project["leak_preview"].get("detectionMode") == "escape_directions"
         ):
             raise ValueError("Directional escape settings require bitsam-project.v1-escape1")
+        if (project.get("schema_version") == "bitsam-project.v1-detail1") != (
+            has_preview and isinstance(project["leak_preview"].get("observer"), dict) and project["leak_preview"]["observer"].get("search_mode") == "full_detail"
+        ):
+            raise ValueError("Full detail search requires bitsam-project.v1-detail1")
         cad = project.get("cad")
         if not isinstance(cad, dict):
             raise ValueError("Invalid BITSAM CAD settings")
@@ -1490,6 +1495,8 @@ class ApiRuntime:
                     phase_detail=(
                         "중단 요청 처리 및 부분 결과 정리 중"
                         if should_stop()
+                        else "전체 정밀 검색 · 관찰 경로 검사 중"
+                        if (request_payload.get("observer_probe") or {}).get("search_mode") == "full_detail" and safe_processed >= total_ray_count and not ray_dispatch_complete
                         else "Ray 계산 완료 · Receiver·기여도 집계 중"
                         if ray_dispatch_complete
                         else "Ray 계산 진행 중"
@@ -1526,7 +1533,15 @@ class ApiRuntime:
                 0,
                 min(int(result_payload.get("total_rays", 0)), total_ray_count),
             )
-            stopped_early = should_stop() and processed_ray_count < total_ray_count
+            job_processed_ray_count, job_total_ray_count = processed_ray_count, total_ray_count
+            observer_summary = (result_payload.get("metrics") or {}).get("_observer_probe_summary") or {}
+            full_detail = (request_payload.get("observer_probe") or {}).get("search_mode") == "full_detail"
+            if full_detail:
+                observer_total = max(0, int(observer_summary.get("planned_count", 0)))
+                observer_done = max(0, min(observer_total, int(observer_summary.get("attempted_count", 0))))
+                job_total_ray_count += observer_total
+                job_processed_ray_count += observer_done
+            stopped_early = (should_stop() and processed_ray_count < total_ray_count) or (full_detail and bool(observer_summary.get("stopped")))
             self._update_raytrace_job(
                 job_id,
                 status="completed",
@@ -1536,11 +1551,11 @@ class ApiRuntime:
                     if stopped_early
                     else "Ray Tracing 완료"
                 ),
-                processed_rays=processed_ray_count,
-                total_rays=total_ray_count,
+                processed_rays=job_processed_ray_count,
+                total_rays=job_total_ray_count,
                 progress=(
-                    processed_ray_count / total_ray_count
-                    if total_ray_count > 0
+                    job_processed_ray_count / job_total_ray_count
+                    if job_total_ray_count > 0
                     else 0.0
                 ),
                 elapsed_sec=max(

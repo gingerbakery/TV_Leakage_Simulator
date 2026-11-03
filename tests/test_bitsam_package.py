@@ -59,6 +59,18 @@ def trace_request(token):
 
 
 class BitsamPackageTests(unittest.TestCase):
+    def test_full_detail_settings_round_trip_and_require_their_version_tag(self):
+        self.project["schema_version"] = "bitsam-project.v1-detail1"
+        self.project["leak_preview"] = {"detectionMode": "escape_directions", "observer": {
+            "enabled": True, "search_mode": "full_detail", "spacing_mm": .5}}
+        write_package(self.package, self.project, self.source, self.scene, self.scene["mesh"])
+        with zipfile.ZipFile(self.package) as archive:
+            settings = json.loads(archive.read("project.json"))
+        self.assertEqual(settings["leak_preview"]["observer"]["spacing_mm"], .5)
+        self.project["schema_version"] = "bitsam-project.v1-escape1"
+        with self.assertRaisesRegex(ValueError, "Full detail"):
+            write_package(self.root / "stale.bitsam", self.project, self.source, self.scene, self.scene["mesh"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

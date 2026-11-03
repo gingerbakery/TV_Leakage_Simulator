@@ -4,6 +4,7 @@ import type { RayTraceJob, RayTraceRequest } from '@/api'
 import { createWorkspaceStore } from '@/stores'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
+import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { createViewAngleReceiver, defaultReceiverView } from './receiver-view'
 import { createReceiverViewSweepController, type ReceiverViewReport } from './receiver-view-sweep'
 
@@ -43,6 +44,46 @@ it('runs each angle independently using a shared scene while leaving the user Ca
   expect(store.getState().receivers).toEqual(receivers)
   expect(store.getState().cadCases).toEqual(before)
   expect(store.getState().batchRayTraceActive).toBe(false)
+})
+
+it('shares one detached BSDF library across the reported 99-angle setup without cloning completed results', async () => {
+  const { store, scene } = setup(), actions = store.getState().actions
+  const asset = createBsdfFixture()
+  asset.transport = { model: 'isotropic_no_shift', wavelengthNm: 550, aoiExtrapolation: 'clamp' }
+  actions.addBsdfAsset(asset)
+  actions.upsertMaterialAssignment({ assignmentId: 'bsdf', componentId: 1, targetType: 'part', faceIds: [],
+    baseMaterialId: 'pc_black', surfaceId: 'matte_black_resin', profileId: '', enabled: true, bsdfAssetId: asset.id })
+  actions.upsertReceiver(createViewAngleReceiver('receiver_001', scene, [30,30,10], {
+    ...defaultReceiverView, horizontal_deg: 85, vertical_deg: 20, range_deg: 10, step_deg: 2,
+  }, 3))
+  actions.upsertEmitter({ ...store.getState().emitters[0], ray_count: 1_000_000 })
+  actions.setRayTraceConfig({ ...store.getState().rayTraceConfig, max_stored_paths: 100 })
+  const originalAsset = store.getState().bsdfAssets![0]
+  const before = structuredClone(store.getState().cadCases)
+  const requests: RayTraceRequest[] = []
+  const results: NonNullable<Extract<RayTraceJob, { status: 'completed' }>['result']>[] = []
+  const client = { getScene: vi.fn(async () => scene), getGpuCudaStatus: vi.fn(),
+    startRayTrace: vi.fn(async (request: RayTraceRequest) => {
+      requests.push(request)
+      const job = complete(request)
+      if (job.status === 'completed') results.push(job.result)
+      return job
+    }), getRayTraceJob: vi.fn(), stopRayTrace: vi.fn() }
+  let reports: ReceiverViewReport[] = []
+  const controller = createReceiverViewSweepController({ store, client, onStateChange: (_state, next) => { reports = next } })
+  const state = await controller.run('receiver_001', scene)
+  expect(state.status).toBe('completed')
+  expect(requests).toHaveLength(99)
+  expect(new Set(requests.map((request) => request.bsdf_assets![0])).size).toBe(1)
+  expect(requests[0].bsdf_assets![0]).not.toBe(originalAsset)
+  expect(requests[0].bsdf_assets![0]).toEqual(originalAsset)
+  expect(requests.every((request) => request.emitters[0].ray_count === 1_000_000 && request.config.max_stored_paths === 100 &&
+    request.config.primary_sampling_strategy === 'source' && request.config.bounce_sampling_strategy === 'source')).toBe(true)
+  expect(reports).toHaveLength(99)
+  reports.forEach((report, index) => expect(report.result).toBe(results[index]))
+  expect(store.getState().cadCases).toEqual(before)
+  expect(store.getState().bsdfAssets![0]).toBe(originalAsset)
+  expect(client.getScene).toHaveBeenCalledOnce()
 })
 
 it('does not start while another analysis owns the global lock', async () => {

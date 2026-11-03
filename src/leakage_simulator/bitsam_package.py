@@ -23,6 +23,7 @@ SETTINGS_SCHEMAS = {
     "bitsam-project.v1-bsdf1",
     "bitsam-project.v1-preview1",
     "bitsam-project.v1-escape1",
+    "bitsam-project.v1-detail1",
 }
 CACHE_CONTRACT = "bitsam-lossless-scene.v1"
 MEDIA_TYPE = "application/vnd.bitsam+zip"
@@ -283,12 +284,16 @@ def write_package(
         raise ValueError("BITSAM workspace is missing")
     workspace = project["workspace"]
     has_preview = isinstance(project.get("leak_preview"), dict)
-    if (project["schema_version"] in {"bitsam-project.v1-preview1", "bitsam-project.v1-escape1"}) != has_preview:
+    if (project["schema_version"] in {"bitsam-project.v1-preview1", "bitsam-project.v1-escape1", "bitsam-project.v1-detail1"}) != has_preview:
         raise ValueError("Leak Preview settings require bitsam-project.v1-preview1")
-    if (project.get("schema_version") == "bitsam-project.v1-escape1") != (
+    if (project.get("schema_version") in {"bitsam-project.v1-escape1", "bitsam-project.v1-detail1"}) != (
         has_preview and project["leak_preview"].get("detectionMode") == "escape_directions"
     ):
         raise ValueError("Directional escape settings require bitsam-project.v1-escape1")
+    if (project.get("schema_version") == "bitsam-project.v1-detail1") != (
+        has_preview and isinstance(project["leak_preview"].get("observer"), dict) and project["leak_preview"]["observer"].get("search_mode") == "full_detail"
+    ):
+        raise ValueError("Full detail search requires bitsam-project.v1-detail1")
     has_bsdf = bool(workspace.get("bsdfAssets")) or any(
         isinstance(item, dict) and bool(item.get("bsdfAssetId"))
         for key in ("materialAssignments", "customOpticalProfiles")
@@ -298,6 +303,7 @@ def write_package(
         "bitsam-project.v1-bsdf1",
         "bitsam-project.v1-preview1",
         "bitsam-project.v1-escape1",
+        "bitsam-project.v1-detail1",
     }:
         raise ValueError(
             "BSDF assets/references require a BSDF-aware settings schema "

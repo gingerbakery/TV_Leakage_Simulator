@@ -10,6 +10,8 @@ import {
   cadCaseRayTraceSourcePaths,
   snapshotCadCasesForRayTrace,
   type CadCaseRayTraceSnapshot,
+  type CadCaseResultStoreOutcome,
+  type CadCaseSetupValidationOutcome,
   type WorkspaceStoreApi,
 } from '@/stores'
 
@@ -89,6 +91,14 @@ export interface BatchRayTracingControllerOptions {
   pollIntervalMs?: number
   onStateChange?(state: BatchRayTraceState): void
   getAuxiliaryBlockers?(snapshot: CadCaseRayTraceSnapshot): AuxiliaryBlockers
+  /** Execution-owned detached inputs may share immutable libraries (e.g. an
+   * angle sweep). The owner also validates freshness and stores results, so
+   * the general Case store does not clone the library/result for every view. */
+  caseSource?: {
+    snapshot(caseIds: Iterable<string>): CadCaseRayTraceSnapshot[]
+    validate(snapshot: CadCaseRayTraceSnapshot): CadCaseSetupValidationOutcome
+    saveResult(snapshot: CadCaseRayTraceSnapshot, result: RayTraceResult): CadCaseResultStoreOutcome
+  }
   now?(): number
   sleep?(milliseconds: number, signal: AbortSignal): Promise<void>
 }
@@ -605,8 +615,9 @@ export function createBatchRayTracingController(
           )
           history.push(evidence.history)
           accumulatedResult.metrics._convergence_history = structuredClone(history)
-          const freshness = options.store.getState().actions
-            .validateCadCaseRayTraceSetup(
+          const freshness = options.caseSource
+            ? options.caseSource.validate(snapshot)
+            : options.store.getState().actions.validateCadCaseRayTraceSetup(
               snapshot.caseId,
               snapshot.setupHash,
             )
@@ -645,11 +656,13 @@ export function createBatchRayTracingController(
         if (!accumulatedResult) {
           throw new Error('Ray Tracing 결과를 받지 못했습니다.')
         }
-        const stored = options.store.getState().actions.setCadCaseRayTraceResult(
-          snapshot.caseId,
-          accumulatedResult,
-          snapshot.setupHash,
-        )
+        const stored = options.caseSource
+          ? options.caseSource.saveResult(snapshot, accumulatedResult)
+          : options.store.getState().actions.setCadCaseRayTraceResult(
+              snapshot.caseId,
+              accumulatedResult,
+              snapshot.setupHash,
+            )
         if (stored === 'missing') {
           throw new Error('실행 중 Case가 삭제되어 결과를 저장하지 못했습니다.')
         }
@@ -750,9 +763,9 @@ export function createBatchRayTracingController(
         '단일 Ray Tracing이 실행 중입니다. 완료하거나 중단한 뒤 Batch를 시작해 주세요.',
       )
     }
-    const snapshots = snapshotCadCasesForRayTrace(
-      options.store.getState(),
-      caseIds,
+    const snapshots = (options.caseSource
+      ? options.caseSource.snapshot(caseIds)
+      : snapshotCadCasesForRayTrace(options.store.getState(), caseIds)
     ).sort((left, right) => left.order - right.order)
     if (snapshots.length === 0) {
       throw new Error('실행할 Case를 하나 이상 선택해 주세요.')

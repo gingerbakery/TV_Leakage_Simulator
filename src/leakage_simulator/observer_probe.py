@@ -18,6 +18,8 @@ from .aim_sampling import aim_sphere_rotation
 from .escape_collection import DIRECTIONS
 
 CONTRACT = "observer_path_support_v1"
+FULL_DETAIL_SAMPLE_LIMIT = 100_000_000
+FULL_DETAIL_CELL_LIMIT = 65_536
 
 
 def validate_settings(spec):
@@ -31,8 +33,15 @@ def validate_settings(spec):
             raise ValueError(f"Invalid observer {key}: expected {lo}..{hi}")
         if key in ("resolution", "samples_per_cell") and int(value) != value:
             raise ValueError(f"Observer {key} must be an integer")
+    mode = spec.get("search_mode", "preview")
+    if mode not in ("preview", "full_detail"):
+        raise ValueError("Invalid observer search mode")
+    if mode == "full_detail":
+        spacing = spec.get("spacing_mm")
+        if isinstance(spacing, bool) or not isinstance(spacing, (int, float)) or not math.isfinite(spacing) or not .1 <= spacing <= 100:
+            raise ValueError("Invalid observer spacing_mm: expected 0.1..100")
     views = angles(spec)
-    if len(views) > 121 or len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * 2 > 500_000:
+    if len(views) > 121 or (mode != "full_detail" and len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * 2 > 500_000):
         raise ValueError("Observer budget exceeded: reduce angle range, resolution or samples")
     return views
 
@@ -54,6 +63,53 @@ def view_direction(axis, horizontal, vertical):
     up = vec_cross(right, w)
     h, v = math.radians(horizontal), math.radians(vertical)
     return vec_norm(tuple(w[i]*math.cos(h)*math.cos(v) + right[i]*math.sin(h)*math.cos(v) + up[i]*math.sin(v) for i in range(3)))
+
+
+def sampling_plan(spec, minimum, maximum, axis, source_count, epsilon=1e-8):
+    """Small per-view plans only; never allocate a full search grid."""
+    views = validate_settings(spec)
+    corners = [tuple(maximum[i] if bits & (1 << i) else minimum[i] for i in range(3)) for bits in range(8)]
+    center = tuple((minimum[i]+maximum[i])/2 for i in range(3))
+    full = spec.get("search_mode") == "full_detail"
+    plans = []
+    for horizontal, vertical in views:
+        outward = view_direction(axis, horizontal, vertical)
+        u, v, _ = orthonormal_basis(outward)
+        pu = [vec_dot(vec_sub(p, center), u) for p in corners]
+        pv = [vec_dot(vec_sub(p, center), v) for p in corners]
+        width, height = max(pu)-min(pu), max(pv)-min(pv)
+        columns = max(1, math.ceil(width/spec["spacing_mm"])) if full else int(spec["resolution"])
+        rows = max(1, math.ceil(height/spec["spacing_mm"])) if full else int(spec["resolution"])
+        grid = columns*rows*int(spec["samples_per_cell"])
+        targeted = max(grid, source_count) if source_count else 0
+        plans.append(dict(horizontal=horizontal, vertical=vertical, outward=outward, u=u, v=v,
+            width=width, height=height, min_u=min(pu), min_v=min(pv), columns=columns, rows=rows,
+            distance=max(vec_dot(vec_sub(p, center), outward) for p in corners)+max(1., epsilon*10),
+            grid_samples=grid, targeted_samples=targeted))
+    total = sum(plan["grid_samples"]+plan["targeted_samples"] for plan in plans)
+    limit = FULL_DETAIL_SAMPLE_LIMIT if full else 500_000
+    if total > limit:
+        raise ValueError(f"Observer budget exceeded: {total} samples, limit {limit}; increase spacing or reduce angles")
+    return plans
+
+
+def _coarsen_cells(cells):
+    """Merge display bins without discarding any detected path counts."""
+    merged = {}
+    for cell in cells.values():
+        row, column = cell["row"]//2, cell["column"]//2
+        target = merged.get((row, column))
+        if target is None:
+            target = dict(cell, row=row, column=column, position_sum=list(cell["position_sum"]))
+            merged[row, column] = target
+        else:
+            for key in ("direct_count", "reflected_count"):
+                target[key] += cell[key]
+            target["min_depth"] = min(target["min_depth"], cell["min_depth"])
+            target["max_depth"] = max(target["max_depth"], cell["max_depth"])
+            for i in range(3):
+                target["position_sum"][i] += cell["position_sum"][i]
+    return merged
 
 
 def reflection_supported(profile, normal, incoming, outgoing):
@@ -164,7 +220,7 @@ def _sample_source(sources, index, rng):
     return emitter, point, normal, face
 
 
-def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=8192):
+def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=8192, progress_callback=None):
     started = time.perf_counter()
     if dispatch not in ("batch", "scalar") or not isinstance(batch_size, int) or not 1 <= batch_size <= 8192:
         raise ValueError("Invalid observer dispatch/batch size")
@@ -181,10 +237,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
     mesh, config = trace_input.mesh, trace_input.config
     epsilon = max(config.epsilon_mm, 1e-8)
     sources = _source_geometry(mesh, trace_input.emitters)
-    base_samples = int(spec["resolution"])**2 * int(spec["samples_per_cell"])
-    planned_count = len(views)*(base_samples + (max(base_samples, len(sources)) if sources else 0))
-    if planned_count > 500_000:
-        raise ValueError("Observer budget exceeded by source count")
+    plans = sampling_plan(spec, collector.minimum, collector.maximum, collector.direction, len(sources), epsilon)
+    planned_count = sum(plan["grid_samples"]+plan["targeted_samples"] for plan in plans)
     face_sources = {}
     virtual = []
     for source in sources:
@@ -194,14 +248,19 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 virtual.append((emitter, triangle, normal))
             else:
                 face_sources.setdefault(face, []).append(emitter)
-    corners = [tuple(collector.maximum[i] if bits & (1 << i) else collector.minimum[i] for i in range(3)) for bits in range(8)]
     center = tuple((collector.minimum[i]+collector.maximum[i])/2 for i in range(3))
     cells, summaries = [], []
     attempted = direct = reflected = excluded = depth_limited = 0
     stopped = False
-    resolution, passes = int(spec["resolution"]), int(spec["samples_per_cell"])
+    passes = int(spec["samples_per_cell"])
+    full = spec.get("search_mode") == "full_detail"
+    cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(views)))
+    if progress_callback is not None:
+        progress_callback(0, planned_count)
 
     def supported(vertices, source_point, launch):
+        if vertices and config.k_brdf <= 0:
+            return False
         for i, (point, normal, profile) in enumerate(vertices):
             lightward = source_point if i == len(vertices)-1 else vertices[i+1][0]
             observerward = launch if i == 0 else vertices[i-1][0]
@@ -209,35 +268,33 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 return False
         return True
 
-    for view_index, (horizontal, vertical) in enumerate(views):
-        outward = view_direction(collector.direction, horizontal, vertical)
-        u, v, _ = orthonormal_basis(outward)
-        projected_u = [vec_dot(vec_sub(p, center), u) for p in corners]
-        projected_v = [vec_dot(vec_sub(p, center), v) for p in corners]
-        distance = max(vec_dot(vec_sub(p, center), outward) for p in corners) + max(1., epsilon*10)
-        width, height = max(projected_u)-min(projected_u), max(projected_v)-min(projected_v)
+    for view_index, plan in enumerate(plans):
+        horizontal, vertical = plan["horizontal"], plan["vertical"]
+        outward, u, v = plan["outward"], plan["u"], plan["v"]
+        distance, width, height = plan["distance"], plan["width"], plan["height"]
+        columns, rows = plan["columns"], plan["rows"]
+        stride = 1
         view_cells = {}
         counts = {"horizontal_deg": horizontal, "vertical_deg": vertical, "direct_count": 0, "reflected_count": 0,
-                  "spacing_mm": [width/resolution, height/resolution]}
-        grid_samples = resolution*resolution*passes
-        targeted_samples = max(grid_samples, len(sources)) if sources else 0
+                  "spacing_mm": [width/columns, height/rows]}
+        grid_samples, targeted_samples = plan["grid_samples"], plan["targeted_samples"]
         def probe(sample_index):
             nonlocal attempted, depth_limited
             attempted += 1
             rng = random.Random(1729 + view_index*1_000_003 + sample_index*9176)
             cell_index = sample_index // passes
-            row, column = divmod(cell_index, resolution)
+            row, column = divmod(cell_index, columns)
             # First pass covers cell centres; extra passes independently jitter.
             jx, jy = (.5, .5) if sample_index % passes == 0 else (rng.random(), rng.random())
-            launch = vec_add(vec_add(vec_add(center, vec_mul(outward, distance)), vec_mul(u, min(projected_u)+(column+jx)*width/resolution)), vec_mul(v, min(projected_v)+(row+jy)*height/resolution))
+            launch = vec_add(vec_add(vec_add(center, vec_mul(outward, distance)), vec_mul(u, plan["min_u"]+(column+jx)*width/columns)), vec_mul(v, plan["min_v"]+(row+jy)*height/rows))
             if sample_index >= grid_samples:
                 # Source projections are essential at extreme angles: even a
                 # large emitter becomes a sub-pixel sliver near 90 degrees.
                 _, target, _, _ = _sample_source(sources, sample_index-grid_samples, rng)
                 launch = vec_add(target, vec_mul(outward, distance-vec_dot(vec_sub(target, center), outward)))
                 relative = vec_sub(target, center)
-                column = max(0, min(resolution-1, int((vec_dot(relative, u)-min(projected_u))/max(width, 1e-12)*resolution)))
-                row = max(0, min(resolution-1, int((vec_dot(relative, v)-min(projected_v))/max(height, 1e-12)*resolution)))
+                column = max(0, min(columns-1, int((vec_dot(relative, u)-plan["min_u"])/max(width, 1e-12)*columns)))
+                row = max(0, min(rows-1, int((vec_dot(relative, v)-plan["min_v"])/max(height, 1e-12)*rows)))
             origin, direction = launch, vec_mul(outward, -1)
             vertices = []
             first_point = None
@@ -320,6 +377,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 if collector._allowed(point, outward, launch):
                     excluded += 1
                     continue
+                row, column = row//stride, column//stride
                 key = (row, column)
                 cell = view_cells.setdefault(key, {"view_index": view_index, "row": row, "column": column, "position_sum": [0.,0.,0.], "direct_count": 0, "reflected_count": 0,
                                                    "min_depth": depth, "max_depth": depth})
@@ -331,6 +389,12 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 cell["min_depth"], cell["max_depth"] = min(cell["min_depth"], depth), max(cell["max_depth"], depth)
                 for i in range(3):
                     cell["position_sum"][i] += point[i]
+                if full:
+                    while len(view_cells) > cell_limit:
+                        view_cells = _coarsen_cells(view_cells)
+                        stride *= 2
+            if progress_callback is not None:
+                progress_callback(attempted, planned_count)
             if stopped:
                 break
         for cell in view_cells.values():
@@ -338,6 +402,10 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
             cells.append(cell)
         counts.update({"direction": outward, "u_axis": u, "v_axis": v,
                        "observer_center": vec_add(center, vec_mul(outward, distance))})
+        if full:
+            counts.update(grid_resolution=[math.ceil(columns/stride), math.ceil(rows/stride)],
+                sampling_resolution=[columns, rows], sample_spacing_mm=[width/columns, height/rows], display_stride=stride,
+                spacing_mm=[width/columns*stride, height/rows*stride])
         summaries.append(counts)
         if stopped:
             break
@@ -345,6 +413,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
     state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
     performance.update(compute_execution_state=state, compute_execution_reason=reason)
     return {"contract": CONTRACT, "sample_contract": "observer_per_ray_seed_batch_v1",
+            "search_contract": "observer_full_spacing_v1" if full else "observer_grid_v1",
             "execution_backend": "gpu_cuda" if state in ("gpu_active", "gpu_mixed") else "cpu",
             "requested_backend": requested, "performance": performance, "measure": "path_support_counts",
             "settings": spec, "attempted_count": attempted, "planned_count": planned_count,

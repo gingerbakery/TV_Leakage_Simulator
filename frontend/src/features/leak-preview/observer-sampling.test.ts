@@ -5,6 +5,31 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { createDefaultLeakPreviewProjectState, leakPreviewStore } from './leak-preview-store'
 
 describe('automatic observer sampling', () => {
+  it('plans fixed millimeter spacing without the Preview budget reducing resolution', () => {
+    const observer = { ...defaultObserverSettings, enabled: true, search_mode: 'full_detail' as const,
+      spacing_mm: 1, horizontal_deg: 0, vertical_deg: 0, range_deg: 0 }
+    const projection = { minimum: [0,0,0] as [number,number,number], maximum: [1000,600,10] as [number,number,number], direction: 'neg_z' as const }
+    const plan = planObserverSampling(observer, 1, projection)
+    expect(plan).toMatchObject({ fullDetail: true, plannedCount: 2_400_000, samples_per_cell: 2, error: null })
+    expect(planObserverSampling({ ...observer, spacing_mm: 2 }, 1, projection).plannedCount).toBe(600_000)
+    expect(planObserverSampling({ ...observer, spacing_mm: .5 }, 1, projection).plannedCount).toBe(9_600_000)
+    expect(planObserverSampling({ ...observer, range_deg: 10, step_deg: 2, spacing_mm: .1 }, 1, projection).error).toContain('100,000,000')
+    expect(planObserverSampling(observer).error).toContain('모델 범위')
+  })
+
+  it('uses precision CAD and actual material assignments for full detail without changing the requested spacing or depth', () => {
+    const request = buildLeakPreviewRequest({ scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast',
+      computeBackend: 'cpu', maxDepth: 50, materialAssignments: [], transformRules: [],
+      excludedComponentIds: [], deletedComponentIds: [], detectionMode: 'escape_directions',
+      observer: { ...defaultObserverSettings, enabled: true, search_mode: 'full_detail', spacing_mm: .5, range_deg: 0 } })
+    expect(request.geometry_mode).toBe('precision')
+    expect(request.observer_probe).toMatchObject({ search_mode: 'full_detail', spacing_mm: .5, samples_per_cell: 2 })
+    expect(request.config).toMatchObject({ max_depth: 50, primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
+    expect(request.analysis_roi).toBeUndefined()
+    expect(request.roi_faces).toBeUndefined()
+    expect(request.optical_profiles.some((profile) => profile.profile_id === 'default')).toBe(false)
+  })
+
   it('keeps the normal default and reduces sampling to fit a dense valid angle sweep', () => {
     expect(planObserverSampling(defaultObserverSettings)).toMatchObject({ views: 9, resolution: 64, samples_per_cell: 2, error: null })
     const observer = { ...defaultObserverSettings, horizontal_deg: 0, vertical_deg: 0, range_deg: 2, step_deg: .5 }

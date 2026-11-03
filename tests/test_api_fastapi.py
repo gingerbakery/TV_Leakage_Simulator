@@ -719,6 +719,47 @@ class FastApiLayerTests(unittest.TestCase):
             "Ray tracing job was not found",
         )
 
+    def test_full_detail_stop_after_forward_dispatch_keeps_observer_partial_progress(self):
+        started = threading.Event()
+
+        class PartialObserverResult:
+            def to_dict(self):
+                return {"run_id": "partial-observer", "total_rays": 2, "metrics": {
+                    "_observer_probe_summary": {"planned_count": 20, "attempted_count": 3, "stopped": True}}}
+
+        def runner(trace_input, progress_callback=None, should_stop=None):
+            progress_callback(2, 22)
+            started.set()
+            deadline = time.time()+1
+            while not should_stop() and time.time() < deadline:
+                time.sleep(.001)
+            return PartialObserverResult()
+
+        runtime = ApiRuntime(Path(self.temp_dir.name)/"full-detail", scene_loader=_scene_loader,
+            trace_input_builder=_trace_input_builder, trace_runner=runner)
+        client = TestClient(create_app(runtime))
+        try:
+            scene = runtime.load_scene("full-detail.step")
+            job = client.post("/api/raytrace/start", json={"scene_token": scene["metadata"]["scene_token"],
+                "emitters": [{"enabled": True, "ray_count": 2}], "observer_probe": {"search_mode": "full_detail"}}).json()
+            self.assertTrue(started.wait(1))
+            current = client.get("/api/raytrace/status", params={"job_id": job["job_id"]}).json()
+            self.assertIn("전체 정밀 검색", current["phase_detail"])
+            client.post("/api/raytrace/stop", params={"job_id": job["job_id"]})
+            for _ in range(100):
+                current = client.get("/api/raytrace/status", params={"job_id": job["job_id"]}).json()
+                if current["status"] == "completed":
+                    break
+                time.sleep(.005)
+            self.assertEqual(current["phase"], "stopped")
+            self.assertTrue(current["stopped_early"])
+            self.assertEqual(current["processed_rays"], 5)
+            self.assertEqual(current["total_rays"], 22)
+            self.assertLess(current["progress"], 1)
+            self.assertEqual(current["result"]["total_rays"], 2)
+        finally:
+            client.close()
+
     def test_stop_finishes_job_with_partial_result(self):
         class PartialResult:
             def __init__(self, total_rays):

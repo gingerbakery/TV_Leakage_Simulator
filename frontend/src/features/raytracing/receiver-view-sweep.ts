@@ -1,5 +1,5 @@
 import { apiClient, type ReceiverSpec, type ScenePayload, type RayTraceResult } from '@/api'
-import { createWorkspaceStore, snapshotCadCasesForRayTrace, type WorkspaceStoreApi, type CadCase } from '@/stores'
+import { createWorkspaceStore, snapshotCadCasesForRayTrace, type WorkspaceStoreApi, type CadCase, type CadCaseRayTraceSnapshot } from '@/stores'
 import { createBatchRayTracingController, type BatchRayTraceState, type BatchRayTracingControllerOptions } from './batch-ray-tracing'
 import { expandReceiverView } from './receiver-view'
 
@@ -34,24 +34,38 @@ export function createReceiverViewSweepController(options: ReceiverViewSweepOpti
       const views = expandReceiverView(template, scene, source.workspaceState.transformRules)
       const staged = createWorkspaceStore()
       const sweepId = crypto.randomUUID()
-      const cases: CadCase[] = views.map((receiver: ReceiverSpec, index) => ({
-        caseId: `view-${sweepId}-${index}`, order: index, cad: structuredClone(source.cad), visible: true,
+      // `source` is already detached from the user's Case. Share its read-only
+      // BSDF/optical/source inputs across views instead of cloning them N times.
+      const snapshots: CadCaseRayTraceSnapshot[] = views.map((receiver: ReceiverSpec, index) => ({
+        ...source, caseId: `view-${sweepId}-${index}`, order: index,
         name: `${receiver.view_angles!.horizontal_deg}° / ${receiver.view_angles!.vertical_deg}°`,
-        accessoryCads: structuredClone(source.accessoryCads), leakPreviewState: structuredClone(source.leakPreviewState),
-        workspaceState: { ...structuredClone(source.workspaceState), receivers: [receiver] },
+        workspaceState: { ...source.workspaceState, receivers: [receiver] },
       }))
+      const cases: CadCase[] = snapshots.map((snapshot) => ({ caseId: snapshot.caseId, order: snapshot.order,
+        cad: snapshot.cad, accessoryCads: snapshot.accessoryCads, visible: true, name: snapshot.name }))
       staged.setState({ cadCases: cases, activeCadCaseId: null, activeCad: null })
       const client = options.client ?? apiClient
-      const reports = (): ReceiverViewReport[] => staged.getState().cadCases.flatMap((item) => item.latestResult ? [{
-        caseId: item.caseId, name: item.name!, cadName: source.cad.displayName, result: item.latestResult,
-      }] : [])
+      let reports: ReceiverViewReport[] = []
+      const validateSource = () => options.store.getState().actions.validateCadCaseRayTraceSetup(source.caseId, source.setupHash)
       controller = createBatchRayTracingController({
         store: staged, pollIntervalMs: options.pollIntervalMs,
+        caseSource: {
+          snapshot: (ids) => { const wanted = new Set(ids); return snapshots.filter((snapshot) => wanted.has(snapshot.caseId)) },
+          validate: validateSource,
+          saveResult: (snapshot, result) => {
+            const freshness = validateSource()
+            if (freshness !== 'current') return freshness
+            // Completed results are immutable; metadata edits/deletions in the
+            // report use copy-on-write rather than duplicating every path here.
+            reports = [...reports, { caseId: snapshot.caseId, name: snapshot.name, cadName: source.cad.displayName, result }]
+            return 'saved'
+          },
+        },
         client: { ...client, startRayTrace: async (request, requestOptions) => {
-          if (options.store.getState().actions.validateCadCaseRayTraceSetup(source.caseId, source.setupHash) !== 'current') throw new Error('Case 조건이 변경되어 이후 각도 실행을 중단합니다.')
+          if (validateSource() !== 'current') throw new Error('Case 조건이 변경되어 이후 각도 실행을 중단합니다.')
           return client.startRayTrace(request, requestOptions)
         } },
-        onStateChange: (next) => options.onStateChange?.(next, reports()),
+        onStateChange: (next) => options.onStateChange?.(next, reports),
       })
       running = true
       state.actions.setBatchRayTraceActive(true)

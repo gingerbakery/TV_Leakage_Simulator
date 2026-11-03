@@ -24,6 +24,49 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined })
 
+it('starts a fixed-spacing whole-model search using precision geometry and the configured reflection depth', async () => {
+  const actions = workspaceStore.getState().actions
+  actions.addCadCase({ path: 'full.step', displayName: 'Full' })
+  actions.upsertEmitter(createDatumEmitter('emitter_001', [30,30,10], [0,0,0]))
+  actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, max_depth: 50, max_stored_paths: 100, k_abs: .9, k_brdf: .5 })
+  mocks.start.mockResolvedValue({ job_id: 'full-detail' })
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button', { name: '기존 Emitter 사용' }))
+  fireEvent.change(screen.getByLabelText('Preview 검색 모드'), { target: { value: 'full_detail' } })
+  expect((screen.getByLabelText('시야각 역추적 사용') as HTMLInputElement).checked).toBe(true)
+  expect(screen.queryByLabelText('해상도 / 축')).toBeNull()
+  const spacing = screen.getByLabelText('전체 정밀 검사 간격 (mm)')
+  fireEvent.change(spacing, { target: { value: '1' } }); fireEvent.blur(spacing)
+  fireEvent.click(screen.getByRole('button', { name: '전체 정밀 검색 시작' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
+  const request = mocks.start.mock.calls[0][0].request
+  expect(request.geometry_mode).toBe('precision')
+  expect(request.observer_probe).toMatchObject({ search_mode: 'full_detail', spacing_mm: 1, samples_per_cell: 2 })
+  expect(request.config.max_depth).toBe(50)
+  expect(request.config).toMatchObject({ max_stored_paths: 100, k_abs: .9, k_brdf: .5 })
+  expect(request.analysis_roi).toBeUndefined()
+  expect(request.optical_profiles.some((profile: { profile_id: string }) => profile.profile_id === 'default')).toBe(false)
+})
+
+it('limits rendered candidate rows and reveals the viewer-selected candidate on another page', () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'many.step', displayName: 'Many' })
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const base = detectLeakPreviewCandidates(scene, result).candidates[0]
+  const candidates = Array.from({ length: 205 }, (_, i) => ({ ...base, id: `candidate-${i}`, relativeStrength: 1-i/1000 }))
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result, [], candidates))
+  expect(screen.getAllByRole('article')).toHaveLength(100)
+  act(() => leakPreviewStore.getState().selectCandidate('candidate-204', 'viewer'))
+  expect(screen.getAllByRole('article')).toHaveLength(5)
+  expect(screen.getByRole('article', { name: 'Candidate 205' }).getAttribute('aria-current')).toBe('true')
+  fireEvent.click(screen.getByRole('button', { name: '이전 후보' }))
+  expect(screen.getAllByRole('article')).toHaveLength(100)
+  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
+  act(() => leakPreviewStore.getState().selectCandidate('candidate-204', 'viewer'))
+  expect(screen.getByRole('article', { name: 'Candidate 205' })).toBeTruthy()
+  expect(leakPreviewStore.getState().candidates).toHaveLength(205)
+})
+
 it('creates only a view-angle receiver from the detected snapshot while preserving BSDF, sources, and sampling', () => {
   const actions = workspaceStore.getState().actions
   actions.addCadCase({ path: 'bsdf-angle.step', displayName: 'BSDF angle' })

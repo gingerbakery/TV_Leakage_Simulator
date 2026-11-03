@@ -540,6 +540,8 @@ describe('Step 11 result UI', () => {
     result.metrics[sideReceiver.receiver_id] = structuredClone(
       result.metrics[result.receivers[0].receiver_id],
     )
+    const original = structuredClone(result)
+    const clone = vi.spyOn(globalThis, 'structuredClone')
     const onDeleteCaseReceiverResult = vi.fn()
 
     render(
@@ -553,6 +555,9 @@ describe('Step 11 result UI', () => {
         onOpenChange={vi.fn()}
       />,
     )
+    // Importing reports must not copy their potentially large path arrays.
+    expect(clone.mock.calls.some(([value]) => value === result)).toBe(false)
+    clone.mockRestore()
 
     fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
     const deleteButton = await screen.findByRole('button', {
@@ -570,6 +575,7 @@ describe('Step 11 result UI', () => {
         }),
       ).toBeNull()
     })
+    expect(result).toEqual(original)
   })
 
   it('uses the automatically synchronized CAD result as a comparison case', () => {

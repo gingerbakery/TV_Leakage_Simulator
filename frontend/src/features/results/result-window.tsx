@@ -2493,7 +2493,9 @@ export function RayTraceResultWindow({
           note: item.note ?? existing?.note ?? '',
           saved_at: new Date().toISOString(),
           selected: existing?.selected ?? true,
-          result: structuredClone(item.result),
+          // Reports are immutable inputs. Deleting Receiver data below creates
+          // a new result; importing a sweep need not duplicate all stored paths.
+          result: item.result,
         })
       }
       return [...merged.values()]

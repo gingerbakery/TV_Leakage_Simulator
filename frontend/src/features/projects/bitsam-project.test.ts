@@ -53,6 +53,22 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('round-trips full detail settings under a version older builds cannot silently reinterpret', () => {
+    const { project } = createProjectFixture()
+    const preview = createDefaultLeakPreviewProjectState()
+    preview.observer = { ...preview.observer!, enabled: true, search_mode: 'full_detail', spacing_mm: .5 }
+    project.leak_preview = preview
+    const saved = serializeBitsamProject(project)
+    expect(parseBitsamProject(saved)).toMatchObject({ schema_version: 'bitsam-project.v1-detail1',
+      leak_preview: { observer: { search_mode: 'full_detail', spacing_mm: .5 } } })
+    const stale = JSON.parse(saved)
+    stale.schema_version = 'bitsam-project.v1-escape1'
+    expect(() => parseBitsamProject(JSON.stringify(stale))).toThrow('전체 정밀 검색')
+    const damaged = JSON.parse(saved)
+    damaged.leak_preview.observer.spacing_mm = 0
+    expect(() => parseBitsamProject(JSON.stringify(damaged))).toThrow('손상')
+  })
+
   it('uses an explicit schema for directional escape settings to prevent old builds silently running planar Preview', () => {
     const { project } = createProjectFixture()
     project.leak_preview = { ...createDefaultLeakPreviewProjectState(), detectionMode: 'escape_directions' }
