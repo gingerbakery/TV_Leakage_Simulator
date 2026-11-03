@@ -22,13 +22,13 @@ export function receiverViewDirection(view: ReceiverViewAngles): Vec3 {
 }
 
 export function receiverViewAnglePairs(view: ReceiverViewAngles): Array<[number, number]> {
-  if (!axes[view.axis] || !Number.isFinite(view.horizontal_deg) || Math.abs(view.horizontal_deg) > 89.9 ||
-      !Number.isFinite(view.vertical_deg) || Math.abs(view.vertical_deg) > 89.9 ||
+  if (!axes[view.axis] || !Number.isFinite(view.horizontal_deg) || Math.abs(view.horizontal_deg) > 90 ||
+      !Number.isFinite(view.vertical_deg) || Math.abs(view.vertical_deg) > 90 ||
       !Number.isFinite(view.range_deg) || view.range_deg < 0 || view.range_deg > 10 ||
-      !Number.isFinite(view.step_deg) || view.step_deg < .1 || view.step_deg > 10) throw new Error('시야각과 범위·간격을 확인하세요.')
+      !Number.isFinite(view.step_deg) || view.step_deg < .1 || view.step_deg > 90) throw new Error('시야각과 범위·간격을 확인하세요.')
   const offsets = new Set([0, -view.range_deg, view.range_deg])
   for (let i = -Math.floor(view.range_deg/view.step_deg); i <= Math.floor(view.range_deg/view.step_deg); i++) offsets.add(i*view.step_deg)
-  const values = (center: number) => [...new Set([...offsets].map((offset) => Number(Math.max(-89.9, Math.min(89.9, center+offset)).toFixed(8))))].sort((a,b) => a-b)
+  const values = (center: number) => [...new Set([...offsets].map((offset) => Number(Math.max(-90, Math.min(90, center+offset)).toFixed(8))))].sort((a,b) => a-b)
   const horizontal = values(view.horizontal_deg), vertical = values(view.vertical_deg)
   const count = horizontal.length*vertical.length
   if (count > 121) throw new Error(`각도 조합 ${count}개 · 한도 121개. 간격을 늘리거나 범위를 줄이세요.`)

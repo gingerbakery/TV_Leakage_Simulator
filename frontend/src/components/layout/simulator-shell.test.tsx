@@ -14,7 +14,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
 import { createWorkspaceStore, workspaceStore, type MaterialAssignment } from '@/stores'
-import { createDefaultLeakPreviewProjectState } from '@/features/leak-preview/leak-preview-store'
+import { createDefaultLeakPreviewProjectState, leakPreviewStore } from '@/features/leak-preview/leak-preview-store'
+import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { buildRayTraceRequest } from '@/features/raytracing'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -89,9 +90,74 @@ afterEach(() => {
   apiHookState.rayTraceJobErrors.clear()
   apiHookState.scene = undefined
   workspaceStore.getState().actions.resetWorkspace()
+  leakPreviewStore.getState().clear()
 })
 
 describe('SimulatorShell', () => {
+  it('saves Preview evidence without a precision result and keeps candidate deletion state', async () => {
+    apiHookState.scene = createSceneFixture()
+    workspaceStore.getState().actions.addCadCase({ path: 'preview.step', displayName: 'Preview' })
+    const saved = createSavedLeakPreviewFixture()
+    const save = vi.spyOn(portableProjects, 'savePortableProject').mockResolvedValueOnce({ cancelled: false })
+    try {
+      renderShell()
+      act(() => {
+        leakPreviewStore.getState().setDetection(saved.result, saved.points, saved.candidates)
+        leakPreviewStore.getState().removeCandidate(saved.candidates[0].id)
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save BITSAM project' }))
+      const notice = await screen.findByRole('dialog', { name: '저장 완료' })
+      expect(within(notice).getByText('해석 설정 및 결과')).toBeTruthy()
+      const project = save.mock.calls[0][0]
+      expect(project.analysis_result).toBeUndefined()
+      expect(project.preview_result?.result).toEqual(saved.result)
+      expect(project.preview_result?.candidates.map((item) => item.id)).toEqual([saved.candidates[1].id])
+      expect(project.preview_result?.points).toEqual(saved.points.filter((item) => item.candidateId === saved.candidates[1].id))
+    } finally {
+      save.mockRestore()
+    }
+  })
+
+  it.each(['single', 'workspace'] as const)('restores Preview results from a %s package and across Case switches', async (scope) => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    const source = createWorkspaceStore()
+    source.getState().actions.addCadCase({ path: 'preview.step', displayName: 'Preview' })
+    const saved = createSavedLeakPreviewFixture()
+    const settings = createDefaultLeakPreviewProjectState()
+    settings.detectionMode = 'planar'
+    saved.inputSignature = JSON.stringify({ sceneToken: null, sourceFaceIds: [], sourceMode: 'face',
+      sourceComponentIds: [], sourceBodyFaceCount: 0, sourceEmitterIds: [], quality: settings.quality,
+      detectionMode: settings.detectionMode, observer: settings.observer, directions: settings.directions,
+      materialAssignments: [], bsdfAssets: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [],
+      blockers: [], allowedAreas: [] })
+    const project = createBitsamProject(scene, source.getState(), new Date(), null, settings, saved)
+    const restored = { project, scene, cad: { path: 'restored.step', displayName: 'Preview' }, traceCached: true }
+    const load = vi.spyOn(portableProjects, 'loadPortableBundle').mockResolvedValueOnce(scope === 'single' ? restored : {
+      scope: 'workspace', activeCaseId: 'saved-a', cases: [{ ...restored, caseId: 'saved-a', order: 1,
+        name: 'Preview', note: '', visible: true, accessoryCads: [] }],
+    })
+    try {
+      renderShell()
+      fireEvent.change(screen.getByLabelText('BITSAM project file'), {
+        target: { files: [new File([new Uint8Array([80, 75, 3, 4])], 'preview.bitsam')] },
+      })
+      await screen.findByRole('dialog', { name: '불러오기 완료' })
+      expect(leakPreviewStore.getState().result).toEqual(saved.result)
+      expect(leakPreviewStore.getState().points).toEqual(saved.points)
+      expect(leakPreviewStore.getState().jobId).toBeNull()
+      expect(screen.getByText('저장된 Preview 결과')).toBeTruthy()
+      const savedCaseId = workspaceStore.getState().activeCadCaseId!
+      act(() => workspaceStore.getState().actions.addCadCase({ path: 'empty.step', displayName: 'Empty' }))
+      expect(leakPreviewStore.getState().result).toBeNull()
+      act(() => workspaceStore.getState().actions.setActiveCadCase(savedCaseId))
+      expect(leakPreviewStore.getState().result).toEqual(saved.result)
+      expect(leakPreviewStore.getState().selectedCandidateId).toBe(saved.selectedCandidateId)
+    } finally {
+      load.mockRestore()
+    }
+  })
+
   it('releases a single-run lock and warns when job polling disconnects', async () => {
     const actions = workspaceStore.getState().actions
     act(() => {
@@ -239,6 +305,9 @@ describe('SimulatorShell', () => {
     const actions = workspaceStore.getState().actions
     actions.addCadCase({ path: 'case-a.step', displayName: 'case-a.step' })
     const caseA = workspaceStore.getState().activeCadCaseId!
+    const previewA = createSavedLeakPreviewFixture()
+    actions.setCadCaseLeakPreviewState(caseA, createDefaultLeakPreviewProjectState())
+    actions.setCadCaseLeakPreviewResult(caseA, previewA)
     actions.updateCadCaseMetadata(caseA, 'Baseline', 'original')
     actions.addAccessoryCad(caseA, {
       path: 'hidden-board.step',
@@ -271,6 +340,9 @@ describe('SimulatorShell', () => {
 
     try {
       renderShell()
+      const previewB = createSavedLeakPreviewFixture()
+      previewB.result.run_id = 'preview-case-b'
+      act(() => leakPreviewStore.getState().setDetection(previewB.result, previewB.points, previewB.candidates))
       fireEvent.click(screen.getByRole('button', {
         name: 'Save BITSAM project',
       }))
@@ -283,6 +355,7 @@ describe('SimulatorShell', () => {
         'Baseline',
         'Shield',
       ])
+      expect(savedCases.map((item) => item.project.preview_result?.result.run_id)).toEqual([previewA.result.run_id, 'preview-case-b'])
       expect(savedCases[0].accessoryCads).toEqual([{
         accessoryId: hiddenAccessory.accessoryId,
         cad: {

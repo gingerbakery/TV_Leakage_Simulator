@@ -10,17 +10,26 @@ export interface ObserverProjection { minimum: Vec3; maximum: Vec3; direction: i
 
 export function planObserverSampling(observer: LeakPreviewObserverSettings, sourceCount = 2, projection?: ObserverProjection) {
   const { range_deg: radius, step_deg: step, horizontal_deg: horizontal, vertical_deg: vertical } = observer
+  const viewLimit = observer.coverage === 'hemisphere' ? 2048 : observerViewLimit
   let views = 0
   let error: string | null = null
   let anglePairs: Array<[number, number]> = []
-  const valid = [radius, step, horizontal, vertical].every(Number.isFinite) && radius >= 0 && radius <= 10 && step >= .1 && step <= 10 && Math.abs(horizontal) <= 89.9 && Math.abs(vertical) <= 89.9
+  const valid = [radius, step, horizontal, vertical].every(Number.isFinite) && radius >= 0 && radius <= 10 && step >= .1 && step <= 90 && Math.abs(horizontal) <= 89.9 && Math.abs(vertical) <= 89.9
   if (valid) {
     const offsets = new Set([0, -radius, radius])
     for (let i = -Math.floor(radius / step); i <= Math.floor(radius / step); i++) offsets.add(i * step)
     const values = (center: number) => [...new Set([...offsets].map((offset) => Number(Math.max(-89.9, Math.min(89.9, center + offset)).toFixed(8))))]
     anglePairs = values(horizontal).flatMap((h) => values(vertical).map((v): [number, number] => [h, v]))
+    if (observer.coverage === 'hemisphere') {
+      const n = 2 * Math.ceil(90 / step)
+      if (n > 45) { error = '180° 전체 검사의 각도 간격을 늘리세요.'; anglePairs = [] }
+      else {
+        const values = Array.from({ length: n + 1 }, (_, i) => Number((-90 + 180*i/n).toFixed(8)))
+        anglePairs = [[0, -90], ...values.flatMap((h) => values.slice(1, -1).map((v): [number, number] => [h, v])), [0, 90]]
+      }
+    }
     views = anglePairs.length
-    if (views > observerViewLimit) error = `각도 조합 ${views.toLocaleString()}개 · 한도 ${observerViewLimit}개. 각도 간격을 늘리거나 주변 범위를 줄이세요.`
+    if (views > viewLimit) error = `각도 조합 ${views.toLocaleString()}개 · 한도 ${viewLimit}개. 각도 간격을 늘리거나 주변 범위를 줄이세요.`
   } else error = '시야각·주변 범위·각도 간격을 확인하세요.'
   let resolution = observer.resolution
   let repeats = observer.samples_per_cell
@@ -45,7 +54,7 @@ export function planObserverSampling(observer: LeakPreviewObserverSettings, sour
       if (plannedCount > fullDetailSampleLimit) error = `관찰 표본 ${plannedCount.toLocaleString()}개 · 한도 100,000,000개. 검사 간격을 늘리거나 각도 수를 줄이세요.`
     }
     return { resolution, samples_per_cell: repeats, views, plannedCount, error, fullDetail,
-      suggestedStep: Math.max(.1, Math.ceil(radius / 5 * 10) / 10) }
+      suggestedStep: observer.coverage === 'hemisphere' ? 15 : Math.max(.1, Math.ceil(radius / 5 * 10) / 10) }
   }
   const samples = (n: number, r: number) => {
     const base = n*n*r
@@ -64,5 +73,5 @@ export function planObserverSampling(observer: LeakPreviewObserverSettings, sour
   if (!error && (!Number.isInteger(resolution) || resolution < 8 || resolution > 256 || !Number.isInteger(repeats) || repeats < 1 || repeats > 16)) error = '해상도·셀 반복을 확인하세요.'
   if (!error && plannedCount > observerSampleLimit) error = `역추적 표본 ${plannedCount.toLocaleString()}개 · 한도 500,000개. 검사 수준 또는 수동 설정을 낮추세요.`
   return { resolution, samples_per_cell: repeats, views, plannedCount, error, fullDetail,
-    suggestedStep: Math.max(.1, Math.ceil(radius / 5 * 10) / 10) }
+    suggestedStep: observer.coverage === 'hemisphere' ? 15 : Math.max(.1, Math.ceil(radius / 5 * 10) / 10) }
 }

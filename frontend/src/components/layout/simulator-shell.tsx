@@ -79,6 +79,7 @@ import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-pr
 import {
   leakPreviewStore,
   snapshotLeakPreviewProjectState,
+  snapshotLeakPreviewResult,
 } from '@/features/leak-preview'
 import {
   groupRoiFacesByComponent,
@@ -391,6 +392,7 @@ export function SimulatorShell() {
     )
     leakPreviewStore.getState().restoreProjectState(
       targetCase?.leakPreviewState,
+      targetCase?.leakPreviewResult,
     )
     suppressedCaseJobIdRef.current = targetCase?.latestJobId ?? null
     suppressedCaseRunIdRef.current = targetCase?.latestResult?.run_id ?? null
@@ -401,7 +403,7 @@ export function SimulatorShell() {
     const active = cadCases.find((item) => item.caseId === activeCadCaseId)
     if (!active?.leakPreviewState) return
     if (JSON.stringify(snapshotLeakPreviewProjectState()) !== JSON.stringify(active.leakPreviewState)) {
-      leakPreviewStore.getState().restoreProjectState(active.leakPreviewState)
+      leakPreviewStore.getState().restoreProjectState(active.leakPreviewState, active.leakPreviewResult)
     }
   }, [activeCadCaseId, cadCases])
 
@@ -581,13 +583,16 @@ export function SimulatorShell() {
         activeCadCaseId,
         pendingProject.leak_preview,
       )
+      actions.setCadCaseLeakPreviewResult(activeCadCaseId, pendingProject.preview_result)
     }
     leakPreviewStore.getState().restoreProjectState(
       pendingProject.leak_preview,
+      pendingProject.preview_result,
     )
     actions.setRestoredRayTraceResult(
       pendingProject.analysis_result ?? null,
     )
+    if (pendingProject.preview_result && !pendingProject.analysis_result) setActiveSection('leak-preview')
     setLoadedProjectSource(pendingProject)
     setPendingProject(null)
     projectLoadAttemptRef.current = ''
@@ -596,7 +601,7 @@ export function SimulatorShell() {
         operation: 'load',
         fileName: bitsamDownloadFileName(pendingProject),
         includesCad: true,
-        includesResult: !!pendingProject.analysis_result,
+        includesResult: !!(pendingProject.analysis_result || pendingProject.preview_result),
         notes: compatibility.warnings,
       })
       return
@@ -662,6 +667,7 @@ export function SimulatorShell() {
         item.caseId === snapshot.activeCadCaseId
           ? snapshotLeakPreviewProjectState()
           : item.leakPreviewState,
+        item.caseId === snapshot.activeCadCaseId ? snapshotLeakPreviewResult() : item.leakPreviewResult,
       )
       project.case_metadata = {
         ...project.case_metadata,
@@ -720,7 +726,7 @@ export function SimulatorShell() {
         operation: 'save',
         fileName: `${name}.bitsam`,
         includesCad: true,
-        includesResult: cases.some((item) => !!item.project.analysis_result),
+        includesResult: cases.some((item) => !!(item.project.analysis_result || item.project.preview_result)),
         downloadStarted: !!saved.downloaded,
         caseCount: saved.caseCount ?? cases.length,
       })
@@ -751,6 +757,7 @@ export function SimulatorShell() {
             new Date(),
             displayedRayTraceResult,
             snapshotLeakPreviewProjectState(),
+            snapshotLeakPreviewResult(),
           )
         : createBitsamProjectFromLoadedProject(
             loadedProjectSource!,
@@ -758,6 +765,7 @@ export function SimulatorShell() {
             new Date(),
             displayedRayTraceResult,
             snapshotLeakPreviewProjectState(),
+            snapshotLeakPreviewResult(),
           )
       if (activeCad && scene) {
         setProjectProgress('저장 위치 선택 중…')
@@ -766,7 +774,7 @@ export function SimulatorShell() {
           operation: 'save',
           fileName: bitsamDownloadFileName(project),
           includesCad: true,
-          includesResult: !!project.analysis_result,
+          includesResult: !!(project.analysis_result || project.preview_result),
           downloadStarted: !!saved.downloaded,
         })
         return
@@ -777,7 +785,7 @@ export function SimulatorShell() {
         operation: 'save',
         fileName: bitsamDownloadFileName(project),
         includesCad: false,
-        includesResult: !!project.analysis_result,
+        includesResult: !!(project.analysis_result || project.preview_result),
         downloadStarted: saveResult !== 'picked',
       })
     } catch (error) {
@@ -825,6 +833,7 @@ export function SimulatorShell() {
         newCaseId,
         item.project.leak_preview,
       )
+      stagedActions.setCadCaseLeakPreviewResult(newCaseId, item.project.preview_result)
       stagedActions.updateCadCaseMetadata(
         newCaseId,
         item.name ?? item.project.case_metadata?.name ?? '',
@@ -882,17 +891,18 @@ export function SimulatorShell() {
     setLoadedWorkspaceName(restored.workspaceName?.trim() || null)
     leakPreviewStore.getState().restoreProjectState(
       activeRestoredCase.project.leak_preview,
+      activeRestoredCase.project.preview_result,
     )
     const activeResult = activeRestoredCase.project.analysis_result ?? null
     setLoadedProjectSource(activeRestoredCase.project)
     setDisplayedRayTraceResult(activeResult)
-    setActiveSection(activeResult ? 'result' : 'model-import')
+    setActiveSection(activeResult ? 'result' : activeRestoredCase.project.preview_result ? 'leak-preview' : 'model-import')
     setProjectFileNotice({
       operation: 'load',
       fileName,
       includesCad: true,
       includesResult: restored.cases.some(
-        (item) => !!item.project.analysis_result,
+        (item) => !!(item.project.analysis_result || item.project.preview_result),
       ),
       caseCount: restored.cases.length,
       notes: restored.cases.some((item) => !item.traceCached)
@@ -928,10 +938,12 @@ export function SimulatorShell() {
         restoredCaseId,
         restored.project.leak_preview,
       )
+      actions.setCadCaseLeakPreviewResult(restoredCaseId, restored.project.preview_result)
     }
     actions.restoreProjectState(restored.project.workspace)
     leakPreviewStore.getState().restoreProjectState(
       restored.project.leak_preview,
+      restored.project.preview_result,
     )
     actions.setRestoredRayTraceResult(restored.project.analysis_result ?? null)
     if (restored.project.analysis_result) {
@@ -940,13 +952,13 @@ export function SimulatorShell() {
     setLoadedProjectSource(restored.project)
     setDisplayedRayTraceResult(restored.project.analysis_result ?? null)
     setActiveSection(
-      restored.project.analysis_result ? 'result' : 'model-import',
+      restored.project.analysis_result ? 'result' : restored.project.preview_result ? 'leak-preview' : 'model-import',
     )
     setProjectFileNotice({
       operation: 'load',
       fileName: file.name,
       includesCad: true,
-      includesResult: !!restored.project.analysis_result,
+      includesResult: !!(restored.project.analysis_result || restored.project.preview_result),
       notes: restored.traceCached
         ? []
         : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],

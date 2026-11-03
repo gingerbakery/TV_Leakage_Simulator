@@ -65,10 +65,16 @@ import 응답의 `cad.path`는 항상 주 CAD 원본만 가리킨다. Viewer는 
 - ROI 범위, 이동·회전 규칙, Emitter/Target 및 Receiver
 - Ray tracing 설정과 Ray 표시 필터
 - Case별 Leak Preview Source·품질·방향·표시 상태와 Allowed Area·Blocker
+- Case별 Preview 결과와 포인트·후보 목록·각도/방향 집계·선택 및 하이라이트 상태
 - 활성 Case 이름/메모
 - 저장 당시 분석 결과 전체 JSON: Receiver grid, 지표, 기여도 및 저장된 Ray 경로
 
 이동 규칙은 기본 형상에 다시 적용하므로 이중 이동하지 않는다. ROI 절단면은 표시용으로 재생성하며 물리적 반사면으로 저장하지 않는다.
+
+Preview 결과는 각 Case의 `project.json` 안에 `preview_result`로 보관한다.
+후보 삭제 상태와 중지 시 반환된 부분 결과도 유지한다. Load 후 계산 없이 결과를
+다시 확인할 수 있으며, 입력 조건이 바뀌면 Preview를 다시 실행해야 한다.
+실행 중인 Job을 재개하는 기능은 포함하지 않는다.
 
 ## 해석 전후 저장의 차이
 

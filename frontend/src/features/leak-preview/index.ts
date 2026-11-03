@@ -19,10 +19,12 @@ export type {
   LeakPreviewPoint,
   LeakPreviewQuality,
   LeakPreviewProjectState,
+  SavedLeakPreviewResult,
 } from './leak-preview-model'
 export {
   createDefaultLeakPreviewProjectState,
   leakPreviewStore,
   snapshotLeakPreviewProjectState,
+  snapshotLeakPreviewResult,
   useLeakPreviewStore,
 } from './leak-preview-store'

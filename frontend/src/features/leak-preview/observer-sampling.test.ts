@@ -5,6 +5,18 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { createDefaultLeakPreviewProjectState, leakPreviewStore } from './leak-preview-store'
 
 describe('automatic observer sampling', () => {
+  it('covers the complete hemisphere including the rim and unique poles', () => {
+    const observer = { ...defaultObserverSettings, coverage: 'hemisphere' as const, step_deg: 30 }
+    const plan = planObserverSampling(observer)
+    expect(plan).toMatchObject({ views: 37, error: null })
+    expect(plan.plannedCount).toBeLessThanOrEqual(500_000)
+    expect(planObserverSampling({ ...observer, step_deg: 15 })).toMatchObject({ views: 145, error: null })
+    expect(planObserverSampling({ ...observer, step_deg: 1 }).error).not.toBeNull()
+    const request = buildLeakPreviewRequest({ scene: createSceneFixture(), sourceFaceIds: [0], quality: 'fast', computeBackend: 'cpu',
+      materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [], detectionMode: 'escape_directions', observer: { ...observer, enabled: true } })
+    expect(request.observer_probe).toMatchObject({ coverage: 'hemisphere', step_deg: 30 })
+  })
+
   it('plans fixed millimeter spacing without the Preview budget reducing resolution', () => {
     const observer = { ...defaultObserverSettings, enabled: true, search_mode: 'full_detail' as const,
       spacing_mm: 1, horizontal_deg: 0, vertical_deg: 0, range_deg: 0 }

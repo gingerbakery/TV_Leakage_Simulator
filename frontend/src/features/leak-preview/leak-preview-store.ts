@@ -12,6 +12,7 @@ import type {
   LeakPreviewQuality,
   LeakPreviewDirection,
   LeakPreviewProjectState,
+  SavedLeakPreviewResult,
 } from './leak-preview-model'
 import { defaultObserverSettings } from './leak-preview-model'
 import { workspaceStore } from '@/stores/workspace-store'
@@ -68,6 +69,7 @@ interface LeakPreviewState {
   directions: LeakPreviewDirection[]
   jobId: string | null
   result: RayTraceResult | null
+  resultRestored: boolean
   points: LeakPreviewPoint[]
   candidates: LeakPreviewCandidate[]
   visualizationVisible: boolean
@@ -119,7 +121,7 @@ interface LeakPreviewState {
   removeBlocker(blockerId: string): void
   beginBlockerAreaSelection(blockerId: string): void
   finishBlockerAreaSelection(): void
-  restoreProjectState(state?: LeakPreviewProjectState): void
+  restoreProjectState(state?: LeakPreviewProjectState, result?: SavedLeakPreviewResult | null): void
   clear(): void
 }
 
@@ -154,6 +156,22 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     set(update)
     persistActiveCase()
   }
+  const persistDetection = () => {
+    const workspace = workspaceStore.getState()
+    if (workspace.activeCadCaseId) {
+      const active = workspace.cadCases.find((item) => item.caseId === workspace.activeCadCaseId)
+      if (!active?.leakPreviewState && get().result) persistActiveCase()
+      workspace.actions.setCadCaseLeakPreviewResult(workspace.activeCadCaseId, savedDetection(get()))
+    }
+  }
+  const setDetectionAndPersist = (
+    update: Partial<LeakPreviewState> | ((state: LeakPreviewState) => Partial<LeakPreviewState>),
+  ) => {
+    const visible = get().visualizationVisible
+    set(update)
+    if (get().visualizationVisible !== visible) persistActiveCase()
+    persistDetection()
+  }
   return ({
   sceneToken: null,
   sceneIdentity: null,
@@ -168,6 +186,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   directions: ['neg_z'],
   jobId: null,
   result: null,
+  resultRestored: false,
   points: [],
   candidates: [],
   visualizationVisible: true,
@@ -196,7 +215,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
         return state.sceneToken === sceneToken ? state : { sceneToken }
       }
       if (state.sceneIdentity === null) {
-        return { sceneToken, sceneIdentity }
+        return { sceneToken, sceneIdentity, runSignature: rebindSignature(state.runSignature, sceneToken) }
       }
       resetPersistentState = true
       const workspace = workspaceStore.getState()
@@ -217,6 +236,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           directions: ['neg_z'],
           jobId: null,
           result: null,
+          resultRestored: false,
           points: [],
           candidates: [],
           visualizationVisible: true,
@@ -234,7 +254,10 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           runSignature: null,
         }
     })
-    if (resetPersistentState) persistActiveCase()
+    if (resetPersistentState) {
+      persistActiveCase()
+      persistDetection()
+    }
   },
   rebindSceneToken: (sceneToken) => set({ sceneToken }),
   setSourceEmitters: (emitterIds) => setAndPersist({ sourceMode: 'emitters', sourceEmitterIds: [...new Set(emitterIds)] }),
@@ -259,8 +282,9 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   toggleDirection: (direction) => setAndPersist({ directions: [direction] }),
   setJobId: (jobId) => set({ jobId }),
   setRunSignature: (runSignature) => set({ runSignature }),
-  setDetection: (result, points, candidates) => set({
+  setDetection: (result, points, candidates) => setDetectionAndPersist({
     result,
+    resultRestored: false,
     points,
     candidateRevealRequest: null,
     candidates: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength),
@@ -268,14 +292,15 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     visualizationVisible: true,
     selectedCandidateId: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength)[0]?.id ?? null,
   }),
-  removeCandidate: (candidateId) => set((state) => {
+  removeCandidate: (candidateId) => setDetectionAndPersist((state) => {
     const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
     return { candidates, candidateRevealRequest: state.candidateRevealRequest?.candidateId === candidateId ? null : state.candidateRevealRequest, points: state.points.filter((point) => point.candidateId !== candidateId),
       selectedCandidateId: state.selectedCandidateId === candidateId ? candidates[0]?.id ?? null : state.selectedCandidateId }
   }),
-  clearDetection: () => set({
+  clearDetection: () => setDetectionAndPersist({
     jobId: null,
     result: null,
+    resultRestored: false,
     points: [],
     candidates: [],
     highlight: null,
@@ -286,8 +311,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
   setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
   setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
-  setHighlight: (highlight) => set({ highlight, selectedCandidateId: null, candidateRevealRequest: null, visualizationVisible: true }),
-  selectCandidate: (selectedCandidateId, source = 'list') => set({ selectedCandidateId, highlight: null, visualizationVisible: true,
+  setHighlight: (highlight) => setDetectionAndPersist({ highlight, selectedCandidateId: null, candidateRevealRequest: null, visualizationVisible: true }),
+  selectCandidate: (selectedCandidateId, source = 'list') => setDetectionAndPersist({ selectedCandidateId, highlight: null, visualizationVisible: true,
     candidateRevealRequest: source === 'viewer' && selectedCandidateId ? { candidateId: selectedCandidateId } : null,
   }),
   beginIgnoreAreaSelection: (areaId) => setAndPersist((state) => {
@@ -386,7 +411,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     selectedBlocker: state.blockers.some((group) => group.id === state.selectedBlocker?.groupId && group.regions?.length !== 0) ? state.selectedBlocker : null,
     blockerAreaSelectionId: null, blockers: state.blockers.filter((blocker) => blocker.regions?.length !== 0),
   })),
-  restoreProjectState: (projectState) => {
+  restoreProjectState: (projectState, saved) => {
     const restored = projectState ?? createDefaultLeakPreviewProjectState()
     set({
       ...structuredClone(restored),
@@ -398,17 +423,18 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,
-      result: null,
-      points: [],
-      candidates: [],
-      highlight: null,
-      selectedCandidateId: null,
+      result: saved?.result ?? null,
+      resultRestored: Boolean(saved),
+      points: saved?.points ?? [],
+      candidates: saved?.candidates ?? [],
+      highlight: saved?.highlight ?? null,
+      selectedCandidateId: saved?.selectedCandidateId ?? null,
       candidateRevealRequest: null,
       ignoreAreaSelectionArmed: false,
       activeIgnoreAreaId: null,
       blockerAreaSelectionId: null,
       selectedBlocker: null,
-      runSignature: null,
+      runSignature: saved?.inputSignature ?? null,
     })
   },
   clear: () => set({
@@ -425,6 +451,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     directions: ['neg_z'],
     jobId: null,
     result: null,
+    resultRestored: false,
     points: [],
     candidates: [],
     visualizationVisible: true,
@@ -445,6 +472,32 @@ const store = createStore<LeakPreviewState>()((set, get) => {
 
 export function snapshotLeakPreviewProjectState(): LeakPreviewProjectState {
   return projectStateFromStore(store.getState())
+}
+
+function rebindSignature(signature: string | null, sceneToken: string | null): string | null {
+  if (!signature) return null
+  try {
+    return JSON.stringify({ ...JSON.parse(signature), sceneToken })
+  } catch {
+    return null
+  }
+}
+
+function savedDetection(state: LeakPreviewState): SavedLeakPreviewResult | null {
+  if (!state.result) return null
+  return {
+    format: 'leak-preview-result.v1',
+    result: state.result,
+    points: state.points,
+    candidates: state.candidates,
+    selectedCandidateId: state.selectedCandidateId,
+    highlight: state.highlight,
+    inputSignature: rebindSignature(state.runSignature, null),
+  }
+}
+
+export function snapshotLeakPreviewResult(): SavedLeakPreviewResult | null {
+  return savedDetection(store.getState())
 }
 
 export function useLeakPreviewStore<T>(selector: (state: LeakPreviewState) => T): T {

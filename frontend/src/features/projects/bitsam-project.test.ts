@@ -5,6 +5,7 @@ import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
 import { createWorkspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
+import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 
 import {
   BitsamProjectError,
@@ -53,6 +54,58 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('preserves hemisphere settings and grouped representative paths and rejects corrupt paths', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.addCadCase({ path: 'hemisphere.step', displayName: 'Hemisphere' })
+    const settings = createDefaultLeakPreviewProjectState()
+    settings.observer = { ...settings.observer!, enabled: true, coverage: 'hemisphere', step_deg: 15 }
+    const saved = createSavedLeakPreviewFixture()
+    saved.candidates[0].representativePath = [[0,0,0],[1,2,3]]
+    saved.candidates[0].groupedCount = 4
+    const project = createBitsamProject(createSceneFixture(), store.getState(), new Date(), null, settings, saved)
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.leak_preview?.observer).toMatchObject({ coverage: 'hemisphere', step_deg: 15 })
+    expect(restored.preview_result?.candidates[0]).toMatchObject({ groupedCount: 4, representativePath: [[0,0,0],[1,2,3]] })
+    const corrupt = JSON.parse(serializeBitsamProject(project))
+    corrupt.preview_result.candidates[0].representativePath = [[0,0,0],[1,2]]
+    expect(() => parseBitsamProject(JSON.stringify(corrupt))).toThrow('손상')
+  })
+
+  it('saves Preview results independently of precision results, including partial evidence and candidate deletion', () => {
+    const store = createWorkspaceStore()
+    store.getState().actions.addCadCase({ path: 'preview.step', displayName: 'Preview' })
+    const saved = createSavedLeakPreviewFixture()
+    saved.result.metrics._termination_summary = { stopped_early: true }
+    saved.result.metrics._observer_probe_summary = { complete: false, stopped: true,
+      views: [{ horizontal_deg: 80, vertical_deg: 20, direct_count: 4, reflected_count: 2 }] }
+    saved.result.stored_paths = createRayTraceResultFixture().stored_paths
+    const deleted = saved.candidates[0].id
+    saved.candidates = saved.candidates.filter((candidate) => candidate.id !== deleted)
+    saved.points = saved.points.filter((point) => point.candidateId !== deleted)
+    saved.selectedCandidateId = saved.candidates[0].id
+    const settings = { ...createDefaultLeakPreviewProjectState(), detectionMode: 'planar' as const }
+    const project = createBitsamProject(createSceneFixture(), store.getState(), new Date(), null, settings, saved)
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.analysis_result).toBeUndefined()
+    expect(restored.preview_result).toEqual(saved)
+    expect(project.preview_result).not.toBe(saved)
+    expect(restored.preview_result?.result.metrics._termination_summary).toEqual({ stopped_early: true })
+    expect(restored.preview_result?.result.stored_paths).toEqual(saved.result.stored_paths)
+    const damaged = JSON.parse(serializeBitsamProject(project))
+    damaged.preview_result.points[0].position = [1,2]
+    expect(() => parseBitsamProject(JSON.stringify(damaged))).toThrow('손상')
+    delete damaged.preview_result
+    expect(parseBitsamProject(JSON.stringify(damaged)).preview_result).toBeUndefined()
+    const resaved = createBitsamProjectFromLoadedProject(restored, store.getState(), new Date(), null, settings, null)
+    expect(resaved.preview_result).toBeUndefined()
+    const caseId = store.getState().activeCadCaseId!
+    store.getState().actions.setCadCaseLeakPreviewState(caseId, settings)
+    store.getState().actions.setCadCaseLeakPreviewResult(caseId, saved)
+    const fromCase = parseBitsamProject(serializeBitsamProject(createBitsamProject(createSceneFixture(), store.getState())))
+    expect(fromCase.preview_result).toEqual(saved)
+    expect(fromCase.leak_preview).toEqual(settings)
+  })
+
   it('round-trips full detail settings under a version older builds cannot silently reinterpret', () => {
     const { project } = createProjectFixture()
     const preview = createDefaultLeakPreviewProjectState()

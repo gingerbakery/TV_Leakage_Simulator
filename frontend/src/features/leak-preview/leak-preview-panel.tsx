@@ -38,7 +38,7 @@ import {
   type LeakPreviewDirection,
   type LeakPreviewQuality,
 } from './leak-preview-model'
-import { useLeakPreviewStore } from './leak-preview-store'
+import { leakPreviewStore, useLeakPreviewStore } from './leak-preview-store'
 
 interface LeakPreviewPanelProps {
   scene?: ScenePayload
@@ -113,12 +113,14 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const sourceBodyFaceCount = useLeakPreviewStore((state) => state.sourceBodyFaceCount)
   const migrateAllowedAreas = useLeakPreviewStore((state) => state.migrateAllowedAreas)
   const ensureScene = useLeakPreviewStore((state) => state.ensureScene)
+  const boundSceneToken = useLeakPreviewStore((state) => state.sceneToken)
   const rebindSceneToken = useLeakPreviewStore((state) => state.rebindSceneToken)
   const detectionMode = useLeakPreviewStore((state) => state.detectionMode)
   const observer = useLeakPreviewStore((state) => state.observer)
   const setObserver = useLeakPreviewStore((state) => state.setObserver)
   const setDetectionMode = useLeakPreviewStore((state) => state.setDetectionMode)
   const previewResult = useLeakPreviewStore((state) => state.result)
+  const resultRestored = useLeakPreviewStore((state) => state.resultRestored)
   const observerSummary = previewResult ? observerProbeSummary(previewResult) : null
   const angularSummary = previewResult ? escapeDirectionSummary(previewResult) : null
   const quality = useLeakPreviewStore((state) => state.quality)
@@ -172,8 +174,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   useEffect(() => { setCandidatePage(0) }, [previewResult?.run_id])
 
   useEffect(() => {
-    if (scene) { ensureScene(scene.metadata.scene_token); migrateAllowedAreas() }
-  }, [ensureScene, migrateAllowedAreas, scene])
+    if (scene) ensureScene(scene.metadata.scene_token)
+  }, [ensureScene, scene, boundSceneToken, runSignature])
+
+  useEffect(() => {
+    if (scene) migrateAllowedAreas()
+  }, [migrateAllowedAreas, scene])
 
   const isRunning = startMutation.isPending || job?.status === 'queued' || job?.status === 'running'
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
@@ -267,10 +273,16 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }, [job])
 
   useEffect(() => {
-    if (!runSignature || runSignature === previewInputSignature) return
+    // ensureScene above may have just rebound saved evidence to a new token.
+    // Read that current signature rather than the pre-effect render snapshot.
+    if (!scene) return
+    const current = leakPreviewStore.getState()
+    if (current.sceneToken !== scene.metadata.scene_token) return
+    const currentSignature = current.runSignature
+    if (!currentSignature || currentSignature === previewInputSignature) return
     clearDetection()
     setMessage('Preview 재실행 필요')
-  }, [clearDetection, previewInputSignature, runSignature])
+  }, [clearDetection, previewInputSignature, runSignature, scene])
 
   useEffect(() => {
     if (job?.status !== 'failed') return
@@ -496,6 +508,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         <div className="flex items-center gap-2 text-sm font-semibold text-sky-900 dark:text-sky-100">
           <Lightbulb className="size-4 text-amber-500" />
           Whole Set Lighting Preview
+          <HelpTooltip label="Preview 결과 저장 도움말">프로젝트 저장 시 Preview 결과·검출점·후보 목록·각도별 집계와 선택·표시 상태를 함께 저장합니다. 삭제한 후보도 그대로 유지합니다. 다시 열거나 Case를 전환하면 결과를 복원하며 실행 중 작업은 재개하지 않습니다. 광원·재질·형상 등 검사 조건이 달라지면 재실행이 필요합니다.</HelpTooltip>
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           빛샘 Risk 영역 탐색 · ROI/Receiver 자동 생성
@@ -628,13 +641,14 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <label className="flex items-center gap-1 text-xs"><input aria-label="시야각 역추적 사용" type="checkbox" checked={observer.enabled} disabled={isRunning} onChange={(event) => setObserver({ enabled: event.currentTarget.checked, ...(!event.currentTarget.checked ? { search_mode: 'preview' as const } : {}) })} />ON</label>
         </div>
         {observer.enabled ? <>
+          <div className="block space-y-1 text-xs"><span className="flex items-center gap-1">각도 영역<HelpTooltip label="180도 전체 영역 도움말">선택한 도면 기준 방향을 중심으로 좌우 −90°~+90°, 상하 −90°~+90°의 반구를 검사합니다. 극점은 한 번만 검사합니다. 각도 간격 이하로 균등 분할하며 기본 간격은 15°입니다. 연속된 모든 각도를 검사하는 것은 아니므로 간격 사이의 좁은 빛샘은 놓칠 수 있습니다.</HelpTooltip></span><select aria-label="각도 영역" className="h-8 w-full rounded border border-border bg-background px-2" disabled={isRunning} value={observer.coverage ?? 'local'} onChange={(event) => setObserver({ coverage: event.currentTarget.value as 'local' | 'hemisphere', step_deg: event.currentTarget.value === 'hemisphere' ? 15 : 1 })}><option value="local">지정 각도 주변</option><option value="hemisphere">180° 전체 영역</option></select></div>
           <div className="grid grid-cols-2 gap-2">
             {([
               ['horizontal_deg', '좌우 시야각 (°)', -89.9, 89.9, .1],
               ['vertical_deg', '상하 시야각 (°)', -89.9, 89.9, .1],
               ['range_deg', '주변 범위 (±°)', 0, 10, .1],
-              ['step_deg', '각도 간격 (°)', .1, 10, .1],
-            ] as const).map(([key, label, min, max, step]) => <label key={key} className="space-y-1 text-xs">
+              ['step_deg', '각도 간격 (°)', .1, 90, .1],
+            ] as const).filter(([key]) => observer.coverage !== 'hemisphere' || key === 'step_deg').map(([key, label, min, max, step]) => <label key={key} className="space-y-1 text-xs">
               <span>{label}</span><NumberInput aria-label={label} className="h-8 w-full rounded border border-border bg-background px-2" value={observer[key]} min={min} max={max} step={step} disabled={isRunning}
                 onValueChange={(value) => setObserver({ [key]: Math.max(min, Math.min(max, value)) })} />
             </label>)}
@@ -643,7 +657,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <span className="flex items-center gap-1 text-xs font-medium">검사 수준<HelpTooltip label="역추적 검사 수준 도움말">각도 수와 광원 수에 맞춰 해상도·셀 반복을 자동 배분합니다. 빠르게는 위치 탐색, 기본은 일반 확인, 세밀하게는 추가 탐색용입니다. 등급은 정확도 보장이 아니며 미검출은 빛샘 없음의 판정이 아닙니다. 각도 간격은 임의로 바꾸지 않습니다.</HelpTooltip></span>
             <div className="grid grid-cols-3 gap-1">{([['fast', '빠르게'], ['balanced', '기본'], ['fine', '세밀하게']] as const).map(([sampling, label]) => <Button key={sampling} size="sm" variant={(observer.sampling ?? 'manual') === sampling ? 'default' : 'outline'} aria-pressed={(observer.sampling ?? 'manual') === sampling} disabled={isRunning} onClick={() => setObserver({ sampling })}>{label}</Button>)}</div>
           </div>}
-          {!observerPlan.error ? <div className="text-xs text-muted-foreground">{observerPlan.fullDetail ? '전체 정밀 검색' : observer.sampling && observer.sampling !== 'manual' ? '자동 배분' : '직접 설정'} · {observerPlan.views}방향 · 예상 표본 {observerPlan.plannedCount.toLocaleString()}개</div> : <div className="space-y-1"><div role="alert" className="text-xs text-amber-700 dark:text-amber-400">{observerPlan.error}</div>{observerPlan.views > 121 ? <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ step_deg: observerPlan.suggestedStep })}>간격 자동 조정 · {observerPlan.suggestedStep}°</Button> : null}</div>}
+          {!observerPlan.error ? <div className="text-xs text-muted-foreground">{observerPlan.fullDetail ? '전체 정밀 검색' : observer.sampling && observer.sampling !== 'manual' ? '자동 배분' : '직접 설정'} · {observerPlan.views}방향 · 예상 표본 {observerPlan.plannedCount.toLocaleString()}개</div> : <div className="space-y-1"><div role="alert" className="text-xs text-amber-700 dark:text-amber-400">{observerPlan.error}</div>{(observerPlan.views > 121 || observer.coverage === 'hemisphere') ? <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ step_deg: observerPlan.suggestedStep })}>간격 자동 조정 · {observerPlan.suggestedStep}°</Button> : null}</div>}
           {!observerPlan.fullDetail ? <details className="rounded-md border border-border p-2">
             <summary className="cursor-pointer text-xs font-medium">고급 설정</summary>
             <div className="mt-2 space-y-2">
@@ -651,8 +665,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               <div className="grid grid-cols-2 gap-2">{([['resolution', '해상도 / 축', 8, 256], ['samples_per_cell', '셀 반복', 1, 16]] as const).map(([key, label, min, max]) => <label key={key} className="space-y-1 text-xs"><span>{label}</span><NumberInput aria-label={label} className="h-8 w-full rounded border border-border bg-background px-2" value={observerPlan[key]} min={min} max={max} disabled={isRunning || (observer.sampling ?? 'manual') !== 'manual'} onValueChange={(value) => setObserver({ [key]: Math.round(Math.max(min, Math.min(max, value))) })} /></label>)}</div>
             </div>
           </details> : <div className="text-xs">정밀 CAD · 최대 반사 {rayTraceConfig.max_depth}회 · 실제 지정 재질</div>}
-          <div className="flex gap-1"><Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ horizontal_deg: 85, vertical_deg: 0, range_deg: 4, step_deg: 2 })}>좌우 극각</Button>
-            <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ horizontal_deg: 0, vertical_deg: 85, range_deg: 4, step_deg: 2 })}>상하 극각</Button></div>
+          <div className="flex gap-1"><Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ coverage: 'local', horizontal_deg: 85, vertical_deg: 0, range_deg: 4, step_deg: 2 })}>좌우 극각</Button>
+            <Button size="sm" variant="outline" disabled={isRunning} onClick={() => setObserver({ coverage: 'local', horizontal_deg: 0, vertical_deg: 85, range_deg: 4, step_deg: 2 })}>상하 극각</Button></div>
           <div className="text-xs text-muted-foreground">역추적 {rayTraceConfig.compute_backend === 'gpu_cuda' ? 'NVIDIA GPU 요청' : 'CPU'} · 직광 / 반사광</div>
         </> : null}
       </section> : null}
@@ -731,6 +745,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         setPickingTarget(null)
       }} />
 
+      {previewResult && resultRestored ? <div role="status" className="text-xs text-muted-foreground">저장된 Preview 결과</div> : null}
       {previewResult ? <ComputeExecutionStatus configuredBackend={previewResult.config.compute_backend ?? 'cpu'}
         performance={(previewResult.metrics._performance_summary ?? {}) as Record<string, unknown>} /> : null}
       {observerSummary ? <section className="space-y-2 rounded-lg border border-border p-3">
@@ -759,7 +774,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               aria-controls={candidateListId} onClick={() => setCandidatesCollapsed(!candidatesCollapsed)}>
               {candidatesCollapsed ? <Plus className="size-3" /> : <Minus className="size-3" />}Leak Candidates · {candidates.length}
             </Button>
-            <HelpTooltip label="후보 도움말">Viewer의 Leak 점을 클릭하면 해당 후보를 강조하고 목록을 펼쳐 이동합니다. 목록에서 후보를 선택하면 해당 점을 강조합니다. 역추적 후보의 시야각 Receiver 생성은 검출 당시의 기준 축·좌우·상하 각도로 Receiver만 만들고 정밀해석 설정을 엽니다. 다른 수광면이 Ray를 먼저 받지 않도록 해당 Receiver만 ON으로 전환하며 기존 항목은 보존합니다. 처음에는 단일 각도이며 주변 범위·간격은 Receiver 편집에서 변경합니다. ROI·광원·재질·샘플링 설정은 변경하지 않습니다. 삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
+            <HelpTooltip label="후보 도움말">Viewer의 Leak 점을 클릭하면 해당 후보를 강조하고 목록을 펼쳐 이동합니다. 선택 시 주황 화살표는 검출된 대표 Ray의 광원→관찰자 경로, 하늘색 화살표는 관찰자 방향입니다. 인접 위치와 유사한 광원·반사점 경로의 후보를 묶으며 대표 각도로 Receiver를 생성합니다. 이전 결과에 실제 경로가 없으면 대표 경로 화살표는 표시하지 않습니다. 목록에서 후보를 선택하면 해당 점을 강조합니다. 역추적 후보의 시야각 Receiver 생성은 검출 당시의 기준 축·좌우·상하 각도로 Receiver만 만들고 정밀해석 설정을 엽니다. 다른 수광면이 Ray를 먼저 받지 않도록 해당 Receiver만 ON으로 전환하며 기존 항목은 보존합니다. 처음에는 단일 각도이며 주변 범위·간격은 Receiver 편집에서 변경합니다. ROI·광원·재질·샘플링 설정은 변경하지 않습니다. 삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
           </div>
           <div id={candidateListId} hidden={candidatesCollapsed} className="space-y-2">{candidates.slice(safeCandidatePage * 100, (safeCandidatePage + 1) * 100).map((candidate, pageIndex) => {
             const index = safeCandidatePage * 100 + pageIndex
@@ -778,7 +793,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               >
                 <div className="flex items-center justify-between gap-2">
                   <Button size="icon-xs" variant="ghost" aria-label={`Delete Candidate ${index + 1}`} onClick={(event) => { event.stopPropagation(); removeCandidate(candidate.id) }}><Trash2 /></Button>
-                  <strong className="text-sm">Candidate {String(index + 1).padStart(2, '0')} · {candidate.label}</strong>
+                  <strong className="text-sm">Candidate {String(index + 1).padStart(2, '0')} · {candidate.label}{(candidate.groupedCount ?? 1) > 1 ? ` · ${candidate.groupedCount}개 묶음` : ''}</strong>
                   <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs font-semibold text-orange-700 dark:text-orange-300">
                     {candidate.observerEvidence ? '경로' : 'Risk'} Priority · {riskPriority(candidate.relativeStrength)}
                   </span>

@@ -1,3 +1,4 @@
+import { leakPreviewArrowSegments } from './leak-preview-paths'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewCandidate } from './leak-preview-picking'
 import { FullViewPipFrame } from './full-view-pip-frame'
@@ -12,6 +13,7 @@ import { applyRayObjectOcclusion } from './ray-object-display'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
+  ArrowHelper,
   AdditiveBlending,
   Box3,
   BoxGeometry,
@@ -4015,6 +4017,27 @@ export function ThreeViewerCanvas({
       (candidate) => candidate.id === selectedLeakCandidateId,
     )
     if (selected && visibleLeakPreviewPoints.some((point) => point.candidateId === selected.id)) {
+      const addArrow = (start: number[], end: number[], color: number, name: string) => {
+        const origin = new Vector3(...start)
+        const delta = new Vector3(...end).sub(origin)
+        const length = delta.length()
+        if (length < 1e-8) return
+        const arrow = new ArrowHelper(delta.normalize(), origin, length, color, Math.min(length * .25, markerSize * 3), Math.min(length * .12, markerSize * 1.5))
+        arrow.name = name
+        arrow.traverse((object) => {
+          object.renderOrder = 230
+          const material = (object as Mesh).material
+          for (const item of Array.isArray(material) ? material : material ? [material] : []) {
+            item.depthTest = false; item.depthWrite = false; item.toneMapped = false
+          }
+        })
+        runtime.leakPreviewRoot.add(arrow)
+      }
+      const length = Math.max(markerSize * 10, Math.max(...getLeakPreviewBounds(scene, transformRules).size) * .12)
+      for (const segment of leakPreviewArrowSegments(selected, length)) {
+        addArrow(segment.start, segment.end, segment.kind === 'ray' ? 0xff7a00 : 0x38bdf8,
+          segment.kind === 'ray' ? 'leak-preview-representative-ray' : 'leak-preview-observer-direction')
+      }
       const clip = selected.clipBox
       const sizeX = Math.max(clip.xMax - clip.xMin, markerSize)
       const sizeY = Math.max(clip.yMax - clip.yMin, markerSize)

@@ -1,12 +1,63 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { leakPreviewStore, snapshotLeakPreviewProjectState } from './leak-preview-store'
+import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewResult } from './leak-preview-store'
+import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { isLeakPreviewPointHighlighted, createEscapeEnclosureReceivers, detectLeakPreviewCandidates } from './leak-preview-model'
-import { workspaceStore } from '@/stores'
+import { snapshotCadCasesForRayTrace, workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
+  it('persists evidence and candidate deletions without cloning the completed result on selection', () => {
+    workspaceStore.getState().actions.addCadCase({ path: 'saved.step', displayName: 'Saved' })
+    const fixture = createSavedLeakPreviewFixture()
+    leakPreviewStore.getState().ensureScene('old-token')
+    leakPreviewStore.getState().setSourceFaceIds([0])
+    leakPreviewStore.getState().setRunSignature(JSON.stringify({ sceneToken: 'old-token', sourceFaceIds: [0] }))
+    leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates)
+    const clone = vi.spyOn(globalThis, 'structuredClone')
+    leakPreviewStore.getState().selectCandidate(fixture.candidates[1].id)
+    const saved = workspaceStore.getState().cadCases[0].leakPreviewResult!
+    expect(saved.result).toBe(fixture.result)
+    expect(saved.selectedCandidateId).toBe(fixture.candidates[1].id)
+    expect(clone.mock.calls.some(([value]) => value === fixture.result)).toBe(false)
+    clone.mockRestore()
+    leakPreviewStore.getState().removeCandidate(fixture.candidates[0].id)
+    const reduced = snapshotLeakPreviewResult()!
+    expect(reduced.candidates.map((candidate) => candidate.id)).toEqual([fixture.candidates[1].id])
+    expect(reduced.points.every((point) => point.candidateId === fixture.candidates[1].id)).toBe(true)
+    expect(JSON.parse(reduced.inputSignature!).sceneToken).toBeNull()
+    const settings = snapshotLeakPreviewProjectState()
+    leakPreviewStore.getState().restoreProjectState(settings, reduced)
+    leakPreviewStore.getState().ensureScene('new-token')
+    expect(leakPreviewStore.getState().jobId).toBeNull()
+    expect(leakPreviewStore.getState().resultRestored).toBe(true)
+    expect(leakPreviewStore.getState().candidates).toEqual(reduced.candidates)
+    expect(JSON.parse(leakPreviewStore.getState().runSignature!).sceneToken).toBe('new-token')
+    leakPreviewStore.getState().clearDetection()
+    expect(workspaceStore.getState().cadCases[0].leakPreviewResult).toBeUndefined()
+  })
+
+  it('keeps Preview evidence separate between Cases and leaves execution inputs unchanged', () => {
+    const actions = workspaceStore.getState().actions
+    actions.addCadCase({ path: 'a.step', displayName: 'A' })
+    const firstId = workspaceStore.getState().activeCadCaseId!
+    const fixture = createSavedLeakPreviewFixture()
+    leakPreviewStore.getState().setSourceFaceIds([0])
+    const inputs = snapshotCadCasesForRayTrace(workspaceStore.getState(), [firstId])
+    leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates)
+    expect(snapshotCadCasesForRayTrace(workspaceStore.getState(), [firstId])).toEqual(inputs)
+    const first = workspaceStore.getState().cadCases.find((item) => item.caseId === firstId)!
+    actions.addCadCase({ path: 'b.step', displayName: 'B' })
+    leakPreviewStore.getState().restoreProjectState()
+    expect(snapshotLeakPreviewResult()).toBeNull()
+    expect(workspaceStore.getState().cadCases.find((item) => item.caseId === firstId)?.leakPreviewResult).toBe(first.leakPreviewResult)
+    actions.setActiveCadCase(firstId)
+    leakPreviewStore.getState().restoreProjectState(first.leakPreviewState, first.leakPreviewResult)
+    expect(leakPreviewStore.getState().points).toEqual(fixture.points)
+    expect(leakPreviewStore.getState().result).toBe(fixture.result)
+  })
+
   it('deletes only the selected candidate and its points, including overlapping ROI bounds', () => {
     const scene = createSceneFixture()
     const result = createRayTraceResultFixture()

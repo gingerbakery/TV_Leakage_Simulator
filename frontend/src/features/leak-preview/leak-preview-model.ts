@@ -75,6 +75,7 @@ export interface LeakPreviewBlocker {
  * they are derived/transient state and must never be replayed as active work.
  */
 export interface LeakPreviewObserverSettings {
+  coverage?: 'local' | 'hemisphere'
   search_mode?: 'preview' | 'full_detail'
   spacing_mm?: number
   sampling?: ObserverSamplingMode
@@ -127,6 +128,8 @@ export interface LeakPreviewPoint {
 }
 
 export interface LeakPreviewCandidate {
+  representativePath?: Vec3[]
+  groupedCount?: number
   sourceCandidateIds?: string[]
   id: string
   label: string
@@ -153,6 +156,17 @@ export interface LeakPreviewCandidate {
 export interface LeakPreviewDetection {
   points: LeakPreviewPoint[]
   candidates: LeakPreviewCandidate[]
+}
+
+/** Completed/partial evidence only; never contains a live job or server token. */
+export interface SavedLeakPreviewResult {
+  format: 'leak-preview-result.v1'
+  result: RayTraceResult
+  points: LeakPreviewPoint[]
+  candidates: LeakPreviewCandidate[]
+  selectedCandidateId: string | null
+  highlight: LeakPreviewHighlight | null
+  inputSignature: string | null
 }
 
 export interface BuildLeakPreviewRequestOptions {
@@ -714,7 +728,7 @@ export function buildLeakPreviewRequest({
       if (plan.error) throw new Error(`역추적 탐색 한도 초과: ${plan.error}`)
       const { enabled: _enabled, sampling: _sampling, ...rawSettings } = observer
       const settings = { ...rawSettings, ...(fullDetail ? { spacing_mm: observer.spacing_mm ?? 2 } : {}), resolution: plan.resolution, samples_per_cell: plan.samples_per_cell }
-      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
+      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
         const value = settings[key]
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
       }
@@ -916,6 +930,12 @@ function mergeCornerCandidates(
     target.peakFluxLumen = Math.max(target.peakFluxLumen, candidate.peakFluxLumen)
     target.sourceCandidateIds = [...(target.sourceCandidateIds ?? [target.id]), ...(candidate.sourceCandidateIds ?? [candidate.id])]
     target.cellCount += candidate.cellCount
+    target.fluxLumen += candidate.fluxLumen
+    target.peakFluxLumen = Math.max(target.peakFluxLumen, candidate.peakFluxLumen)
+    if (target.observerEvidence && candidate.observerEvidence) {
+      target.observerEvidence = { ...target.observerEvidence, directCount: target.observerEvidence.directCount + candidate.observerEvidence.directCount,
+        reflectedCount: target.observerEvidence.reflectedCount + candidate.observerEvidence.reflectedCount }
+    }
     const combinedSampleCount = target.sampledPathCount + candidate.sampledPathCount
     target.meanExitAngleDeg = combinedSampleCount > 0
       ? (
@@ -1116,6 +1136,7 @@ interface ObserverProbeView {
   direction: Vec3; observer_center: Vec3; u_axis: Vec3; v_axis: Vec3; spacing_mm: [number, number]
 }
 interface ObserverProbeCell {
+  representative_path?: Vec3[]
   view_index: number; row: number; column: number; position: Vec3
   direct_count: number; reflected_count: number; min_depth: number; max_depth: number
 }
@@ -1143,7 +1164,7 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
     ![summary.attempted_count, summary.planned_count, summary.direct_count, summary.reflected_count, summary.excluded_count, summary.depth_limited_count].every(count) ||
     summary.attempted_count > summary.planned_count || summary.direct_count + summary.reflected_count + summary.excluded_count > summary.attempted_count ||
     typeof summary.complete !== 'boolean' || typeof summary.stopped !== 'boolean' || summary.complete === summary.stopped ||
-    !Array.isArray(summary.views) || summary.views.length > 121 || !Array.isArray(summary.cells)) return null
+    !Array.isArray(summary.views) || summary.views.length > (summary.settings.coverage === 'hemisphere' ? 2048 : 121) || !Array.isArray(summary.cells)) return null
   if (summary.execution_backend === 'gpu_cuda' && (summary.requested_backend !== 'gpu_cuda' || summary.sample_contract !== 'observer_per_ray_seed_batch_v1' || !summary.performance ||
     !['gpu_active', 'gpu_mixed'].includes(String(summary.performance.compute_execution_state)) ||
     !(Number(summary.performance.gpu_cuda_gpu_success_count) > 0))) return null
@@ -1151,6 +1172,7 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
     (view.grid_resolution !== undefined && (!vector(view.grid_resolution, 2) || !view.grid_resolution.every((n) => count(n) && n > 0))) ||
     !Number.isFinite(view.horizontal_deg) || !Number.isFinite(view.vertical_deg) || !count(view.direct_count) || !count(view.reflected_count))) return null
   if (summary.cells.some((cell) => !count(cell.view_index) || cell.view_index >= summary.views.length || !vector(cell.position) ||
+    (cell.representative_path !== undefined && (!Array.isArray(cell.representative_path) || cell.representative_path.length < 2 || !cell.representative_path.every((p) => vector(p)))) ||
     !count(cell.row) || !count(cell.column) || cell.row >= (summary.views[cell.view_index].grid_resolution?.[1] ?? summary.settings.resolution) || cell.column >= (summary.views[cell.view_index].grid_resolution?.[0] ?? summary.settings.resolution) ||
     !count(cell.direct_count) || !count(cell.reflected_count) || cell.direct_count + cell.reflected_count <= 0 ||
     !count(cell.min_depth) || !count(cell.max_depth) || cell.min_depth > cell.max_depth)) return null
@@ -1188,6 +1210,7 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const columns = cluster.map((cell) => cell.column), rows = cluster.map((cell) => cell.row)
       const angle = Math.acos(Math.max(-1, Math.min(1, dot(view.direction, directionVector(result.metrics._escape_direction_summary))))) * 180 / Math.PI
       candidates.push({ id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
+        representativePath: evidence.find((cell) => cell.representative_path)?.representative_path,
         receiverId: receiver.receiver_id, center, normal: receiver.normal, uAxis: view.u_axis, vAxis: view.v_axis,
         widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0] + 10),
         heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1] + 10),
@@ -1201,7 +1224,45 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       })
     })
   })
-  return { points, candidates }
+  return groupObserverCandidates(points, candidates, Math.max(3, Math.min(15, modelDepth / 18)))
+}
+
+export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: LeakPreviewCandidate[], distance: number): LeakPreviewDetection {
+  const groups: LeakPreviewCandidate[] = []
+  const buckets = new Map<string, LeakPreviewCandidate[]>()
+  const ids = new Map<string, string>()
+  for (const candidate of [...candidates].sort((a, b) => b.sampledPathCount - a.sampledPathCount)) {
+    const cell = candidate.center.map((x) => Math.floor(x / distance))
+    const nearby: LeakPreviewCandidate[] = []
+    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+      nearby.push(...(buckets.get(`${cell[0]+x}:${cell[1]+y}:${cell[2]+z}`) ?? []))
+    }
+    const target = nearby.find((group) => {
+      if (Math.hypot(...subtract(group.center, candidate.center)) > distance) return false
+      const a = group.representativePath?.slice(0, -1), b = candidate.representativePath?.slice(0, -1)
+      if (!a || !b) return false
+      return a.length === b.length && a.every((point, i) => Math.hypot(...subtract(point, b[i])) <= distance)
+    })
+    if (!target) {
+      const group = { ...candidate, groupedCount: 1, sourceCandidateIds: [...(candidate.sourceCandidateIds ?? [candidate.id])] }
+      groups.push(group)
+      const key = cell.join(':')
+      buckets.set(key, [...(buckets.get(key) ?? []), group])
+      ids.set(candidate.id, candidate.id)
+      continue
+    }
+    ids.set(candidate.id, target.id)
+    target.sourceCandidateIds!.push(...(candidate.sourceCandidateIds ?? [candidate.id]))
+    target.groupedCount = (target.groupedCount ?? 1) + 1
+    target.sampledPathCount += candidate.sampledPathCount
+    target.cellCount += candidate.cellCount
+    target.grazingPathCount += candidate.grazingPathCount
+    target.relativeStrength = Math.max(target.relativeStrength, candidate.relativeStrength)
+    target.clipBox = { xMin: Math.min(target.clipBox.xMin, candidate.clipBox.xMin), xMax: Math.max(target.clipBox.xMax, candidate.clipBox.xMax),
+      yMin: Math.min(target.clipBox.yMin, candidate.clipBox.yMin), yMax: Math.max(target.clipBox.yMax, candidate.clipBox.yMax),
+      zMin: Math.min(target.clipBox.zMin ?? 0, candidate.clipBox.zMin ?? 0), zMax: Math.max(target.clipBox.zMax ?? 0, candidate.clipBox.zMax ?? 0) }
+  }
+  return { candidates: groups, points: points.map((point) => ({ ...point, candidateId: ids.get(point.candidateId ?? '') ?? point.candidateId })) }
 }
 
 function directionAxis(raw: unknown): LeakPreviewDirection {
@@ -1346,12 +1407,27 @@ export function detectLeakPreviewCandidates(
     topCandidates.splice(Math.max(0, topCandidates.length - 1), 1, strongestFrontGrazing)
     topCandidates.sort((left, right) => right.relativeStrength - left.relativeStrength)
   }
-  const candidateIds = new Map(topCandidates.flatMap((candidate, index) => (candidate.sourceCandidateIds ?? [candidate.id]).map((id) => [id, `leak-candidate-${index + 1}`] as const)))
+  for (const candidate of topCandidates) {
+    let nearest = Infinity
+    for (const path of result.stored_paths) {
+      const hit = path.at(-1), previous = path.at(-2)
+      if (!hit || !previous || hit.event_type !== 'receiver' || hit.receiver_id !== candidate.receiverId) continue
+      const exit = receiverEnvelopeIntersection(candidate.receiverId, previous.point, hit.point, boundsMinimum, boundsMaximum) ?? previous.point
+      const distance = Math.hypot(...subtract(exit, candidate.center))
+      const clip = candidate.clipBox
+      if (distance >= nearest || exit[0] < clip.xMin || exit[0] > clip.xMax || exit[1] < clip.yMin || exit[1] > clip.yMax ||
+        (!clip.zUnbounded && (exit[2] < (clip.zMin ?? -Infinity) || exit[2] > (clip.zMax ?? Infinity)))) continue
+      nearest = distance
+      candidate.representativePath = path.map((vertex) => vertex.point)
+    }
+  }
+  const groupedForward = groupObserverCandidates([], topCandidates, Math.max(3, Math.min(15, maxDimension * .01))).candidates
+  const candidateIds = new Map(groupedForward.flatMap((candidate, index) => (candidate.sourceCandidateIds ?? [candidate.id]).map((id) => [id, `leak-candidate-${index + 1}`] as const)))
   return {
     points: [...observerDetection.points, ...points.map((point) => ({ ...point, candidateId: point.candidateId ? candidateIds.get(point.candidateId) ?? point.candidateId : undefined }))]
       .sort((left, right) => right.relativeStrength - left.relativeStrength)
       .slice(0, directionalSummary ? undefined : 800),
-    candidates: [...observerDetection.candidates, ...topCandidates.map((candidate, index) => ({
+    candidates: [...observerDetection.candidates, ...groupedForward.map((candidate, index) => ({
       ...candidate,
       id: `leak-candidate-${index + 1}`,
     }))],

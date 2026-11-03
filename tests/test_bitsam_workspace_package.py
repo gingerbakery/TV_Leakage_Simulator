@@ -166,6 +166,22 @@ class BitsamWorkspacePackageTests(unittest.TestCase):
         path, _ = self.runtime.project_export_file(exported["download_url"].split("/")[-1])
         return path
 
+    def test_workspace_preserves_separate_preview_evidence_for_every_case(self) -> None:
+        for index, item in enumerate(self.request["cases"]):
+            item["project"]["preview_result"] = {
+                "format": "leak-preview-result.v1",
+                "result": {"run_id": f"preview-{index}", "metrics": {"observer_count": index + 1}},
+                "points": [{"position": [index, 2, 3], "relativeStrength": .75}],
+                "candidates": [], "selectedCandidateId": None,
+                "highlight": {"kind": "observer", "horizontal": 80, "vertical": 20},
+                "inputSignature": None,
+            }
+        restored = ApiRuntime(self.root / "preview-workspace", scene_loader=scene_fixture).import_project(self.exported_path())
+        self.assertEqual(
+            [item["project"]["preview_result"] for item in restored["cases"]],
+            [item["project"]["preview_result"] for item in self.request["cases"]],
+        )
+
     def test_backend_geometry_signature_matches_browser_contract(self) -> None:
         self.assertEqual(
             scene_geometry_signature(scene_fixture("browser-contract.step")),

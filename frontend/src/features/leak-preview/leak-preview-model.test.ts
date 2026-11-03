@@ -10,6 +10,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 
 import {
   buildLeakPreviewRequest,
+  groupObserverCandidates,
   getLeakPreviewBounds,
   createEscapeEnclosureReceivers,
   escapeDirectionSummary,
@@ -28,6 +29,24 @@ import {
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
+  it('groups nearby identical interior paths across views but preserves distinct reflection routes', () => {
+    const base = detectLeakPreviewCandidates(createSceneFixture(), createRayTraceResultFixture()).candidates[0]
+    const candidates = [
+      { ...base, id: 'a', sourceCandidateIds: undefined, center: [0,0,0] as [number,number,number], representativePath: [[0,0,-5],[0,0,0],[0,0,10]] as [number,number,number][] },
+      { ...base, id: 'b', sourceCandidateIds: undefined, center: [1,0,0] as [number,number,number], representativePath: [[1,0,-5],[1,0,0],[10,0,10]] as [number,number,number][] },
+      { ...base, id: 'c', sourceCandidateIds: undefined, center: [1,0,0] as [number,number,number], representativePath: [[1,0,-5],[20,0,0],[10,0,10]] as [number,number,number][] },
+      { ...base, id: 'd', sourceCandidateIds: undefined, center: [30,0,0] as [number,number,number], representativePath: [[0,0,-5],[0,0,0],[0,0,10]] as [number,number,number][] },
+    ]
+    const points = candidates.map((candidate) => ({ candidateId: candidate.id, position: candidate.center, relativeStrength: 1 }))
+    const grouped = groupObserverCandidates(points, candidates, 3)
+    expect(grouped.candidates).toHaveLength(3)
+    expect(grouped.candidates[0].groupedCount).toBe(2)
+    expect(grouped.candidates[0].sampledPathCount).toBe(base.sampledPathCount * 2)
+    expect(grouped.points.map((point) => point.candidateId)).toEqual(['a','a','c','d'])
+    expect(grouped.candidates[0].representativePath).toEqual(candidates[0].representativePath)
+    expect(candidates[0].sourceCandidateIds).toBeUndefined()
+  })
+
   it('accepts rectangular full-detail result bins and rejects an older server response without the spacing contract', () => {
     const result = createRayTraceResultFixture(), scene = createSceneFixture()
     result.receivers = createEscapeEnclosureReceivers(scene)

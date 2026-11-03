@@ -59,6 +59,21 @@ def trace_request(token):
 
 
 class BitsamPackageTests(unittest.TestCase):
+    def test_preview_evidence_round_trips_without_precision_result_or_live_job(self):
+        self.project.pop("analysis_result")
+        self.project["preview_result"] = {
+            "format": "leak-preview-result.v1",
+            "result": {"run_id": "preview-1", "stored_paths": [],
+                       "metrics": {"_observer_probe_summary": {"complete": False, "stopped": True}}},
+            "points": [{"position": [1.25, 2.5, -3.75], "relativeStrength": .5, "candidateId": "leak-2"}],
+            "candidates": [{"id": "leak-2", "label": "Candidate 02"}],
+            "selectedCandidateId": "leak-2", "highlight": None, "inputSignature": None,
+        }
+        write_package(self.package, self.project, self.source, self.scene, self.scene["mesh"])
+        restored = ApiRuntime(self.root / "preview-evidence", scene_loader=scene_fixture).import_project(self.package)
+        self.assertEqual(restored["project"]["preview_result"], self.project["preview_result"])
+        self.assertNotIn("analysis_result", restored["project"])
+
     def test_full_detail_settings_round_trip_and_require_their_version_tag(self):
         self.project["schema_version"] = "bitsam-project.v1-detail1"
         self.project["leak_preview"] = {"detectionMode": "escape_directions", "observer": {

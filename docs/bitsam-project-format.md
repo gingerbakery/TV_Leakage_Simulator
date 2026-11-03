@@ -45,13 +45,15 @@
 - Component/Face 색상, 사용자 광학 프로파일
 - 지원되는 LT ASCII BSDF 원본 텍스트·파싱 데이터와 연결 ID (`workspace.bsdfAssets`)
 - 선택적 마지막 분석 결과: Receiver grid, 지표, Stored paths
+- Case별 Preview 결과: 검출 포인트, 삭제 상태를 반영한 후보 목록, 각도·방향별 집계,
+  저장된 Ray 경로, 선택 후보 및 하이라이트 (`preview_result`)
 
 ## 저장되지 않는 항목
 
 - 원본 STEP/STP/X_T CAD 파일
 - 서버가 생성한 임시 업로드 경로
 - 현재 선택한 면 또는 부품
-- 실행 중인 Leak Preview 결과·샘플 점·선택 제스처와 팝업 상태
+- 실행 중인 Leak Preview Job과 선택 제스처·팝업 상태
 - 실행 중인 Ray tracing Job ID
 
 CAD의 임시 절대 경로는 저장하지 않는다. BSDF 원본 텍스트는 그대로 보관하므로,
@@ -68,6 +70,12 @@ Leak Preview 조건을 포함한 파일은 내부 설정 스키마를
 `bitsam-project.v1-preview1`로 표시한다. 이 스키마는 BSDF 자산도 함께 담을 수
 있다. 구버전이 Ray Tracing 적용 플래그만 읽고 실제 차광 구조·허용 영역을
 누락하는 일을 막기 위해, 이 확장을 모르는 빌드는 파일을 거부한다.
+
+선택 항목 `preview_result`는 `format: leak-preview-result.v1`로 결과를 보관한다.
+일반 Preview와 전체 정밀 검색 모두 지원하며, 중지 후 반환된 부분 결과도 그대로
+저장한다. 불러올 때 재계산하지 않고 포인트·후보와 선택 상태를 복원한다. 입력 조건을
+바꾸면 기존 결과를 무효화하므로 다시 실행해야 한다. 실행 Job은 재개하지 않는다.
+이 항목이 없는 기존 파일은 설정만 복원한다.
 
 ## 저장과 불러오기
 

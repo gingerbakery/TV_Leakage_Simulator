@@ -46,6 +46,31 @@ def setup(mirror=False, allowed=None):
 
 
 class ObserverProbeTests(TestCase):
+    def test_hemisphere_covers_rim_and_unique_poles(self):
+        trace, run = setup()
+        spec = dict(trace.observer_probe, coverage="hemisphere", step_deg=30)
+        views = validate_settings(spec)
+        self.assertEqual(len(views), 37)
+        self.assertEqual(len(validate_settings(dict(spec, step_deg=15))), 145)
+        directions = [view_direction("neg_z", h, v) for h, v in views]
+        self.assertEqual(len({tuple(round(x, 8) for x in d) for d in directions}), 37)
+        self.assertTrue(all(d[2] <= 1e-10 for d in directions))
+        self.assertIn((0., 0.), views)
+        self.assertIn((0., 0.), validate_settings(dict(spec, step_deg=40)))
+        self.assertIn((-90., 0.), views)
+        self.assertIn((90., 0.), views)
+        with self.assertRaises(ValueError):
+            validate_settings(dict(spec, step_deg=1))
+        for mirror in (False, True):
+            trace, run = setup(mirror)
+            result = run()
+            for cell in result["cells"]:
+                path = cell["representative_path"]
+                self.assertEqual(len(path), cell["min_depth"] + 2)
+                self.assertTrue(all(math.isfinite(x) for p in path for x in p))
+                self.assertAlmostEqual(path[0][2], -5.)
+                self.assertLess(path[-1][2], -10.)
+
     def test_face_emitter_uses_winding_normal_not_reverse_ray_facing_normal(self):
         trace, _ = setup()
         mesh = TriangleMesh()

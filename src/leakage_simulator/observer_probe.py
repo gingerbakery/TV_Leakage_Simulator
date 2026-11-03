@@ -26,13 +26,15 @@ def validate_settings(spec):
     if not isinstance(spec, dict):
         raise ValueError("Observer settings must be an object")
     for key, lo, hi in (("horizontal_deg", -89.9, 89.9), ("vertical_deg", -89.9, 89.9),
-                        ("range_deg", 0, 10), ("step_deg", .1, 10),
+                        ("range_deg", 0, 10), ("step_deg", .1, 90),
                         ("resolution", 8, 256), ("samples_per_cell", 1, 16)):
         value = spec.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not lo <= value <= hi:
             raise ValueError(f"Invalid observer {key}: expected {lo}..{hi}")
         if key in ("resolution", "samples_per_cell") and int(value) != value:
             raise ValueError(f"Observer {key} must be an integer")
+    if spec.get("coverage", "local") not in ("local", "hemisphere"):
+        raise ValueError("Invalid observer coverage")
     mode = spec.get("search_mode", "preview")
     if mode not in ("preview", "full_detail"):
         raise ValueError("Invalid observer search mode")
@@ -41,13 +43,20 @@ def validate_settings(spec):
         if isinstance(spacing, bool) or not isinstance(spacing, (int, float)) or not math.isfinite(spacing) or not .1 <= spacing <= 100:
             raise ValueError("Invalid observer spacing_mm: expected 0.1..100")
     views = angles(spec)
-    if len(views) > 121 or (mode != "full_detail" and len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * 2 > 500_000):
+    if len(views) > (2048 if spec.get("coverage") == "hemisphere" else 121) or (mode != "full_detail" and len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * 2 > 500_000):
         raise ValueError("Observer budget exceeded: reduce angle range, resolution or samples")
     return views
 
 
 def angles(spec):
     radius, step = spec["range_deg"], spec["step_deg"]
+    if spec.get("coverage") == "hemisphere":
+        # Spherical latitude/longitude on the selected drawing axis. Unique poles.
+        n = 2 * math.ceil(90 / step)
+        if n > 45:
+            raise ValueError("Observer budget exceeded: increase hemisphere angle step")
+        values = [round(-90 + 180*i/n, 8) for i in range(n+1)]
+        return [(0., -90.)] + [(h, v) for h in values for v in values[1:-1]] + [(0., 90.)]
     # Always include the requested direction and range endpoints.
     offsets = {0., -radius, radius}
     offsets.update(i * step for i in range(-int(radius / step), int(radius / step) + 1))
@@ -311,7 +320,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                             closest, source_hit = t, point
                 if source_hit is not None:
                     if supported(vertices, source_hit, launch):
-                        found = (first_point or source_hit, depth)
+                        found = (first_point or source_hit, depth, [source_hit] + [v[0] for v in reversed(vertices)] + [launch])
                     break
                 if hit is None:
                     break
@@ -320,7 +329,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                     # Hit normals face the reverse ray; emission uses the CAD
                     # winding normal, exactly like forward Face sampling.
                     if emission_supported(emitter, hit.point, mesh.normal(hit.face_index), vec_mul(direction, -1)) and supported(vertices, hit.point, launch):
-                        found = (first_point, depth)
+                        found = (first_point, depth, [hit.point] + [v[0] for v in reversed(vertices)] + [launch])
                         break
                 if found is not None:
                     break
@@ -338,7 +347,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                     block = yield (vec_add(hit.point, vec_mul(toward_source, epsilon)), toward_source, epsilon, source_distance-2*epsilon)
                     proposal = vertices + [(hit.point, hit.normal, profile)]
                     if block is None and emission_supported(emitter, point, normal, vec_mul(toward_source, -1)) and supported(proposal, point, launch):
-                        found = (first_point, depth+1)
+                        found = (first_point, depth+1, [point] + [v[0] for v in reversed(proposal)] + [launch])
                         break
                 normal = hit.normal if vec_dot(direction, hit.normal) < 0 else vec_mul(hit.normal, -1)
                 if not profile.bsdf_asset_id and (profile.reflectance <= 0 or profile.scatter_model == "none"):
@@ -373,14 +382,14 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 found, row, column, launch = item
                 if found is None:
                     continue
-                point, depth = found
+                point, depth, path = found
                 if collector._allowed(point, outward, launch):
                     excluded += 1
                     continue
                 row, column = row//stride, column//stride
                 key = (row, column)
                 cell = view_cells.setdefault(key, {"view_index": view_index, "row": row, "column": column, "position_sum": [0.,0.,0.], "direct_count": 0, "reflected_count": 0,
-                                                   "min_depth": depth, "max_depth": depth})
+                                                   "min_depth": depth, "max_depth": depth, "representative_path": path})
                 kind = "direct_count" if depth == 0 else "reflected_count"
                 cell[kind] += 1
                 counts[kind] += 1

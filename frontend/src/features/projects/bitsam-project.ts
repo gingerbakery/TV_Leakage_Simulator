@@ -28,6 +28,7 @@ import type {
   LeakPreviewBlocker,
   LeakPreviewIgnoreArea,
   LeakPreviewProjectState,
+  SavedLeakPreviewResult,
 } from '@/features/leak-preview'
 
 export const bitsamFileExtension = '.bitsam'
@@ -82,8 +83,9 @@ export interface BitsamProject {
   cad: BitsamCadReference
   case_metadata?: { name?: string; note?: string; setup_links?: Partial<Record<LinkedSetupSection, string>> }
   workspace: WorkspaceProjectState
-  /** Case-scoped Leak Preview inputs; runtime preview samples are not saved. */
+  /** Case-scoped Preview settings and separate, optional completed evidence. */
   leak_preview?: LeakPreviewProjectState
+  preview_result?: SavedLeakPreviewResult
   /** Last completed analysis, including receiver grids and stored ray paths. */
   analysis_result?: RayTraceResult | null
 }
@@ -379,10 +381,11 @@ function isLeakPreviewProjectState(
 function isObserverSettings(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled)) return false
   if (value.sampling !== undefined && !isOneOf(value.sampling, ['fast', 'balanced', 'fine', 'manual'])) return false
+  if (value.coverage !== undefined && !isOneOf(value.coverage, ['local', 'hemisphere'])) return false
   if (value.search_mode !== undefined && !isOneOf(value.search_mode, ['preview', 'full_detail'])) return false
   if (value.spacing_mm !== undefined && (!isFiniteNumber(value.spacing_mm) || value.spacing_mm < .1 || value.spacing_mm > 100)) return false
   return ([['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10],
-    ['step_deg', .1, 10], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const).every(([key, lo, hi]) => {
+    ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const).every(([key, lo, hi]) => {
       const number = value[key]
       return isFiniteNumber(number) && number >= lo && number <= hi &&
         (!['resolution', 'samples_per_cell'].includes(key) || Number.isInteger(number))
@@ -466,7 +469,7 @@ function isEmitterSpec(value: unknown): value is EmitterSpec {
 
 function isReceiverViewAngles(value: unknown): boolean {
   if (!isRecord(value) || !isOneOf(value.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z'])) return false
-  return ([['horizontal_deg',-89.9,89.9],['vertical_deg',-89.9,89.9],['range_deg',0,10],['step_deg',.1,10]] as const)
+  return ([['horizontal_deg',-90,90],['vertical_deg',-90,90],['range_deg',0,10],['step_deg',.1,90]] as const)
     .every(([key,low,high]) => isFiniteNumber(value[key]) && value[key] >= low && value[key] <= high)
 }
 
@@ -589,6 +592,40 @@ function isSavedRayTraceResult(value: unknown): value is RayTraceResult {
     isRecord(value.metrics) &&
     isRecord(value.contribution_summary)
   )
+}
+
+function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
+  if (!isRecord(value) || value.format !== 'leak-preview-result.v1' || !isSavedRayTraceResult(value.result) ||
+    !Array.isArray(value.points) || !Array.isArray(value.candidates) ||
+    value.points.length > 500_000 || value.candidates.length > 500_000 ||
+    !(value.selectedCandidateId === null || isString(value.selectedCandidateId)) ||
+    !(value.inputSignature === null || isString(value.inputSignature))) return false
+  if (isString(value.inputSignature)) {
+    try { const input: unknown = JSON.parse(value.inputSignature); if (!isRecord(input) || input.sceneToken !== null) return false } catch { return false }
+  }
+  const highlight = value.highlight
+  if (!(highlight === null || (isRecord(highlight) && (
+    (highlight.kind === 'escape' && isSafeId(highlight.bin) && highlight.bin < 4) ||
+    (highlight.kind === 'observer' && isFiniteNumber(highlight.horizontal) && isFiniteNumber(highlight.vertical)))))) return false
+  const ids = new Set<string>()
+  for (const candidate of value.candidates) {
+    if (!isRecord(candidate) || !isString(candidate.id) || ids.has(candidate.id) || !isString(candidate.label) || !isString(candidate.receiverId) ||
+      !isVec3(candidate.center) || !isVec3(candidate.normal) || !isVec3(candidate.uAxis) || !isVec3(candidate.vAxis) || !isRoiClipBox(candidate.clipBox) ||
+      !['widthMm','heightMm','fluxLumen','peakFluxLumen','relativeStrength','cellCount','sampledPathCount','grazingPathCount'].every((key) => isFiniteNumber(candidate[key]) && candidate[key] >= 0) ||
+      !['minReflectionCount','maxReflectionCount','meanExitAngleDeg'].every((key) => candidate[key] === null || isFiniteNumber(candidate[key]))) return false
+    if (candidate.representativePath !== undefined && (!Array.isArray(candidate.representativePath) || candidate.representativePath.length < 2 || !candidate.representativePath.every(isVec3))) return false
+    if (candidate.groupedCount !== undefined && (!Number.isSafeInteger(candidate.groupedCount) || Number(candidate.groupedCount) < 1)) return false
+    const observer = candidate.observerEvidence
+    if (observer !== undefined && (!isRecord(observer) || !isOneOf(observer.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z']) ||
+      !['horizontalDeg','verticalDeg','stepDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(observer[key])) ||
+      !isVec3(observer.direction) || !isVec3(observer.receiverCenter))) return false
+    ids.add(candidate.id)
+  }
+  if (value.selectedCandidateId !== null && !ids.has(value.selectedCandidateId)) return false
+  return value.points.every((point: unknown) => isRecord(point) && isVec3(point.position) && isFiniteNumber(point.relativeStrength) &&
+    (point.candidateId === undefined || isString(point.candidateId)) &&
+    (point.observerAngles === undefined || (Array.isArray(point.observerAngles) && point.observerAngles.length === 2 && point.observerAngles.every(isFiniteNumber))) &&
+    (point.angleBins === undefined || (Array.isArray(point.angleBins) && point.angleBins.length === 4 && point.angleBins.every(isFiniteNumber))))
 }
 
 function isComponentColorOverrides(
@@ -744,6 +781,7 @@ export function createBitsamProject(
   savedAt = new Date(),
   analysisResult?: RayTraceResult | null,
   leakPreviewState?: LeakPreviewProjectState,
+  previewResult?: SavedLeakPreviewResult | null,
 ): BitsamProject {
   if (!workspace.activeCad) {
     throw new BitsamProjectError(
@@ -755,9 +793,11 @@ export function createBitsamProject(
   const activeCase = workspace.cadCases.find(
     (item) => item.caseId === workspace.activeCadCaseId,
   )
+  const savedPreview = previewResult === undefined ? activeCase?.leakPreviewResult : previewResult
+  const previewSettings = leakPreviewState ?? (savedPreview ? activeCase?.leakPreviewState : undefined)
   return {
     format: bitsamFormat,
-    schema_version: projectSchemaVersion(workspace, leakPreviewState),
+    schema_version: projectSchemaVersion(workspace, previewSettings),
     application_version: applicationVersion,
     saved_at: savedAt.toISOString(),
     project_name:
@@ -769,12 +809,13 @@ export function createBitsamProject(
     },
     case_metadata: activeCase ? { name: activeCase.name, note: activeCase.note } : undefined,
     workspace: createWorkspaceProjectState(workspace),
-    leak_preview: leakPreviewState
-      ? structuredClone(leakPreviewState)
+    leak_preview: previewSettings
+      ? structuredClone(previewSettings)
       : undefined,
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
+    preview_result: savedPreview ? structuredClone(savedPreview) : undefined,
   }
 }
 
@@ -787,10 +828,14 @@ export function createBitsamProjectFromLoadedProject(
   savedAt = new Date(),
   analysisResult?: RayTraceResult | null,
   leakPreviewState?: LeakPreviewProjectState,
+  previewResult?: SavedLeakPreviewResult | null,
 ): BitsamProject {
   const activeCase = workspace.cadCases.find(
     (item) => item.caseId === workspace.activeCadCaseId,
   )
+  const savedPreview = previewResult === undefined
+    ? activeCase ? activeCase.leakPreviewResult : loadedProject.preview_result
+    : previewResult
   return {
     format: bitsamFormat,
     schema_version: projectSchemaVersion(
@@ -811,6 +856,7 @@ export function createBitsamProjectFromLoadedProject(
     analysis_result: analysisResult
       ? structuredClone(analysisResult)
       : undefined,
+    preview_result: savedPreview ? structuredClone(savedPreview) : undefined,
   }
 }
 
@@ -876,7 +922,8 @@ export function parseBitsamProject(source: string): BitsamProject {
           ))))) ||
     (parsed.analysis_result !== undefined &&
       parsed.analysis_result !== null &&
-      !isSavedRayTraceResult(parsed.analysis_result))
+      !isSavedRayTraceResult(parsed.analysis_result)) ||
+    (parsed.preview_result !== undefined && !isSavedPreviewResult(parsed.preview_result))
   ) {
     throw new BitsamProjectError(
       'BITSAM 프로젝트의 필수 데이터가 없거나 손상되었습니다.',

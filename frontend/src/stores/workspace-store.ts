@@ -11,7 +11,7 @@ import type {
   SceneComponentMatchMetadata,
   OpticalProfile,
 } from '@/api'
-import type { LeakPreviewProjectState } from '@/features/leak-preview/leak-preview-model'
+import type { LeakPreviewProjectState, SavedLeakPreviewResult } from '@/features/leak-preview/leak-preview-model'
 
 export interface ActiveCad {
   path: string
@@ -40,6 +40,8 @@ export interface CadCase {
   accessoryCads: AccessoryCad[]
   /** Case-owned precision-preview inputs used by Batch and project restore. */
   leakPreviewState?: LeakPreviewProjectState
+  /** Immutable Preview evidence, excluded from execution input snapshots/hashes. */
+  leakPreviewResult?: SavedLeakPreviewResult
   setupLinks?: Partial<Record<LinkedSetupSection, string>>
 }
 
@@ -328,6 +330,7 @@ export interface WorkspaceActions {
     caseId: string,
     state: LeakPreviewProjectState | undefined,
   ): void
+  setCadCaseLeakPreviewResult(caseId: string, result: SavedLeakPreviewResult | null | undefined): void
   setActiveCadCaseResult(result: RayTraceResult): void
   setSingleRayTraceRun(
     run: { caseId: string; jobId: string | null } | null,
@@ -1685,6 +1688,15 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 }
               : item,
           ),
+        }))
+      },
+      setCadCaseLeakPreviewResult: (caseId, result) => {
+        // Results are immutable; selection/deletion updates replace metadata or
+        // arrays without copying all stored paths or the Case's BSDF library.
+        set((state) => ({
+          cadCases: state.cadCases.map((item) => item.caseId === caseId
+            ? { ...item, leakPreviewResult: result ?? undefined }
+            : item),
         }))
       },
       setCadCaseLeakPreviewState: (caseId, leakPreviewState) => {

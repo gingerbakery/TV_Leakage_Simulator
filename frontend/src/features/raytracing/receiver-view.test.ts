@@ -11,7 +11,7 @@ const dot = (a: number[], b: number[]) => a.reduce((sum, value, i) => sum+value*
 it('matches observer directions and places an inward-facing plane outside every CAD corner', () => {
   const scene = createSceneFixture()
   for (const axis of ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z'] as const) {
-    for (const [horizontal_deg,vertical_deg] of [[0,0],[45,20],[89.9,-89.9]]) {
+    for (const [horizontal_deg,vertical_deg] of [[0,0],[45,20],[89.9,-89.9],[90,0],[-90,0],[0,90],[0,-90]]) {
       const view = { ...defaultReceiverView, axis, horizontal_deg, vertical_deg }
       const receiver = createViewAngleReceiver('r',scene,[30,30,10],view,3)
       const outward = receiverViewDirection(view)

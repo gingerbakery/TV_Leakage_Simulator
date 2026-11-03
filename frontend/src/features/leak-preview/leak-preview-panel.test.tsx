@@ -10,7 +10,8 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { buildRayTraceRequest, createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
 import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
-import { leakPreviewStore } from './leak-preview-store'
+import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewResult } from './leak-preview-store'
+import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { LeakPreviewPanel } from './leak-preview-panel'
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown }))
@@ -23,6 +24,45 @@ vi.mock('@/api', async () => {
   }
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined })
+
+it('keeps saved results while the scene loads and rebinds a restarted server session', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'saved.step', displayName: 'Saved' })
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'saved-preview' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setSourceFaceIds([0]))
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('saved-preview'))
+  const fixture = createSavedLeakPreviewFixture()
+  act(() => leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates))
+  const settings = snapshotLeakPreviewProjectState(), saved = snapshotLeakPreviewResult()!
+  view.unmount()
+  leakPreviewStore.getState().restoreProjectState(settings, saved)
+  const restored = render(<AppProviders><LeakPreviewPanel scene={undefined} onOpenPrecision={() => undefined} /></AppProviders>)
+  expect(leakPreviewStore.getState().result).toBe(fixture.result)
+  const restarted = { ...scene, metadata: { ...scene.metadata, scene_token: 'restarted-server' } }
+  restored.rerender(<AppProviders><LeakPreviewPanel scene={restarted} onOpenPrecision={() => undefined} /></AppProviders>)
+  expect(leakPreviewStore.getState().result).toBe(fixture.result)
+  expect(screen.getByText('저장된 Preview 결과')).toBeTruthy()
+  expect(screen.getAllByRole('article')).toHaveLength(fixture.candidates.length)
+  expect(mocks.start).toHaveBeenCalledOnce()
+  // A real input change still invalidates saved evidence.
+  act(() => leakPreviewStore.getState().setQuality('deep'))
+  expect(leakPreviewStore.getState().result).toBeNull()
+})
+
+it('starts a full hemisphere search and hides unused local angles', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'hemisphere.step', displayName: 'Hemisphere' })
+  mocks.start.mockResolvedValue({ job_id: 'hemisphere' })
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true }) })
+  fireEvent.change(screen.getByLabelText('각도 영역'), { target: { value: 'hemisphere' } })
+  expect(screen.queryByLabelText('좌우 시야각 (°)')).toBeNull()
+  expect(screen.getByLabelText('각도 간격 (°)')).toHaveProperty('value', '15')
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
+  expect(mocks.start.mock.calls[0][0].request.observer_probe).toMatchObject({ coverage: 'hemisphere', step_deg: 15 })
+})
 
 it('starts a fixed-spacing whole-model search using precision geometry and the configured reflection depth', async () => {
   const actions = workspaceStore.getState().actions
