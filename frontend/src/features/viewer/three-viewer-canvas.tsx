@@ -1,4 +1,7 @@
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
+import { pickLeakPreviewCandidate } from './leak-preview-picking'
+import { FullViewPipFrame } from './full-view-pip-frame'
+import { fullViewPipRect, type FullViewPipSize } from './full-view-pip-layout'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
 import { findCadHoleLoops, pickRoundCadHole, type CadHoleLoop } from '@/features/leak-preview/hole-recognition'
 import { syncBlockerDisplays, syncBlockerSectionCaps, pickBlocker } from './blocker-display'
@@ -1894,6 +1897,15 @@ export function ThreeViewerCanvas({
   const [rendererError, setRendererError] = useState('')
   const [boxDrag, setBoxDrag] = useState<ViewerBoxDrag | null>(null)
   const [fullViewCameraSync, setFullViewCameraSync] = useState(false)
+  const [viewerViewport, setViewerViewport] = useState<FullViewPipSize>({ width: 1, height: 1 })
+  const [fullViewPipSize, setFullViewPipSize] = useState<FullViewPipSize | null>(null)
+  const fullViewPipSizeRef = useRef(fullViewPipSize)
+  const changeFullViewPipSize = (size: FullViewPipSize | null) => {
+    fullViewPipSizeRef.current = size
+    setFullViewPipSize(size)
+    const runtime = runtimeRef.current
+    if (runtime) runtime.pipLastRenderTime = 0
+  }
   const [sectionView, setSectionView] = useState<ViewerSectionState>({
     axis: 'z',
     enabled: false,
@@ -2317,6 +2329,8 @@ export function ThreeViewerCanvas({
       const height = Math.max(Math.floor(rect.height), 1)
       viewportWidth = width
       viewportHeight = height
+      setViewerViewport((current) => current.width === width && current.height === height ? current : { width, height })
+      runtime.pipLastRenderTime = 0
       renderer.setSize(width, height, false)
       camera.aspect = width / height
       camera.updateProjectionMatrix()
@@ -2455,24 +2469,11 @@ export function ThreeViewerCanvas({
       renderer.setScissorTest(false)
 
       if (runtime.roiPreviewRoot.visible) {
-        const pipWidth = Math.min(
-          220,
-          Math.floor(viewportWidth * 0.34),
-        )
-        const pipHeight = Math.min(
-          160,
-          Math.floor(viewportHeight * 0.34),
-        )
-        if (pipWidth > 24 && pipHeight > 24) {
-          const pipMargin = 14
-          const pipX = viewportWidth - pipWidth - pipMargin
-          const pipY = pipMargin
-          runtime.pipViewportRect = {
-            x: pipX,
-            y: viewportHeight - pipY - pipHeight,
-            width: pipWidth,
-            height: pipHeight,
-          }
+        const pipRect = fullViewPipRect({ width: viewportWidth, height: viewportHeight }, fullViewPipSizeRef.current)
+        if (pipRect) {
+          const { width: pipWidth, height: pipHeight, x: pipX } = pipRect
+          const pipY = viewportHeight - pipRect.y - pipHeight
+          runtime.pipViewportRect = pipRect
 
           pipCamera.aspect = pipWidth / pipHeight
           if (!runtime.pipUserAdjusted) {
@@ -3346,6 +3347,18 @@ export function ThreeViewerCanvas({
           } else if (!selectBlockerAt(event.clientX,event.clientY)) onStatusMessage('원형 홀 미인식 · 보이는 홀 중심 근처를 클릭하세요.')
           return
         }
+        if (!blockerAreaSelectionIdRef.current) {
+          const rect = canvas.getBoundingClientRect()
+          const candidateId = pickLeakPreviewCandidate(runtime.leakPreviewRoot, camera,
+            { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect)
+          const preview = leakPreviewStore.getState()
+          const index = preview.candidates.findIndex((candidate) => candidate.id === candidateId)
+          if (candidateId && index >= 0) {
+            preview.selectCandidate(candidateId, 'viewer')
+            onStatusMessage(`Candidate ${String(index + 1).padStart(2, '0')} 선택됨`)
+            return
+          }
+        }
         if (selectBlockerAt(event.clientX, event.clientY)) return
         leakPreviewStore.getState().selectBlocker(null)
       }
@@ -3994,6 +4007,7 @@ export function ThreeViewerCanvas({
       }),
     )
     glowPoints.name = 'leak-preview-glow-points'
+    glowPoints.userData.leakCandidateIds = visibleLeakPreviewPoints.map((point) => point.candidateId)
     glowPoints.renderOrder = 220
     runtime.leakPreviewRoot.add(glowHalo, glowPoints)
 
@@ -5914,19 +5928,7 @@ export function ThreeViewerCanvas({
         </div>
       ) : null}
       {showFullViewPip ? (
-        <div
-          data-testid="full-view-pip-frame"
-          className="pointer-events-none absolute z-10 overflow-hidden rounded-md border border-border/70 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
-          style={{
-            right: 14,
-            bottom: 14,
-            width: 'min(220px, 34%)',
-            height: 'min(160px, 34%)',
-          }}
-        >
-          <span className="absolute top-1 left-1.5 rounded bg-background/70 px-1 py-0.5 text-xs font-medium tracking-wide text-muted-foreground">
-            Full View
-          </span>
+        <FullViewPipFrame viewport={viewerViewport} size={fullViewPipSize} onSizeChange={changeFullViewPipSize}>
           <button
             type="button"
             className={`pointer-events-auto absolute top-1 right-1 rounded border px-1.5 py-0.5 text-xs font-semibold backdrop-blur transition-colors ${
@@ -5959,7 +5961,7 @@ export function ThreeViewerCanvas({
           >
             {fullViewCameraSync ? 'ON' : 'OFF'}
           </button>
-        </div>
+        </FullViewPipFrame>
       ) : null}
       <div
         id="three-viewer-controls"

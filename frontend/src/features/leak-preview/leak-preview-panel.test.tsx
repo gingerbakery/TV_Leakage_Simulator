@@ -8,7 +8,8 @@ import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { defaultObserverSettings, createEscapeEnclosureReceivers, detectLeakPreviewCandidates, createLeakPreviewReceivers } from './leak-preview-model'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
-import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
+import { buildRayTraceRequest, createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
+import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import { leakPreviewStore } from './leak-preview-store'
 import { LeakPreviewPanel } from './leak-preview-panel'
 
@@ -22,6 +23,114 @@ vi.mock('@/api', async () => {
   }
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined })
+
+it('creates only a view-angle receiver from the detected snapshot while preserving BSDF, sources, and sampling', () => {
+  const actions = workspaceStore.getState().actions
+  actions.addCadCase({ path: 'bsdf-angle.step', displayName: 'BSDF angle' })
+  actions.upsertEmitter(createDatumEmitter('emitter_001', [30, 30, 10], [0, 0, 0]))
+  const asset = createBsdfFixture()
+  asset.transport = { model: 'isotropic_no_shift', wavelengthNm: 550, aoiExtrapolation: 'clamp' }
+  actions.addBsdfAsset(asset)
+  actions.upsertMaterialAssignment({ assignmentId: 'bsdf', componentId: 1, targetType: 'part', faceIds: [],
+    baseMaterialId: 'pc_black', surfaceId: 'matte_black_resin', profileId: '', enabled: true, bsdfAssetId: asset.id })
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const canonical = createViewAngleReceiver('canonical', scene, [30, 30, 10],
+    { axis: 'neg_z', horizontal_deg: 80, vertical_deg: 20, range_deg: 0, step_deg: .5 }, 3)
+  result.receivers = createEscapeEnclosureReceivers(scene)
+  result.receiver_grids = result.receivers.map((receiver) => ({ receiver_id: receiver.receiver_id,
+    resolution: [1, 1], flux_lumen: [[0]], bin_area_mm2: 1, hit_count: 0 }))
+  result.metrics._escape_direction_summary = { direction: 'neg_z' }
+  result.metrics._observer_probe_summary = { contract: 'observer_path_support_v1', execution_backend: 'cpu',
+    measure: 'path_support_counts', settings: { ...defaultObserverSettings, step_deg: .5, resolution: 8 },
+    attempted_count: 128, planned_count: 128, direct_count: 1, reflected_count: 0, excluded_count: 0,
+    depth_limited_count: 0, complete: true, stopped: false, runtime_sec: .1,
+    views: [{ horizontal_deg: 80, vertical_deg: 20, direct_count: 1, reflected_count: 0,
+      direction: canonical.normal.map((value) => -value), observer_center: canonical.center,
+      u_axis: canonical.u_axis, v_axis: canonical.v_axis, spacing_mm: [1, 1] }],
+    cells: [{ view_index: 0, row: 0, column: 0, position: [30, 30, 10], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }] }
+  const onOpenPrecision = vi.fn()
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={onOpenPrecision} /></AppProviders>)
+  const detection = detectLeakPreviewCandidates(scene, result)
+  act(() => {
+    leakPreviewStore.getState().setDetection(result, detection.points, detection.candidates)
+    leakPreviewStore.getState().toggleDirection('pos_x')
+    leakPreviewStore.getState().setObserver({ horizontal_deg: -30, vertical_deg: -10, range_deg: 2, step_deg: 1 })
+  })
+  const before = structuredClone({ emitters: workspaceStore.getState().emitters,
+    materialAssignments: workspaceStore.getState().materialAssignments, config: workspaceStore.getState().rayTraceConfig })
+  fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
+  expect(onOpenPrecision).toHaveBeenCalledOnce()
+  expect(workspaceStore.getState().roiScopes).toEqual([])
+  expect(workspaceStore.getState().receivers).toHaveLength(1)
+  const receiver = workspaceStore.getState().receivers[0]
+  expect(receiver.view_angles).toEqual({ axis: 'neg_z', horizontal_deg: 80, vertical_deg: 20, range_deg: 0, step_deg: .5 })
+  expect(receiver.base_center).toEqual([30, 30, 10])
+  expect(workspaceStore.getState().emitters).toEqual(before.emitters)
+  expect(workspaceStore.getState().materialAssignments).toEqual(before.materialAssignments)
+  expect(workspaceStore.getState().rayTraceConfig).toEqual(before.config)
+  const request = buildRayTraceRequest({ scene, projectName: 'BSDF angle', emitters: before.emitters,
+    receivers: [receiver], materialAssignments: before.materialAssignments, bsdfAssets: [asset],
+    transformRules: [], excludedComponentIds: [], deletedComponentIds: [], roiScopes: [], config: before.config })
+  expect(request.bsdf_assets).toEqual([asset])
+  expect(request.config).toMatchObject({ primary_sampling_strategy: 'source', bounce_sampling_strategy: 'source' })
+  expect(request.analysis_roi).toBeUndefined()
+  const competing = { ...receiver, receiver_id: 'receiver_other', display_name: 'Other receiver',
+    reference_mode: null, view_angles: undefined }
+  act(() => {
+    actions.upsertReceiver(competing)
+    actions.setReceiverEnabled(receiver.receiver_id, false)
+  })
+  fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
+  expect(workspaceStore.getState().receivers).toHaveLength(2)
+  expect(workspaceStore.getState().receivers.filter((item) => item.enabled).map((item) => item.receiver_id)).toEqual([receiver.receiver_id])
+  expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === competing.receiver_id)).toEqual({ ...competing, enabled: false })
+  fireEvent.click(screen.getByRole('button', { name: 'ROI·Receiver 생성' }))
+  expect(workspaceStore.getState().roiScopes).toHaveLength(1)
+  expect(workspaceStore.getState().receivers).toHaveLength(2)
+})
+
+it('reveals and scrolls to the viewer-picked candidate, including repeated picks of a collapsed selection', () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'picking.step', displayName: 'Picking' })
+  const scene = createSceneFixture()
+  const result = createRayTraceResultFixture()
+  result.receivers = [createEscapeEnclosureReceivers(scene)[0]]
+  result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [3, 1],
+    bin_area_mm2: 1, flux_lumen: [[1, 0, .5]], hit_count: 2 }]
+  result.stored_paths = []
+  const detection = detectLeakPreviewCandidates(scene, result)
+  expect(detection.candidates).toHaveLength(2)
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result, detection.points, detection.candidates))
+  const [first, second] = leakPreviewStore.getState().candidates
+  const firstRow = screen.getByRole('article', { name: 'Candidate 01' })
+  const secondRow = screen.getByRole('article', { name: 'Candidate 02' })
+  const scroll = vi.fn()
+  firstRow.scrollIntoView = scroll
+  secondRow.scrollIntoView = scroll
+  act(() => leakPreviewStore.getState().setHighlight({ kind: 'escape', bin: 0 }))
+  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
+  act(() => leakPreviewStore.getState().selectCandidate(second.id, 'viewer'))
+  expect(screen.getByRole('button', { name: 'Leak Candidates 접기' }).getAttribute('aria-expanded')).toBe('true')
+  expect(secondRow.getAttribute('aria-current')).toBe('true')
+  expect(firstRow.hasAttribute('aria-current')).toBe(false)
+  expect(scroll.mock.contexts.at(-1)).toBe(secondRow)
+  expect(scroll).toHaveBeenLastCalledWith({ block: 'nearest' })
+  expect(leakPreviewStore.getState().highlight).toBeNull()
+  scroll.mockClear()
+  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
+  expect(screen.queryByRole('article', { name: 'Candidate 02' })).toBeNull()
+  expect(scroll).not.toHaveBeenCalled()
+  act(() => leakPreviewStore.getState().selectCandidate(second.id, 'viewer'))
+  expect(screen.getByRole('article', { name: 'Candidate 02' }).getAttribute('aria-current')).toBe('true')
+  expect(scroll.mock.contexts.at(-1)).toBe(secondRow)
+  fireEvent.click(firstRow)
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe(first.id)
+  expect(firstRow.getAttribute('aria-current')).toBe('true')
+  expect(leakPreviewStore.getState().points).toEqual(detection.points)
+  expect(leakPreviewStore.getState().result).toBe(result)
+  act(() => leakPreviewStore.getState().removeCandidate(second.id))
+  expect(screen.queryByRole('article', { name: 'Candidate 02' })).toBeNull()
+})
 
 it('enables Ray Tracing datum emitters and starts a BSDF Preview using CPU Source without changing the original', async () => {
   const actions = workspaceStore.getState().actions

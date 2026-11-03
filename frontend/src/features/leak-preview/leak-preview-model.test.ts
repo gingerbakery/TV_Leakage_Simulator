@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { createEmitterAim } from '@/features/raytracing/emitter-aim'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
-import { createDatumEmitter, createFaceEmitter } from '@/features/raytracing/ray-tracing-model'
+import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter } from '@/features/raytracing/ray-tracing-model'
+import { createViewAngleReceiver, expandReceiverView, receiverViewDirection } from '@/features/raytracing/receiver-view'
 import type { RayTraceResult } from '@/api'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -27,6 +28,49 @@ import {
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
+  it('carries the detected observer angle to an editable single-view receiver without losing footprint coverage', () => {
+    const scene = createSceneFixture(), result = createRayTraceResultFixture()
+    const view = { axis: 'pos_x' as const, horizontal_deg: 80, vertical_deg: 20, range_deg: 0, step_deg: .5 }
+    const direction = receiverViewDirection(view)
+    const target: [number, number, number] = [30, 30, 10]
+    const canonical = createViewAngleReceiver('canonical', scene, target, view, 3)
+    result.receivers = createEscapeEnclosureReceivers(scene)
+    result.receiver_grids = result.receivers.map((receiver) => ({ receiver_id: receiver.receiver_id,
+      resolution: [1, 1], bin_area_mm2: 1, flux_lumen: [[0]], hit_count: 0 }))
+    result.metrics._escape_direction_summary = { direction: view.axis }
+    result.metrics._observer_probe_summary = {
+      contract: 'observer_path_support_v1', execution_backend: 'cpu', measure: 'path_support_counts',
+      settings: { ...defaultObserverSettings, resolution: 8, step_deg: .5 },
+      attempted_count: 128, planned_count: 128, direct_count: 1, reflected_count: 0, excluded_count: 0,
+      depth_limited_count: 0, complete: true, stopped: false, runtime_sec: .1,
+      views: [{ horizontal_deg: 80, vertical_deg: 20, direction,
+        observer_center: canonical.center, u_axis: canonical.v_axis, v_axis: canonical.u_axis,
+        spacing_mm: [1, 1], direct_count: 1, reflected_count: 0 }],
+      cells: [{ view_index: 0, row: 0, column: 0, position: target, direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }],
+    }
+    const candidate = { ...detectLeakPreviewCandidates(scene, result).candidates[0], widthMm: 80, heightMm: 30 }
+    const receiver = createCandidateReceiver(candidate, 1, scene)
+    expect(receiver.view_angles).toEqual(view)
+    expect(receiver.base_center).toEqual(target)
+    expect(receiver.center).toEqual(canonical.center)
+    expect(receiver.normal).toEqual(direction.map((value) => -value))
+    expect(receiver.width_mm).toBeCloseTo(26)
+    expect(receiver.height_mm).toBeCloseTo(76)
+    expect(receiver.acceptance_angle_deg).toBe(90)
+    expect(receiver.view_distance_mm).toBe(3)
+    const [resolved] = expandReceiverView(receiver, scene)
+    expect(resolved.center).toEqual(receiver.center)
+    expect(resolved.u_axis).toEqual(receiver.u_axis)
+    expect(resolved.v_axis).toEqual(receiver.v_axis)
+    const request = buildRayTraceRequest({ scene, projectName: 'Single angle', emitters: result.emitters,
+      receivers: [receiver], materialAssignments: [], transformRules: [], excludedComponentIds: [],
+      deletedComponentIds: [], roiScopes: [], config: result.config })
+    expect(request.receivers[0].normal).toEqual(receiver.normal)
+    expect(request.receivers[0]).not.toHaveProperty('view_angles')
+    expect(request.analysis_roi).toBeUndefined()
+    expect(request.observer_probe).toBeUndefined()
+  })
+
   it('reuses Ray Tracing face, body and datum emitters while preserving power and aiming settings', () => {
     const face = { ...createFaceEmitter('emitter_001', [0]), power_lumen: 12, ray_count: 20, normal_flip: true }
     const body = { ...createFaceEmitter('emitter_002', []), source_component_ids: [1], power_lumen: 8, ray_count: 30 }

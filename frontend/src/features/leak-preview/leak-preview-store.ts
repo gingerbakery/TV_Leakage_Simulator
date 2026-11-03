@@ -76,6 +76,7 @@ interface LeakPreviewState {
   highlight: LeakPreviewHighlight | null
   setHighlight(highlight: LeakPreviewState['highlight']): void
   selectedCandidateId: string | null
+  candidateRevealRequest: { candidateId: string } | null
   ignoreAreaSelectionArmed: boolean
   activeIgnoreAreaId: string | null
   ignoreAreas: LeakPreviewIgnoreArea[]
@@ -102,7 +103,7 @@ interface LeakPreviewState {
   setVisualizationVisible(visible: boolean): void
   setIgnoreAreasVisible(visible: boolean): void
   setBlockersVisible(visible: boolean): void
-  selectCandidate(candidateId: string | null): void
+  selectCandidate(candidateId: string | null, source?: 'list' | 'viewer'): void
   beginIgnoreAreaSelection(areaId?: string): void
   finishIgnoreAreaSelection(): void
   addIgnoreAreaRegion(clipBox: LeakPreviewIgnoreArea['regions'][number]): void
@@ -174,6 +175,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   blockersVisible: true,
   highlight: null,
   selectedCandidateId: null,
+  candidateRevealRequest: null,
   ignoreAreaSelectionArmed: false,
   activeIgnoreAreaId: null,
   ignoreAreas: [],
@@ -222,6 +224,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           blockersVisible: preserved?.blockersVisible ?? true,
           highlight: null,
           selectedCandidateId: null,
+          candidateRevealRequest: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
           ignoreAreas: structuredClone(preserved?.ignoreAreas ?? []),
@@ -259,6 +262,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   setDetection: (result, points, candidates) => set({
     result,
     points,
+    candidateRevealRequest: null,
     candidates: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength),
     highlight: null,
     visualizationVisible: true,
@@ -266,7 +270,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   }),
   removeCandidate: (candidateId) => set((state) => {
     const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
-    return { candidates, points: state.points.filter((point) => point.candidateId !== candidateId),
+    return { candidates, candidateRevealRequest: state.candidateRevealRequest?.candidateId === candidateId ? null : state.candidateRevealRequest, points: state.points.filter((point) => point.candidateId !== candidateId),
       selectedCandidateId: state.selectedCandidateId === candidateId ? candidates[0]?.id ?? null : state.selectedCandidateId }
   }),
   clearDetection: () => set({
@@ -276,13 +280,16 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     candidates: [],
     highlight: null,
     selectedCandidateId: null,
+    candidateRevealRequest: null,
     runSignature: null,
   }),
   setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
   setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
   setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
-  setHighlight: (highlight) => set({ highlight, selectedCandidateId: null, visualizationVisible: true }),
-  selectCandidate: (selectedCandidateId) => set({ selectedCandidateId, highlight: null, visualizationVisible: true }),
+  setHighlight: (highlight) => set({ highlight, selectedCandidateId: null, candidateRevealRequest: null, visualizationVisible: true }),
+  selectCandidate: (selectedCandidateId, source = 'list') => set({ selectedCandidateId, highlight: null, visualizationVisible: true,
+    candidateRevealRequest: source === 'viewer' && selectedCandidateId ? { candidateId: selectedCandidateId } : null,
+  }),
   beginIgnoreAreaSelection: (areaId) => setAndPersist((state) => {
     if (areaId && state.ignoreAreas.some((area) => area.id === areaId)) {
       return { ignoreAreaSelectionArmed: true, activeIgnoreAreaId: areaId }
@@ -396,6 +403,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       candidates: [],
       highlight: null,
       selectedCandidateId: null,
+      candidateRevealRequest: null,
       ignoreAreaSelectionArmed: false,
       activeIgnoreAreaId: null,
       blockerAreaSelectionId: null,
@@ -424,6 +432,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     blockersVisible: true,
     highlight: null,
     selectedCandidateId: null,
+    candidateRevealRequest: null,
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,
     ignoreAreas: [],

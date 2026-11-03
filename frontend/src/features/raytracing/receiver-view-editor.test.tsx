@@ -5,6 +5,7 @@ import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createFaceEmitter } from './ray-tracing-model'
+import { createViewAngleReceiver } from './receiver-view'
 import { RayTracingPanel } from './ray-tracing-panel'
 import { leakPreviewStore } from '@/features/leak-preview/leak-preview-store'
 
@@ -66,4 +67,28 @@ it('copies entered Preview viewing conditions without running Preview', () => {
   fireEvent.click(screen.getByRole('button',{name:'Add Receiver'}))
   expect(workspaceStore.getState().receivers[0].view_angles).toEqual({axis:'pos_x',horizontal_deg:20,vertical_deg:-10,range_deg:2,step_deg:1})
   expect(leakPreviewStore.getState().jobId).toBeNull()
+})
+
+it('preserves a Preview angle receiver plane when opening and saving without a legacy distance offset', () => {
+  renderPanel()
+  const original = { ...createViewAngleReceiver('receiver_001', createSceneFixture(), [30, 30, 10],
+    { axis: 'neg_z', horizontal_deg: 80, vertical_deg: 20, range_deg: 0, step_deg: .5 }, 3),
+    reference_mode: 'leak_preview_candidate', display_name: 'Preview Receiver 1', width_mm: 26, height_mm: 38 }
+  act(() => workspaceStore.getState().actions.upsertReceiver(original))
+  const config = structuredClone(workspaceStore.getState().rayTraceConfig)
+  fireEvent.click(screen.getByRole('button', { name: 'Edit Preview Receiver 1' }))
+  expect(screen.getByRole('spinbutton', { name: 'Receiver 좌우 시야각 (°)' })).toHaveProperty('value', '80.0')
+  expect(screen.getByRole('spinbutton', { name: 'Receiver 상하 시야각 (°)' })).toHaveProperty('value', '20.0')
+  expect(screen.getByRole('spinbutton', { name: 'Receiver 주변 범위 (±°)' })).toHaveProperty('value', '0.0')
+  expect(workspaceStore.getState().placementPreviewReceiver?.center).toEqual(original.center)
+  fireEvent.click(screen.getByRole('button', { name: 'Save Receiver' }))
+  const saved = workspaceStore.getState().receivers[0]
+  expect(saved.center).toEqual(original.center)
+  expect(saved.normal).toEqual(original.normal)
+  expect(saved.view_angles).toEqual(original.view_angles)
+  expect(saved.base_center).toEqual(original.base_center)
+  expect(saved.width_mm).toBe(original.width_mm)
+  expect(saved.height_mm).toBe(original.height_mm)
+  expect(saved.reference_mode).toBe('leak_preview_candidate')
+  expect(workspaceStore.getState().rayTraceConfig).toEqual(config)
 })

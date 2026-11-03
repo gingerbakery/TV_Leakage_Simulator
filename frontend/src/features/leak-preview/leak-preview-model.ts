@@ -10,6 +10,7 @@ import type {
   Vec3,
 } from '@/api'
 import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter, distributeIntegerBudget } from '@/features/raytracing/ray-tracing-model'
+import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import type {
   ComponentTransformRule,
   MaterialAssignment,
@@ -143,7 +144,7 @@ export interface LeakPreviewCandidate {
   maxReflectionCount: number | null
   meanExitAngleDeg: number | null
   clipBox: RoiClipBox
-  observerEvidence?: { horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3 }
+  observerEvidence?: { axis: LeakPreviewDirection; stepDeg: number; horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3 }
 }
 
 export interface LeakPreviewDetection {
@@ -1167,16 +1168,22 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
         cellCount: cluster.length, sampledPathCount: count, grazingPathCount: angle >= 60 ? count : 0,
         minReflectionCount: Math.min(...evidence.map((cell) => cell.min_depth)), maxReflectionCount: Math.max(...evidence.map((cell) => cell.max_depth)),
         meanExitAngleDeg: angle, clipBox: candidateClipBox(cluster, receiver, grid, modelDepth),
-        observerEvidence: { horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg, directCount, reflectedCount, direction: view.direction, receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)) },
+        observerEvidence: { axis: directionAxis(result.metrics._escape_direction_summary), stepDeg: summary.settings.step_deg,
+          horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg, directCount, reflectedCount, direction: view.direction,
+          receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)) },
       })
     })
   })
   return { points, candidates }
 }
 
-function directionVector(raw: unknown): Vec3 {
+function directionAxis(raw: unknown): LeakPreviewDirection {
   const name = (raw as { direction?: LeakPreviewDirection } | undefined)?.direction ?? 'neg_z'
-  return ({ pos_x: [1,0,0], neg_x: [-1,0,0], pos_y: [0,1,0], neg_y: [0,-1,0], pos_z: [0,0,1], neg_z: [0,0,-1] } as Record<LeakPreviewDirection, Vec3>)[name] ?? [0,0,-1]
+  return allLeakPreviewDirections.includes(name) ? name : 'neg_z'
+}
+
+function directionVector(raw: unknown): Vec3 {
+  return ({ pos_x: [1,0,0], neg_x: [-1,0,0], pos_y: [0,1,0], neg_y: [0,-1,0], pos_z: [0,0,1], neg_z: [0,0,-1] } as Record<LeakPreviewDirection, Vec3>)[directionAxis(raw)]
 }
 
 export function detectLeakPreviewCandidates(
@@ -1395,7 +1402,26 @@ export function resolveLeakPreviewRoiFaces(
 export function createCandidateReceiver(
   candidate: LeakPreviewCandidate,
   index: number,
+  scene?: ScenePayload,
+  transforms: ComponentTransformRule[] = [],
 ): ReceiverSpec {
+  if (candidate.observerEvidence && scene) {
+    const evidence = candidate.observerEvidence
+    const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
+      scene, candidate.center, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
+        vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
+      leakPreviewReceiverDistanceMm, transforms)
+    // Preserve coverage of the Preview grid footprint when converting from
+    // its arbitrary observer U/V basis to the angle editor's canonical basis.
+    const width = Math.max(1, candidate.widthMm - leakPreviewReceiverOffsetMm * 2)
+    const height = Math.max(1, candidate.heightMm - leakPreviewReceiverOffsetMm * 2)
+    const extent = (axis: Vec3) => Math.abs(dot(candidate.uAxis, axis)) * width + Math.abs(dot(candidate.vAxis, axis)) * height
+    const widthMm = Math.max(1, extent(receiver.u_axis!)), heightMm = Math.max(1, extent(receiver.v_axis!))
+    const pixelSize = Math.max(widthMm, heightMm) / 40
+    return { ...receiver, display_name: `Preview Receiver ${index}`, reference_mode: 'leak_preview_candidate',
+      width_mm: widthMm, height_mm: heightMm,
+      resolution: [Math.max(8, Math.round(widthMm / pixelSize)), Math.max(8, Math.round(heightMm / pixelSize))] }
+  }
   const directionId = candidate.receiverId.replace('__leak_preview_', '') as LeakPreviewDirection
   const outwardByDirection: Record<LeakPreviewDirection, Vec3> = {
     pos_x: [1, 0, 0],

@@ -87,6 +87,7 @@ const previewDirectionOptions: Array<{ id: LeakPreviewDirection; label: string; 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
   const [candidatesCollapsed,setCandidatesCollapsed] = useState(false)
   const candidateListId = useId()
+  const candidateRows = useRef(new Map<string, HTMLElement>())
   const queryClient = useQueryClient()
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
@@ -125,6 +126,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const previewPointCount = useLeakPreviewStore((state) => state.points.length)
   const visualizationVisible = useLeakPreviewStore((state) => state.visualizationVisible)
   const selectedCandidateId = useLeakPreviewStore((state) => state.selectedCandidateId)
+  const candidateRevealRequest = useLeakPreviewStore((state) => state.candidateRevealRequest)
   const ignoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const blockers = useLeakPreviewStore((state) => state.blockers)
   const runSignature = useLeakPreviewStore((state) => state.runSignature)
@@ -149,6 +151,16 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const handledRunRef = useRef<string | null>(null)
   const [message, setMessage] = useState('광원으로 사용할 CAD Face를 선택하세요.')
   const [pickingTarget, setPickingTarget] = useState<'source' | null>(null)
+
+  useEffect(() => {
+    if (candidateRevealRequest) setCandidatesCollapsed(false)
+  }, [candidateRevealRequest])
+
+  useEffect(() => {
+    if (candidateRevealRequest && !candidatesCollapsed) {
+      candidateRows.current.get(candidateRevealRequest.candidateId)?.scrollIntoView?.({ block: 'nearest' })
+    }
+  }, [candidateRevealRequest, candidatesCollapsed])
 
   useEffect(() => {
     if (scene) { ensureScene(scene.metadata.scene_token); migrateAllowedAreas() }
@@ -359,6 +371,34 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const highlight = useLeakPreviewStore((state) => state.highlight)
   const setHighlight = useLeakPreviewStore((state) => state.setHighlight)
 
+  const ensureCandidateReceiver = (candidate: LeakPreviewCandidate, candidateIndex: number) => {
+    const generated = createCandidateReceiver(candidate, candidateIndex, scene, transformRules)
+    const existing = receivers.find((receiver) => receiver.reference_mode === 'leak_preview_candidate' &&
+      (generated.view_angles ? receiver.view_angles?.axis === generated.view_angles.axis &&
+        receiver.view_angles.horizontal_deg === generated.view_angles.horizontal_deg &&
+        receiver.view_angles.vertical_deg === generated.view_angles.vertical_deg : !receiver.view_angles) &&
+      Math.abs(receiver.normal.reduce((sum, value, axis) => sum + value * generated.normal[axis], 0) - 1) < 1e-6 &&
+      Math.hypot(...receiver.center.map((value, axis) => value - generated.center[axis])) < .1)
+    if (existing) return { receiver: existing, existed: true }
+    const receiver = { ...generated,
+      receiver_id: nextSpecId('receiver', receivers.map((receiver) => receiver.receiver_id)),
+    }
+    actions.upsertReceiver(receiver)
+    return { receiver, existed: false }
+  }
+
+  const createViewReceiver = (candidate: LeakPreviewCandidate) => {
+    if (!scene || !candidate.observerEvidence) return
+    const index = Math.max(1, candidates.findIndex((item) => item.id === candidate.id) + 1)
+    const { receiver } = ensureCandidateReceiver(candidate, index)
+    for (const other of receivers) {
+      if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
+    }
+    actions.setReceiverEnabled(receiver.receiver_id, true)
+    setMessage('검출 각도의 시야각 Receiver 1개를 활성화했습니다.')
+    onOpenPrecision()
+  }
+
   const createRoi = (candidate: LeakPreviewCandidate, precision: boolean) => {
     if (!scene) return
     setMessage('ROI 후보에 포함되는 CAD Face를 찾고 있습니다.')
@@ -388,26 +428,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       } : undefined,
       point: { x: candidate.center[0], y: candidate.center[1], z: candidate.center[2] },
     })
-    const receiverAlreadyExists = receivers.some((receiver) =>
-      receiver.reference_mode === 'leak_preview_candidate' &&
-      (!candidate.observerEvidence || Math.abs(receiver.normal.reduce((sum, value, axis) => sum + value * candidate.normal[axis], 0) - 1) < 1e-6) &&
-      Math.hypot(
-        (candidate.observerEvidence ? receiver.center[0] : receiver.base_center?.[0] ?? receiver.center[0]) - (candidate.observerEvidence?.receiverCenter[0] ?? candidate.center[0]),
-        (candidate.observerEvidence ? receiver.center[1] : receiver.base_center?.[1] ?? receiver.center[1]) - (candidate.observerEvidence?.receiverCenter[1] ?? candidate.center[1]),
-        (candidate.observerEvidence ? receiver.center[2] : receiver.base_center?.[2] ?? receiver.center[2]) - (candidate.observerEvidence?.receiverCenter[2] ?? candidate.center[2]),
-      ) < 0.1,
-    )
-    if (!receiverAlreadyExists) {
-      const receiverId = nextSpecId(
-        'receiver',
-        receivers.map((receiver) => receiver.receiver_id),
-      )
-      actions.upsertReceiver({
-        ...createCandidateReceiver(candidate, candidateIndex),
-        receiver_id: receiverId,
-        display_name: `Preview Receiver ${candidateIndex}`,
-      })
-    }
+    const { existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex)
     if (precision) {
       if (!emitters.some((emitter) => emitter.enabled)) {
         if (sourceMode === 'body') {
@@ -722,16 +743,19 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               aria-controls={candidateListId} onClick={() => setCandidatesCollapsed(!candidatesCollapsed)}>
               {candidatesCollapsed ? <Plus className="size-3" /> : <Minus className="size-3" />}Leak Candidates · {candidates.length}
             </Button>
-            <HelpTooltip label="후보 삭제 도움말">삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
+            <HelpTooltip label="후보 도움말">Viewer의 Leak 점을 클릭하면 해당 후보를 강조하고 목록을 펼쳐 이동합니다. 목록에서 후보를 선택하면 해당 점을 강조합니다. 역추적 후보의 시야각 Receiver 생성은 검출 당시의 기준 축·좌우·상하 각도로 Receiver만 만들고 정밀해석 설정을 엽니다. 다른 수광면이 Ray를 먼저 받지 않도록 해당 Receiver만 ON으로 전환하며 기존 항목은 보존합니다. 처음에는 단일 각도이며 주변 범위·간격은 Receiver 편집에서 변경합니다. ROI·광원·재질·샘플링 설정은 변경하지 않습니다. 삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
           </div>
           <div id={candidateListId} hidden={candidatesCollapsed} className="space-y-2">{candidates.map((candidate, index) => {
             const selected = candidate.id === selectedCandidateId
             return (
               <article
                 key={candidate.id}
+                ref={(node) => { if (node) candidateRows.current.set(candidate.id, node); else candidateRows.current.delete(candidate.id) }}
+                aria-label={`Candidate ${String(index + 1).padStart(2, '0')}`}
+                aria-current={selected ? 'true' : undefined}
                 className={cn(
                   'rounded-lg border p-2.5 transition-colors',
-                  selected ? 'border-orange-300 bg-orange-50 dark:border-orange-700 dark:bg-orange-950/25' : 'border-border bg-background/40',
+                  selected ? 'border-orange-500 bg-orange-50 ring-2 ring-orange-500/50 dark:bg-orange-950/25' : 'border-border bg-background/40',
                 )}
                 onClick={() => selectCandidate(candidate.id)}
               >
@@ -757,6 +781,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                   </div>
                 ) : null}
                 <div className="mt-2 grid grid-cols-2 gap-1.5">
+                  {candidate.observerEvidence ? <Button className="col-span-2" size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); createViewReceiver(candidate) }}>시야각 Receiver 생성</Button> : null}
                   <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); createRoi(candidate, false) }}>
                     <Square /> ROI·Receiver 생성
                   </Button>

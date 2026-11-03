@@ -1218,7 +1218,7 @@ function ReceiverDialog({
   }, [viewAngles])
   const canApply = mode === 'view_angle' ? Boolean(scene) && !anglePlan.error : mode === 'datum_plane' || capturedFrame !== null
   const isLeakPreviewReceiver =
-    initialReceiver?.reference_mode === 'leak_preview_candidate'
+    initialReceiver?.reference_mode === 'leak_preview_candidate' && mode !== 'view_angle'
   const updatePixelSizeFromResolution = (
     nextResolutionX: number,
     nextResolutionY: number,
@@ -1336,6 +1336,8 @@ function ReceiverDialog({
     onApply({
       ...initialReceiver,
       ...receiver,
+      ...(initialReceiver?.reference_mode === 'leak_preview_candidate' && mode === 'view_angle'
+        ? { reference_mode: 'leak_preview_candidate' } : {}),
       source_face_indices:
         mode === 'datum_plane' ? receiverSourceFaceIds : [],
       display_name:
@@ -2561,7 +2563,7 @@ export function RayTracingPanel({
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {receiver.view_angles ? '시야각' : receiver.placement_mode === 'current_view'
+                    {receiver.view_angles ? `시야각 ${receiver.view_angles.horizontal_deg}° / ${receiver.view_angles.vertical_deg}°` : receiver.placement_mode === 'current_view'
                       ? 'Current View'
                       : 'Datum Plane'}
                     {' · '}

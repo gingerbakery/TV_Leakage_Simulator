@@ -26,6 +26,7 @@ import {
 } from '@/features/components'
 import { MaterialAssignmentPanel } from '@/features/materials'
 import { LeakPreviewPanel } from '@/features/leak-preview'
+import { useLeakPreviewStore } from '@/features/leak-preview/leak-preview-store'
 import {
   RayTracingPanel,
   type RayObjectEditRequest,
@@ -303,6 +304,13 @@ export function WorkflowSidebar({
   useEffect(() => {
     setExpandedSection(activeSection)
   }, [activeSection])
+  const candidateRevealRequest = useLeakPreviewStore((state) => state.candidateRevealRequest)
+  useEffect(() => {
+    if (candidateRevealRequest) {
+      setExpandedSection('leak-preview')
+      onActiveSectionChange('leak-preview')
+    }
+  }, [candidateRevealRequest, onActiveSectionChange])
 
   const sceneStatus = isSceneLoading
     ? 'Loading scene and component tree…'
