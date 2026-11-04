@@ -69,6 +69,20 @@ def planar_trace_input(asset, rays=1200, depth=1):
 
 
 class BsdfTransportTests(unittest.TestCase):
+    def test_near_normal_oblique_face_keeps_frame_and_sampled_rays_unit(self):
+        normal = (0.2564160773074262, -0.8735399525494437, -0.41373753346558667)
+        incoming = (-0.25641607736278405, 0.873539952596738, 0.41373753350092657)
+        _, x, y, n = incident_frame(incoming, normal)
+        frame = np.array([x, y, n])
+        np.testing.assert_allclose(frame @ frame.T, np.eye(3), atol=1e-14, rtol=0)
+        model = compile_asset(synthetic_asset())
+        rng = random.Random(42)
+        directions = np.array([model.sample_direction(rng, incoming, normal) for _ in range(128)])
+        np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1., atol=1e-14, rtol=0)
+        from leakage_simulator.geometry import RayBatch
+        RayBatch(np.zeros_like(directions), directions)
+
+
     def test_api_roundtrip_runs_bsdf_and_repeat_seed_reproduces_flux_grid(self):
         trace=planar_trace_input(synthetic_asset(),rays=200)
         payload={'scene_token':'fixture','emitters':[asdict(trace.emitters[0])],

@@ -204,6 +204,11 @@ def make_bsdf_functions(jit, uniform):
         inv = 1.0 / math.sqrt(length2)
         yx, yy, yz = yx*inv, yy*inv, yz*inv
         xx, xy, xz = yy*nz-yz*ny, yz*nx-yx*nz, yx*ny-yy*nx
+        # Re-orthogonalize after near-normal projection cancellation, matching
+        # incident_frame. Keep sampled polar angles and RNG lanes unchanged.
+        inv_x = 1.0 / math.sqrt(xx*xx + xy*xy + xz*xz)
+        xx, xy, xz = xx*inv_x, xy*inv_x, xz*inv_x
+        yx, yy, yz = ny*xz-nz*xy, nz*xx-nx*xz, nx*xy-ny*xx
         st = math.sin(theta)
         x, y, z = st*math.cos(phi), st*math.sin(phi), math.cos(theta)
         return (x*xx+y*yx+z*nx, x*xy+y*yy+z*ny, x*xz+y*yz+z*nz,

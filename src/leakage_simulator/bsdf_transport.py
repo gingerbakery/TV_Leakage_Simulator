@@ -43,7 +43,11 @@ def incident_frame(incoming, normal):
         projection = sum(a*b for a, b in zip(helper, n))
         y = tuple(helper[k] - projection*n[k] for k in range(3))
     y = _unit(y)
-    x = (y[1]*n[2]-y[2]*n[1], y[2]*n[0]-y[0]*n[2], y[0]*n[1]-y[1]*n[0])
+    # Near normal incidence the subtraction above loses tangent precision and
+    # leaves a small normal component. Rebuild an orthonormal frame before
+    # mapping sampled polar angles back to CAD-space unit ray directions.
+    x = _unit((y[1]*n[2]-y[2]*n[1], y[2]*n[0]-y[0]*n[2], y[0]*n[1]-y[1]*n[0]))
+    y = (n[1]*x[2]-n[2]*x[1], n[2]*x[0]-n[0]*x[2], n[0]*x[1]-n[1]*x[0])
     return math.degrees(math.acos(cosine)), x, y, n
 
 

@@ -21,6 +21,19 @@ from leakage_simulator.types import OpticalProfile, RayTraceConfig
 
 
 class PackedBsdfTests(unittest.TestCase):
+    def test_near_normal_rotated_face_generates_valid_unit_ray_batches(self):
+        from leakage_simulator.geometry import RayBatch
+        normal = np.array([0.2564160773074262, -0.8735399525494437, -0.41373753346558667])
+        incoming = np.array([-0.25641607736278405, 0.873539952596738, 0.41373753350092657])
+        incoming /= np.linalg.norm(incoming)
+        batch = self.batch(synthetic_asset(), n=128)
+        batch = replace(batch, incoming_directions=np.tile(incoming, (128, 1)),
+            surface_normals=np.tile(normal, (128, 1)))
+        reference = plan_counter_reference(batch)
+        np.testing.assert_allclose(np.linalg.norm(reference.emitted_directions, axis=1), 1., atol=1e-14, rtol=0)
+        RayBatch(np.zeros_like(reference.emitted_directions), reference.emitted_directions)
+
+
     def pack(self, asset, copies=1):
         profiles=[OpticalProfile(profile_id='measured',reflectance=0,
             scatter_model='none',bsdf_asset_id=asset['id'])] * copies
