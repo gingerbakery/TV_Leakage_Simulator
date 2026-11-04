@@ -3105,7 +3105,7 @@ export function ThreeViewerCanvas({
         canvas.setPointerCapture(event.pointerId)
         return
       }
-      if (roiBoxSelectionArmedRef.current && (!blockerAreaSelectionIdRef.current || event.ctrlKey || event.metaKey || blockerReferenceSurfaceRef.current?.groupId === blockerAreaSelectionIdRef.current)) {
+      if (roiBoxSelectionArmedRef.current) {
         // Shift/Alt+drag stays free to roll the camera even while armed -
         // orbit is locked so a plain drag always draws the box, but the
         // user still needs some way to reorient without disarming.
@@ -3864,7 +3864,7 @@ export function ThreeViewerCanvas({
     const detachActionShortcuts = attachViewerActionShortcuts(canvas,{fit:fitShortcut,section:() => toggleSectionViewRef.current()},prepareKeyboardNavigation)
     const detachBlockerBoxDrawing = attachBlockerBoxDrawing(canvas, () => Boolean(roiBoxSelectionArmedRef.current && blockerAreaSelectionIdRef.current &&
       !(runtime.roiPreviewRoot.visible && pointerInPip)), handlePointerDown,
-      () => Boolean(blockerReferenceSurfaceRef.current && blockerReferenceSurfaceRef.current.groupId === blockerAreaSelectionIdRef.current))
+      () => true)
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
@@ -4137,7 +4137,7 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
 
-    runtime.controls.noRotate = roiBoxSelectionArmed && !blockerAreaSelectionId
+    runtime.controls.noRotate = roiBoxSelectionArmed
     if (blockerAreaSelectionId && leakPreviewStore.getState().blockers.find((group) => group.id === blockerAreaSelectionId)?.shape === 'ellipse') {
       onStatusMessage('홀 선택 중 · 원형 홀 중심 근처 클릭')
     }
@@ -4161,7 +4161,7 @@ export function ThreeViewerCanvas({
       runtime.roiPreviewRoot.visible = false
       runtime.modelRoot.visible = true
       if (blockerAreaSelectionId) {
-        onStatusMessage('Block 선택 중 · Ctrl+드래그로 영역 추가')
+        onStatusMessage('Block 선택 중 · 왼쪽 드래그로 영역 추가 · F3 회전')
         return
       }
       const preset = runtime.roiSelectionPreset ?? 'XY'
@@ -5999,7 +5999,7 @@ export function ThreeViewerCanvas({
               : 'Emitter surface mode · Click/Ctrl drag add · Shift click/drag remove · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
         <HelpTooltip label="뷰어 단축키 도움말" triggerClassName="pointer-events-auto">
-          Block 만들기에서는 CAD 면을 클릭해 기준면을 선택한 뒤 왼쪽 드래그로 영역을 추가합니다. 기준면 선택 전에도 Ctrl+왼쪽 드래그로 바로 추가할 수 있습니다. 기준면 선택 전 일반 드래그는 회전이며, 선택 후에는 F3 회전을 사용할 수 있습니다. 우클릭 이동과 휠 확대도 계속 사용할 수 있습니다.
+          Block 만들기 중 왼쪽 드래그는 항상 영역을 그립니다. 먼저 CAD 면을 클릭하면 기준면을 고정하며, 바로 드래그하면 시작점의 면을 사용합니다. Ctrl+드래그도 같은 기능입니다. 회전은 F3을 사용합니다. 우클릭 이동과 휠 확대도 계속 사용할 수 있습니다.
           마우스 버튼 없이 F1을 누른 채 이동하면 PAN, F2는 ZOOM, F3는 ROTATE입니다.
           키를 떼면 종료합니다. F4는 현재 방향에서 가장 가까운 기본 뷰로 정렬합니다.
           뷰어 위에서는 입력칸에 포커스가 남아 있어도 F1~F4를 사용할 수 있으며 미니뷰 위에서는 미니뷰 카메라를 조작합니다. 선택 박스를 그리는 중에 단축키를 누르면 미완료 드래그만 취소하고 작업 모드는 유지합니다. F는 화면 맞춤, H는 Section이며 이름 등 문자 입력 중에는 F/H를 입력에 사용합니다.
