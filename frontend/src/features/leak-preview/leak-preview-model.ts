@@ -130,6 +130,7 @@ export interface LeakPreviewPoint {
 export interface LeakPreviewCandidate {
   representativePath?: Vec3[]
   groupedCount?: number
+  observerAngles?: Array<{ horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number }>
   sourceCandidateIds?: string[]
   id: string
   label: string
@@ -1244,7 +1245,11 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
       return a.length === b.length && a.every((point, i) => Math.hypot(...subtract(point, b[i])) <= distance)
     })
     if (!target) {
-      const group = { ...candidate, groupedCount: 1, sourceCandidateIds: [...(candidate.sourceCandidateIds ?? [candidate.id])] }
+      const evidence = candidate.observerEvidence
+      const group = { ...candidate, groupedCount: 1, sourceCandidateIds: [...(candidate.sourceCandidateIds ?? [candidate.id])],
+        ...(evidence ? { observerAngles: [{ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg,
+          directCount: evidence.directCount, reflectedCount: evidence.reflectedCount }] } : {}) }
+
       groups.push(group)
       const key = cell.join(':')
       buckets.set(key, [...(buckets.get(key) ?? []), group])
@@ -1254,6 +1259,13 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     ids.set(candidate.id, target.id)
     target.sourceCandidateIds!.push(...(candidate.sourceCandidateIds ?? [candidate.id]))
     target.groupedCount = (target.groupedCount ?? 1) + 1
+    if (target.observerEvidence && candidate.observerEvidence) {
+      const evidence = candidate.observerEvidence
+      const angle = target.observerAngles!.find((item) => item.horizontalDeg === evidence.horizontalDeg && item.verticalDeg === evidence.verticalDeg)
+      if (angle) { angle.directCount += evidence.directCount; angle.reflectedCount += evidence.reflectedCount }
+      else target.observerAngles!.push({ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg,
+        directCount: evidence.directCount, reflectedCount: evidence.reflectedCount })
+    }
     target.sampledPathCount += candidate.sampledPathCount
     target.cellCount += candidate.cellCount
     target.grazingPathCount += candidate.grazingPathCount
@@ -1261,6 +1273,11 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     target.clipBox = { xMin: Math.min(target.clipBox.xMin, candidate.clipBox.xMin), xMax: Math.max(target.clipBox.xMax, candidate.clipBox.xMax),
       yMin: Math.min(target.clipBox.yMin, candidate.clipBox.yMin), yMax: Math.max(target.clipBox.yMax, candidate.clipBox.yMax),
       zMin: Math.min(target.clipBox.zMin ?? 0, candidate.clipBox.zMin ?? 0), zMax: Math.max(target.clipBox.zMax ?? 0, candidate.clipBox.zMax ?? 0) }
+  }
+  for (const group of groups) {
+    if (group.observerAngles && group.observerAngles.length > 1 && group.observerEvidence) {
+      group.label = `대표 ${group.observerEvidence.horizontalDeg}° / ${group.observerEvidence.verticalDeg}° · ${group.observerAngles.length}방향`
+    }
   }
   return { candidates: groups, points: points.map((point) => ({ ...point, candidateId: ids.get(point.candidateId ?? '') ?? point.candidateId })) }
 }

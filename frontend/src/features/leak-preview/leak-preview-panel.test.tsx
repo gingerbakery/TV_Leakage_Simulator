@@ -490,3 +490,22 @@ it('retains an active full-detail job when shared analysis settings change', asy
   expect(screen.queryByRole('button', { name: '전체 정밀 검색 시작' })).toBeNull()
   expect(screen.getByText('설정 변경 · 실행 중인 작업은 기존 조건으로 계속 진행합니다.')).toBeTruthy()
 })
+
+
+it('distinguishes observer path detections from brightness priority and lists all grouped angles', () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'angles.step', displayName: 'Angles' })
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const candidate = { ...detectLeakPreviewCandidates(scene, result).candidates[0], relativeStrength: .001,
+    observerEvidence: { axis: 'neg_z' as const, stepDeg: 15, horizontalDeg: -60, verticalDeg: 15, directCount: 1, reflectedCount: 0,
+      direction: [0,0,-1] as [number,number,number], receiverCenter: [0,0,-10] as [number,number,number] },
+    observerAngles: [{ horizontalDeg: -60, verticalDeg: 15, directCount: 1, reflectedCount: 0 },
+      { horizontalDeg: -60, verticalDeg: 30, directCount: 0, reflectedCount: 2 }], groupedCount: 2 }
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result, [], [candidate]))
+  expect(screen.getByText('경로 검출 · 광량 미평가')).toBeTruthy()
+  expect(screen.queryByText(/Priority · Low/)).toBeNull()
+  expect(screen.getByText('검출 각도 · 2방향')).toBeTruthy()
+  expect(screen.getByText('좌우 -60° · 상하 15° · 직광 1 · 반사광 0')).toBeTruthy()
+  expect(screen.getByText('좌우 -60° · 상하 30° · 직광 0 · 반사광 2')).toBeTruthy()
+  expect(screen.getByText('직광 1 · 반사광 2')).toBeTruthy()
+})

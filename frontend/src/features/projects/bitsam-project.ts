@@ -615,6 +615,11 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
       !['minReflectionCount','maxReflectionCount','meanExitAngleDeg'].every((key) => candidate[key] === null || isFiniteNumber(candidate[key]))) return false
     if (candidate.representativePath !== undefined && (!Array.isArray(candidate.representativePath) || candidate.representativePath.length < 2 || !candidate.representativePath.every(isVec3))) return false
     if (candidate.groupedCount !== undefined && (!Number.isSafeInteger(candidate.groupedCount) || Number(candidate.groupedCount) < 1)) return false
+    if (candidate.observerAngles !== undefined && (!Array.isArray(candidate.observerAngles) || !candidate.observerAngles.every((angle: unknown) =>
+      isRecord(angle) && ['horizontalDeg','verticalDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(angle[key])) &&
+      Math.abs(Number(angle.horizontalDeg)) <= 90 && Math.abs(Number(angle.verticalDeg)) <= 90 &&
+      Number.isSafeInteger(angle.directCount) && Number.isSafeInteger(angle.reflectedCount) &&
+      Number(angle.directCount) >= 0 && Number(angle.reflectedCount) >= 0))) return false
     const observer = candidate.observerEvidence
     if (observer !== undefined && (!isRecord(observer) || !isOneOf(observer.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z']) ||
       !['horizontalDeg','verticalDeg','stepDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(observer[key])) ||

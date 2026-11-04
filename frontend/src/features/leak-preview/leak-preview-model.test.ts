@@ -45,6 +45,17 @@ describe('whole-set leak preview', () => {
     expect(grouped.points.map((point) => point.candidateId)).toEqual(['a','a','c','d'])
     expect(grouped.candidates[0].representativePath).toEqual(candidates[0].representativePath)
     expect(candidates[0].sourceCandidateIds).toBeUndefined()
+    const angled = candidates.map((candidate, index) => ({ ...candidate, observerEvidence: { axis: 'neg_z' as const, stepDeg: 15,
+      horizontalDeg: -60, verticalDeg: index * 15, directCount: index + 1, reflectedCount: 0,
+      direction: [0,0,-1] as [number,number,number], receiverCenter: [0,0,-10] as [number,number,number] } }))
+    const angularGroup = groupObserverCandidates(points, angled, 3).candidates[0]
+    expect(angularGroup.observerAngles).toEqual([
+      { horizontalDeg: -60, verticalDeg: 0, directCount: 1, reflectedCount: 0 },
+      { horizontalDeg: -60, verticalDeg: 15, directCount: 2, reflectedCount: 0 },
+    ])
+    expect(angularGroup.label).toContain('2방향')
+    expect(angularGroup.label).toContain('대표')
+    expect(angularGroup.observerEvidence?.directCount).toBe(1)
   })
 
   it('accepts rectangular full-detail result bins and rejects an older server response without the spacing contract', () => {
