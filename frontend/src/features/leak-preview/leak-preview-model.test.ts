@@ -197,6 +197,9 @@ describe('whole-set leak preview', () => {
     const detection = detectLeakPreviewCandidates(scene, result)
     expect(detection.points).toHaveLength(1)
     expect(detection.points[0].position).toEqual(position)
+    const escape = result.metrics._escape_direction_summary as { cells: Array<{ surface_position?: [number,number,number] }> }
+    escape.cells[0].surface_position = [2,3,4]
+    expect(detectLeakPreviewCandidates(scene,result).points[0].position).toEqual([2,3,4])
     expect(detection.candidates[0].meanExitAngleDeg).toBe(90)
     expect(escapeDirectionSummary(result)?.bins[3].count).toBe(1)
     ;(result.metrics._escape_direction_summary as { selected_count: number }).selected_count = 2
@@ -251,7 +254,13 @@ describe('whole-set leak preview', () => {
     expect(observerProbeSummary(result)).not.toBeNull()
     const detection = detectLeakPreviewCandidates(scene, result)
     expect(detection.points).toHaveLength(1)
+    expect(detection.points[0].position).toEqual([1,2,3])
     expect(detection.candidates).toHaveLength(1)
+    const cells = (result.metrics._observer_probe_summary as { cells: Array<{ representative_path?: [number,number,number][] }> }).cells
+    cells[0].representative_path = [[0,0,0],[2,3,4],[1000,0,-100]]
+    const actual = detectLeakPreviewCandidates(scene,result)
+    expect(actual.points[0].position).toEqual([2,3,4])
+    expect(actual.points[0].surfacePosition).toEqual([2,3,4])
     const receiver = createCandidateReceiver(detection.candidates[0], 1)
     const observationDirection = detection.candidates[0].observerEvidence!.direction
     expect(receiver.center).toEqual(detection.candidates[0].observerEvidence!.receiverCenter)

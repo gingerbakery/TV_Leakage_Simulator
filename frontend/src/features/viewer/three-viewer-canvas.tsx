@@ -4029,7 +4029,7 @@ export function ThreeViewerCanvas({
           object.renderOrder = 230
           const material = (object as Mesh).material
           for (const item of Array.isArray(material) ? material : material ? [material] : []) {
-            item.depthTest = false; item.depthWrite = false; item.toneMapped = false
+            item.depthTest = true; item.depthWrite = false; item.toneMapped = false
           }
         })
         runtime.leakPreviewRoot.add(arrow)

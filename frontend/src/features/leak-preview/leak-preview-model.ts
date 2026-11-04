@@ -19,7 +19,6 @@ import type {
 import {
   createLeakPreviewPointTransform,
   getLeakPreviewBounds,
-  projectLeakPreviewExit,
 } from './leak-preview-geometry'
 
 import type { BsdfAsset } from '@/features/materials/bsdf-asset'
@@ -468,7 +467,7 @@ export interface EscapeDirectionSummary {
   selected_count: number
   excluded_count: number
   bins: Array<{ min_deg: number; max_deg: number; count: number; flux_lumen: number }>
-  cells: Array<{ receiver_id: string; row: number; column: number; position: Vec3; count: number;
+  cells: Array<{ receiver_id: string; row: number; column: number; position: Vec3; surface_position?: Vec3; count: number;
     grazing_count: number; min_depth: number; max_depth: number; angle_sum_deg: number; angle_bin_counts?: number[] }>
 }
 
@@ -485,6 +484,7 @@ export function escapeDirectionSummary(result: RayTraceResult): EscapeDirectionS
     const grid = cell && grids.get(cell.receiver_id)
     return grid && count(cell.row) && count(cell.column) && cell.row < grid.resolution[1] && cell.column < grid.resolution[0] &&
       Array.isArray(cell.position) && cell.position.length === 3 && cell.position.every(Number.isFinite) &&
+      (cell.surface_position === undefined || (Array.isArray(cell.surface_position) && cell.surface_position.length === 3 && cell.surface_position.every(Number.isFinite))) &&
       count(cell.count) && cell.count > 0 && count(cell.grazing_count) && cell.grazing_count <= cell.count &&
       count(cell.min_depth) && count(cell.max_depth) && cell.max_depth >= cell.min_depth && Number.isFinite(cell.angle_sum_deg) &&
       (cell.angle_bin_counts === undefined || (Array.isArray(cell.angle_bin_counts) && cell.angle_bin_counts.length === 4 &&
@@ -1068,7 +1068,7 @@ function sampledEscapeLocations(
   const summary = escapeDirectionSummary(result)
   if (summary) return new Map(summary.cells.map((cell) => [
     `${cell.receiver_id}:${cell.row}:${cell.column}`,
-    { position: cell.position, sampleCount: cell.count, grazingSampleCount: cell.grazing_count,
+    { position: cell.surface_position ?? cell.position, sampleCount: cell.count, grazingSampleCount: cell.grazing_count,
       minReflectionCount: cell.min_depth, maxReflectionCount: cell.max_depth,
       meanExitAngleDeg: cell.angle_sum_deg / Math.max(1, cell.count), angleBins: cell.angle_bin_counts },
   ]))
@@ -1205,8 +1205,12 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
 
     connectedClusters(active).forEach((cluster, index) => {
       const candidateId = `observer-${viewIndex}-${index}`
-      cluster.forEach((cell) => points.push({ position: projectLeakPreviewExit(cell.position, view.direction, bounds.minimum, bounds.maximum) ?? cell.position,
-        surfacePosition: cell.position, relativeStrength: cell.flux / maximum, candidateId, observerAngles: [view.horizontal_deg, view.vertical_deg] }))
+      cluster.forEach((cell) => {
+        const sample = lookup.get(`${cell.row}:${cell.column}`)!
+        const position = sample.representative_path?.at(-2) ?? cell.position
+        points.push({ position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
+          observerAngles: [view.horizontal_deg, view.vertical_deg] })
+      })
       const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
       const directCount = evidence.reduce((sum, cell) => sum + cell.direct_count, 0)
       const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)

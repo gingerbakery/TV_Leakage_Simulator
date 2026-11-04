@@ -8,6 +8,15 @@ import { isLeakPreviewPointHighlighted, createEscapeEnclosureReceivers, detectLe
 import { snapshotCadCasesForRayTrace, workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
+  it('restores older envelope markers to their retained physical evidence locations', () => {
+    const saved = createSavedLeakPreviewFixture()
+    saved.points[0] = { ...saved.points[0], position:[100,100,100], surfacePosition:[1,2,3] }
+    leakPreviewStore.getState().restoreProjectState(undefined,saved)
+    expect(leakPreviewStore.getState().points[0].position).toEqual([1,2,3])
+    expect(saved.points[0].position).toEqual([100,100,100])
+    leakPreviewStore.getState().clear()
+  })
+
   it('persists evidence and candidate deletions without cloning the completed result on selection', () => {
     workspaceStore.getState().actions.addCadCase({ path: 'saved.step', displayName: 'Saved' })
     const fixture = createSavedLeakPreviewFixture()

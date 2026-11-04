@@ -11,9 +11,8 @@ it('draws actual source-to-bounce-to-observer arrows and a normalized observer d
   expect(arrows).toEqual([
     { start: [0,0,-5], end: [2,0,0], kind: 'ray' },
     { start: [2,0,0], end: [2,0,-10], kind: 'ray' },
-    { start: [2,0,0], end: [2,0,-20], kind: 'observer' },
+    { start: [2,0,-10], end: [2,0,-30], kind: 'observer' },
   ])
   const old = leakPreviewArrowSegments({ ...base, representativePath: undefined }, 20)
-  expect(old).toHaveLength(1)
-  expect(old[0].kind).toBe('observer')
+  expect(old).toHaveLength(0)
 })

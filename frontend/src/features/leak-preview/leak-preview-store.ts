@@ -425,7 +425,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       jobId: null,
       result: saved?.result ?? null,
       resultRestored: Boolean(saved),
-      points: saved?.points ?? [],
+      points: saved?.points.map((point) => point.surfacePosition ? { ...point, position: point.surfacePosition } : point) ?? [],
       candidates: saved?.candidates ?? [],
       highlight: saved?.highlight ?? null,
       selectedCandidateId: saved?.selectedCandidateId ?? null,

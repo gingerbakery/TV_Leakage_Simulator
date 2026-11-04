@@ -32,6 +32,15 @@ def collector(regions=None):
 
 
 class EscapeCollectionTests(unittest.TestCase):
+    def test_preserves_actual_escape_origin_separately_from_envelope_average(self):
+        c = collector()
+        self.assertTrue(c.record((1,2,-3), (0,0,-1), 1., 0))
+        self.assertTrue(c.record((2,3,-4), (0,0,-1), 1., 0))
+        cell = c.summary()["cells"][0]
+        self.assertEqual(cell["surface_position"], [1,2,-3])
+        self.assertEqual(cell["position"], [1.5,2.5,-10.])
+
+
     def test_boundary_normal_offset_preserves_grazing_escapes_on_every_axis(self):
         for axis in range(3):
             for sign in (-1, 1):

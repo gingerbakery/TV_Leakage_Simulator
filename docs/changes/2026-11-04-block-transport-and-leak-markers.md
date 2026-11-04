@@ -45,3 +45,20 @@ it('filters exterior observer markers using their retained internal evidence loc
   expect(leakPreviewPointsInRoi([point], [scope('internal',0,1)])).toEqual([point])
   expect(leakPreviewPointsInRoi([point], [scope('exterior',9,11)])).toEqual([])
 })
+
+
+## Marker correction after visual feedback
+
+The envelope-marker presentation above has been superseded. Observer points now
+prefer the actual first visible surface/source sample from a stored path, not
+the averaged cell position or a bounding-box projection. Forward escape cells
+retain their actual terminal-ray origin separately from envelope statistics.
+Old saved observer markers are restored from retained surface positions when
+available. Older forward results without these samples need rerunning.
+
+Cyan direction guides now begin at the stored observation endpoint and point
+outward, instead of extending an arbitrary distance from an internal surface.
+No guide is fabricated without a stored path. Path arrows now respect displayed
+CAD depth, so occluded segments are not painted through visible solid surfaces.
+These presentation changes do not establish physical validity of a customer CAD
+path; independent occlusion checks still require the customer's saved case.

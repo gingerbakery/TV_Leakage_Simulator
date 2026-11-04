@@ -29,16 +29,3 @@ it('requires a real surface and rejects edge-on or zero-size rectangles', () => 
   expect(projectBlockerDrag(camera, viewport, drag, group, { point: [3,0,0], normal: [1,0,0] })).toBeNull()
   expect(projectBlockerDrag(camera, viewport, { ...drag, currentX: drag.startX }, group, { point: [0,0,3], normal: [0,0,1] })).toBeNull()
 })
-
-
-it('projects an interior observer hit to the full assembly boundary without moving the path evidence', async () => {
-  const { projectLeakPreviewExit } = await import('@/features/leak-preview/leak-preview-geometry')
-  const origin: [number,number,number] = [2,3,4]
-  const exit = projectLeakPreviewExit(origin, [-.6,0,-.8], [0,0,0], [10,10,10])!
-  expect(exit[0]).toBeCloseTo(0)
-  expect(exit[1]).toBeCloseTo(3)
-  expect(exit[2]).toBeCloseTo(4-2/.6*.8)
-  expect(origin).toEqual([2,3,4])
-  expect(projectLeakPreviewExit([0,3,4], [-1,0,0], [0,0,0], [10,10,10])).toEqual([0,3,4])
-  expect(projectLeakPreviewExit([12,3,4], [1,0,0], [0,0,0], [10,10,10])).toBeNull()
-})
