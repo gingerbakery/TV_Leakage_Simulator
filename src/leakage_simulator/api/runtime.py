@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1382,10 +1383,19 @@ class ApiRuntime:
         job_id: str,
         **updates: Any,
     ) -> None:
+        terminal = None
         with self._state_lock:
             job = self._raytrace_jobs.get(job_id)
             if job is not None:
+                previous_status = job.get("status")
                 job.update(updates)
+                if job.get("status") in {"completed", "cancelled", "failed"} and previous_status != job.get("status"):
+                    terminal = dict(job)
+        if terminal is not None:
+            print("[RAY] job end | {} | status={} phase={} | processed={}/{} progress={:.1%} | stop_requested={} | {}".format(
+                job_id, terminal.get("status"), terminal.get("phase"),
+                terminal.get("processed_rays", 0), terminal.get("total_rays", 0), terminal.get("progress", 0),
+                terminal.get("stop_requested", False), terminal.get("error") or terminal.get("phase_detail", "")), flush=True)
 
     def _run_raytrace_job(
         self,
@@ -1578,12 +1588,14 @@ class ApiRuntime:
                 completed_at=time.time(),
             )
         except Exception as exc:
+            print(f"[RAY] job exception | {job_id} | {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
             self._update_raytrace_job(
                 job_id,
                 status="failed",
                 phase="failed",
                 phase_detail="Ray Tracing 오류 발생",
-                error=str(exc),
+                error=str(exc) or type(exc).__name__,
                 estimated_remaining_sec=None,
                 completed_at=time.time(),
             )

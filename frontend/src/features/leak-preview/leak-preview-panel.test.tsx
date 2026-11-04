@@ -14,16 +14,16 @@ import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewR
 import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { LeakPreviewPanel } from './leak-preview-panel'
 
-const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown }))
+const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown, queryError: null as Error | null }))
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api')
   return { ...actual,
     useStartRayTraceMutation: () => ({ mutateAsync: mocks.start, isPending: false }),
     useStopRayTraceMutation: () => ({ mutateAsync: vi.fn(), isPending: false }),
-    useRayTraceJobQuery: () => ({ data: mocks.job }),
+    useRayTraceJobQuery: () => ({ data: mocks.job, isError: Boolean(mocks.queryError), error: mocks.queryError, refetch: vi.fn() }),
   }
 })
-afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined })
+afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
 it('keeps saved results while the scene loads and rebinds a restarted server session', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'saved.step', displayName: 'Saved' })
@@ -293,7 +293,7 @@ it('invalidates old Preview results after Allowed Area changes and includes the 
     leakPreviewStore.getState().finishIgnoreAreaSelection()
   })
   expect(leakPreviewStore.getState().candidates).toEqual([])
-  expect(screen.getByText('Preview 재실행 필요')).toBeTruthy()
+  expect(screen.getByText(/Preview 재실행 필요/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledTimes(2))
   expect(mocks.start.mock.calls[1][0].request.preview_blockers).toHaveLength(2)
@@ -398,7 +398,8 @@ it('automatically budgets sampling and blocks excessive angles before starting',
   workspaceStore.getState().actions.addCadCase({ path: 'auto.step', displayName: 'Auto' })
   workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('emitter_001', [0, 0, 0], [0, 0, 0]))
   mocks.start.mockResolvedValue({ job_id: 'auto-job' })
-  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  const scene = createSceneFixture()
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
   fireEvent.click(screen.getByRole('button', { name: '기존 Emitter 사용' }))
   fireEvent.click(screen.getByLabelText('시야각 역추적 사용'))
   expect(screen.getByRole('button', { name: '기본' }).getAttribute('aria-pressed')).toBe('true')
@@ -408,10 +409,84 @@ it('automatically budgets sampling and blocks excessive angles before starting',
   fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
   expect(mocks.start.mock.calls[0][0].request.observer_probe).toMatchObject({ resolution: 43, samples_per_cell: 1, step_deg: .5 })
+  mocks.job = { job_id: 'auto-job', status: 'cancelled', phase: 'stopped', progress: 0 }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
   act(() => leakPreviewStore.getState().setObserver({ range_deg: 10, step_deg: .1 }))
   expect(screen.getByRole('alert').textContent).toContain('각도 조합')
   expect((screen.getByRole('button', { name: 'Run Leak Preview' }) as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: /간격 자동 조정/ }))
   expect(leakPreviewStore.getState().observer.step_deg).toBe(2)
   expect((screen.getByRole('button', { name: 'Run Leak Preview' }) as HTMLButtonElement).disabled).toBe(false)
+})
+
+
+it('keeps an accepted job active while its status is unavailable and exposes polling errors', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'unknown.step', displayName: 'Unknown' })
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'unknown-job' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setSourceFaceIds([0]))
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('unknown-job'))
+  expect(screen.getByRole('button', { name: 'Preview Stop' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Run Leak Preview' })).toBeNull()
+  mocks.queryError = new Error('network unavailable')
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  expect(screen.getByRole('alert').textContent).toContain('unknown-job')
+  expect(screen.getByRole('alert').textContent).toContain('network unavailable')
+  expect(screen.getByRole('button', { name: '상태 다시 조회' })).toBeTruthy()
+})
+
+it('shows the server error and job identity when a hemisphere job fails halfway', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'failed.step', displayName: 'Failed' })
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'failed-halfway' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true, coverage: 'hemisphere', step_deg: 15, search_mode: 'full_detail' }) })
+  fireEvent.click(screen.getByRole('button', { name: '전체 정밀 검색 시작' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('failed-halfway'))
+  mocks.job = { job_id: 'failed-halfway', status: 'failed', phase: 'failed', progress: .5, error: 'synthetic observer error' }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  expect(screen.getByRole('alert').textContent).toContain('50%')
+  expect(screen.getByRole('alert').textContent).toContain('failed-halfway')
+  expect(screen.getByRole('alert').textContent).toContain('synthetic observer error')
+  expect(screen.getByRole('button', { name: '전체 정밀 검색 시작' }).hasAttribute('disabled')).toBe(false)
+})
+
+it('reports a result processing exception without losing the job identity', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'broken.step', displayName: 'Broken' })
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'broken-result' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setDetectionMode('planar') })
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('broken-result'))
+  const result = { ...createRayTraceResultFixture(), receiver_grids: undefined }
+  mocks.job = { job_id: 'broken-result', status: 'completed', phase: 'completed', progress: 1, result }
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+    expect(screen.getByRole('alert').textContent).toContain('결과 처리 실패')
+    expect(screen.getByRole('alert').textContent).toContain('broken-result')
+    expect(leakPreviewStore.getState().jobId).toBe('broken-result')
+    expect(logged).toHaveBeenCalled()
+  } finally { logged.mockRestore() }
+})
+
+
+it('retains an active full-detail job when shared analysis settings change', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'active.step', displayName: 'Active' })
+  const scene = createSceneFixture()
+  mocks.start.mockResolvedValue({ job_id: 'active-halfway' })
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true, coverage: 'hemisphere', step_deg: 15, search_mode: 'full_detail' }) })
+  fireEvent.click(screen.getByRole('button', { name: '전체 정밀 검색 시작' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('active-halfway'))
+  mocks.job = { job_id: 'active-halfway', status: 'running', phase: 'tracing', progress: .5, processed_rays: 50, total_rays: 100 }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => workspaceStore.getState().actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, max_depth: 17 }))
+  expect(leakPreviewStore.getState().jobId).toBe('active-halfway')
+  expect(screen.getByRole('button', { name: 'Preview Stop' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '전체 정밀 검색 시작' })).toBeNull()
+  expect(screen.getByText('설정 변경 · 실행 중인 작업은 기존 조건으로 계속 진행합니다.')).toBeTruthy()
 })

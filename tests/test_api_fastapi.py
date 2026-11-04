@@ -75,6 +75,34 @@ def _trace_runner(trace_input, progress_callback=None, should_stop=None):
 
 
 class FastApiLayerTests(unittest.TestCase):
+    def test_halfway_worker_exception_is_logged_and_exposed_in_status(self):
+        def runner(trace_input, progress_callback=None, should_stop=None):
+            progress_callback(1, 2)
+            raise RuntimeError("synthetic halfway observer failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = ApiRuntime(Path(directory), scene_loader=_scene_loader,
+                trace_input_builder=_trace_input_builder, trace_runner=runner)
+            scene = runtime.load_scene("failed.step")
+            with patch("builtins.print") as output, patch("leakage_simulator.api.runtime.traceback.print_exc") as stack:
+                job = runtime.start_raytrace_job({"scene_token": scene["metadata"]["scene_token"],
+                    "emitters": [{"enabled": True, "ray_count": 2}]})
+                for _ in range(100):
+                    snapshot = runtime.raytrace_job_snapshot(job["job_id"])
+                    if snapshot["status"] == "failed":
+                        break
+                    time.sleep(.005)
+                self.assertEqual(snapshot["status"], "failed")
+                self.assertEqual(snapshot["progress"], .5)
+                self.assertEqual(snapshot["error"], "synthetic halfway observer failure")
+                stack.assert_called_once()
+                messages = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+                self.assertIn("job exception", messages)
+                self.assertIn("status=failed", messages)
+                self.assertIn(job["job_id"], messages)
+                self.assertIn("50.0%", messages)
+
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.runtime = ApiRuntime(

@@ -181,7 +181,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     if (scene) migrateAllowedAreas()
   }, [migrateAllowedAreas, scene])
 
-  const isRunning = startMutation.isPending || job?.status === 'queued' || job?.status === 'running'
+  const activeJob = job?.job_id === jobId ? job : undefined
+  // A missing response is an unknown job state, not evidence of completion.
+  const isRunning = startMutation.isPending || Boolean(jobId && !activeJob) || activeJob?.status === 'queued' || activeJob?.status === 'running'
+  const queryError = jobId && jobQuery.isError ? `작업 상태 조회 실패 · Job ${jobId} · ${jobQuery.error instanceof Error ? jobQuery.error.message : '서버 응답을 확인할 수 없습니다.'}` : null
+  const terminalStatus = activeJob?.status === 'failed'
+    ? `해석 실패 · ${Math.round(activeJob.progress * 100)}% · Job ${activeJob.job_id} · ${activeJob.error || '알 수 없는 서버 오류'}`
+    : activeJob?.status === 'cancelled' || (activeJob?.status === 'completed' && (activeJob.phase === 'stopped' || activeJob.stopped_early))
+      ? `중지 · Job ${activeJob.job_id} · ${activeJob.phase_detail ?? '부분 결과'}`
+      : activeJob?.status === 'completed' ? `해석 완료 · Job ${activeJob.job_id}` : null
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
   const isFinalizing = job?.status === 'running' &&
     (job.phase === 'aggregating' || job.phase === 'serializing')
@@ -237,34 +245,38 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }, [actions, finishBlockerAreaSelection, finishIgnoreAreaSelection])
 
   useEffect(() => {
-    if (!scene || !jobId || job?.job_id !== jobId || job.status !== 'completed' || !job.result) return
+    if (!scene || !jobId || job?.job_id !== jobId || job.status !== 'completed') return
+    if (!job.result) { setMessage(`결과 누락 · Job ${jobId} · 서버가 완료 결과를 반환하지 않았습니다.`); return }
     if (runSignature && runSignature !== previewInputSignature) return
-    if (detectionMode === 'escape_directions' && !escapeDirectionSummary(job.result)) {
-      clearDetection()
-      setMessage('방향별 유출 집계 결과가 없습니다. 서버를 최신 버전으로 업데이트한 뒤 다시 실행하세요.')
-      return
+    try {
+      if (detectionMode === 'escape_directions' && !escapeDirectionSummary(job.result)) {
+        setMessage(`결과 확인 실패 · Job ${jobId} · 방향별 유출 집계 결과가 없습니다. 서버와 화면 버전을 확인하세요.`)
+        return
+      }
+      if (detectionMode === 'escape_directions' && observer.enabled && !observerProbeSummary(job.result)) {
+        setMessage(`결과 확인 실패 · Job ${jobId} · 역추적 집계가 없거나 유효하지 않습니다. 서버와 화면 버전을 확인하세요.`)
+        return
+      }
+      const detectionKey = `${job.job_id}:${detectionMode}:${JSON.stringify(analysisOnly(ignoreAreas))}`
+      if (handledRunRef.current === detectionKey) return
+      handledRunRef.current = detectionKey
+      const detection = detectLeakPreviewCandidates(scene, job.result, {
+        quality,
+        ignoreAreas,
+        transformRules,
+      })
+      setDetection(job.result, detection.points, detection.candidates)
+      setMessage(
+        job.phase === 'stopped' || job.stopped_early || observerProbeSummary(job.result)?.stopped
+          ? `Preview를 중지했습니다. 중지 시점까지 빛샘 후보 ${detection.candidates.length}개가 검출되었습니다.`
+          : detection.candidates.length > 0
+          ? `빛샘 후보 ${detection.candidates.length}개를 찾았습니다.`
+          : '현재 탐색 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.',
+      )
+    } catch (error) {
+      console.error(`[Preview] result processing failed | Job ${jobId}`, error)
+      setMessage(`결과 처리 실패 · Job ${jobId} · ${error instanceof Error ? error.message : String(error)}`)
     }
-    if (detectionMode === 'escape_directions' && observer.enabled && !observerProbeSummary(job.result)) {
-      clearDetection()
-      setMessage('역추적 결과가 없습니다. 서버와 화면을 함께 업데이트한 뒤 다시 실행하세요.')
-      return
-    }
-    const detectionKey = `${job.job_id}:${detectionMode}:${JSON.stringify(analysisOnly(ignoreAreas))}`
-    if (handledRunRef.current === detectionKey) return
-    handledRunRef.current = detectionKey
-    const detection = detectLeakPreviewCandidates(scene, job.result, {
-      quality,
-      ignoreAreas,
-      transformRules,
-    })
-    setDetection(job.result, detection.points, detection.candidates)
-    setMessage(
-      job.phase === 'stopped'
-        ? `Preview를 중지했습니다. 중지 시점까지 빛샘 후보 ${detection.candidates.length}개가 검출되었습니다.`
-        : detection.candidates.length > 0
-        ? `빛샘 후보 ${detection.candidates.length}개를 찾았습니다.`
-        : '현재 탐색 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.',
-    )
   }, [clearDetection, detectionMode, observer.enabled, ignoreAreas, job, jobId, previewInputSignature, quality, runSignature, scene, setDetection, transformRules])
 
   useEffect(() => {
@@ -280,13 +292,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     if (current.sceneToken !== scene.metadata.scene_token) return
     const currentSignature = current.runSignature
     if (!currentSignature || currentSignature === previewInputSignature) return
+    if (isRunning) { setMessage('설정 변경 · 실행 중인 작업은 기존 조건으로 계속 진행합니다.'); return }
+    if (activeJob?.status === 'failed' || activeJob?.status === 'cancelled') return
     clearDetection()
-    setMessage('Preview 재실행 필요')
-  }, [clearDetection, previewInputSignature, runSignature, scene])
+    setMessage(jobId ? `설정 변경으로 결과 초기화 · Job ${jobId} · Preview 재실행 필요` : 'Preview 재실행 필요')
+  }, [activeJob, clearDetection, isRunning, jobId, previewInputSignature, runSignature, scene])
 
   useEffect(() => {
     if (job?.status !== 'failed') return
-    setMessage(`Preview 실행 실패: ${job.error}`)
+    setMessage(`Preview 실행 실패 · Job ${job.job_id} · ${job.error}`)
   }, [job])
 
   const finishFaceSelection = async () => {
@@ -320,7 +334,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   }
 
   const runPreview = async () => {
-    if (!scene || !hasPreviewSource) return
+    if (!scene || !hasPreviewSource || isRunning) return
     finishBlockerAreaSelection()
     actions.setRoiBoxSelectionArmed(false)
     clearDetection()
@@ -705,7 +719,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <StopCircle /> Preview Stop
           </Button>
         ) : (
-          <Button className="w-full" disabled={!hasPreviewSource || (detectionMode === 'escape_directions' && observer.enabled && observerPlan.error !== null)} onClick={() => void runPreview()}>
+          <Button className="w-full" disabled={isRunning || !hasPreviewSource || (detectionMode === 'escape_directions' && observer.enabled && observerPlan.error !== null)} onClick={() => void runPreview()}>
             <Play /> {observerPlan.fullDetail && observer.enabled ? '전체 정밀 검색 시작' : 'Run Leak Preview'}
           </Button>
         )}
@@ -723,7 +737,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             </div>
           </div>
         ) : null}
-        <p role="status" className="text-xs leading-5 text-muted-foreground">{message}</p>
+        {queryError ? <div role="alert" className="space-y-1 text-xs text-destructive"><div>{queryError}</div><Button size="sm" variant="outline" onClick={() => void jobQuery.refetch()}>상태 다시 조회</Button></div> : null}
+        {terminalStatus ? <div role={activeJob?.status === 'failed' ? 'alert' : 'status'} className={cn('text-xs break-words', activeJob?.status === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>{terminalStatus}</div> : null}
+        <p role={message.startsWith('결과 처리 실패') || message.startsWith('결과 확인 실패') || message.startsWith('결과 누락') ? 'alert' : 'status'} className="text-xs leading-5 text-muted-foreground">{message}</p>
         <div className="flex items-center justify-between rounded-md border border-amber-300/70 bg-amber-50/60 px-2.5 py-2 dark:border-amber-700/60 dark:bg-amber-950/20">
           <span className="text-xs font-semibold">Leak Visualization</span>
           <Button
