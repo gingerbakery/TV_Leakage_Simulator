@@ -1,3 +1,4 @@
+import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewCandidate } from './leak-preview-picking'
@@ -78,7 +79,6 @@ import {
 } from '@/features/leak-preview/leak-preview-geometry'
 import {
   createLeakPreviewBodyPlaneEmitters,
-  resizeLeakPreviewBlockerOnFace,
 } from '@/features/leak-preview/leak-preview-model'
 import {
   leakPreviewStore,
@@ -1875,6 +1875,7 @@ export function ThreeViewerCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const runtimeRef = useRef<ViewerRuntime | null>(null)
   const roiBoxSelectionArmedRef = useRef(roiBoxSelectionArmed)
+  const blockerReferenceSurfaceRef = useRef<(BlockerDrawingSurface & { groupId: string }) | null>(null)
   const blockerAreaSelectionIdRef = useRef<string | null>(null)
   const emitterFaceSelectionArmedRef = useRef(false)
   const emitterSelectionTargetRef = useRef<'surface' | 'body'>('surface')
@@ -2106,6 +2107,7 @@ export function ThreeViewerCanvas({
   }, [roiBoxSelectionArmed])
 
   useEffect(() => {
+    blockerReferenceSurfaceRef.current = null
     blockerAreaSelectionIdRef.current = blockerAreaSelectionId
   }, [blockerAreaSelectionId])
 
@@ -2714,30 +2716,10 @@ export function ThreeViewerCanvas({
       const surface = samples.map(([x, y]) => resolveSurfaceHit(rect.left + x, rect.top + y))
         .filter((hit) => hit?.normal)
         .sort((a, b) => new Vector3(...a!.point).distanceToSquared(camera.position) - new Vector3(...b!.point).distanceToSquared(camera.position))[0]
-      const template = surface?.normal ? { ...blocker, baseCenter: surface.point, normal: surface.normal } : blocker
-      const normal = new Vector3(...template.normal).normalize()
-      const projectionPlane = new Plane().setFromNormalAndCoplanarPoint(
-        normal,
-        new Vector3(...template.baseCenter),
-      )
-      const boxRaycaster = new Raycaster()
-      const points: [number, number, number][] = []
-      for (const [x, y] of [
-        [minX, minY],
-        [maxX, minY],
-        [maxX, maxY],
-        [minX, maxY],
-      ]) {
-        boxRaycaster.setFromCamera(
-          new Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1),
-          camera,
-        )
-        const point = boxRaycaster.ray.intersectPlane(projectionPlane, new Vector3())
-        if (!point) return null
-        points.push([point.x, point.y, point.z])
-      }
-      const patch = resizeLeakPreviewBlockerOnFace(template, points)
-      return patch ? { ...patch, normal: template.normal } : null
+      const reference = blockerReferenceSurfaceRef.current
+      const startSurface = resolveSurfaceHit(rect.left + selection.startX, rect.top + selection.startY)
+      const anchor = reference?.groupId === blockerId ? reference : startSurface?.normal ? startSurface : surface
+      return projectBlockerDrag(camera, rect, selection, blocker, anchor?.normal ? { point: anchor.point, normal: anchor.normal } : null)
     }
 
     const resolveSurfaceHit = (clientX: number, clientY: number) => {
@@ -3123,7 +3105,7 @@ export function ThreeViewerCanvas({
         canvas.setPointerCapture(event.pointerId)
         return
       }
-      if (roiBoxSelectionArmedRef.current && (!blockerAreaSelectionIdRef.current || event.ctrlKey || event.metaKey)) {
+      if (roiBoxSelectionArmedRef.current && (!blockerAreaSelectionIdRef.current || event.ctrlKey || event.metaKey || blockerReferenceSurfaceRef.current?.groupId === blockerAreaSelectionIdRef.current)) {
         // Shift/Alt+drag stays free to roll the camera even while armed -
         // orbit is locked so a plain drag always draws the box, but the
         // user still needs some way to reorient without disarming.
@@ -3274,7 +3256,16 @@ export function ThreeViewerCanvas({
             )
             return
           } else {
-            if (blockerAreaSelectionIdRef.current && selectBlockerAt(event.clientX, event.clientY)) return
+            const groupId = blockerAreaSelectionIdRef.current
+            if (groupId) {
+              if (selectBlockerAt(event.clientX, event.clientY)) return
+              const surface = resolveSurfaceHit(event.clientX, event.clientY)
+              if (surface?.normal) {
+                blockerReferenceSurfaceRef.current = { groupId, point: surface.point, normal: surface.normal }
+                onStatusMessage('기준면 선택됨 · 드래그로 Block 추가')
+              } else onStatusMessage('기준 CAD 면을 클릭하세요.')
+              return
+            }
             leakPreviewStore.getState().finishBlockerAreaSelection()
             actions.setRoiBoxSelectionArmed(false)
             onStatusMessage('영역 선택을 취소했습니다.')
@@ -3333,6 +3324,15 @@ export function ThreeViewerCanvas({
 
       if (!pivotPickArmedRef.current && !datumFacePickArmedRef.current && !emitterFaceSelectionArmedRef.current && !materialFacePickArmedRef.current) {
         const group = leakPreviewStore.getState().blockers.find((item) => item.id === blockerAreaSelectionIdRef.current)
+        if (group?.shape === 'box') {
+          if (selectBlockerAt(event.clientX, event.clientY)) return
+          const surface = resolveSurfaceHit(event.clientX, event.clientY)
+          if (surface?.normal) {
+            blockerReferenceSurfaceRef.current = { groupId: group.id, point: surface.point, normal: surface.normal }
+            onStatusMessage('기준면 선택됨 · 드래그로 Block 추가')
+          } else onStatusMessage('기준 CAD 면을 클릭하세요.')
+          return
+        }
         if (group?.shape === 'ellipse') {
           const patch = resolveHolePointSelection(event.clientX,event.clientY)
           if (patch) {
@@ -3863,7 +3863,8 @@ export function ThreeViewerCanvas({
     })
     const detachActionShortcuts = attachViewerActionShortcuts(canvas,{fit:fitShortcut,section:() => toggleSectionViewRef.current()},prepareKeyboardNavigation)
     const detachBlockerBoxDrawing = attachBlockerBoxDrawing(canvas, () => Boolean(roiBoxSelectionArmedRef.current && blockerAreaSelectionIdRef.current &&
-      !(runtime.roiPreviewRoot.visible && pointerInPip)), handlePointerDown)
+      !(runtime.roiPreviewRoot.visible && pointerInPip)), handlePointerDown,
+      () => Boolean(blockerReferenceSurfaceRef.current && blockerReferenceSurfaceRef.current.groupId === blockerAreaSelectionIdRef.current))
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
@@ -5998,7 +5999,7 @@ export function ThreeViewerCanvas({
               : 'Emitter surface mode · Click/Ctrl drag add · Shift click/drag remove · Left drag rotate'
             : 'Drag rotate · Wheel zoom · Right drag pan · Click face · Shift multi-select · H section'}
         <HelpTooltip label="뷰어 단축키 도움말" triggerClassName="pointer-events-auto">
-          Block 만들기에서는 Ctrl+왼쪽 드래그로 영역을 추가하고 일반 왼쪽 드래그로 회전합니다. 우클릭 이동과 휠 확대도 계속 사용할 수 있습니다.
+          Block 만들기에서는 CAD 면을 클릭해 기준면을 선택한 뒤 왼쪽 드래그로 영역을 추가합니다. 기준면 선택 전에도 Ctrl+왼쪽 드래그로 바로 추가할 수 있습니다. 기준면 선택 전 일반 드래그는 회전이며, 선택 후에는 F3 회전을 사용할 수 있습니다. 우클릭 이동과 휠 확대도 계속 사용할 수 있습니다.
           마우스 버튼 없이 F1을 누른 채 이동하면 PAN, F2는 ZOOM, F3는 ROTATE입니다.
           키를 떼면 종료합니다. F4는 현재 방향에서 가장 가까운 기본 뷰로 정렬합니다.
           뷰어 위에서는 입력칸에 포커스가 남아 있어도 F1~F4를 사용할 수 있으며 미니뷰 위에서는 미니뷰 카메라를 조작합니다. 선택 박스를 그리는 중에 단축키를 누르면 미완료 드래그만 취소하고 작업 모드는 유지합니다. F는 화면 맞춤, H는 Section이며 이름 등 문자 입력 중에는 F/H를 입력에 사용합니다.

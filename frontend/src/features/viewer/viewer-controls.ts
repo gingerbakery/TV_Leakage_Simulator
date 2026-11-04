@@ -22,13 +22,14 @@ export class ViewerTrackballControls extends TrackballControls {
   }
 }
 
-/** Capture only Ctrl/Cmd + left drag before TrackballControls sees it.
- * Ordinary drags and right/middle/wheel navigation keep their normal route. */
+/** Capture Ctrl/Cmd or an explicitly anchored surface drag before navigation.
+ * Unanchored ordinary drags and right/middle/wheel keep their normal route. */
 export function attachBlockerBoxDrawing(
   canvas:HTMLCanvasElement, enabled:()=>boolean, begin:(event:PointerEvent)=>void,
+  surfaceSelected:()=>boolean = () => false,
 ):()=>void {
   const down = (event:PointerEvent) => {
-    if (!enabled() || event.button !== 0 || !(event.ctrlKey || event.metaKey)) return
+    if (!enabled() || event.button !== 0 || !(event.ctrlKey || event.metaKey || surfaceSelected())) return
     event.preventDefault()
     event.stopImmediatePropagation()
     begin(event)

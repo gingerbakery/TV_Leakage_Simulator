@@ -150,6 +150,22 @@ describe('projection-aware viewer panning', () => {
 })
 
 describe('Block drawing with camera navigation', () => {
+  it('captures a plain left drag after a reference face is selected and restores orbit when it is cleared', () => {
+    const { canvas, camera, controls } = createControls(DEFAULT_CAMERA_FOV_DEGREES)
+    let selected = true
+    const draw = vi.fn(() => { controls.enabled = false })
+    const detach = attachBlockerBoxDrawing(canvas, () => true, draw, () => selected)
+    const before = camera.position.clone()
+    pointerDrag(canvas, 0, 40, 20); controls.update()
+    expect(draw).toHaveBeenCalledOnce()
+    expect(camera.position.distanceTo(before)).toBe(0)
+    selected = false; controls.enabled = true
+    pointerDrag(canvas, 0, 40, 20); controls.update()
+    expect(draw).toHaveBeenCalledOnce()
+    expect(camera.position.distanceTo(before)).toBeGreaterThan(0)
+    detach(); controls.dispose()
+  })
+
   it('lets ordinary mouse drags rotate, right drags pan and the wheel zoom while only Ctrl drag draws a block', () => {
     const {canvas,camera,controls} = createControls(DEFAULT_CAMERA_FOV_DEGREES)
     const draw = vi.fn(() => { controls.enabled = false })
