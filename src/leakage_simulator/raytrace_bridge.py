@@ -495,13 +495,10 @@ def _append_preview_blockers(
     mesh: TriangleMesh,
     blockers: List[Dict[str, Any]],
 ) -> None:
-    """Append lightweight, unassigned rectangular absorber solids.
+    """Append closed opaque replacement solids for box blocks and hole plugs.
 
-    Preview uses these as approximate assembly blockers. Precision tracing may
-    also opt into the same geometry for Preview Blockers and Allowed-Area
-    evaluation masks. Unassigned faces resolve to the safe zero-reflectance
-    profile, so these volumes remove intercepted light without adding a
-    synthetic reflection.
+    Block faces use the resolver's explicit/default block reflection profile.
+    The legacy auxiliary material tag is retained for package compatibility.
     """
     triangles = (
         (0, 2, 1), (0, 3, 2),

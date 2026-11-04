@@ -72,3 +72,23 @@ it('clips both the solid and outline, picks the kept section cap, and ignores re
   setObjectClippingPlane(display, null)
   expect(solid.material.clippingPlanes).toBeNull()
 })
+
+
+it('keeps the rendered tilted block identical to the physical solid when Reverse is enabled', () => {
+  const s = Math.SQRT1_2
+  for (const reverse of [false,true]) {
+    const region = { ...createBlockGroup('Block 1','box'), groupId:'g', regionId:'r',
+      baseCenter:[3,4,5] as [number,number,number], uAxis:[s,0,s] as [number,number,number],
+      vAxis:[0,1,0] as [number,number,number], normal:[-s,0,s] as [number,number,number],
+      widthMm:4, heightMm:6, depthMm:2, offsetMm:.5, reverse }
+    const display = createBlockerDisplay(region,null,null)
+    display.updateMatrixWorld(true)
+    const bounds = new Box3().setFromObject(display)
+    const sign = reverse ? -1 : 1
+    const center = new Vector3(3-sign*s*1.5,4,5+sign*s*1.5)
+    expect(bounds.getCenter(new Vector3()).distanceTo(center)).toBeLessThan(1e-6)
+    expect(bounds.getSize(new Vector3()).x).toBeCloseTo(s*6,5)
+    expect(bounds.getSize(new Vector3()).z).toBeCloseTo(s*6,5)
+    expect(bounds.getSize(new Vector3()).y).toBeCloseTo(6,5)
+  }
+})

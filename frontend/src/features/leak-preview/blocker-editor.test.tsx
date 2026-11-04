@@ -20,6 +20,7 @@ it('creates named groups for both modes, appends repeated drags, edits names and
   workspaceStore.getState().actions.addCadCase({ path: 'groups.step', displayName: 'Groups' })
   render(<AppProviders><BlockerEditor scene={scene} disabled={false} onStart={() => undefined} /></AppProviders>)
   fireEvent.click(screen.getByRole('button', { name: '홀 막기' }))
+  expect(workspaceStore.getState().rayTraceConfig.apply_preview_blockers).toBe(true)
   const id = leakPreviewStore.getState().blockers[0].id
   expect(leakPreviewStore.getState().blockerAreaSelectionId).toBe(id)
   expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ label: 'Block 1', shape: 'ellipse', regions: [] })

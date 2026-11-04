@@ -2635,8 +2635,8 @@ export function RayTracingPanel({
                 />
                 Blocker
                 <HelpTooltip label="정밀해석 Blocker 도움말">
-                  Preview에서 활성화한 사각 블록과 홀 마개를 정밀해석의 완전 흡수형
-                  차폐 형상으로 적용합니다.
+                  Preview에서 활성화한 사각 블록과 홀 마개를 정밀해석의 기본 반사 재질을 가진 불투명
+                  대체 형상으로 적용합니다.
                 </HelpTooltip>
               </span>
               <span className="mt-1 block text-xs text-muted-foreground">
@@ -3028,6 +3028,7 @@ export function RayTracingPanel({
       </section>
 
       <section className="space-y-2 border-t border-border pt-3">
+        {enabledPreviewBlockerCount > 0 && !config.apply_preview_blockers ? <div role="alert" className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400"><span>Blocker OFF · 활성 그룹 {enabledPreviewBlockerCount}개가 정밀해석에서 제외됩니다.</span><Button size="sm" variant="outline" disabled={isRunning} onClick={() => updateConfig({ apply_preview_blockers: true })}>Blocker 켜기</Button></div> : null}
         {viewRunError ? <div role="alert" className="text-xs text-destructive">{viewRunError}</div> : viewRunCount > 1 ? <div className="flex items-center gap-1 text-xs">{viewRunCount}각도 · 각도별 {enabledEmitterRayCount.toLocaleString()} Ray · 기본 합계 {(viewRunCount*enabledEmitterRayCount).toLocaleString()} Ray<HelpTooltip label="각도별 해석 계산량 도움말">각도별 Ray 수는 현재 활성 광원의 합입니다. 자동 수렴을 켜면 각 각도에서 추가 실행할 수 있어 실제 합계는 더 커집니다. Receiver 크기·해상도·재질·광원 설정은 유지합니다.</HelpTooltip></div> : null}
         {onOpenReceiverViewSweep ? <Button size="sm" variant="outline" onClick={onOpenReceiverViewSweep}>{receiverViewSweepRunning ? '각도별 해석 진행 보기' : '각도별 결과 보기'}</Button> : null}
         {isRunning && executionJobId ? (

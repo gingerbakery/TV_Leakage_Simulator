@@ -19,6 +19,7 @@ import type {
 import {
   createLeakPreviewPointTransform,
   getLeakPreviewBounds,
+  projectLeakPreviewExit,
 } from './leak-preview-geometry'
 
 import type { BsdfAsset } from '@/features/materials/bsdf-asset'
@@ -122,6 +123,7 @@ export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight
 export interface LeakPreviewPoint {
   candidateId?: string
   observerAngles?: [number, number]
+  surfacePosition?: Vec3
   angleBins?: number[]
   position: Vec3
   relativeStrength: number
@@ -1188,7 +1190,8 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
   if (!summary) return { points: [], candidates: [] }
   const points: LeakPreviewPoint[] = []
   const candidates: LeakPreviewCandidate[] = []
-  const modelDepth = Math.max(...getLeakPreviewBounds(scene, options.transformRules).size, 1) * .18
+  const bounds = getLeakPreviewBounds(scene, options.transformRules)
+  const modelDepth = Math.max(...bounds.size, 1) * .18
   const maximum = summary.cells.reduce((value, cell) => Math.max(value, cell.direct_count + cell.reflected_count), 1)
   summary.views.forEach((view, viewIndex) => {
     const cells = summary.cells.filter((cell) => cell.view_index === viewIndex)
@@ -1202,7 +1205,8 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
 
     connectedClusters(active).forEach((cluster, index) => {
       const candidateId = `observer-${viewIndex}-${index}`
-      cluster.forEach((cell) => points.push({ position: cell.position, relativeStrength: cell.flux / maximum, candidateId, observerAngles: [view.horizontal_deg, view.vertical_deg] }))
+      cluster.forEach((cell) => points.push({ position: projectLeakPreviewExit(cell.position, view.direction, bounds.minimum, bounds.maximum) ?? cell.position,
+        surfacePosition: cell.position, relativeStrength: cell.flux / maximum, candidateId, observerAngles: [view.horizontal_deg, view.vertical_deg] }))
       const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
       const directCount = evidence.reduce((sum, cell) => sum + cell.direct_count, 0)
       const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)

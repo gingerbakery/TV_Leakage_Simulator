@@ -13,7 +13,11 @@ export function createBlockerDisplay(blocker: ExpandedBlocker, selected: Blocker
   group.userData.blockerSelection = { groupId: blocker.groupId, regionId: blocker.regionId }
   const normal = new Vector3(...blocker.normal).normalize().multiplyScalar(blocker.reverse ? -1 : 1)
   group.position.set(...blocker.baseCenter).addScaledVector(normal, blocker.offsetMm + blocker.depthMm/2)
-  group.setRotationFromMatrix(new Matrix4().makeBasis(new Vector3(...blocker.uAxis).normalize(), new Vector3(...blocker.vAxis).normalize(), normal))
+  // Reverse flips two basis axes to keep a proper rotation (determinant +1).
+  // A reflected basis cannot be represented by a quaternion and distorted
+  // the displayed solid relative to the trace geometry for tilted blocks.
+  const vAxis = new Vector3(...blocker.vAxis).normalize().multiplyScalar(blocker.reverse ? -1 : 1)
+  group.setRotationFromMatrix(new Matrix4().makeBasis(new Vector3(...blocker.uAxis).normalize(), vAxis, normal))
   const geometry = blocker.shape === 'ellipse'
     ? new CylinderGeometry(1, 1, Math.max(blocker.depthMm, .01), 48).rotateX(Math.PI/2).scale(blocker.widthMm/2, blocker.heightMm/2, 1)
     : new BoxGeometry(Math.max(blocker.widthMm, .01), Math.max(blocker.heightMm, .01), Math.max(blocker.depthMm, .01))

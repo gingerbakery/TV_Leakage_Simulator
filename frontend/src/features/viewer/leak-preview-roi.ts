@@ -6,5 +6,8 @@ import { emitterPointInRoi } from './emitter-roi-display'
 export function leakPreviewPointsInRoi(points: LeakPreviewPoint[], scopes: RoiScope[]): LeakPreviewPoint[] {
   const boxes = scopes.flatMap((scope) => scope.active && scope.clipBox ? [scope.clipBox] : [])
   if (boxes.length === 0) return points
-  return points.filter(({ position: [x, y, z] }) => emitterPointInRoi({ x, y, z }, boxes))
+  return points.filter((point) => {
+    const [x,y,z] = point.surfacePosition ?? point.position
+    return emitterPointInRoi({ x, y, z }, boxes)
+  })
 }

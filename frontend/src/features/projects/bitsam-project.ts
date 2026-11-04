@@ -629,6 +629,7 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
   if (value.selectedCandidateId !== null && !ids.has(value.selectedCandidateId)) return false
   return value.points.every((point: unknown) => isRecord(point) && isVec3(point.position) && isFiniteNumber(point.relativeStrength) &&
     (point.candidateId === undefined || isString(point.candidateId)) &&
+    (point.surfacePosition === undefined || isVec3(point.surfacePosition)) &&
     (point.observerAngles === undefined || (Array.isArray(point.observerAngles) && point.observerAngles.length === 2 && point.observerAngles.every(isFiniteNumber))) &&
     (point.angleBins === undefined || (Array.isArray(point.angleBins) && point.angleBins.length === 4 && point.angleBins.every(isFiniteNumber))))
 }

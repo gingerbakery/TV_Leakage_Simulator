@@ -139,3 +139,19 @@ export function getLeakPreviewBounds(
     ],
   }
 }
+
+
+/** Outward marker on the complete assembly envelope, independent of CAD Hide. */
+export function projectLeakPreviewExit(origin: Vec3, direction: Vec3, minimum: Vec3, maximum: Vec3): Vec3 | null {
+  let enter = -Infinity, leave = Infinity
+  for (let axis = 0; axis < 3; axis++) {
+    if (Math.abs(direction[axis]) < 1e-15) {
+      if (origin[axis] < minimum[axis] - 1e-8 || origin[axis] > maximum[axis] + 1e-8) return null
+      continue
+    }
+    const a = (minimum[axis]-origin[axis])/direction[axis], b = (maximum[axis]-origin[axis])/direction[axis]
+    enter = Math.max(enter, Math.min(a,b)); leave = Math.min(leave, Math.max(a,b))
+  }
+  if (!Number.isFinite(leave) || leave < Math.max(enter,0)-1e-8) return null
+  return origin.map((value, axis) => Math.max(minimum[axis], Math.min(maximum[axis], value + Math.max(0,leave)*direction[axis]))) as Vec3
+}

@@ -165,6 +165,12 @@ class OpticalPropertyResolver:
             notes="Safe fallback for a surface without a resolved optical profile",
         )
 
+    def _blocker_profile(self):
+        return self.profiles.get("__blocker_default__") or self.profiles.get("default") or OpticalProfile(
+            profile_id="__blocker_default__", reflectance=.35, specular_ratio=.3, diffuse_ratio=.7,
+            scatter_model="mixed", roughness=.5, gaussian_sigma_deg=18.,
+            notes="Block default reflection, matching the neutral Preview default")
+
     @staticmethod
     def _store_assignment(mapping, key, candidate: OpticalAssignment) -> None:
         current = mapping.get(key)
@@ -173,6 +179,8 @@ class OpticalPropertyResolver:
 
     def resolve(self, face_index: int) -> ResolvedOpticalProperty:
         metadata = self.mesh.metadata(face_index)
+        if metadata.get("preview_blocker_id") is not None:
+            return ResolvedOpticalProperty(self._blocker_profile(), "blocker_default")
         component_id = metadata.get("component_id")
         source_face_index = int(metadata.get("source_face_index", face_index))
         if component_id is not None:
@@ -236,6 +244,7 @@ class OpticalPropertyResolver:
             ResolvedOpticalProperty(default, "default") if default is not None
             else ResolvedOpticalProperty(self.unassigned_profile, "unassigned")
         )
+        blocker_default = ResolvedOpticalProperty(self._blocker_profile(), "blocker_default")
         cache_mode = os.environ.get('LEAKAGE_OPTICAL_ROUTING_CACHE', 'auto')
         cache_enabled = (
             cache_mode != 'off'
@@ -249,7 +258,7 @@ class OpticalPropertyResolver:
             and all(type(key) is str for key in self.profiles)
         )
         if cache_enabled:
-            routes = {('fallback',): fallback}
+            routes = {('fallback',): fallback, ('blocker_default',): blocker_default}
             routes.update({('material', key): value for key, value in materials.items()})
             mapping_signatures = []
             for source, assignments, resolved_mapping in (
@@ -280,8 +289,8 @@ class OpticalPropertyResolver:
             metadata = self.mesh.metadata(face_index)
             component_id = metadata.get("component_id")
             source_face_index = int(metadata.get("source_face_index", face_index))
-            resolved = None
-            if component_id is not None:
+            resolved = blocker_default if metadata.get("preview_blocker_id") is not None else None
+            if resolved is None and component_id is not None:
                 component_id = int(component_id)
                 resolved = face_assignments.get((component_id, source_face_index))
                 if resolved is None:

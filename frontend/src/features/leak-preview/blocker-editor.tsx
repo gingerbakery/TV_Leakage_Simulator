@@ -4,7 +4,7 @@ import type { ScenePayload } from '@/api'
 import { Popover } from 'radix-ui'
 import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
-import { useWorkspaceStore, workspaceSelectors } from '@/stores'
+import { workspaceStore, useWorkspaceStore, workspaceSelectors } from '@/stores'
 import { createBlockGroup, nextBlockName } from './blocker-groups'
 import { getLeakPreviewBounds, type LeakPreviewBlocker } from './leak-preview-model'
 import { leakPreviewStore, useLeakPreviewStore } from './leak-preview-store'
@@ -45,7 +45,9 @@ export function BlockerEditor({ scene, disabled, onStart }: { scene: ScenePayloa
   const create = (shape: 'box' | 'ellipse') => {
     stop()
     const group = createBlockGroup(nextBlockName(blockers), shape, getLeakPreviewBounds(scene).center)
-    add(group); start(group.id)
+    add(group)
+    actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, apply_preview_blockers: true })
+    start(group.id)
   }
   const fields = (region: LeakPreviewBlocker, change: (patch: Partial<LeakPreviewBlocker>) => void, prefix: string) => <div className="grid grid-cols-3 gap-1.5">
     {(['X', 'Y', 'Z'] as const).map((axis, index) => <label key={axis} className="text-xs">{axis} (mm)<NumberInput aria-label={`${prefix} ${axis}`} className="h-8 w-full rounded border border-border bg-background px-1" value={region.baseCenter[index]} decimals={2} disabled={disabled} onValueChange={(value) => { const center = [...region.baseCenter] as [number, number, number]; center[index] = value; change({ baseCenter: center }) }} /></label>)}
@@ -53,7 +55,7 @@ export function BlockerEditor({ scene, disabled, onStart }: { scene: ScenePayloa
     <Button size="sm" variant={region.reverse ? 'default' : 'outline'} disabled={disabled} onClick={() => change({ reverse: !region.reverse })}>Reverse</Button>
   </div>
   return <section className="space-y-2 rounded-lg border border-border bg-background/45 p-3">
-    <div className="flex items-center justify-between gap-1"><span className="flex items-center gap-1 text-sm font-semibold">Blockers<Popover.Root><Popover.Trigger asChild><button type="button" aria-label="Blocker 도움말" className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-primary/40"><CircleHelp className="size-3.5" /></button></Popover.Trigger><Popover.Portal><Popover.Content side="right" sideOffset={6} className="z-50 max-h-80 w-72 overflow-auto rounded-md border border-border bg-popover p-3 text-xs leading-5 text-popover-foreground shadow-md">사각 블록은 CAD 면을 클릭해 기준면을 고정한 뒤 왼쪽 드래그로 같은 그룹에 추가합니다. Ctrl+왼쪽 드래그로도 바로 추가할 수 있습니다. 선택한 기준면은 모서리가 모델 밖이나 틈에 있어도 유지됩니다. Block 만들기 중 왼쪽 드래그는 항상 박스 그리기이며 회전은 F3을 사용합니다. 면을 먼저 클릭하지 않고 바로 드래그하면 시작점의 면을 사용합니다. 우클릭 이동·휠 확대와 F1~F4도 사용할 수 있습니다. 그룹 Edit의 그룹 치수에서 입력한 항목을 모든 사각 Block에 일괄 적용할 수 있습니다. 홀 막기는 원형 홀 중심 근처를 클릭해 같은 그룹에 마개를 추가합니다. Z축 원형의 닫힌 CAD 윤곽에서 중심과 지름을 인식하며, 새 마개는 미세한 여유를 포함한 인식 지름의 3배로 생성합니다. 기존 저장 마개는 변경하지 않습니다. 마개에 기울기나 회전을 넣지 않습니다. 깊이 기준면은 클릭 방향에서 보이는 홀 입구의 Z 좌표입니다. 기본 총 깊이는 5 mm로 입구 면에서 Z ±2.5 mm입니다. 홀 목록은 −/+로 접고 펼칠 수 있으며, 뷰어에서 개별 홀을 선택하면 해당 목록이 열립니다. 원형 홀을 찾지 못하면 마개를 생성하지 않습니다. 열린 윤곽·비원형 홀·기울어진 홀은 자동 인식 대상이 아닙니다. 목록의 그룹·홀이나 Viewer의 마개를 선택하면 서로 강조되며 Section에서도 같은 선택과 절단을 적용합니다. ON인 형상은 완전 흡수체로 빛을 실제 차단합니다. 눈 아이콘은 표시만 바꿉니다. 정밀해석에서는 Run Options의 Blocker를 켜세요. 기존 Allowed Area는 같은 범위의 사각 차광 형상으로 변환됩니다.</Popover.Content></Popover.Portal></Popover.Root></span>
+    <div className="flex items-center justify-between gap-1"><span className="flex items-center gap-1 text-sm font-semibold">Blockers<Popover.Root><Popover.Trigger asChild><button type="button" aria-label="Blocker 도움말" className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-primary/40"><CircleHelp className="size-3.5" /></button></Popover.Trigger><Popover.Portal><Popover.Content side="right" sideOffset={6} className="z-50 max-h-80 w-72 overflow-auto rounded-md border border-border bg-popover p-3 text-xs leading-5 text-popover-foreground shadow-md">사각 블록은 CAD 면을 클릭해 기준면을 고정한 뒤 왼쪽 드래그로 같은 그룹에 추가합니다. Ctrl+왼쪽 드래그로도 바로 추가할 수 있습니다. 선택한 기준면은 모서리가 모델 밖이나 틈에 있어도 유지됩니다. Block 만들기 중 왼쪽 드래그는 항상 박스 그리기이며 회전은 F3을 사용합니다. 면을 먼저 클릭하지 않고 바로 드래그하면 시작점의 면을 사용합니다. 우클릭 이동·휠 확대와 F1~F4도 사용할 수 있습니다. 그룹 Edit의 그룹 치수에서 입력한 항목을 모든 사각 Block에 일괄 적용할 수 있습니다. 홀 막기는 원형 홀 중심 근처를 클릭해 같은 그룹에 마개를 추가합니다. Z축 원형의 닫힌 CAD 윤곽에서 중심과 지름을 인식하며, 새 마개는 미세한 여유를 포함한 인식 지름의 3배로 생성합니다. 기존 저장 마개는 변경하지 않습니다. 마개에 기울기나 회전을 넣지 않습니다. 깊이 기준면은 클릭 방향에서 보이는 홀 입구의 Z 좌표입니다. 기본 총 깊이는 5 mm로 입구 면에서 Z ±2.5 mm입니다. 홀 목록은 −/+로 접고 펼칠 수 있으며, 뷰어에서 개별 홀을 선택하면 해당 목록이 열립니다. 원형 홀을 찾지 못하면 마개를 생성하지 않습니다. 열린 윤곽·비원형 홀·기울어진 홀은 자동 인식 대상이 아닙니다. 목록의 그룹·홀이나 Viewer의 마개를 선택하면 서로 강조되며 Section에서도 같은 선택과 절단을 적용합니다. ON인 형상은 투과 없는 대체 형상으로 빛을 차단하고 기본 재질로 반사합니다. 별도 기본 재질이 없으면 기존 Preview 기본값인 반사율 35%의 혼합 반사를 사용합니다. 눈 아이콘은 표시만 바꿉니다. 정밀해석에서는 Run Options의 Blocker를 켜세요. 기존 Allowed Area는 같은 범위의 사각 차광 형상으로 변환됩니다.</Popover.Content></Popover.Portal></Popover.Root></span>
       <Button size="sm" variant="outline" disabled={!blockers.length} onClick={() => setVisible(!visible)}>{visible ? <Eye /> : <EyeOff />}{visible ? 'Hide All' : 'Show All'}</Button></div>
     <div className="flex gap-1"><Button size="sm" variant="outline" disabled={disabled} onClick={() => create('box')}>Block 만들기</Button><Button size="sm" variant="outline" disabled={disabled} onClick={() => create('ellipse')}>홀 막기</Button>{drawingId ? <Button size="sm" disabled={disabled} onClick={stop}>선택 완료</Button> : null}</div>
     {blockers.map((group) => <div key={group.id} role="group" aria-label={`${group.label} 목록`} data-selected={selected?.groupId === group.id}

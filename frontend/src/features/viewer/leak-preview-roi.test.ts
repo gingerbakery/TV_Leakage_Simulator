@@ -38,3 +38,10 @@ it('retains finite Z limits for a manually defined XYZ ROI', () => {
   expect(leakPreviewPointsInRoi(points, [roi])).toEqual([])
   expect(leakPreviewPointsInRoi([{ position: [.5, .5, .5], relativeStrength: 1 }], [roi])).toHaveLength(1)
 })
+
+
+it('filters exterior observer markers using their retained internal evidence location', () => {
+  const point: LeakPreviewPoint = { position: [10, .5, 0], surfacePosition: [.5,.5,0], relativeStrength: 1 }
+  expect(leakPreviewPointsInRoi([point], [scope('internal',0,1)])).toEqual([point])
+  expect(leakPreviewPointsInRoi([point], [scope('exterior',9,11)])).toEqual([])
+})
