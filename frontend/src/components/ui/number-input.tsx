@@ -18,6 +18,8 @@ type NumberInputProps = Omit<
    * the user is actively typing - only applied to what's shown when the
    * field isn't focused and to the value committed on blur/Enter/arrow. */
   decimals?: number
+  /** Keep edits local until blur/Enter; empty drafts and Escape retain value. */
+  commitOnBlur?: boolean
 }
 
 const incompleteNumbers = new Set(['', '+', '-', '.', '+.', '-.'])
@@ -49,6 +51,7 @@ function NumberInput({
   max,
   step = 'any',
   decimals,
+  commitOnBlur = false,
   onBlur,
   onFocus,
   onKeyDown,
@@ -65,8 +68,12 @@ function NumberInput({
 
   const commitDraft = () => {
     const parsed = parseDraft(draft)
-    const nextValue = roundToDecimals(parsed ?? 0, decimals)
-    onValueChange(nextValue)
+    let nextValue = roundToDecimals(parsed ?? (commitOnBlur ? value : 0), decimals)
+    if (commitOnBlur) {
+      if (typeof min === 'number') nextValue = Math.max(min, nextValue)
+      if (typeof max === 'number') nextValue = Math.min(max, nextValue)
+    }
+    if (!commitOnBlur || nextValue !== value) onValueChange(nextValue)
     setDraft(formatNumber(nextValue, decimals))
   }
 
@@ -83,7 +90,12 @@ function NumberInput({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
+      event.preventDefault()
       commitDraft()
+    } else if (event.key === 'Escape' && commitOnBlur) {
+      event.preventDefault()
+      event.stopPropagation()
+      setDraft(formatNumber(value, decimals))
     } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault()
       const parsed = parseDraft(draft) ?? value
@@ -93,7 +105,7 @@ function NumberInput({
       if (typeof min === 'number') nextValue = Math.max(min, nextValue)
       if (typeof max === 'number') nextValue = Math.min(max, nextValue)
       nextValue = roundToDecimals(nextValue, decimals)
-      onValueChange(nextValue)
+      if (!commitOnBlur) onValueChange(nextValue)
       setDraft(formatNumber(nextValue, decimals))
     }
     onKeyDown?.(event)
@@ -116,7 +128,7 @@ function NumberInput({
         const nextDraft = event.currentTarget.value
         setDraft(nextDraft)
         const parsed = parseDraft(nextDraft)
-        if (parsed !== null) {
+        if (parsed !== null && !commitOnBlur) {
           onValueChange(parsed)
         }
       }}

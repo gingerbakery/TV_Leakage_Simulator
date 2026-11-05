@@ -214,6 +214,8 @@ export type RayTraceConfigRequest = Omit<
 }
 
 export interface RayTraceRequest {
+  resume_scope?: string
+  restart_from_beginning?: boolean
   scene_token: string
   project_name: string
   /** Preview runs may use the already-loaded display tessellation. */
@@ -329,6 +331,10 @@ export interface RayTraceResult {
 }
 
 interface RayTraceJobProgress {
+  resume_available?: boolean
+  resume_count?: number
+  resumed_from_job_id?: string
+  resume_unavailable_reason?: string
   job_id: string
   processed_rays: number
   total_rays: number

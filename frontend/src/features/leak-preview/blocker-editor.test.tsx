@@ -69,7 +69,7 @@ it('drops an empty draft and reuses a group for later drags without changing exi
   const id = leakPreviewStore.getState().blockers[0].id
   act(() => leakPreviewStore.getState().appendBlockerRegion(id, { widthMm: 15 }))
   fireEvent.click(screen.getByRole('button', { name: '선택 완료' }))
-  fireEvent.click(screen.getByLabelText('Block 1 영역 추가'))
+  fireEvent.click(screen.getByLabelText('Block 1 형상 추가'))
   act(() => leakPreviewStore.getState().appendBlockerRegion(id, { widthMm: 25 }))
   expect(leakPreviewStore.getState().blockers[0].regions?.map((item) => item.widthMm)).toEqual([15, 25])
   fireEvent.click(screen.getByRole('button', { name: '선택 완료' }))
@@ -98,7 +98,7 @@ it('keeps hole plugs in point mode and synchronizes group/region selections with
     leakPreviewStore.getState().appendBlockerRegion(group.id, { baseCenter:[4,5,6] })
     leakPreviewStore.getState().finishBlockerAreaSelection()
   })
-  expect(screen.queryByLabelText('Block 1 Edit')).toBeNull()
+  expect(screen.queryByLabelText('Block 1 그룹 치수')).toBeNull()
   expect(screen.queryByLabelText('Block 1 새 영역 깊이')).toBeNull()
   const regions = leakPreviewStore.getState().blockers[0].regions!
   fireEvent.click(screen.getByLabelText('Block 1 홀 1 선택'))
@@ -131,6 +131,29 @@ it('starts hole lists expanded, keeps collapsed rows compact and reveals a hole 
   expect(leakPreviewStore.getState().blockers[0].regions).toHaveLength(1)
 })
 
+it('separates adding geometry from expanding box lists and reveals a selected Block', () => {
+  const box=createBlockGroup('Block 1','box')
+  box.regions=[{...box,id:'one',regions:undefined},{...box,id:'two',regions:undefined,baseCenter:[2,3,4]}]
+  act(() => leakPreviewStore.getState().addBlocker(box))
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 Block 목록 접기'))
+  expect(screen.queryByRole('button',{name:'Block 1 Block 1 선택'})).toBeNull()
+  expect(leakPreviewStore.getState().blockerAreaSelectionId).toBeNull()
+  expect(leakPreviewStore.getState().blockers[0].regions).toHaveLength(2)
+  fireEvent.click(screen.getByLabelText('Block 1 Block 목록 펼치기'))
+  expect(screen.getByRole('button',{name:'Block 1 Block 1 선택'})).toBeTruthy()
+  fireEvent.click(screen.getByLabelText('Block 1 형상 추가'))
+  expect(leakPreviewStore.getState().blockerAreaSelectionId).toBe(box.id)
+  expect(screen.getByRole('button',{name:'Block 1 추가 완료'}).textContent).toContain('추가 완료')
+  fireEvent.click(screen.getByLabelText('Block 1 추가 완료'))
+  expect(leakPreviewStore.getState().blockerAreaSelectionId).toBeNull()
+  fireEvent.click(screen.getByLabelText('Block 전체 목록 접기'))
+  expect(screen.queryByRole('group',{name:'Block 1 목록'})).toBeNull()
+  act(() => leakPreviewStore.getState().selectBlocker(box.id,'two'))
+  expect(screen.getByRole('group',{name:'Block 1 목록'})).toBeTruthy()
+  expect(screen.getByLabelText('Block 1 Block 2 선택').getAttribute('aria-pressed')).toBe('true')
+})
+
 it('applies only entered group dimensions to all blocks while retaining placement and other groups', () => {
   const box = createBlockGroup('Block 1','box'), other = createBlockGroup('Block 2','box')
   box.regions = [
@@ -139,7 +162,7 @@ it('applies only entered group dimensions to all blocks while retaining placemen
   ]
   act(() => { leakPreviewStore.getState().addBlocker(box); leakPreviewStore.getState().addBlocker(other) })
   render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
-  fireEvent.click(screen.getByLabelText('Block 1 Edit'))
+  fireEvent.click(screen.getByLabelText('Block 1 그룹 치수'))
   fireEvent.change(screen.getByLabelText('Block 1 그룹 깊이'),{target:{value:'7'}})
   fireEvent.change(screen.getByLabelText('Block 1 그룹 Offset'),{target:{value:'-2'}})
   fireEvent.click(screen.getByLabelText('Block 1 그룹 치수 전체 적용'))
@@ -157,10 +180,84 @@ it('rejects invalid bulk dimensions without partially changing the group', () =>
   box.regions = [{...box,id:'a',regions:undefined}]
   act(() => leakPreviewStore.getState().addBlocker(box))
   render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
-  fireEvent.click(screen.getByLabelText('Block 1 Edit'))
+  fireEvent.click(screen.getByLabelText('Block 1 그룹 치수'))
   fireEvent.change(screen.getByLabelText('Block 1 그룹 폭'),{target:{value:'10'}})
   fireEvent.change(screen.getByLabelText('Block 1 그룹 깊이'),{target:{value:'-1'}})
   fireEvent.click(screen.getByLabelText('Block 1 그룹 치수 전체 적용'))
   expect(screen.getByRole('alert').textContent).toContain('0.01 mm')
   expect(leakPreviewStore.getState().blockers[0]).toEqual(box)
+})
+
+it('edits one Block directly without live geometry jumps and keeps display separate from analysis', () => {
+  const box=createBlockGroup('Block 1','box')
+  box.regions=[{...box,id:'one',regions:undefined,widthMm:10}]
+  act(() => leakPreviewStore.getState().addBlocker(box))
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 영역 1 치수 편집'))
+  const width=screen.getByLabelText('Block 1 영역 1 폭') as HTMLInputElement
+  fireEvent.focus(width)
+  fireEvent.change(width,{target:{value:'25'}})
+  expect(leakPreviewStore.getState().blockers[0].regions![0].widthMm).toBe(10)
+  fireEvent.keyDown(width,{key:'Escape'})
+  expect(Number(width.value)).toBe(10)
+  fireEvent.change(width,{target:{value:''}})
+  fireEvent.blur(width)
+  expect(leakPreviewStore.getState().blockers[0].regions![0].widthMm).toBe(10)
+  fireEvent.focus(width); fireEvent.change(width,{target:{value:'25'}}); fireEvent.blur(width)
+  expect(leakPreviewStore.getState().blockers[0].regions![0].widthMm).toBe(25)
+  fireEvent.click(screen.getByLabelText('Block 1 영역 1 Hide'))
+  expect(expandBlockerGroups(leakPreviewStore.getState().blockers)[0]).toMatchObject({visible:false,enabled:true})
+  fireEvent.click(screen.getByLabelText('Block 1 영역 1 적용'))
+  expect(expandBlockerGroups(leakPreviewStore.getState().blockers)[0].enabled).toBe(false)
+})
+
+it('reveals hidden drawing without silently enabling a group excluded from analysis', () => {
+  const box=createBlockGroup('Block 1','box')
+  box.enabled=false; box.visible=false
+  box.regions=[{...box,id:'one',regions:undefined}]
+  act(() => { leakPreviewStore.getState().addBlocker(box); leakPreviewStore.getState().setBlockersVisible(false) })
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 형상 추가'))
+  expect(leakPreviewStore.getState().blockersVisible).toBe(true)
+  expect(leakPreviewStore.getState().blockers[0]).toMatchObject({visible:true,enabled:false})
+  expect(screen.getByText('그룹 해석 적용 OFF')).toBeTruthy()
+})
+
+it('lists and edits a legacy single Block without creating phantom child geometry', () => {
+  const box={...createBlockGroup('Block 1','box'),regions:undefined,widthMm:12}
+  act(() => leakPreviewStore.getState().addBlocker(box))
+  render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByLabelText('Block 1 Block 1 선택'))
+  expect(screen.getByLabelText('Block 1 Block 1 선택').getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(screen.getByLabelText('Block 1 영역 1 치수 편집'))
+  const width=screen.getByLabelText('Block 1 폭')
+  fireEvent.change(width,{target:{value:'20'}}); fireEvent.blur(width)
+  expect(leakPreviewStore.getState().blockers[0]).toMatchObject({widthMm:20,regions:undefined})
+  expect(expandBlockerGroups(leakPreviewStore.getState().blockers)).toHaveLength(1)
+})
+
+it('ends its drawing mode on leaving the panel and retains completed geometry', () => {
+  const view=render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button',{name:'Block 만들기'}))
+  const id=leakPreviewStore.getState().blockerAreaSelectionId!
+  act(() => leakPreviewStore.getState().appendBlockerRegion(id,{widthMm:10}))
+  view.unmount()
+  expect(leakPreviewStore.getState().blockerAreaSelectionId).toBeNull()
+  expect(workspaceStore.getState().roiBoxSelectionArmed).toBe(false)
+  expect(leakPreviewStore.getState().blockers[0].regions).toHaveLength(1)
+})
+
+it('does not end another Case drawing when an old editor unmounts', () => {
+  workspaceStore.getState().actions.addCadCase({path:'a.step',displayName:'A'})
+  const view=render(<AppProviders><BlockerEditor scene={createSceneFixture()} disabled={false} onStart={() => undefined} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button',{name:'Block 만들기'}))
+  const other=createBlockGroup('Block 2','box')
+  act(() => {
+    workspaceStore.getState().actions.addCadCase({path:'b.step',displayName:'B'})
+    leakPreviewStore.getState().clear()
+    leakPreviewStore.getState().addBlocker(other)
+    leakPreviewStore.getState().beginBlockerAreaSelection(other.id)
+  })
+  view.unmount()
+  expect(leakPreviewStore.getState().blockerAreaSelectionId).toBe(other.id)
 })

@@ -2157,6 +2157,7 @@ def run_direct_ray_trace(
     wavefront_residency: str = "auto",
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
+    pause_callback: Optional[Callable[[RayTraceResult], bool]] = None,
 ) -> RayTraceResult:
     if trace_input.analysis_roi and trace_input.analysis_roi.get("detection_boxes"):
         # Keep CUDA BVH intersections, but route Receiver acceptance through
@@ -2613,6 +2614,66 @@ def run_direct_ray_trace(
     if progress_callback is not None:
         progress_callback(0, expected_ray_count)
 
+    pause_count = 0
+    paused_sec = 0.
+
+    def stop_at_boundary():
+        """Suspend the live stream only after a complete primary/chunk commit.
+
+        Keeping this stack also keeps generator/RNG/prefetch and native state;
+        resuming never regenerates or re-traces previously completed primaries.
+        """
+        nonlocal pause_count, paused_sec, start_time
+        if total_rays >= expected_ray_count:
+            return False
+        if should_stop is None or not should_stop():
+            return False
+        if pause_callback is None or trace_input.observer_probe is not None:
+            return True
+        _flush_retained_ordered_summary(trace_input.mesh, trace_input.config,
+            receiver_frames, receiver_grids, optical_summary, reflection_summary,
+            contribution_summary, resolved_optical_by_face, stored_paths, wavefront_reducer_stats)
+        snapshot_grids = copy.deepcopy([receiver_grids[r.receiver_id] for r in trace_input.receivers if r.enabled])
+        snapshot_contributions = copy.deepcopy(contribution_summary)
+        _finalize_surface_contributions(snapshot_contributions)
+        snapshot_metrics = _build_direct_metrics(snapshot_grids, trace_input.config, total_rays,
+            [r for r in trace_input.receivers if r.enabled])
+        snapshot_metrics.update(_optical_summary=copy.deepcopy(optical_summary),
+            _reflection_summary=copy.deepcopy(reflection_summary),
+            _contribution_summary=snapshot_contributions.to_dict(),
+            _termination_summary=termination_summary(trace_input.config, optical_summary, reflection_summary,
+                termination_thresholds, source_power_lumen, True,
+                primary_sampling_stats.applied_emitter_count > 0 or bounce_sampling_stats.eligible_surface_count > 0))
+        if trace_input.analysis_roi:
+            snapshot_metrics["_roi_scope_summary"] = copy.deepcopy(trace_input.analysis_roi)
+        if escape_collector is not None:
+            snapshot_metrics["_escape_direction_summary"] = escape_collector.summary()
+        state, reason = intersection_stats.compute_execution_diagnosis(gpu_compute_requested)
+        if state == "gpu_active" and gpu_resident_stats.fallback_count:
+            state, reason = "gpu_mixed", gpu_resident_stats.fallback_reason
+        if bsdf_models and state == "gpu_active" and gpu_resident_stats.success_count == 0:
+            state, reason = "gpu_mixed", "bsdf_reflection_cpu_host_roundtrip"
+        snapshot_metrics["_performance_summary"] = dict(intersection_stats.to_summary(),
+            **gpu_resident_stats.to_summary(), compute_execution_state=state, compute_execution_reason=reason,
+            compute_backend="gpu_cuda" if gpu_compute_requested else "cpu",
+            receiver_flux_contract=RECEIVER_FLUX_CONTRACT,receiver_bin_assignment_contract=RECEIVER_BIN_CONTRACT,
+            contribution_mode=trace_input.config.contribution_mode,
+            stopped_early=True, requested_ray_count=expected_ray_count, monte_carlo_contract=monte_carlo_contract,
+            resume_contract="live_primary_boundary_v1", pause_count=pause_count+1)
+        snapshot = RayTraceResult(run_id=fresh_run_id("rt-pause"),config=copy.deepcopy(trace_input.config),
+            emitters=copy.deepcopy(trace_input.emitters),receivers=copy.deepcopy(trace_input.receivers),
+            optical_profiles=[copy.copy(profile) for profile in trace_input.optical_profiles],receiver_grids=snapshot_grids,
+            total_rays=total_rays,receiver_hit_count=receiver_hit_count,surface_hit_count=surface_hit_count,
+            terminated_ray_count=terminated_ray_count,contribution_summary=snapshot_contributions,
+            stored_paths=copy.deepcopy(stored_paths),runtime_sec=max(0., time.time()-start_time),metrics=snapshot_metrics)
+        wait_started = time.perf_counter()
+        keep_running = pause_callback(snapshot)
+        waited = time.perf_counter()-wait_started
+        paused_sec += waited
+        start_time += waited
+        pause_count += 1
+        return not keep_running
+
     for emitter in trace_input.emitters:
         if not emitter.enabled:
             continue
@@ -2764,7 +2825,7 @@ def run_direct_ray_trace(
             )
             emitter_ray_offset = 0
             while True:
-                if should_stop is not None and should_stop():
+                if stop_at_boundary():
                     stopped_early = True
                     break
                 try:
@@ -2785,7 +2846,7 @@ def run_direct_ray_trace(
                 ray_power_batch = ray_power * power_weight_batch
                 start = 0
                 while start < len(origin_batch):
-                    if should_stop is not None and should_stop():
+                    if stop_at_boundary():
                         stopped_early = True
                         break
                     chunk_size = intersection_batch_size
@@ -2987,7 +3048,7 @@ def run_direct_ray_trace(
             emitter_seed,
             trace_input.config.epsilon_mm,
         ):
-            if should_stop is not None and should_stop():
+            if stop_at_boundary():
                 stopped_early = True
                 break
             total_rays += 1
@@ -3386,6 +3447,9 @@ def run_direct_ray_trace(
         compute_execution_state = "gpu_mixed"
         compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
     metrics["_performance_summary"] = {
+        "resume_contract": "live_primary_boundary_v1" if pause_callback is not None and trace_input.observer_probe is None else None,
+        "pause_count": pause_count,
+        "paused_sec": paused_sec,
         "receiver_bin_assignment_contract": RECEIVER_BIN_CONTRACT,
         "backend": "python_numpy_cpu",
         "execution_path": (

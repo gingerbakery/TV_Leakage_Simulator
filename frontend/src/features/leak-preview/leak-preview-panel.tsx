@@ -122,6 +122,14 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const previewResult = useLeakPreviewStore((state) => state.result)
   const resultRestored = useLeakPreviewStore((state) => state.resultRestored)
   const observerSummary = previewResult ? observerProbeSummary(previewResult) : null
+  const [observerSort, setObserverSort] = useState<'brightness' | 'angle'>('brightness')
+  const observerViews = useMemo(() => {
+    const views = observerSummary?.views.map((view,index) => ({view,index})) ?? []
+    if (observerSummary?.measure === 'luminance_cd_m2' && observerSort === 'brightness') {
+      views.sort((a,b) => (b.view.peak_luminance_nit ?? 0)-(a.view.peak_luminance_nit ?? 0) || a.index-b.index)
+    }
+    return views
+  }, [observerSummary, observerSort])
   const angularSummary = previewResult ? escapeDirectionSummary(previewResult) : null
   const quality = useLeakPreviewStore((state) => state.quality)
   const directions = useLeakPreviewStore((state) => state.directions)
@@ -777,7 +785,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         {observerSummary.measure === 'luminance_cd_m2' ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">평행 관찰 휘도 추정 · 실측 미보정 · 투과 미포함</div> : null}
         {observerSummary.display_truncated ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">표시 한도 초과 · 밝은 셀 우선 표시</div> : null}
         {observerSummary.views.some((view) => (view.display_stride ?? 1) > 1) ? <div role="status" className="text-xs">검출점 묶음 표시 · 검사 간격 유지<HelpTooltip label="검출점 묶음 표시 도움말">메모리를 제한하기 위해 가까운 표시 셀을 묶었습니다. 지정 간격으로 전체 검사를 수행하며 검출 경로 수는 유지합니다. 표시 위치는 묶인 표본의 평균이고 개별 틈이 한 후보로 합쳐질 수 있습니다.</HelpTooltip></div> : null}
-        <div className="max-h-48 overflow-auto"><table className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th>{observerSummary.measure === 'luminance_cd_m2' ? <th>최고 (nit)</th> : null}</tr></thead><tbody>{observerSummary.views.map((view, i) => <tr key={i} className={cn(highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg && 'bg-orange-500/20')}><td><button type="button" className="w-full py-1 text-right" aria-pressed={highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg} onClick={() => setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })}>{view.horizontal_deg} / {view.vertical_deg}</button></td><td>{view.direct_count}</td><td>{view.reflected_count}</td>{observerSummary.measure === 'luminance_cd_m2' ? <td>{view.peak_luminance_nit?.toExponential(2)}</td> : null}</tr>)}</tbody></table></div>
+        {observerSummary.measure === 'luminance_cd_m2' ? <label className="flex items-center justify-end gap-1 text-xs">정렬<select aria-label="시야각 결과 정렬" className="h-7 rounded border border-border bg-background px-1" value={observerSort} onChange={(event) => setObserverSort(event.currentTarget.value as 'brightness' | 'angle')}><option value="brightness">휘도 높은 순</option><option value="angle">각도순</option></select></label> : null}
+        <div className="max-h-48 overflow-auto"><table aria-label="시야각 역추적 결과" className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th>{observerSummary.measure === 'luminance_cd_m2' ? <th>최고 (nit)</th> : null}</tr></thead><tbody>{observerViews.map(({view,index}) => <tr key={index} className={cn(highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg && 'bg-orange-500/20')}><td><button type="button" className="w-full py-1 text-right" aria-pressed={highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg} onClick={() => setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })}>{view.horizontal_deg} / {view.vertical_deg}</button></td><td>{view.direct_count}</td><td>{view.reflected_count}</td>{observerSummary.measure === 'luminance_cd_m2' ? <td>{view.peak_luminance_nit?.toExponential(2)}</td> : null}</tr>)}</tbody></table></div>
         {observerSummary.direct_count + observerSummary.reflected_count === 0 ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">현재 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.</div> : null}
       </section> : null}
       {angularSummary ? <section className="space-y-2 rounded-lg border border-border p-3">

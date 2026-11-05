@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import shutil
@@ -69,6 +70,19 @@ class _TraceGeometryBuildState:
         self.error: Optional[Exception] = None
 
 
+class _RayTraceSession:
+    """One live worker, retained at a committed primary boundary, never pickled."""
+    def __init__(self, job_id: str, fingerprint: str, predecessors=()):
+        self.job_id = job_id
+        self.fingerprint = fingerprint
+        self.wake = threading.Event()
+        self.finished = threading.Event()
+        self.paused = False
+        self.cancelled = False
+        self.resume_count = 0
+        self.predecessors = tuple(predecessors)
+
+
 class ApiRuntime:
     """Owns the short-lived state required by the local simulation API."""
 
@@ -103,6 +117,11 @@ class ApiRuntime:
         self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
+        self._raytrace_sessions: dict[str, _RayTraceSession] = {}
+        try:
+            self._supports_pause = "pause_callback" in inspect.signature(trace_runner).parameters
+        except (ValueError, TypeError):
+            self._supports_pause = False
         self._output_file_index: dict[str, Path] = {}
         self._state_lock = threading.RLock()
 
@@ -928,6 +947,13 @@ class ApiRuntime:
         self,
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        # Freeze the exact calculation inputs; callers must not mutate a live run.
+        request_payload = json.loads(json.dumps(request_payload, allow_nan=False))
+        restart = request_payload.pop("restart_from_beginning", False)
+        if not isinstance(restart, bool):
+            raise ValueError("restart_from_beginning must be boolean")
+        fingerprint = hashlib.sha256(json.dumps(request_payload, sort_keys=True,
+            separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         validate_bsdf_request(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         requested_ray_count = sum(
@@ -949,9 +975,44 @@ class ApiRuntime:
             "rays_per_sec": 0.0,
             "stop_requested": False,
             "stopped_early": False,
+            "resume_available": False,
+            "resume_count": 0,
             "created_at": time.time(),
         }
         with self._state_lock:
+            resume = next((session for session in self._raytrace_sessions.values()
+                if session.paused and not session.cancelled and session.fingerprint == fingerprint), None) if not restart else None
+            predecessors = []
+            for old_id, session in list(self._raytrace_sessions.items()):
+                if session is resume:
+                    continue
+                session.cancelled = True
+                session.wake.set()
+                predecessors.extend(session.predecessors)
+                predecessors.append(session)
+                self._raytrace_sessions.pop(old_id, None)
+                if old_id in self._raytrace_jobs:
+                    self._raytrace_jobs[old_id].update(resume_available=False,
+                        resume_unavailable_reason="다른 해석 시작 또는 입력 변경으로 이어 실행 상태 해제")
+            if resume is not None:
+                old_id = resume.job_id
+                old = self._raytrace_jobs[old_id]
+                for key in ("processed_rays", "total_rays", "progress", "elapsed_sec", "geometry_cache_hit"):
+                    if key in old:
+                        job[key] = old[key]
+                job.update(status="running",phase="tracing",phase_detail="중단 지점에서 이어 계산 중",
+                    resumed_from_job_id=old_id,resume_count=resume.resume_count+1)
+                old.update(resume_available=False,resumed_by_job_id=job_id)
+                self._raytrace_sessions.pop(old_id)
+                resume.job_id = job_id
+                resume.paused = False
+                resume.resume_count += 1
+                self._raytrace_sessions[job_id] = resume
+                self._raytrace_jobs[job_id] = job
+                resume.wake.set()
+                self._prune_raytrace_jobs_locked()
+                print(f"[RAY] job resume | {old_id[:8]} -> {job_id[:8]} | processed={job['processed_rays']}/{job['total_rays']}", flush=True)
+                return dict(job)
             superseded_job_count = 0
             for existing_job in self._raytrace_jobs.values():
                 if existing_job.get("status") not in {"queued", "running"}:
@@ -960,6 +1021,10 @@ class ApiRuntime:
                 existing_job["phase"] = "stopping"
                 superseded_job_count += 1
             self._raytrace_jobs[job_id] = job
+            predecessors = list(dict.fromkeys(s for s in predecessors if not s.finished.is_set()))
+            session = _RayTraceSession(job_id, fingerprint, predecessors) if self._supports_pause and not request_payload.get("observer_probe") else None
+            if session is not None:
+                self._raytrace_sessions[job_id] = session
             self._prune_raytrace_jobs_locked()
 
         config = request_payload.get("config")
@@ -978,7 +1043,7 @@ class ApiRuntime:
 
         worker = threading.Thread(
             target=self._run_raytrace_job,
-            args=(job_id, scene_mesh, request_payload),
+            args=(job_id, scene_mesh, request_payload, session, tuple(predecessors)),
             daemon=True,
             name="raytrace-{}".format(job_id[:8]),
         )
@@ -1402,25 +1467,34 @@ class ApiRuntime:
         job_id: str,
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
+        session: Optional[_RayTraceSession] = None,
+        predecessors: tuple = (),
     ) -> None:
+        def update_job(**updates):
+            if session is None or not session.cancelled:
+                self._update_raytrace_job(session.job_id if session else job_id, **updates)
         try:
             def should_stop() -> bool:
                 with self._state_lock:
-                    job = self._raytrace_jobs.get(job_id)
-                    return bool(job and job.get("stop_requested"))
+                    job = self._raytrace_jobs.get(session.job_id if session else job_id)
+                    return bool((session and session.cancelled) or (job and job.get("stop_requested")))
+
+            for previous in predecessors:
+                update_job(status="running",phase="preparing",phase_detail="이전 계산 상태 정리 중")
+                while not previous.finished.wait(.05):
+                    if should_stop():
+                        raise InterruptedError("Superseded while waiting for previous worker")
 
             preparation_started_at = time.time()
             def report_preparation_phase(detail: str) -> None:
-                self._update_raytrace_job(
-                    job_id,
+                update_job(
                     status="running",
                     phase="preparing",
                     phase_detail=detail,
                     elapsed_sec=max(0.0, time.time() - preparation_started_at),
                 )
 
-            self._update_raytrace_job(
-                job_id,
+            update_job(
                 status="running",
                 phase="preparing",
                 phase_detail="Ray Tracing 준비 시작",
@@ -1449,8 +1523,7 @@ class ApiRuntime:
                 if emitter.enabled
             )
             trace_started_at = time.time()
-            self._update_raytrace_job(
-                job_id,
+            update_job(
                 phase="tracing",
                 phase_detail="Ray 계산 진행 중",
                 processed_rays=0,
@@ -1493,8 +1566,7 @@ class ApiRuntime:
                 ray_dispatch_complete = (
                     safe_total > 0 and safe_processed >= safe_total
                 )
-                self._update_raytrace_job(
-                    job_id,
+                update_job(
                     phase=(
                         "stopping"
                         if should_stop()
@@ -1526,14 +1598,33 @@ class ApiRuntime:
                     rays_per_sec=ray_rate,
                 )
 
-            result = self._trace_runner(
-                trace_input,
-                progress_callback=report_progress,
-                should_stop=should_stop,
-            )
+            def pause_worker(partial_result):
+                nonlocal trace_started_at
+                wait_started = time.perf_counter()
+                payload = partial_result.to_dict()
+                processed = int(payload["total_rays"])
+                with self._state_lock:
+                    if session.cancelled:
+                        return False
+                    session.wake.clear()
+                    session.paused = True
+                    update_job(status="completed",phase="stopped",phase_detail="중단 지점 보관 · 동일 조건으로 이어 실행 가능",
+                        result=payload,processed_rays=processed,total_rays=total_ray_count,
+                        progress=processed/total_ray_count if total_ray_count else 0.,
+                        elapsed_sec=float(payload.get("runtime_sec",max(0.,time.time()-trace_started_at))),estimated_remaining_sec=None,
+                        stopped_early=True,resume_available=True,completed_at=time.time())
+                session.wake.wait()
+                trace_started_at += time.perf_counter()-wait_started
+                return not session.cancelled
+
+            runner_options = dict(progress_callback=report_progress,should_stop=should_stop)
+            if session is not None:
+                runner_options["pause_callback"] = pause_worker
+            result = self._trace_runner(trace_input, **runner_options)
+            if session is not None and session.cancelled:
+                return
             if not should_stop():
-                self._update_raytrace_job(
-                    job_id,
+                update_job(
                     status="running",
                     phase="serializing",
                     phase_detail="분석 결과·Stored Path 정리 중",
@@ -1554,8 +1645,7 @@ class ApiRuntime:
                 job_total_ray_count += observer_total
                 job_processed_ray_count += observer_done
             stopped_early = (should_stop() and processed_ray_count < total_ray_count) or (has_observer and bool(observer_summary.get("stopped")))
-            self._update_raytrace_job(
-                job_id,
+            update_job(
                 status="completed",
                 phase="stopped" if stopped_early else "completed",
                 phase_detail=(
@@ -1580,8 +1670,7 @@ class ApiRuntime:
                 completed_at=time.time(),
             )
         except InterruptedError:
-            self._update_raytrace_job(
-                job_id,
+            update_job(
                 status="cancelled",
                 phase="stopped",
                 phase_detail="준비 작업 중단 완료",
@@ -1590,10 +1679,10 @@ class ApiRuntime:
                 completed_at=time.time(),
             )
         except Exception as exc:
-            print(f"[RAY] job exception | {job_id} | {type(exc).__name__}: {exc}", flush=True)
+            current_id = session.job_id if session else job_id
+            print(f"[RAY] job exception | {current_id} | {type(exc).__name__}: {exc}", flush=True)
             traceback.print_exc()
-            self._update_raytrace_job(
-                job_id,
+            update_job(
                 status="failed",
                 phase="failed",
                 phase_detail="Ray Tracing 오류 발생",
@@ -1601,6 +1690,18 @@ class ApiRuntime:
                 estimated_remaining_sec=None,
                 completed_at=time.time(),
             )
+        finally:
+            if session is not None:
+                with self._state_lock:
+                    if self._raytrace_sessions.get(session.job_id) is session:
+                        self._raytrace_sessions.pop(session.job_id, None)
+                    current = self._raytrace_jobs.get(session.job_id)
+                    if current is not None:
+                        current["resume_available"] = False
+                        if session.cancelled and current.get("status") in {"queued", "running"}:
+                            current.update(status="cancelled",phase="stopped",stopped_early=True,
+                                phase_detail="새 해석 시작으로 이전 작업 종료",completed_at=time.time())
+                session.finished.set()
 
     def _prune_raytrace_jobs_locked(self) -> None:
         if len(self._raytrace_jobs) <= self._max_jobs:
@@ -1617,6 +1718,10 @@ class ApiRuntime:
             if len(self._raytrace_jobs) <= self._max_jobs:
                 break
             self._raytrace_jobs.pop(job_id, None)
+            session = self._raytrace_sessions.pop(job_id, None)
+            if session is not None:
+                session.cancelled = True
+                session.wake.set()
 
     def _prepare_upload_path(
         self,

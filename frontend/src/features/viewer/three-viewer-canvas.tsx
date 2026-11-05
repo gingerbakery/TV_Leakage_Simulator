@@ -132,7 +132,7 @@ import { emitterSphereDirection } from '@/features/raytracing/emitter-aim'
 import { createRoiCapMaterial } from './roi-cap-material'
 import { roiSurfaceAppearance } from './roi-surface-appearance'
 import { applyFaceDisplayColors, resolveFaceDisplayColors, setDisplayVertexColors } from './face-display-colors'
-import { attachBlockerBoxDrawing, attachViewerNavigationShortcuts, ViewerTrackballControls, type ViewerNavigationTarget } from './viewer-controls'
+import { attachBlockerBoxDrawing, attachBlockerDrawingEscape, attachViewerNavigationShortcuts, ViewerTrackballControls, type ViewerNavigationTarget } from './viewer-controls'
 import { attachViewerActionShortcuts } from './viewer-shortcuts'
 import { createSectionCapOutline } from './section-cap-outline'
 import {
@@ -3865,6 +3865,14 @@ export function ThreeViewerCanvas({
     const detachBlockerBoxDrawing = attachBlockerBoxDrawing(canvas, () => Boolean(roiBoxSelectionArmedRef.current && blockerAreaSelectionIdRef.current &&
       !(runtime.roiPreviewRoot.visible && pointerInPip)), handlePointerDown,
       () => true)
+    const detachBlockerEscape = attachBlockerDrawingEscape(() => Boolean(blockerAreaSelectionIdRef.current), () => {
+      prepareKeyboardNavigation()
+      leakPreviewStore.getState().finishBlockerAreaSelection()
+      actions.setRoiBoxSelectionArmed(false)
+      blockerAreaSelectionIdRef.current = null
+      blockerReferenceSurfaceRef.current = null
+      onStatusMessage('Block 추가 종료 · 생성된 형상 유지')
+    })
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
@@ -3897,6 +3905,7 @@ export function ThreeViewerCanvas({
       detachNavigationShortcuts()
       detachActionShortcuts()
       detachBlockerBoxDrawing()
+      detachBlockerEscape()
       controls.dispose()
       disposeObject(threeScene)
       disposeObject(orientationScene)

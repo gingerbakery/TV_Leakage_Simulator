@@ -62,6 +62,74 @@ afterEach(() => {
   workspaceStore.getState().actions.resetWorkspace()
 })
 
+it.each(['resume','restart','changed'] as const)('handles a paused calculation with %s semantics', async (mode) => {
+  const result=createRayTraceResultFixture(),actions=workspaceStore.getState().actions
+  act(() => {
+    actions.addCadCase({path:'resume.step',displayName:'Resume'})
+    actions.upsertEmitter(result.emitters[0]); actions.upsertReceiver(result.receivers[0])
+    actions.setRayTraceConfig({...result.config,auto_convergence:false})
+  })
+  apiHookState.matchJobId=true
+  apiHookState.start.mockResolvedValueOnce({job_id:'paused'})
+    .mockResolvedValueOnce({job_id:'next',...(mode==='resume'?{resumed_from_job_id:'paused',processed_rays:40}:{})})
+  const scene=createSceneFixture()
+  const view=render(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button',{name:'Run Ray Tracing'}))
+  await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe('paused'))
+  apiHookState.job={...createCompletedRayTraceJobFixture(),job_id:'paused',phase:'stopped',
+    processed_rays:40,progress:.4,stopped_early:true,resume_available:true,result:{...result,total_rays:40}}
+  view.rerender(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  await screen.findByRole('button',{name:'이어서 실행'})
+  expect(screen.getByText('40.0%')).toBeTruthy()
+  expect(workspaceStore.getState().singleRayTraceRun).toBeNull()
+  if(mode==='changed') {
+    act(() => actions.setRayTraceConfig({...workspaceStore.getState().rayTraceConfig,max_depth:result.config.max_depth+1}))
+    expect(screen.queryByRole('button',{name:'이어서 실행'})).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Run Ray Tracing'}))
+  } else fireEvent.click(screen.getByRole('button',{name:mode==='restart'?'처음부터':'이어서 실행'}))
+  await waitFor(() => expect(apiHookState.start).toHaveBeenCalledTimes(2))
+  const first=apiHookState.start.mock.calls[0][0].request,second=apiHookState.start.mock.calls[1][0].request
+  expect(second.resume_scope).toBe(workspaceStore.getState().activeCadCaseId)
+  if(mode==='resume') expect(second).toEqual(first)
+  if(mode==='restart') expect(second).toEqual({...first,restart_from_beginning:true})
+  if(mode==='changed') expect(second.config.max_depth).toBe(result.config.max_depth+1)
+})
+
+it('resumes an automatic-convergence segment without adding its previous partial twice', async () => {
+  const result=createRayTraceResultFixture(),actions=workspaceStore.getState().actions
+  act(() => {
+    actions.addCadCase({path:'auto-resume.step',displayName:'Auto resume'})
+    actions.upsertEmitter({...result.emitters[0],ray_count:100,seed:7}); actions.upsertReceiver(result.receivers[0])
+    actions.setRayTraceConfig({...result.config,auto_convergence:true,convergence_target_percent:5,max_convergence_multiplier:2})
+  })
+  apiHookState.matchJobId=true
+  apiHookState.start.mockResolvedValueOnce({job_id:'first'})
+    .mockResolvedValueOnce({job_id:'second'})
+    .mockResolvedValueOnce({job_id:'resumed',resumed_from_job_id:'second',processed_rays:40})
+  const scene=createSceneFixture()
+  const view=render(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  fireEvent.click(screen.getByRole('button',{name:'Run Ray Tracing'}))
+  await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe('first'))
+  const first=createCompletedRayTraceJobFixture(); first.job_id='first'; first.result.total_rays=100
+  first.result.metrics.receiver_001={...(first.result.metrics.receiver_001 as Record<string,unknown>),error_estimate_percent:12,peak_area_error_estimate_percent:14}
+  apiHookState.job=first
+  view.rerender(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe('second'))
+  const partial=createCompletedRayTraceJobFixture(); partial.job_id='second'; partial.phase='stopped'
+  partial.resume_available=true; partial.stopped_early=true; partial.processed_rays=40; partial.progress=.4; partial.result.total_rays=40
+  apiHookState.job=partial
+  view.rerender(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  fireEvent.click(await screen.findByRole('button',{name:'이어서 실행'}))
+  await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun?.jobId).toBe('resumed'))
+  expect(apiHookState.start.mock.calls[2][0].request).toEqual(apiHookState.start.mock.calls[1][0].request)
+  const resumed=createCompletedRayTraceJobFixture(); resumed.job_id='resumed'; resumed.result.total_rays=100
+  apiHookState.job=resumed
+  view.rerender(<AppProviders><RayTracingPanel scene={scene} cameraFrame={null} /></AppProviders>)
+  await waitFor(() => expect(workspaceStore.getState().singleRayTraceRun).toBeNull())
+  expect(workspaceStore.getState().cadCases[0].latestResult?.total_rays).toBe(200)
+  expect(apiHookState.start).toHaveBeenCalledTimes(3)
+})
+
 describe('RayTracingPanel Aim editing', () => {
   it.each(['datum_plane', 'current_view'] as const)('saves edited %s Receiver as a new entry without changing the original', (mode) => {
     const frame = { target: [0, 0, 0] as [number, number, number], normal: [0, 0, 1] as [number, number, number],

@@ -38,6 +38,23 @@ export function attachBlockerBoxDrawing(
   return () => canvas.removeEventListener('pointerdown',down,true)
 }
 
+/** Escape leaves explicit Block creation, without stealing text/dialog Escape. */
+export function attachBlockerDrawingEscape(enabled:()=>boolean, cancel:()=>void):()=>void {
+  const editable = (target:EventTarget|null) => target instanceof Element &&
+    Boolean(target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]'))
+  const keydown = (event:KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.repeat || event.isComposing ||
+      !enabled() || editable(event.target) || editable(document.activeElement)) return
+    for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+      if (!dialog.closest('[hidden],[aria-hidden="true"]')) return
+    }
+    event.preventDefault()
+    cancel()
+  }
+  window.addEventListener('keydown',keydown)
+  return () => window.removeEventListener('keydown',keydown)
+}
+
 
 /** Add held-key navigation without synthesizing clicks or changing mouse bindings. */
 export function attachViewerNavigationShortcuts(

@@ -35,6 +35,27 @@ function NumberInputHarness({
 }
 
 describe('NumberInput', () => {
+  it('defers geometry edits, restores empty drafts and Escape, and bounds committed dimensions', () => {
+    const change=vi.fn()
+    render(<NumberInput aria-label="Block depth" value={5} min={.01} commitOnBlur onValueChange={change} />)
+    const input=screen.getByRole('spinbutton',{name:'Block depth'}) as HTMLInputElement
+    fireEvent.focus(input)
+    fireEvent.change(input,{target:{value:''}})
+    fireEvent.blur(input)
+    expect(input.value).toBe('5')
+    expect(change).not.toHaveBeenCalled()
+    fireEvent.focus(input)
+    fireEvent.change(input,{target:{value:'12'}})
+    expect(change).not.toHaveBeenCalled()
+    fireEvent.keyDown(input,{key:'Escape'})
+    expect(input.value).toBe('5')
+    fireEvent.change(input,{target:{value:'12'}})
+    fireEvent.keyDown(input,{key:'Enter'})
+    expect(change).toHaveBeenLastCalledWith(12)
+    fireEvent.change(input,{target:{value:'-1'}})
+    fireEvent.blur(input)
+    expect(change).toHaveBeenLastCalledWith(.01)
+  })
   it('preserves zero on focus and accepts negative decimals after editing', () => {
     render(<NumberInputHarness />)
     const input = screen.getByRole('spinbutton', {

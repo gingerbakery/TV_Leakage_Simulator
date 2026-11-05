@@ -1729,6 +1729,12 @@ export function RayTracingPanel({
   const convergenceSegmentIndexRef = useRef(0)
   const convergenceAggregateRef = useRef<RayTraceResult | null>(null)
   const handledConvergenceJobRef = useRef<string | null>(null)
+  const launchedSegmentRef = useRef({ rayMultiplier: 1, segmentIndex: 0 })
+  const [resumeState, setResumeState] = useState<{
+    caseId:string; setupHash:string; jobId:string; rayMultiplier:number; segmentIndex:number;
+    cumulativeMultiplier:number; aggregate:RayTraceResult|null;
+    history:{rays:number;totalError:number;peakError:number;peakNit:number;flux:number}[];
+  } | null>(null)
   const autoRetryJobIdRef = useRef<string | null>(null)
   const singleRunSetupRef = useRef<{
     caseId: string
@@ -1833,6 +1839,8 @@ export function RayTracingPanel({
   const executionJobId = singleRayTraceRun?.jobId ?? activeJobId
   const jobQuery = useRayTraceJobQuery(executionJobId)
   const job = jobQuery.data
+  const canResume = Boolean(job?.resume_available && resumeState && job.job_id === resumeState.jobId &&
+    activeCadCaseId === resumeState.caseId && actions.validateCadCaseRayTraceSetup(resumeState.caseId,resumeState.setupHash) === 'current')
   const latestResult = job?.status === 'completed' && job.job_id === activeJobId
     ? job.result : null
   const isRunning =
@@ -1985,6 +1993,8 @@ export function RayTracingPanel({
     rayMultiplier = 1,
     autoRetry = false,
     segmentIndex = 0,
+    restart = false,
+    expectedResume = false,
   ) => {
     const executionState = workspaceStore.getState()
     const currentSingleRun = executionState.singleRayTraceRun
@@ -2038,6 +2048,7 @@ export function RayTracingPanel({
       caseId: activeCadCaseId,
       jobId: null,
     })
+    launchedSegmentRef.current = {rayMultiplier,segmentIndex}
     const requestForScene = (requestScene: ScenePayload) => {
       const request = buildRayTraceRequest({
         scene: requestScene,
@@ -2065,6 +2076,8 @@ export function RayTracingPanel({
             : convergenceSegmentSeed(emitter.seed, segmentIndex),
         }))
       }
+      if (restart) request.restart_from_beginning = true
+      request.resume_scope = activeCadCaseId
       return request
     }
     const cancelTokenAtStart = autoConvergenceCancelTokenRef.current
@@ -2112,6 +2125,8 @@ export function RayTracingPanel({
         caseId: activeCadCaseId,
         jobId: startedJob.job_id,
       })
+      if (startedJob.resumed_from_job_id) setAutoConvergenceStatus(`중단 지점 ${startedJob.processed_rays.toLocaleString()} Ray부터 이어 실행합니다.`)
+      else if (expectedResume) setAutoConvergenceStatus('보관 상태가 해제되었거나 입력이 달라 처음부터 실행합니다.')
       if (autoRetryAbortControllerRef.current === abortController) {
         autoRetryAbortControllerRef.current = null
       }
@@ -2145,7 +2160,7 @@ export function RayTracingPanel({
     }
   }, [activeCad?.displayName, activeCad?.path, activeCadCaseId, config, deletedComponentIds, emitters, excludedComponentIds, materialAssignments, bsdfAssets, precisionPreviewConstraints, queryClient, receivers, roiScopes, scene, startMutation, stopMutation, transformRules, actions])
 
-  const handleRun = async () => {
+  const handleRun = async (restart = false) => {
     if (
       batchRayTracingRunning ||
       workspaceStore.getState().batchRayTraceActive ||
@@ -2157,16 +2172,18 @@ export function RayTracingPanel({
     autoRetryJobIdRef.current = null
     autoRetryAbortControllerRef.current?.abort()
     autoRetryAbortControllerRef.current = null
-    convergenceMultiplierRef.current = 1
-    convergenceSegmentIndexRef.current = 0
-    convergenceAggregateRef.current = null
-    handledConvergenceJobRef.current = null
+    const continuation = !restart && canResume ? resumeState : null
+    convergenceMultiplierRef.current = continuation?.cumulativeMultiplier ?? 1
+    convergenceSegmentIndexRef.current = continuation?.segmentIndex ?? 0
+    convergenceAggregateRef.current = continuation?.aggregate ?? null
+    // The previous partial result must not be processed again while start is pending.
+    handledConvergenceJobRef.current = job?.job_id ?? null
     setAutoConvergenceStatus(
-      config.auto_convergence ? '자동 수렴 1차 해석을 시작합니다.' : '',
+      continuation ? '중단 지점에서 이어 실행합니다.' : config.auto_convergence ? '자동 수렴 1차 해석을 시작합니다.' : '',
     )
-    setConvergenceHistory([])
-    convergenceHistoryRef.current = []
-    await launchRun(1, false, 0)
+    setConvergenceHistory(continuation?.history ?? [])
+    convergenceHistoryRef.current = continuation?.history ?? []
+    await launchRun(continuation?.rayMultiplier ?? 1, false, continuation?.segmentIndex ?? 0, restart, Boolean(continuation))
   }
 
   useEffect(() => {
@@ -2196,6 +2213,12 @@ export function RayTracingPanel({
       autoRetryJobIdRef.current = null
     }
     let accumulatedResult = job.result
+    if (job.phase === 'stopped' || job.stopped_early) autoConvergenceActiveRef.current = false
+    if (job.resume_available && runSetup) {
+      setResumeState({...runSetup,jobId:job.job_id,...launchedSegmentRef.current,
+        cumulativeMultiplier:convergenceMultiplierRef.current,
+        aggregate:convergenceAggregateRef.current,history:convergenceHistoryRef.current})
+    }
     if (config.auto_convergence) {
       try {
         accumulatedResult = mergeConvergenceRayTraceResults(
@@ -2278,7 +2301,7 @@ export function RayTracingPanel({
   }, [actions, config.auto_convergence, config.convergence_target_percent, config.max_convergence_multiplier, enabledEmitterRayCount, job, launchRun, receivers])
 
   const progress =
-    job?.status === 'completed'
+    job?.status === 'completed' && job.phase !== 'stopped'
       ? 1
       : Math.max(0, Math.min(1, job?.progress ?? 0))
   const errorMessage =
@@ -3071,7 +3094,7 @@ export function RayTracingPanel({
               onClick={() => void handleRun()}
             >
               <Play />
-              Run Ray Tracing
+              {canResume ? '이어서 실행' : 'Run Ray Tracing'}
             </Button>
             {cadCases.length >= 2 && onOpenBatchRayTracing ? (
               <Button
@@ -3097,6 +3120,11 @@ export function RayTracingPanel({
             ) : null}
           </div>
         )}
+        {canResume && !isRunning ? <div className="flex items-center gap-2 text-xs">
+          <span>중단 지점 보관 · {job?.processed_rays.toLocaleString()} Ray</span>
+          <HelpTooltip label="중단 후 이어 실행 도움말">완료된 Ray 묶음 경계에서 난수·누적 결과·계산 상태를 메모리에 보관합니다. 같은 입력은 BVH 준비와 완료 Ray 계산을 반복하지 않고 이어갑니다. 변경한 입력으로 실행하거나 다른 해석을 시작하면 보관 상태를 해제합니다. 서버 종료와 작업 이력 정리 시에도 해제되며, 보관 중에는 계산 메모리를 유지합니다. 정밀 Ray Tracing의 현재 계산 구간을 이어가며 Preview 관찰 역추적은 이 기능의 대상이 아닙니다. 처음부터는 보관 상태를 버리고 새로 계산합니다.</HelpTooltip>
+          <Button size="sm" variant="outline" disabled={!canRun} onClick={() => void handleRun(true)}>처음부터</Button>
+        </div> : null}
         <p className="text-xs leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·
           Rays {enabledEmitterRayCount.toLocaleString()} · ROI{' '}

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { workspaceStore } from '@/stores'
@@ -24,6 +24,26 @@ vi.mock('@/api', async () => {
   }
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
+
+it('sorts radiance views by brightness and preserves the selected angle when sorting changes', () => {
+  const scene=createSceneFixture(),result=createRayTraceResultFixture()
+  result.metrics._observer_probe_summary={contract:'observer_radiance_parallel_v1',measure:'luminance_cd_m2',
+    execution_backend:'cpu',calibration_state:'uncalibrated',limitations:['finite_sampling'],
+    settings:{...defaultObserverSettings,resolution:8},attempted_count:128,planned_count:128,
+    direct_count:2,reflected_count:0,excluded_count:0,depth_limited_count:0,complete:true,stopped:false,runtime_sec:0,
+    views:[-20,20].map((horizontal_deg,i) => ({horizontal_deg,vertical_deg:0,direct_count:1,reflected_count:0,
+      direction:[0,0,-1],observer_center:[0,0,-10],u_axis:[1,0,0],v_axis:[0,1,0],spacing_mm:[1,1],peak_luminance_nit:i?10:5})),
+    cells:[5,10].map((luminance_nit,view_index) => ({view_index,row:0,column:0,position:[view_index,0,0],
+      direct_count:1,reflected_count:0,min_depth:0,max_depth:0,sample_count:1,luminance_nit}))}
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result,[],[]))
+  const table=screen.getByRole('table',{name:'시야각 역추적 결과'})
+  expect(within(table).getAllByRole('row')[1].textContent).toContain('20 / 0')
+  fireEvent.click(within(table).getByRole('button',{name:'20 / 0'}))
+  fireEvent.change(screen.getByLabelText('시야각 결과 정렬'),{target:{value:'angle'}})
+  expect(within(table).getAllByRole('row')[1].textContent).toContain('-20 / 0')
+  expect(leakPreviewStore.getState().highlight).toEqual({kind:'observer',horizontal:20,vertical:0})
+})
 
 it('rejects an old count-only server response when the user requested radiance', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'radiance.step', displayName: 'Radiance' })
