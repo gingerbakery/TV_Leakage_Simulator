@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { defaultObserverSettings, buildLeakPreviewRequest } from './leak-preview-model'
+import { defaultObserverSettings as newDefaults, buildLeakPreviewRequest } from './leak-preview-model'
 import { planObserverSampling } from './observer-sampling'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createDefaultLeakPreviewProjectState, leakPreviewStore } from './leak-preview-store'
 
+// Pin legacy path sampling regression fixtures independently of new defaults.
+const defaultObserverSettings = { ...newDefaults, measurement: 'paths' as const, refine_angles: false }
+
 describe('automatic observer sampling', () => {
+  it('defaults to radiance and explores zero-hit angular midpoints with an explicit budget', () => {
+    expect(newDefaults).toMatchObject({ measurement: 'radiance', refine_angles: true, min_luminance_nit: .01 })
+    const plan = planObserverSampling({ ...newDefaults, coverage: 'hemisphere', step_deg: 15 })
+    expect(plan).toMatchObject({ views: 577, error: null })
+    expect(plan.plannedCount).toBeLessThanOrEqual(500_000)
+    const projection = { minimum: [0,0,0] as [number,number,number], maximum: [100,60,10] as [number,number,number], direction: 'neg_z' as const }
+    const full = planObserverSampling({ ...newDefaults, search_mode: 'full_detail', range_deg: 0,
+      horizontal_deg: 0, vertical_deg: 0, spacing_mm: 1 }, 1, projection)
+    expect(full).toMatchObject({ samples_per_cell: 8, plannedCount: 48_000, error: null })
+  })
   it('covers the complete hemisphere including the rim and unique poles', () => {
     const observer = { ...defaultObserverSettings, coverage: 'hemisphere' as const, step_deg: 30 }
     const plan = planObserverSampling(observer)
@@ -97,6 +110,14 @@ describe('automatic observer sampling', () => {
     expect(leakPreviewStore.getState().observer).toMatchObject({ sampling: 'manual', resolution: 80, samples_per_cell: 3 })
     leakPreviewStore.getState().restoreProjectState({ ...project, observer: { ...observer, sampling: 'fine' } })
     expect(leakPreviewStore.getState().observer.sampling).toBe('fine')
+    leakPreviewStore.getState().clear()
+  })
+
+  it('does not silently reinterpret an old saved observer as a radiance calculation', () => {
+    const old = { ...newDefaults }
+    delete old.measurement; delete old.refine_angles; delete old.min_luminance_nit
+    leakPreviewStore.getState().restoreProjectState({ ...createDefaultLeakPreviewProjectState(), observer: old })
+    expect(leakPreviewStore.getState().observer).toMatchObject({ measurement: 'paths', refine_angles: false })
     leakPreviewStore.getState().clear()
   })
 })

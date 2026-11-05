@@ -25,6 +25,29 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('rejects an old count-only server response when the user requested radiance', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'radiance.step', displayName: 'Radiance' })
+  mocks.start.mockResolvedValue({ job_id: 'old-server' })
+  const scene=createSceneFixture()
+  const view=render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true }) })
+  expect((screen.getByLabelText('역추적 검출 기준') as HTMLSelectElement).value).toBe('radiance')
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
+  const result=createRayTraceResultFixture()
+  result.metrics._escape_direction_summary={ contract: 'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count: 0, selected_count: 0, excluded_count: 0, cells: [],
+    bins: [0,30,60,80].map((min_deg,i) => ({ min_deg, max_deg: [30,60,80,90][i],count: 0,flux_lumen: 0 })) }
+  result.metrics._observer_probe_summary={ contract: 'observer_path_support_v1', measure: 'path_support_counts',
+    execution_backend: 'cpu', settings: { ...defaultObserverSettings, resolution: 8 },
+    attempted_count: 64, planned_count: 64, direct_count: 0, reflected_count: 0, excluded_count: 0,
+    depth_limited_count: 0, complete: true, stopped: false, runtime_sec: 0, views: [], cells: [] }
+  mocks.job={ job_id: 'old-server', status: 'completed', result }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  await waitFor(() => expect(screen.getByText(/역추적 집계가 없거나 유효하지 않습니다/)).toBeTruthy())
+  expect(leakPreviewStore.getState().result).toBeNull()
+})
+
 it('keeps saved results while the scene loads and rebinds a restarted server session', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'saved.step', displayName: 'Saved' })
   const scene = createSceneFixture()
@@ -81,7 +104,7 @@ it('starts a fixed-spacing whole-model search using precision geometry and the c
   await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
   const request = mocks.start.mock.calls[0][0].request
   expect(request.geometry_mode).toBe('precision')
-  expect(request.observer_probe).toMatchObject({ search_mode: 'full_detail', spacing_mm: 1, samples_per_cell: 2 })
+  expect(request.observer_probe).toMatchObject({ measurement: 'radiance', search_mode: 'full_detail', spacing_mm: 1, samples_per_cell: 8 })
   expect(request.config.max_depth).toBe(50)
   expect(request.config).toMatchObject({ max_stored_paths: 100, k_abs: .9, k_brdf: .5 })
   expect(request.analysis_roi).toBeUndefined()
@@ -405,7 +428,7 @@ it('automatically budgets sampling and blocks excessive angles before starting',
   expect(screen.getByRole('button', { name: '기본' }).getAttribute('aria-pressed')).toBe('true')
   const advanced = screen.getByText('고급 설정').closest('details')!
   expect(advanced.open).toBe(false)
-  act(() => leakPreviewStore.getState().setObserver({ horizontal_deg: 0, vertical_deg: 0, range_deg: 2, step_deg: .5 }))
+  act(() => leakPreviewStore.getState().setObserver({ measurement: 'paths', refine_angles: false, horizontal_deg: 0, vertical_deg: 0, range_deg: 2, step_deg: .5 }))
   fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
   expect(mocks.start.mock.calls[0][0].request.observer_probe).toMatchObject({ resolution: 43, samples_per_cell: 1, step_deg: .5 })

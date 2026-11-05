@@ -380,6 +380,9 @@ function isLeakPreviewProjectState(
 
 function isObserverSettings(value: unknown): boolean {
   if (!isRecord(value) || !isBoolean(value.enabled)) return false
+  if (value.measurement !== undefined && !isOneOf(value.measurement, ['paths', 'radiance'])) return false
+  if (value.refine_angles !== undefined && !isBoolean(value.refine_angles)) return false
+  if (value.min_luminance_nit !== undefined && (!isFiniteNumber(value.min_luminance_nit) || value.min_luminance_nit < 0)) return false
   if (value.sampling !== undefined && !isOneOf(value.sampling, ['fast', 'balanced', 'fine', 'manual'])) return false
   if (value.coverage !== undefined && !isOneOf(value.coverage, ['local', 'hemisphere'])) return false
   if (value.search_mode !== undefined && !isOneOf(value.search_mode, ['preview', 'full_detail'])) return false
@@ -614,6 +617,7 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
       !['widthMm','heightMm','fluxLumen','peakFluxLumen','relativeStrength','cellCount','sampledPathCount','grazingPathCount'].every((key) => isFiniteNumber(candidate[key]) && candidate[key] >= 0) ||
       !['minReflectionCount','maxReflectionCount','meanExitAngleDeg'].every((key) => candidate[key] === null || isFiniteNumber(candidate[key]))) return false
     if (candidate.representativePath !== undefined && (!Array.isArray(candidate.representativePath) || candidate.representativePath.length < 2 || !candidate.representativePath.every(isVec3))) return false
+    if (candidate.peakLuminanceNit !== undefined && (!isFiniteNumber(candidate.peakLuminanceNit) || candidate.peakLuminanceNit < 0)) return false
     if (candidate.groupedCount !== undefined && (!Number.isSafeInteger(candidate.groupedCount) || Number(candidate.groupedCount) < 1)) return false
     if (candidate.observerAngles !== undefined && (!Array.isArray(candidate.observerAngles) || !candidate.observerAngles.every((angle: unknown) =>
       isRecord(angle) && ['horizontalDeg','verticalDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(angle[key])) &&

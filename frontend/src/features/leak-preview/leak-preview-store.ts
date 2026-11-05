@@ -17,6 +17,13 @@ import type {
 import { defaultObserverSettings } from './leak-preview-model'
 import { workspaceStore } from '@/stores/workspace-store'
 
+function restoredObserver(observer?: LeakPreviewProjectState['observer']) {
+  return { ...defaultObserverSettings, ...observer,
+    measurement: observer ? observer.measurement ?? 'paths' : defaultObserverSettings.measurement,
+    refine_angles: observer ? observer.refine_angles ?? false : defaultObserverSettings.refine_angles,
+    sampling: observer ? observer.sampling ?? 'manual' : 'balanced' as const }
+}
+
 export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState {
   return {
     sourceMode: 'face',
@@ -225,7 +232,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       return {
           sceneToken,
           sceneIdentity,
-          observer: { ...defaultObserverSettings, ...preserved?.observer, sampling: preserved?.observer ? preserved.observer.sampling ?? 'manual' : 'balanced' },
+          observer: restoredObserver(preserved?.observer),
           detectionMode: 'escape_directions',
           sourceMode: 'face',
           sourceEmitterIds: [],
@@ -419,7 +426,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       ignoreAreas: [],
       sourceEmitterIds: restored.sourceEmitterIds ?? [],
       detectionMode: restored.detectionMode ?? 'planar',
-      observer: { ...defaultObserverSettings, ...restored.observer, sampling: restored.observer ? restored.observer.sampling ?? 'manual' : 'balanced' },
+      observer: restoredObserver(restored.observer),
       sceneToken: null,
       sceneIdentity: null,
       jobId: null,

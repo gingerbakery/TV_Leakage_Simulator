@@ -29,6 +29,30 @@ import {
 } from './leak-preview-model'
 
 describe('whole-set leak preview', () => {
+  it('uses radiance for strength and centroid and never restores filtered forward escapes', () => {
+    const result = createRayTraceResultFixture(), scene = createSceneFixture()
+    const probe = { contract: 'observer_radiance_parallel_v1', execution_backend: 'cpu', measure: 'luminance_cd_m2',
+      calibration_state: 'uncalibrated', limitations: ['finite_sampling'], settings: { ...defaultObserverSettings, resolution: 8 },
+      attempted_count: 128, planned_count: 128, direct_count: 2, reflected_count: 0, excluded_count: 0,
+      depth_limited_count: 0, complete: true, stopped: false, runtime_sec: .1,
+      views: [{ horizontal_deg: 0, vertical_deg: 0, direction: [0,0,-1], observer_center: [0,0,-10],
+        u_axis: [1,0,0], v_axis: [0,1,0], spacing_mm: [1,1], direct_count: 2, reflected_count: 0 }],
+      cells: [1,9].map((luminance_nit, column) => ({ view_index: 0, row: 0, column,
+        position: [column*2-1,0,0], representative_path: [[column*2-1,0,0],[column*2-1,0,-10]],
+        direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0, sample_count: 8, luminance_nit })) }
+    result.metrics._observer_probe_summary = probe
+    const detected = detectLeakPreviewCandidates(scene,result)
+    expect(detected.candidates).toHaveLength(1)
+    expect(detected.candidates[0].center[0]).toBeCloseTo(.8)
+    expect(detected.candidates[0].peakLuminanceNit).toBe(9)
+    expect(detected.candidates[0].representativePath).toEqual(probe.cells[1].representative_path)
+    expect(detected.points.map((point) => point.relativeStrength)).toEqual([1/9,1])
+    probe.cells=[]; probe.direct_count=0; probe.views[0].direct_count=0
+    expect(observerProbeSummary(result)).not.toBeNull()
+    expect(detectLeakPreviewCandidates(scene,result)).toEqual({ points: [], candidates: [] })
+    probe.measure='path_support_counts'
+    expect(observerProbeSummary(result)).toBeNull()
+  })
   it('groups nearby identical interior paths across views but preserves distinct reflection routes', () => {
     const base = detectLeakPreviewCandidates(createSceneFixture(), createRayTraceResultFixture()).candidates[0]
     const candidates = [

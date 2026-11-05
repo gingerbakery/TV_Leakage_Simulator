@@ -2169,16 +2169,19 @@ def run_direct_ray_trace(
         wavefront_planner = wavefront_reducer = "python_cpu"
         wavefront_residency = "host_roundtrip"
         gpu_accumulator = "host"
-    full_observer_plans = None
+    observer_plans = None
     if trace_input.observer_probe is not None:
         from .observer_probe import validate_settings, sampling_plan
         validate_settings(trace_input.observer_probe)
+        if trace_input.observer_probe.get("measurement") == "radiance":
+            from .observer_probe import _source_geometry
+            from .observer_radiance import validate_sources
+            validate_sources(_source_geometry(trace_input.mesh, trace_input.emitters))
         if trace_input.escape_collection is None:
             raise ValueError("Observer probing requires escape collection bounds")
-        if trace_input.observer_probe.get("search_mode") == "full_detail":
-            bounds = trace_input.escape_collection
-            full_observer_plans = sampling_plan(trace_input.observer_probe, bounds["minimum"], bounds["maximum"],
-                bounds["direction"], sum(1 for emitter in trace_input.emitters if emitter.enabled), trace_input.config.epsilon_mm)
+        bounds = trace_input.escape_collection
+        observer_plans = sampling_plan(trace_input.observer_probe, bounds["minimum"], bounds["maximum"],
+            bounds["direction"], sum(1 for emitter in trace_input.emitters if emitter.enabled), trace_input.config.epsilon_mm)
     if trace_input.escape_collection is not None:
         if trace_input.config.primary_sampling_strategy != "source" or trace_input.config.bounce_sampling_strategy != "source":
             raise ValueError("Directional escape collection requires Source sampling")
@@ -2473,9 +2476,9 @@ def run_direct_ray_trace(
         emitter.ray_count for emitter in trace_input.emitters if emitter.enabled
     )
     observer_progress_callback = None
-    if full_observer_plans is not None and progress_callback is not None:
+    if observer_plans is not None and progress_callback is not None:
         report_combined_progress = progress_callback
-        expected_observer_count = sum(plan["grid_samples"]+plan["targeted_samples"] for plan in full_observer_plans)
+        expected_observer_count = sum(plan["grid_samples"]+plan["targeted_samples"] for plan in observer_plans)
         progress_callback = lambda completed, total: report_combined_progress(completed, total+expected_observer_count)
         observer_progress_callback = lambda completed, total: report_combined_progress(expected_ray_count+completed, expected_ray_count+total)
     progress_interval = max(1, expected_ray_count // 400)

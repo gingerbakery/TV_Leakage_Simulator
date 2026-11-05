@@ -35,6 +35,13 @@ def validate_settings(spec):
             raise ValueError(f"Observer {key} must be an integer")
     if spec.get("coverage", "local") not in ("local", "hemisphere"):
         raise ValueError("Invalid observer coverage")
+    if spec.get("measurement", "paths") not in ("paths", "radiance"):
+        raise ValueError("Invalid observer measurement")
+    if "refine_angles" in spec and not isinstance(spec["refine_angles"], bool):
+        raise ValueError("Observer refine_angles must be boolean")
+    threshold = spec.get("min_luminance_nit", 0.)
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
+        raise ValueError("Observer min_luminance_nit must be finite and non-negative")
     mode = spec.get("search_mode", "preview")
     if mode not in ("preview", "full_detail"):
         raise ValueError("Invalid observer search mode")
@@ -43,16 +50,22 @@ def validate_settings(spec):
         if isinstance(spacing, bool) or not isinstance(spacing, (int, float)) or not math.isfinite(spacing) or not .1 <= spacing <= 100:
             raise ValueError("Invalid observer spacing_mm: expected 0.1..100")
     views = angles(spec)
-    if len(views) > (2048 if spec.get("coverage") == "hemisphere" else 121) or (mode != "full_detail" and len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * 2 > 500_000):
+    sample_factor = 1 if spec.get("measurement") == "radiance" else 2
+    if len(views) > (2048 if spec.get("coverage") == "hemisphere" else 121) or (mode != "full_detail" and len(views) * spec["resolution"] ** 2 * spec["samples_per_cell"] * sample_factor > 500_000):
         raise ValueError("Observer budget exceeded: reduce angle range, resolution or samples")
     return views
 
 
 def angles(spec):
     radius, step = spec["range_deg"], spec["step_deg"]
+    # Unconditional midpoint coverage includes cells whose coarse probes were
+    # all zero. Never infer angular support from hits alone.
+    refine = spec.get("refine_angles", False)
     if spec.get("coverage") == "hemisphere":
         # Spherical latitude/longitude on the selected drawing axis. Unique poles.
         n = 2 * math.ceil(90 / step)
+        if refine:
+            n *= 2
         if n > 45:
             raise ValueError("Observer budget exceeded: increase hemisphere angle step")
         values = [round(-90 + 180*i/n, 8) for i in range(n+1)]
@@ -60,6 +73,9 @@ def angles(spec):
     # Always include the requested direction and range endpoints.
     offsets = {0., -radius, radius}
     offsets.update(i * step for i in range(-int(radius / step), int(radius / step) + 1))
+    if refine:
+        ordered = sorted(offsets)
+        offsets.update((a+b)/2 for a, b in zip(ordered, ordered[1:]))
     return sorted({(round(max(-89.9, min(89.9, spec["horizontal_deg"] + x)), 8),
                     round(max(-89.9, min(89.9, spec["vertical_deg"] + y)), 8)) for x in offsets for y in offsets})
 
@@ -77,6 +93,8 @@ def view_direction(axis, horizontal, vertical):
 def sampling_plan(spec, minimum, maximum, axis, source_count, epsilon=1e-8):
     """Small per-view plans only; never allocate a full search grid."""
     views = validate_settings(spec)
+    if spec.get("measurement") == "radiance":
+        source_count = 0  # Biased source-projection primaries are discovery only.
     corners = [tuple(maximum[i] if bits & (1 << i) else minimum[i] for i in range(3)) for bits in range(8)]
     center = tuple((minimum[i]+maximum[i])/2 for i in range(3))
     full = spec.get("search_mode") == "full_detail"
@@ -239,6 +257,10 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
         raise ValueError("GPU observer requires batch dispatch")
     if requested == "gpu_cuda" and trace_input.config.intersection_backend == "brute_force":
         raise ValueError("GPU observer requires BVH")
+    if trace_input.observer_probe.get("measurement") == "radiance":
+        from .observer_radiance import trace_observer_radiance
+        return trace_observer_radiance(trace_input, collector, resolved, should_stop,
+            dispatch=dispatch, batch_size=batch_size, progress_callback=progress_callback)
     stats = _IntersectionDispatchStats(intersection_backend=trace_input.config.intersection_backend,
         requested_provider="gpu_cuda" if requested == "gpu_cuda" else "python_cpu")
     spec = trace_input.observer_probe
@@ -290,6 +312,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
         def probe(sample_index):
             nonlocal attempted, depth_limited
             attempted += 1
+            # Preserve v1 path-discovery samples for saved legacy results.
+            # The radiance estimator separately honors config.seed.
             rng = random.Random(1729 + view_index*1_000_003 + sample_index*9176)
             cell_index = sample_index // passes
             row, column = divmod(cell_index, columns)

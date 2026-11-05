@@ -1505,8 +1505,10 @@ class ApiRuntime:
                     phase_detail=(
                         "중단 요청 처리 및 부분 결과 정리 중"
                         if should_stop()
-                        else "전체 정밀 검색 · 관찰 경로 검사 중"
-                        if (request_payload.get("observer_probe") or {}).get("search_mode") == "full_detail" and safe_processed >= total_ray_count and not ray_dispatch_complete
+                        else ("전체 정밀 검색 · 관찰 경로 검사 중"
+                              if (request_payload.get("observer_probe") or {}).get("search_mode") == "full_detail"
+                              else "시야각 역추적 검사 중")
+                        if request_payload.get("observer_probe") and safe_processed >= total_ray_count and not ray_dispatch_complete
                         else "Ray 계산 완료 · Receiver·기여도 집계 중"
                         if ray_dispatch_complete
                         else "Ray 계산 진행 중"
@@ -1545,13 +1547,13 @@ class ApiRuntime:
             )
             job_processed_ray_count, job_total_ray_count = processed_ray_count, total_ray_count
             observer_summary = (result_payload.get("metrics") or {}).get("_observer_probe_summary") or {}
-            full_detail = (request_payload.get("observer_probe") or {}).get("search_mode") == "full_detail"
-            if full_detail:
+            has_observer = bool(request_payload.get("observer_probe"))
+            if has_observer:
                 observer_total = max(0, int(observer_summary.get("planned_count", 0)))
                 observer_done = max(0, min(observer_total, int(observer_summary.get("attempted_count", 0))))
                 job_total_ray_count += observer_total
                 job_processed_ray_count += observer_done
-            stopped_early = (should_stop() and processed_ray_count < total_ray_count) or (full_detail and bool(observer_summary.get("stopped")))
+            stopped_early = (should_stop() and processed_ray_count < total_ray_count) or (has_observer and bool(observer_summary.get("stopped")))
             self._update_raytrace_job(
                 job_id,
                 status="completed",

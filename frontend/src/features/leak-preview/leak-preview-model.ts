@@ -75,6 +75,9 @@ export interface LeakPreviewBlocker {
  * they are derived/transient state and must never be replayed as active work.
  */
 export interface LeakPreviewObserverSettings {
+  measurement?: 'paths' | 'radiance'
+  min_luminance_nit?: number
+  refine_angles?: boolean
   coverage?: 'local' | 'hemisphere'
   search_mode?: 'preview' | 'full_detail'
   spacing_mm?: number
@@ -89,6 +92,7 @@ export interface LeakPreviewObserverSettings {
 }
 
 export const defaultObserverSettings: LeakPreviewObserverSettings = {
+  measurement: 'radiance', min_luminance_nit: .01, refine_angles: true,
   search_mode: 'preview', spacing_mm: 2,
   enabled: false, sampling: 'balanced', horizontal_deg: 85, vertical_deg: 0, range_deg: 1, step_deg: 1,
   resolution: 64, samples_per_cell: 2,
@@ -129,6 +133,7 @@ export interface LeakPreviewPoint {
 }
 
 export interface LeakPreviewCandidate {
+  peakLuminanceNit?: number
   representativePath?: Vec3[]
   groupedCount?: number
   observerAngles?: Array<{ horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number }>
@@ -731,6 +736,10 @@ export function buildLeakPreviewRequest({
       if (plan.error) throw new Error(`역추적 탐색 한도 초과: ${plan.error}`)
       const { enabled: _enabled, sampling: _sampling, ...rawSettings } = observer
       const settings = { ...rawSettings, ...(fullDetail ? { spacing_mm: observer.spacing_mm ?? 2 } : {}), resolution: plan.resolution, samples_per_cell: plan.samples_per_cell }
+      if (settings.measurement === 'radiance') {
+        settings.min_luminance_nit ??= .01
+        if (!Number.isFinite(settings.min_luminance_nit) || settings.min_luminance_nit < 0) throw new Error('최소 관찰 휘도는 0 이상의 유한한 nit 값이어야 합니다.')
+      }
       for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
         const value = settings[key]
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
@@ -1134,18 +1143,24 @@ function sampledEscapeLocations(
 }
 
 interface ObserverProbeView {
+  peak_luminance_nit?: number
   grid_resolution?: [number, number]; sampling_resolution?: [number, number]; sample_spacing_mm?: [number, number]; display_stride?: number
   horizontal_deg: number; vertical_deg: number; direct_count: number; reflected_count: number
   direction: Vec3; observer_center: Vec3; u_axis: Vec3; v_axis: Vec3; spacing_mm: [number, number]
 }
 interface ObserverProbeCell {
+  luminance_nit?: number
+  sample_count?: number
   representative_path?: Vec3[]
   view_index: number; row: number; column: number; position: Vec3
   direct_count: number; reflected_count: number; min_depth: number; max_depth: number
 }
 export interface ObserverProbeSummary {
+  display_truncated?: boolean
+  limitations?: string[]
+  calibration_state?: string
   search_contract?: string
-  contract: 'observer_path_support_v1'; execution_backend: 'cpu' | 'gpu_cuda'; requested_backend?: 'cpu' | 'gpu_cuda'; performance?: Record<string, unknown>; sample_contract?: string; measure: 'path_support_counts'
+  contract: 'observer_path_support_v1' | 'observer_radiance_parallel_v1'; execution_backend: 'cpu' | 'gpu_cuda'; requested_backend?: 'cpu' | 'gpu_cuda'; performance?: Record<string, unknown>; sample_contract?: string; measure: 'path_support_counts' | 'luminance_cd_m2'
   settings: Omit<LeakPreviewObserverSettings, 'enabled' | 'sampling'>
   attempted_count: number; planned_count: number; direct_count: number; reflected_count: number
   excluded_count: number; depth_limited_count: number; complete: boolean; stopped: boolean; runtime_sec: number
@@ -1158,11 +1173,14 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
   const summary = raw as ObserverProbeSummary
   const count = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
   const vector = (x: unknown, size = 3): boolean => Array.isArray(x) && x.length === size && x.every((v) => typeof v === 'number' && Number.isFinite(v))
+  const radiance = summary.contract === 'observer_radiance_parallel_v1' && summary.measure === 'luminance_cd_m2'
+  if (radiance && (summary.settings?.measurement !== 'radiance' || summary.calibration_state !== 'uncalibrated' ||
+    !Array.isArray(summary.limitations) || !summary.limitations.includes('finite_sampling'))) return null
   if (summary.settings?.search_mode === 'full_detail' && (summary.search_contract !== 'observer_full_spacing_v1' ||
     !Array.isArray(summary.views) || summary.views.some((view) => !vector(view.grid_resolution, 2) || !vector(view.sampling_resolution, 2) || !vector(view.sample_spacing_mm, 2) ||
       !view.sampling_resolution!.every((n) => count(n) && n > 0) || !count(view.display_stride) || view.display_stride < 1 ||
       !view.sample_spacing_mm!.every((n) => n > 0 && n <= (summary.settings.spacing_mm ?? 2) + 1e-9)))) return null
-  if (summary.contract !== 'observer_path_support_v1' || !['cpu', 'gpu_cuda'].includes(summary.execution_backend) || summary.measure !== 'path_support_counts' ||
+  if ((!radiance && (summary.contract !== 'observer_path_support_v1' || summary.measure !== 'path_support_counts')) || !['cpu', 'gpu_cuda'].includes(summary.execution_backend) ||
     !summary.settings || !count(summary.settings.resolution) || summary.settings.resolution < 8 || summary.settings.resolution > 256 ||
     ![summary.attempted_count, summary.planned_count, summary.direct_count, summary.reflected_count, summary.excluded_count, summary.depth_limited_count].every(count) ||
     summary.attempted_count > summary.planned_count || summary.direct_count + summary.reflected_count + summary.excluded_count > summary.attempted_count ||
@@ -1175,6 +1193,7 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
     (view.grid_resolution !== undefined && (!vector(view.grid_resolution, 2) || !view.grid_resolution.every((n) => count(n) && n > 0))) ||
     !Number.isFinite(view.horizontal_deg) || !Number.isFinite(view.vertical_deg) || !count(view.direct_count) || !count(view.reflected_count))) return null
   if (summary.cells.some((cell) => !count(cell.view_index) || cell.view_index >= summary.views.length || !vector(cell.position) ||
+    (radiance && (!Number.isFinite(cell.luminance_nit) || cell.luminance_nit! <= 0 || !count(cell.sample_count) || cell.sample_count < 1)) ||
     (cell.representative_path !== undefined && (!Array.isArray(cell.representative_path) || cell.representative_path.length < 2 || !cell.representative_path.every((p) => vector(p)))) ||
     !count(cell.row) || !count(cell.column) || cell.row >= (summary.views[cell.view_index].grid_resolution?.[1] ?? summary.settings.resolution) || cell.column >= (summary.views[cell.view_index].grid_resolution?.[0] ?? summary.settings.resolution) ||
     !count(cell.direct_count) || !count(cell.reflected_count) || cell.direct_count + cell.reflected_count <= 0 ||
@@ -1192,10 +1211,12 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
   const candidates: LeakPreviewCandidate[] = []
   const bounds = getLeakPreviewBounds(scene, options.transformRules)
   const modelDepth = Math.max(...bounds.size, 1) * .18
-  const maximum = summary.cells.reduce((value, cell) => Math.max(value, cell.direct_count + cell.reflected_count), 1)
+  const radiance = summary.measure === 'luminance_cd_m2'
+  const strength = (cell: ObserverProbeCell) => radiance ? cell.luminance_nit! : cell.direct_count + cell.reflected_count
+  const maximum = summary.cells.reduce((value, cell) => Math.max(value, strength(cell)), Number.MIN_VALUE)
   summary.views.forEach((view, viewIndex) => {
     const cells = summary.cells.filter((cell) => cell.view_index === viewIndex)
-    const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.position, flux: cell.direct_count + cell.reflected_count }))
+    const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.position, flux: strength(cell) }))
     const lookup = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]))
     const resolution = view.grid_resolution ?? [summary.settings.resolution, summary.settings.resolution]
     const receiver = { ...result.receivers[0], receiver_id: `observer-${viewIndex}`, center: [0, 0, 0] as Vec3,
@@ -1215,11 +1236,13 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const directCount = evidence.reduce((sum, cell) => sum + cell.direct_count, 0)
       const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)
       const count = directCount + reflectedCount
-      const center = [0, 1, 2].map((axis) => cluster.reduce((sum, cell) => sum + cell.position[axis] * cell.flux, 0) / count) as Vec3
+      const totalStrength = cluster.reduce((sum, cell) => sum + cell.flux, 0)
+      const center = [0, 1, 2].map((axis) => cluster.reduce((sum, cell) => sum + cell.position[axis] * cell.flux, 0) / totalStrength) as Vec3
       const columns = cluster.map((cell) => cell.column), rows = cluster.map((cell) => cell.row)
       const angle = Math.acos(Math.max(-1, Math.min(1, dot(view.direction, directionVector(result.metrics._escape_direction_summary))))) * 180 / Math.PI
       candidates.push({ id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
-        representativePath: evidence.find((cell) => cell.representative_path)?.representative_path,
+        ...(radiance ? { peakLuminanceNit: Math.max(...evidence.map(strength)) } : {}),
+        representativePath: [...evidence].sort((a, b) => strength(b) - strength(a)).find((cell) => cell.representative_path)?.representative_path,
         receiverId: receiver.receiver_id, center, normal: receiver.normal, uAxis: view.u_axis, vAxis: view.v_axis,
         widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0] + 10),
         heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1] + 10),
@@ -1240,7 +1263,7 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
   const groups: LeakPreviewCandidate[] = []
   const buckets = new Map<string, LeakPreviewCandidate[]>()
   const ids = new Map<string, string>()
-  for (const candidate of [...candidates].sort((a, b) => b.sampledPathCount - a.sampledPathCount)) {
+  for (const candidate of [...candidates].sort((a, b) => (b.peakLuminanceNit ?? b.sampledPathCount) - (a.peakLuminanceNit ?? a.sampledPathCount))) {
     const cell = candidate.center.map((x) => Math.floor(x / distance))
     const nearby: LeakPreviewCandidate[] = []
     for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
@@ -1311,6 +1334,9 @@ export function detectLeakPreviewCandidates(
     ...result.receiver_grids.flatMap((grid) => grid.flux_lumen.flat()),
   )
   const observerDetection = detectObserverCandidates(scene, result, options)
+  // A forward escape count is not an observation. Reintroducing it here
+  // would bypass the radiance filter, including a valid zero-cell result.
+  if (observerProbeSummary(result)?.measure === 'luminance_cd_m2') return observerDetection
   if (globalMaximum <= 0) return observerDetection
 
   const bounds = getLeakPreviewBounds(scene, options.transformRules)

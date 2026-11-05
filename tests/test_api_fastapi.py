@@ -748,6 +748,12 @@ class FastApiLayerTests(unittest.TestCase):
         )
 
     def test_full_detail_stop_after_forward_dispatch_keeps_observer_partial_progress(self):
+        self._assert_observer_partial_progress("full_detail", "전체 정밀 검색")
+
+    def test_radiance_preview_stop_keeps_observer_partial_progress(self):
+        self._assert_observer_partial_progress("preview", "시야각 역추적")
+
+    def _assert_observer_partial_progress(self, search_mode, phase_label):
         started = threading.Event()
 
         class PartialObserverResult:
@@ -769,10 +775,10 @@ class FastApiLayerTests(unittest.TestCase):
         try:
             scene = runtime.load_scene("full-detail.step")
             job = client.post("/api/raytrace/start", json={"scene_token": scene["metadata"]["scene_token"],
-                "emitters": [{"enabled": True, "ray_count": 2}], "observer_probe": {"search_mode": "full_detail"}}).json()
+                "emitters": [{"enabled": True, "ray_count": 2}], "observer_probe": {"search_mode": search_mode, "measurement": "radiance"}}).json()
             self.assertTrue(started.wait(1))
             current = client.get("/api/raytrace/status", params={"job_id": job["job_id"]}).json()
-            self.assertIn("전체 정밀 검색", current["phase_detail"])
+            self.assertIn(phase_label, current["phase_detail"])
             client.post("/api/raytrace/stop", params={"job_id": job["job_id"]})
             for _ in range(100):
                 current = client.get("/api/raytrace/status", params={"job_id": job["job_id"]}).json()
