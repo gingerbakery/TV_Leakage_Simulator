@@ -3122,7 +3122,7 @@ export function RayTracingPanel({
         )}
         {canResume && !isRunning ? <div className="flex items-center gap-2 text-xs">
           <span>중단 지점 보관 · {job?.processed_rays.toLocaleString()} Ray</span>
-          <HelpTooltip label="중단 후 이어 실행 도움말">완료된 Ray 묶음 경계에서 난수·누적 결과·계산 상태를 메모리에 보관합니다. 같은 입력은 BVH 준비와 완료 Ray 계산을 반복하지 않고 이어갑니다. 변경한 입력으로 실행하거나 다른 해석을 시작하면 보관 상태를 해제합니다. 서버 종료와 작업 이력 정리 시에도 해제되며, 보관 중에는 계산 메모리를 유지합니다. 정밀 Ray Tracing의 현재 계산 구간을 이어가며 Preview 관찰 역추적은 이 기능의 대상이 아닙니다. 처음부터는 보관 상태를 버리고 새로 계산합니다.</HelpTooltip>
+          <HelpTooltip label="중단 후 이어 실행 도움말">완료된 Ray 묶음 경계에서 난수·누적 결과·계산 상태를 메모리에 보관합니다. 같은 입력은 BVH 준비와 완료 Ray 계산을 반복하지 않고 이어갑니다. 변경한 입력으로 실행하거나 다른 해석을 시작하면 보관 상태를 해제합니다. 서버 종료와 작업 이력 정리 시에도 해제되며, 보관 중에는 계산 메모리를 유지합니다. 정밀 Ray Tracing의 현재 계산 구간을 이어갑니다. Preview의 관찰 휘도 역추적도 해당 패널에서 이어 실행할 수 있으며 경로 탐색 모드는 제외됩니다. 처음부터는 보관 상태를 버리고 새로 계산합니다.</HelpTooltip>
           <Button size="sm" variant="outline" disabled={!canRun} onClick={() => void handleRun(true)}>처음부터</Button>
         </div> : null}
         <p className="text-xs leading-4 text-muted-foreground">

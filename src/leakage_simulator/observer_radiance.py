@@ -6,6 +6,7 @@ NEE and continuation use balance-heuristic MIS; delta hits are kept separately.
 from __future__ import annotations
 
 from functools import lru_cache
+import copy
 import math
 import random
 import time
@@ -264,8 +265,22 @@ def emission_radiance(source, point, normal, outgoing):
     return source_flux(emitter, area)/(area*1e-6)*density/projected
 
 
+def unstarted_summary(spec, plans, requested):
+    """Valid partial contract while a resumable Preview is still tracing sources."""
+    return dict(contract=CONTRACT,measure="luminance_cd_m2",sample_contract="observer_per_ray_seed_batch_v1",
+        search_contract="observer_full_spacing_v1" if spec.get("search_mode") == "full_detail" else "observer_grid_v1",
+        progress_contract="committed_samples_v1",resume_contract="live_observer_wave_v1",
+        execution_backend="cpu",requested_backend=requested,
+        performance=dict(compute_execution_state="gpu_requested_cpu_only" if requested == "gpu_cuda" else "cpu",
+            compute_execution_reason="observer_not_started"),settings=spec,
+        attempted_count=0,planned_count=sum(p["grid_samples"] for p in plans),direct_count=0,reflected_count=0,
+        excluded_count=0,filtered_count=0,depth_limited_count=0,stopped=True,complete=False,runtime_sec=0.,views=[],cells=[],
+        calibration_state="uncalibrated",observation_state="not_observed",display_truncated=False,
+        limitations=["parallel_camera","finite_sampling","reflection_only","uncalibrated_source_material_threshold","forward_incomplete","partial_result"])
+
+
 def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
-                            *, dispatch="batch", batch_size=8192, progress_callback=None):
+                            *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None):
     from .observer_probe import (_source_geometry, _sample_source, _triangle_intersection,
                                  sampling_plan, _execute_probes, FULL_DETAIL_CELL_LIMIT)
     from .raytracer import _IntersectionDispatchStats
@@ -290,11 +305,40 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     samples = int(spec["samples_per_cell"])
     threshold = spec.get("min_luminance_nit", 0.)
     attempted = depth_limited = excluded = filtered = 0
+    committed = committed_depth_limited = pause_count = 0
     stopped = display_truncated = False
     cells, views = [], []
     cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(plans)))
     if progress_callback:
         progress_callback(0, planned)
+
+    def view_summary(plan, view_cells):
+        columns, rows = plan["columns"], plan["rows"]
+        outward = plan["outward"]
+        return dict(horizontal_deg=plan["horizontal"], vertical_deg=plan["vertical"],
+            direction=outward, u_axis=plan["u"], v_axis=plan["v"], observer_center=vec_add(center, vec_mul(outward, plan["distance"])),
+            spacing_mm=[plan["width"]/columns, plan["height"]/rows],
+            sample_spacing_mm=[plan["width"]/columns, plan["height"]/rows],
+            sampling_resolution=[columns, rows], grid_resolution=[columns, rows], display_stride=1,
+            direct_count=sum(c["direct_count"] for c in view_cells), reflected_count=sum(c["reflected_count"] for c in view_cells),
+            peak_luminance_nit=max((c["luminance_nit"] for c in view_cells), default=0.))
+
+    def result(out_cells, out_views, is_stopped):
+        performance = stats.to_summary()
+        state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
+        performance.update(compute_execution_state=state, compute_execution_reason=reason)
+        return dict(contract=CONTRACT, measure="luminance_cd_m2", sample_contract="observer_per_ray_seed_batch_v1",
+            search_contract="observer_full_spacing_v1" if spec.get("search_mode") == "full_detail" else "observer_grid_v1",
+            progress_contract="committed_samples_v1", resume_contract="live_observer_wave_v1" if pause_callback else None,
+            execution_backend="gpu_cuda" if state in ("gpu_active", "gpu_mixed") else "cpu", requested_backend=requested,
+            performance=performance, settings=spec, attempted_count=committed, planned_count=planned,
+            in_flight_sample_count=attempted-committed, pause_count=pause_count,
+            direct_count=sum(c["direct_count"] for c in out_cells), reflected_count=sum(c["reflected_count"] for c in out_cells),
+            excluded_count=excluded, filtered_count=filtered, depth_limited_count=committed_depth_limited,
+            stopped=is_stopped, complete=not is_stopped, runtime_sec=time.perf_counter()-started, views=out_views, cells=out_cells,
+            display_truncated=display_truncated, calibration_state="uncalibrated", observation_state="estimated" if out_cells else "not_observed",
+            limitations=["parallel_camera", "finite_sampling", "reflection_only", "uncalibrated_source_material_threshold"]
+                + (["depth_truncated"] if committed_depth_limited else []) + (["partial_result"] if is_stopped else []))
 
     for view_index, plan in enumerate(plans):
         columns, rows = plan["columns"], plan["rows"]
@@ -421,30 +465,57 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
 
         pending = None
 
-        def finish(cell):
-            nonlocal filtered, display_truncated
+        def format_cell(cell):
             if cell is None or cell["direct_count"]+cell["reflected_count"] == 0:
-                return
+                return None
+            cell = dict(cell)
             cell["luminance_nit"] = cell.pop("sum")/cell["sample_count"]
             # Standard error is intentionally absent: stratified low-sample
             # zero variance is not evidence of absence or calibrated confidence.
             cell["observation_state"] = "estimated"
             if cell["luminance_nit"] < threshold:
-                filtered += cell["direct_count"]+cell["reflected_count"]
+                return None
+            return cell
+
+        def finish(cell):
+            nonlocal filtered, display_truncated
+            formatted = format_cell(cell)
+            if formatted is None:
+                if cell:
+                    filtered += cell["direct_count"]+cell["reflected_count"]
                 return
-            view_cells.append(cell)
+            view_cells.append(formatted)
             if len(view_cells) > 2*cell_limit:
                 view_cells.sort(key=lambda c: c["luminance_nit"], reverse=True)
                 del view_cells[cell_limit:]
                 display_truncated = True
 
+        def pause_current():
+            nonlocal started, pause_count
+            pause_count += 1
+            visible_cells = list(view_cells)
+            current_cell = format_cell(pending)
+            if current_cell is not None:
+                visible_cells.append(current_cell)
+            visible_cells.sort(key=lambda c: c["luminance_nit"], reverse=True)
+            visible_cells = visible_cells[:cell_limit]
+            # Snapshot the committed prefix only. Uncommitted primary slots,
+            # active reverse generators and their queries stay in _execute_probes.
+            snapshot = copy.deepcopy(result(cells+visible_cells, views+[view_summary(plan, visible_cells)], True))
+            snapshot["display_truncated"] = display_truncated or len(view_cells)+(current_cell is not None) > cell_limit
+            wait_started = time.perf_counter()
+            keep_running = pause_callback(snapshot)
+            started += time.perf_counter()-wait_started
+            return keep_running
+
         for start in range(0, plan["grid_samples"], batch_size):
             if should_stop and should_stop():
-                stopped = True
-                break
+                if pause_callback is None or not pause_current():
+                    stopped = True
+                    break
             completed, interrupted = _execute_probes(mesh,
                 [probe(i) for i in range(start, min(plan["grid_samples"], start+batch_size))],
-                stats, dispatch, should_stop)
+                stats, dispatch, should_stop, pause_current if pause_callback is not None else None)
             for item in completed:
                 if item is None:
                     continue
@@ -466,8 +537,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                     pending["max_depth"] = max(pending["max_depth"], depth)
                     if contribution > pending["representative_contribution_nit"]:
                         pending.update(position=path[-2], representative_path=path, representative_contribution_nit=contribution)
+            committed += sum(item is not None for item in completed)
+            committed_depth_limited = depth_limited
             if progress_callback:
-                progress_callback(attempted, planned)
+                progress_callback(committed, planned)
             if interrupted:
                 stopped = True
                 break
@@ -477,25 +550,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             del view_cells[cell_limit:]
             display_truncated = True
         cells.extend(view_cells)
-        views.append(dict(horizontal_deg=plan["horizontal"], vertical_deg=plan["vertical"],
-            direction=outward, u_axis=u, v_axis=v, observer_center=vec_add(center, vec_mul(outward, plan["distance"])),
-            spacing_mm=[plan["width"]/columns, plan["height"]/rows],
-            sample_spacing_mm=[plan["width"]/columns, plan["height"]/rows],
-            sampling_resolution=[columns, rows], grid_resolution=[columns, rows], display_stride=1,
-            direct_count=sum(c["direct_count"] for c in view_cells), reflected_count=sum(c["reflected_count"] for c in view_cells),
-            peak_luminance_nit=max((c["luminance_nit"] for c in view_cells), default=0.)))
+        views.append(view_summary(plan, view_cells))
         if stopped:
             break
-    performance = stats.to_summary()
-    state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
-    performance.update(compute_execution_state=state, compute_execution_reason=reason)
-    return dict(contract=CONTRACT, measure="luminance_cd_m2", sample_contract="observer_per_ray_seed_batch_v1",
-        search_contract="observer_full_spacing_v1" if spec.get("search_mode") == "full_detail" else "observer_grid_v1",
-        execution_backend="gpu_cuda" if state in ("gpu_active", "gpu_mixed") else "cpu", requested_backend=requested,
-        performance=performance, settings=spec, attempted_count=attempted, planned_count=planned,
-        direct_count=sum(c["direct_count"] for c in cells), reflected_count=sum(c["reflected_count"] for c in cells),
-        excluded_count=excluded, filtered_count=filtered, depth_limited_count=depth_limited,
-        stopped=stopped, complete=not stopped, runtime_sec=time.perf_counter()-started, views=views, cells=cells,
-        display_truncated=display_truncated, calibration_state="uncalibrated", observation_state="estimated" if cells else "not_observed",
-        limitations=["parallel_camera", "finite_sampling", "reflection_only", "uncalibrated_source_material_threshold"]
-            + (["depth_truncated"] if depth_limited else []) + (["partial_result"] if stopped else []))
+    return result(cells, views, stopped)

@@ -1022,7 +1022,8 @@ class ApiRuntime:
                 superseded_job_count += 1
             self._raytrace_jobs[job_id] = job
             predecessors = list(dict.fromkeys(s for s in predecessors if not s.finished.is_set()))
-            session = _RayTraceSession(job_id, fingerprint, predecessors) if self._supports_pause and not request_payload.get("observer_probe") else None
+            observer = request_payload.get("observer_probe")
+            session = _RayTraceSession(job_id, fingerprint, predecessors) if self._supports_pause and (not observer or observer.get("measurement") == "radiance") else None
             if session is not None:
                 self._raytrace_sessions[job_id] = session
             self._prune_raytrace_jobs_locked()
@@ -1603,14 +1604,17 @@ class ApiRuntime:
                 wait_started = time.perf_counter()
                 payload = partial_result.to_dict()
                 processed = int(payload["total_rays"])
+                observer = (payload.get("metrics") or {}).get("_observer_probe_summary") or {}
+                total = total_ray_count+int(observer.get("planned_count",0))
+                processed += int(observer.get("attempted_count",0))
                 with self._state_lock:
                     if session.cancelled:
                         return False
                     session.wake.clear()
                     session.paused = True
                     update_job(status="completed",phase="stopped",phase_detail="중단 지점 보관 · 동일 조건으로 이어 실행 가능",
-                        result=payload,processed_rays=processed,total_rays=total_ray_count,
-                        progress=processed/total_ray_count if total_ray_count else 0.,
+                        result=payload,processed_rays=processed,total_rays=total,
+                        progress=processed/total if total else 0.,
                         elapsed_sec=float(payload.get("runtime_sec",max(0.,time.time()-trace_started_at))),estimated_remaining_sec=None,
                         stopped_early=True,resume_available=True,completed_at=time.time())
                 session.wake.wait()

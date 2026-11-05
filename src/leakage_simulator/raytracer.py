@@ -2616,26 +2616,23 @@ def run_direct_ray_trace(
 
     pause_count = 0
     paused_sec = 0.
+    contributions_finalized = False
+    resumable_observer = bool(trace_input.observer_probe and trace_input.observer_probe.get("measurement") == "radiance")
 
-    def stop_at_boundary():
+    def pause_with_snapshot(observer_summary=None):
         """Suspend the live stream only after a complete primary/chunk commit.
 
         Keeping this stack also keeps generator/RNG/prefetch and native state;
         resuming never regenerates or re-traces previously completed primaries.
         """
         nonlocal pause_count, paused_sec, start_time
-        if total_rays >= expected_ray_count:
-            return False
-        if should_stop is None or not should_stop():
-            return False
-        if pause_callback is None or trace_input.observer_probe is not None:
-            return True
         _flush_retained_ordered_summary(trace_input.mesh, trace_input.config,
             receiver_frames, receiver_grids, optical_summary, reflection_summary,
             contribution_summary, resolved_optical_by_face, stored_paths, wavefront_reducer_stats)
         snapshot_grids = copy.deepcopy([receiver_grids[r.receiver_id] for r in trace_input.receivers if r.enabled])
         snapshot_contributions = copy.deepcopy(contribution_summary)
-        _finalize_surface_contributions(snapshot_contributions)
+        if not contributions_finalized:
+            _finalize_surface_contributions(snapshot_contributions)
         snapshot_metrics = _build_direct_metrics(snapshot_grids, trace_input.config, total_rays,
             [r for r in trace_input.receivers if r.enabled])
         snapshot_metrics.update(_optical_summary=copy.deepcopy(optical_summary),
@@ -2648,6 +2645,14 @@ def run_direct_ray_trace(
             snapshot_metrics["_roi_scope_summary"] = copy.deepcopy(trace_input.analysis_roi)
         if escape_collector is not None:
             snapshot_metrics["_escape_direction_summary"] = escape_collector.summary()
+        if resumable_observer:
+            if observer_summary is None:
+                from .observer_radiance import unstarted_summary
+                observer_summary = unstarted_summary(trace_input.observer_probe, observer_plans, trace_input.config.compute_backend)
+            snapshot_metrics["_observer_probe_summary"] = observer_summary
+        snapshot_metrics["_resume_state_summary"] = dict(stage="observer_radiance" if observer_summary and
+            "forward_incomplete" not in observer_summary.get("limitations",[]) else "forward",
+            primary_completed=total_rays,observer_completed=(observer_summary or {}).get("attempted_count",0))
         state, reason = intersection_stats.compute_execution_diagnosis(gpu_compute_requested)
         if state == "gpu_active" and gpu_resident_stats.fallback_count:
             state, reason = "gpu_mixed", gpu_resident_stats.fallback_reason
@@ -2672,7 +2677,14 @@ def run_direct_ray_trace(
         paused_sec += waited
         start_time += waited
         pause_count += 1
-        return not keep_running
+        return keep_running
+
+    def stop_at_boundary():
+        if total_rays >= expected_ray_count or should_stop is None or not should_stop():
+            return False
+        if pause_callback is None or (trace_input.observer_probe is not None and not resumable_observer):
+            return True
+        return not pause_with_snapshot()
 
     for emitter in trace_input.emitters:
         if not emitter.enabled:
@@ -3396,6 +3408,7 @@ def run_direct_ray_trace(
     if progress_callback is not None:
         progress_callback(total_rays, expected_ray_count)
     _finalize_surface_contributions(contribution_summary)
+    contributions_finalized = True
     grids = [receiver_grids[receiver.receiver_id] for receiver in trace_input.receivers if receiver.enabled]
     metrics = _build_direct_metrics(
         grids,
@@ -3415,6 +3428,7 @@ def run_direct_ray_trace(
         metrics["_observer_probe_summary"] = trace_observer_paths(
             trace_input, escape_collector, resolved_optical_by_face, should_stop,
             progress_callback=observer_progress_callback,
+            pause_callback=pause_with_snapshot if pause_callback is not None and resumable_observer else None,
         )
         stopped_early = stopped_early or metrics["_observer_probe_summary"]["stopped"]
     if trace_input.analysis_roi:
@@ -3447,7 +3461,8 @@ def run_direct_ray_trace(
         compute_execution_state = "gpu_mixed"
         compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
     metrics["_performance_summary"] = {
-        "resume_contract": "live_primary_boundary_v1" if pause_callback is not None and trace_input.observer_probe is None else None,
+        "resume_contract": ("live_preview_radiance_v1" if resumable_observer else "live_primary_boundary_v1")
+            if pause_callback is not None and (trace_input.observer_probe is None or resumable_observer) else None,
         "pause_count": pause_count,
         "paused_sec": paused_sec,
         "receiver_bin_assignment_contract": RECEIVER_BIN_CONTRACT,

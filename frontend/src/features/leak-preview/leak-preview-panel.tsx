@@ -92,6 +92,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const candidateRows = useRef(new Map<string, HTMLElement>())
   const queryClient = useQueryClient()
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
+  const activeCadCaseId = useWorkspaceStore(workspaceSelectors.activeCadCaseId)
   const selectedFaceIds = useWorkspaceStore(workspaceSelectors.selectedFaceIds)
   const selectedComponentIds = useWorkspaceStore(workspaceSelectors.selectedComponentIds)
   const bsdfAssets = useWorkspaceStore(workspaceSelectors.bsdfAssets)
@@ -239,6 +240,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const previewInputSignature = inputSignatureForSceneToken(
     scene?.metadata.scene_token ?? null,
   )
+  const canResumePreview = Boolean(job?.resume_available && job.job_id === jobId &&
+    runSignature === previewInputSignature && observer.enabled && observer.measurement === 'radiance')
 
   useEffect(() => {
     return () => actions.setEmitterFaceSelectionArmed(false)
@@ -343,16 +346,17 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     clearDetection()
   }
 
-  const runPreview = async () => {
+  const runPreview = async (restart = false) => {
     if (!scene || !hasPreviewSource || isRunning) return
     finishBlockerAreaSelection()
     actions.setRoiBoxSelectionArmed(false)
     clearDetection()
     handledRunRef.current = null
-    setMessage('전체 세트의 외부 유출광을 탐색하고 있습니다.')
+    const expectedResume = canResumePreview && !restart
+    setMessage(expectedResume ? '중단한 관찰 휘도 역추적을 이어 실행합니다.' : '전체 세트의 외부 유출광을 탐색하고 있습니다.')
     try {
       const start = (requestScene: ScenePayload) => startMutation.mutateAsync({
-        request: buildLeakPreviewRequest({
+        request: { ...buildLeakPreviewRequest({
           scene: requestScene,
           sourceFaceIds,
           sourceComponentIds: sourceMode === 'body' ? sourceComponentIds : [],
@@ -371,7 +375,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           deletedComponentIds,
           blockers,
           allowedAreas: ignoreAreas,
-        }),
+        }), resume_scope: `preview:${activeCadCaseId ?? ''}`, ...(restart ? { restart_from_beginning: true } : {}) },
       })
       let started
       let runSceneToken = scene.metadata.scene_token
@@ -402,6 +406,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       }
       setJobId(started.job_id)
       setRunSignature(inputSignatureForSceneToken(runSceneToken))
+      if (started.resumed_from_job_id) setMessage(`관찰 휘도 이어 실행 · 처리 표본 ${started.processed_rays.toLocaleString()}개부터 계속합니다.`)
+      else if (expectedResume) setMessage('보관 상태가 없거나 입력이 달라 Preview를 처음부터 실행합니다.')
     } catch (error) {
       setRunSignature(null)
       setMessage(`Preview 실행 실패: ${error instanceof Error ? error.message : String(error)}`)
@@ -733,9 +739,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           </Button>
         ) : (
           <Button className="w-full" disabled={isRunning || !hasPreviewSource || (detectionMode === 'escape_directions' && observer.enabled && observerPlan.error !== null)} onClick={() => void runPreview()}>
-            <Play /> {observerPlan.fullDetail && observer.enabled ? '전체 정밀 검색 시작' : 'Run Leak Preview'}
+            <Play /> {canResumePreview ? '휘도 역추적 이어 실행' : observerPlan.fullDetail && observer.enabled ? '전체 정밀 검색 시작' : 'Run Leak Preview'}
           </Button>
         )}
+        {canResumePreview && !isRunning ? <div className="flex items-center gap-2 text-xs"><span>중단 지점 보관</span><HelpTooltip label="Preview 이어 실행 도움말">같은 입력이면 광원 추적 결과와 관찰 휘도 역추적의 각도·셀·집계 전 Ray 상태를 유지해 이어갑니다. 변경된 입력으로 실행하거나 다른 해석 시작, 서버 종료, 작업 이력 정리 시 보관 상태는 해제됩니다. 보관 중에는 계산 메모리를 유지합니다. 경로 탐색 모드는 대상이 아닙니다.</HelpTooltip><Button size="sm" variant="outline" onClick={() => void runPreview(true)}>Preview 처음부터</Button></div> : null}
         {isRunning ? (
           <div className="space-y-1">
             <div className="h-2 overflow-hidden rounded-full bg-muted">

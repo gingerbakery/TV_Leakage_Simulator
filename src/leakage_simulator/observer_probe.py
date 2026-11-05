@@ -247,7 +247,7 @@ def _sample_source(sources, index, rng):
     return emitter, point, normal, face
 
 
-def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=8192, progress_callback=None):
+def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None):
     started = time.perf_counter()
     if dispatch not in ("batch", "scalar") or not isinstance(batch_size, int) or not 1 <= batch_size <= 8192:
         raise ValueError("Invalid observer dispatch/batch size")
@@ -260,7 +260,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
     if trace_input.observer_probe.get("measurement") == "radiance":
         from .observer_radiance import trace_observer_radiance
         return trace_observer_radiance(trace_input, collector, resolved, should_stop,
-            dispatch=dispatch, batch_size=batch_size, progress_callback=progress_callback)
+            dispatch=dispatch, batch_size=batch_size, progress_callback=progress_callback, pause_callback=pause_callback)
     stats = _IntersectionDispatchStats(intersection_backend=trace_input.config.intersection_backend,
         requested_provider="gpu_cuda" if requested == "gpu_cuda" else "python_cpu")
     spec = trace_input.observer_probe
@@ -455,7 +455,7 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
             "runtime_sec": time.perf_counter()-started, "views": summaries, "cells": cells}
 
 
-def _execute_probes(mesh, probes, stats, dispatch, should_stop):
+def _execute_probes(mesh, probes, stats, dispatch, should_stop, pause_callback=None):
     """Wavefront scheduler for primary, continuation AND source-shadow rays.
 
     Per-probe RNG is private and results reduce in primary order, so batch
@@ -471,7 +471,10 @@ def _execute_probes(mesh, probes, stats, dispatch, should_stop):
                 completed[index] = done.value
         while active:
             if should_stop is not None and should_stop():
-                return completed, True
+                # Keep active generators, their RNGs, completed slots and
+                # outstanding queries on this stack while the worker waits.
+                if pause_callback is None or not pause_callback():
+                    return completed, True
             if dispatch == "scalar":
                 hits = [stats.intersect_scalar(mesh, query[0], query[1], min_t=query[2], max_t=query[3]) for _, _, query in active]
             else:

@@ -25,6 +25,43 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it.each(['resume', 'restart', 'changed'] as const)('handles a stopped radiance Preview: %s', async (action) => {
+  workspaceStore.getState().actions.addCadCase({ path: 'resume.step', displayName: 'Resume' })
+  mocks.start.mockResolvedValueOnce({ job_id: 'paused-preview' }).mockResolvedValueOnce({ job_id: 'next-preview' })
+  const scene = createSceneFixture()
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true }) })
+  fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('paused-preview'))
+  const result = createRayTraceResultFixture()
+  result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count: 0, selected_count: 0, excluded_count: 0, cells: [],
+    bins: [0,30,60,80].map((min_deg,i) => ({ min_deg, max_deg: [30,60,80,90][i], count: 0, flux_lumen: 0 })) }
+  // Forward tracing may stop before the observer has committed its first sample.
+  result.metrics._observer_probe_summary = { contract: 'observer_radiance_parallel_v1', measure: 'luminance_cd_m2',
+    execution_backend: 'cpu', calibration_state: 'uncalibrated', limitations: ['finite_sampling', 'forward_incomplete', 'partial_result'],
+    settings: { ...defaultObserverSettings, resolution: 8 }, attempted_count: 0, planned_count: 128,
+    direct_count: 0, reflected_count: 0, excluded_count: 0, depth_limited_count: 0,
+    complete: false, stopped: true, runtime_sec: 0, views: [], cells: [] }
+  mocks.job = { job_id: 'paused-preview', status: 'completed', phase: 'stopped', resume_available: true,
+    progress: .25, processed_rays: 32, total_rays: 128, result }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  await waitFor(() => expect(screen.getByRole('button', { name: '휘도 역추적 이어 실행' })).toBeTruthy())
+  expect(leakPreviewStore.getState().result).toBe(result)
+  expect(screen.queryByText(/역추적 집계가 없거나 유효하지 않습니다/)).toBeNull()
+  if (action === 'changed') {
+    act(() => leakPreviewStore.getState().setQuality('deep'))
+    expect(screen.queryByRole('button', { name: '휘도 역추적 이어 실행' })).toBeNull()
+  }
+  fireEvent.click(screen.getByRole('button', { name: action === 'restart' ? 'Preview 처음부터' : action === 'changed' ? 'Run Leak Preview' : '휘도 역추적 이어 실행' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledTimes(2))
+  const before = mocks.start.mock.calls[0][0].request, after = mocks.start.mock.calls[1][0].request
+  expect(after.resume_scope).toBe(before.resume_scope)
+  if (action === 'restart') expect(after).toEqual({ ...before, restart_from_beginning: true })
+  else if (action === 'resume') expect(after).toEqual(before)
+  else expect(after).not.toEqual(before)
+})
+
 it('sorts radiance views by brightness and preserves the selected angle when sorting changes', () => {
   const scene=createSceneFixture(),result=createRayTraceResultFixture()
   result.metrics._observer_probe_summary={contract:'observer_radiance_parallel_v1',measure:'luminance_cd_m2',
