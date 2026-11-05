@@ -4,7 +4,7 @@ import { createEmitterAim } from '@/features/raytracing/emitter-aim'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter } from '@/features/raytracing/ray-tracing-model'
 import { createViewAngleReceiver, expandReceiverView, receiverViewDirection } from '@/features/raytracing/receiver-view'
-import type { RayTraceResult } from '@/api'
+import type { RayTraceResult, Vec3 } from '@/api'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 
@@ -27,6 +27,68 @@ import {
   resolveLeakPreviewRoiFaces,
   resizeLeakPreviewBlockerOnFace,
 } from './leak-preview-model'
+
+it('centres the generated Receiver on the observer footprint rather than the brightness centroid', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  result.receivers = createEscapeEnclosureReceivers(scene)
+  result.metrics._escape_direction_summary = { direction: 'neg_z' }
+  const cells = Array.from({ length: 10 }, (_, column) => {
+    const position: Vec3 = [-450+column*100, 0, 0]
+    return { view_index: 0, row: 0, column, position, direct_count: 1, reflected_count: 0,
+      min_depth: 0, max_depth: 0, sample_count: 1, luminance_nit: column === 0 ? 10 : column >= 7 ? 9 : .01,
+      representative_path: [position, [position[0], 0, -100]] }
+  })
+  result.metrics._observer_probe_summary = { contract: 'observer_radiance_parallel_v1', measure: 'luminance_cd_m2',
+    execution_backend: 'cpu', calibration_state: 'uncalibrated', limitations: ['finite_sampling'], settings: { ...defaultObserverSettings, resolution: 8 },
+    attempted_count: 10, planned_count: 10, direct_count: 10, reflected_count: 0, excluded_count: 0, depth_limited_count: 0,
+    complete: true, stopped: false, runtime_sec: 0,
+    views: [{ horizontal_deg: 0, vertical_deg: 0, direction: [0,0,-1], observer_center: [0,0,-100],
+      u_axis: [1,0,0], v_axis: [0,1,0], spacing_mm: [100,100], grid_resolution: [10,1], direct_count: 10, reflected_count: 0 }], cells }
+  const candidate = detectLeakPreviewCandidates(scene, result).candidates[0]
+  const receiver = createCandidateReceiver(candidate, 1, scene)
+  const witness = candidate.representativePath![0]
+  expect(Math.abs(witness[0]-candidate.center[0])).toBeGreaterThan(receiver.width_mm/2)
+  expect(Math.abs(witness[0]-receiver.center[0])).toBeLessThanOrEqual(receiver.width_mm/2)
+  expect(receiver.observer_reference_path).toEqual(candidate.representativePath)
+  const summary = observerProbeSummary(result)!
+  summary.cells[0].path_validation = { status: 'invalid', reason: 'occluded_segment' }
+  summary.cells[1].path_validation = { status: 'valid', endpoint_kind: 'virtual_emitter' }
+  const checked = detectLeakPreviewCandidates(scene, result)
+  expect(checked.points.some((p) => p.position[0] === cells[0].position[0] || p.position[0] === cells[1].position[0])).toBe(false)
+  summary.execution_backend = 'gpu_cuda'
+  summary.requested_backend = 'gpu_cuda'
+  summary.sample_contract = 'observer_counter_latin_v1'
+  summary.performance = { compute_execution_state: 'gpu_active', gpu_cuda_gpu_success_count: 1,
+    observer_transport_contract: 'strict_float64_observer_resident_v1', observer_resident_success_count: 1 }
+  expect(observerProbeSummary(result)).toBe(summary)
+  summary.performance.gpu_cuda_gpu_success_count = 0
+  expect(observerProbeSummary(result)).toBeNull()
+})
+
+it('retains faint direct evidence in a bright reflected cluster and uses precision occlusion geometry', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const settings = { ...defaultObserverSettings, enabled: true, horizontal_deg: 0, vertical_deg: 0, range_deg: 0, refine_angles: false, resolution: 8 }
+  const request = buildLeakPreviewRequest({ scene, sourceFaceIds: [0], quality: 'fast', computeBackend: 'cpu',
+    materialAssignments: [], transformRules: [], excludedComponentIds: [], deletedComponentIds: [], detectionMode: 'escape_directions', observer: settings })
+  expect(request.geometry_mode).toBe('precision')
+  const direct = [[0,0,-4],[0,0,-10]] as Vec3[]
+  result.metrics._observer_probe_summary = { contract: 'observer_radiance_parallel_v1', measure: 'luminance_cd_m2',
+    calibration_state: 'uncalibrated', limitations: ['finite_sampling'],
+    execution_backend: 'cpu', settings, attempted_count: 2, planned_count: 2, direct_count: 1, reflected_count: 1, excluded_count: 0,
+    depth_limited_count: 0, complete: true, stopped: false, runtime_sec: 0,
+    views: [{ horizontal_deg: 0, vertical_deg: 0, direction: [0,0,-1], observer_center: [0,0,-10], u_axis: [1,0,0], v_axis: [0,1,0],
+      spacing_mm: [1,1], direct_count: 1, reflected_count: 1 }], cells: [
+      { view_index: 0, row: 0, column: 0, position: [0,0,-4], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0,
+        sample_count: 1, luminance_nit: 1, direct_luminance_nit: 1, reflected_luminance_nit: 0, representative_path: direct },
+      { view_index: 0, row: 0, column: 1, position: [1,0,0], direct_count: 0, reflected_count: 1, min_depth: 1, max_depth: 1,
+        sample_count: 1, luminance_nit: 90, direct_luminance_nit: 0, reflected_luminance_nit: 90, representative_path: [[1,0,-5],[1,0,0],[1,0,-10]] },
+    ] }
+  const candidate = detectLeakPreviewCandidates(scene, result).candidates[0]
+  expect(candidate.representativePath).toEqual(direct)
+  expect(candidate.peakLuminanceNit).toBe(90)
+  expect(candidate.peakDirectLuminanceNit).toBe(1)
+  expect(candidate.peakReflectedLuminanceNit).toBe(90)
+})
 
 describe('whole-set leak preview', () => {
   it('uses radiance for strength and centroid and never restores filtered forward escapes', () => {

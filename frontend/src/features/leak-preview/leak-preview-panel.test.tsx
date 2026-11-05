@@ -9,6 +9,7 @@ import { defaultObserverSettings, createEscapeEnclosureReceivers, detectLeakPrev
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
 import { buildRayTraceRequest, createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
+import { apiClient } from '@/api'
 import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewResult } from './leak-preview-store'
 import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
@@ -24,6 +25,62 @@ vi.mock('@/api', async () => {
   }
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
+
+it('validates saved representative evidence without starting another Preview or ray-tracing run', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'witness.step', displayName: 'Witness' })
+  workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
+  const fixture = createSavedLeakPreviewFixture()
+  fixture.candidates[0].observerEvidence = { axis: 'neg_z', stepDeg: 1, horizontalDeg: 0, verticalDeg: 0,
+    directCount: 1, reflectedCount: 0, direction: [0,0,-1], receiverCenter: [0,0,-100] }
+  fixture.candidates[0].representativePath = [[0,0,0], [0,0,-100]]
+  const validate = vi.spyOn(apiClient, 'validateObserverReceiver').mockResolvedValue({ simulation_run_started: false,
+    geometry_cache_hit: true, runtime_sec: .01, receiver_checks: [{ receiver_id: 'witness', path_valid: true,
+      diagnosis: 'reference_path_valid', forward_hit_count: null }] })
+  try {
+    render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+    act(() => leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates))
+    fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
+    await waitFor(() => expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy())
+    expect(validate).toHaveBeenCalledOnce()
+    expect(validate.mock.calls[0][0].receivers[0].observer_reference_path).toEqual(fixture.candidates[0].representativePath)
+    expect(mocks.start).not.toHaveBeenCalled()
+  } finally { validate.mockRestore() }
+})
+
+it('keeps a saved precision result when serialization changes only object key order', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'saved-precision.step', displayName: 'Saved precision' })
+  mocks.start.mockResolvedValue({ job_id: 'saved-precision' })
+  const scene = createSceneFixture()
+  const view = render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => { leakPreviewStore.getState().setSourceFaceIds([0]); leakPreviewStore.getState().setObserver({ enabled: true, search_mode: 'full_detail' }) })
+  fireEvent.click(screen.getByRole('button', { name: '전체 정밀 검색 시작' }))
+  await waitFor(() => expect(leakPreviewStore.getState().jobId).toBe('saved-precision'))
+  const result = createSavedLeakPreviewFixture().result
+  result.metrics._escape_direction_summary = { contract: 'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count: 0, selected_count: 0, excluded_count: 0, cells: [],
+    bins: [0,30,60,80].map((min_deg,i) => ({ min_deg, max_deg: [30,60,80,90][i], count: 0, flux_lumen: 0 })) }
+  result.metrics._observer_probe_summary = { contract: 'observer_radiance_parallel_v1', measure: 'luminance_cd_m2',
+    search_contract: 'observer_full_spacing_v1', execution_backend: 'cpu', calibration_state: 'uncalibrated', limitations: ['finite_sampling'],
+    settings: { ...leakPreviewStore.getState().observer, resolution: 8 }, attempted_count: 128, planned_count: 128,
+    direct_count: 0, reflected_count: 0, excluded_count: 0, depth_limited_count: 0,
+    complete: true, stopped: false, runtime_sec: 0, views: [], cells: [] }
+  mocks.job = { job_id: 'saved-precision', status: 'completed', result }
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  await waitFor(() => expect(leakPreviewStore.getState().result).toBe(result))
+  const settings = snapshotLeakPreviewProjectState(), saved = snapshotLeakPreviewResult()!
+  const config = workspaceStore.getState().rayTraceConfig
+  const observer = leakPreviewStore.getState().observer
+  act(() => {
+    workspaceStore.setState({ rayTraceConfig: Object.fromEntries(Object.entries(config).reverse()) as typeof config })
+    leakPreviewStore.getState().restoreProjectState({ ...settings,
+      observer: Object.fromEntries(Object.entries(observer).reverse()) as typeof observer }, saved)
+  })
+  view.rerender(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  await waitFor(() => expect(leakPreviewStore.getState().result).toBe(result))
+  expect(screen.queryByText(/^Preview 재실행 필요$/)).toBeNull()
+  act(() => leakPreviewStore.getState().setObserver({ spacing_mm: 3 }))
+  expect(leakPreviewStore.getState().result).toBeNull()
+})
 
 it.each(['resume', 'restart', 'changed'] as const)('handles a stopped radiance Preview: %s', async (action) => {
   workspaceStore.getState().actions.addCadCase({ path: 'resume.step', displayName: 'Resume' })

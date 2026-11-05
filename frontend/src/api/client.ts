@@ -18,11 +18,34 @@ export interface ApiRequestOptions {
   signal?: AbortSignal
 }
 
+export interface SensorComparisonOptions {
+  receiver_id: string; batches: number; forward_samples: number; reverse_samples: number; tolerance_percent: number
+}
+export interface SensorComparisonReport {
+  sensor: { receiver_id: string; width_mm?: number; height_mm?: number; acceptance_angle_deg?: number }; options: SensorComparisonOptions; verdict: 'match' | 'mismatch' | 'inconclusive'; reason: string;
+  gpu_execution_proven?: boolean; compute_execution_state?: string;
+  batches?: Array<{ forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown> }>;
+  forward_flux_lumen?: number; reverse_flux_lumen?: number; difference_interval_lumen?: number[]; tolerance_lumen?: number;
+  forward_hits?: number; reverse_positive_samples?: number; forward_effective_samples?: number; reverse_effective_samples?: number;
+  original_termination_probe?: { forward_flux_lumen: number; forward_hits: number }
+}
+export interface SensorComparisonJob {
+  job_id: string; status: 'queued' | 'running' | 'completed' | 'stopped' | 'failed'; phase: string; progress: number;
+  batch: number; scene_token?: string; stop_requested: boolean; error: string | null; report: SensorComparisonReport | null
+}
+
 export interface GpuCudaStatusRequestOptions extends ApiRequestOptions {
   refresh?: boolean
 }
 
 export interface LeakageApiClient {
+  startSensorComparison(request: RayTraceRequest, options: SensorComparisonOptions): Promise<SensorComparisonJob>
+  getSensorComparison(): Promise<SensorComparisonJob | null>
+  stopSensorComparison(jobId: string): Promise<SensorComparisonJob>
+  validateObserverReceiver(request: RayTraceRequest, options?: ApiRequestOptions): Promise<{
+    simulation_run_started: boolean; geometry_cache_hit: boolean; runtime_sec: number;
+    receiver_checks: Array<{ receiver_id: string; path_valid: boolean; diagnosis: string; forward_hit_count: number | null; visible_endpoint_kind?: string | null }>
+  }>
   importBsdf(files: { name: string; text: string }[], options?: ApiRequestOptions): Promise<BsdfAsset>
   getScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<ScenePayload>
   refreshScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<SceneRefreshResponse>
@@ -60,6 +83,11 @@ export function createApiClient(
   const http = createHttpClient(options)
 
   return {
+    startSensorComparison(request, options) {
+      return http.requestJson('/api/raytrace/compare-sensor/start', { method: 'POST', json: { request, options } })
+    },
+    getSensorComparison() { return http.requestJson('/api/raytrace/compare-sensor/status') },
+    stopSensorComparison(jobId) { return http.requestJson(`/api/raytrace/compare-sensor/stop?job_id=${encodeURIComponent(jobId)}`, { method: 'POST' }) },
     async importBsdf(files, requestOptions) {
       const asset = await http.requestJson<unknown>('/api/bsdf/import', {
         method: 'POST', json: { files }, signal: requestOptions?.signal,
@@ -130,6 +158,12 @@ export function createApiClient(
         method: 'POST',
         json: rayTraceRequest,
         signal: requestOptions?.signal,
+      })
+    },
+
+    validateObserverReceiver(request, requestOptions) {
+      return http.requestJson('/api/raytrace/validate-observer', {
+        method: 'POST', json: request, signal: requestOptions?.signal,
       })
     },
 

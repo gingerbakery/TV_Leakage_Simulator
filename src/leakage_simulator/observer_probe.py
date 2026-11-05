@@ -130,6 +130,8 @@ def _coarsen_cells(cells):
             target = dict(cell, row=row, column=column, position_sum=list(cell["position_sum"]))
             merged[row, column] = target
         else:
+            if len(cell["representative_path"]) == 2 and len(target["representative_path"]) > 2:
+                target["representative_path"] = cell["representative_path"]
             for key in ("direct_count", "reflected_count"):
                 target[key] += cell[key]
             target["min_depth"] = min(target["min_depth"], cell["min_depth"])
@@ -416,6 +418,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                                                    "min_depth": depth, "max_depth": depth, "representative_path": path})
                 kind = "direct_count" if depth == 0 else "reflected_count"
                 cell[kind] += 1
+                if depth == 0 and len(cell["representative_path"]) > 2:
+                    cell["representative_path"] = path
                 counts[kind] += 1
                 direct += int(depth == 0)
                 reflected += int(depth > 0)

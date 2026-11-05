@@ -127,7 +127,7 @@ describe('compute execution status', () => {
     expect(summary.reason).toContain('Emitter 형식은 CUDA batch를 지원하지 않아')
   })
 
-  it('warns when an old GPU result lacks the parity contract', () => {
+  it('does not infer an old build solely from a missing parity contract', () => {
     render(
       <ComputeExecutionStatus
         configuredBackend="gpu_cuda"
@@ -143,7 +143,29 @@ describe('compute execution status', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Compute device · GPU 활성' }))
     expect(
-      screen.getByText(/동일 샘플 정확도 계약이 기록되지 않은 이전 결과/),
+      screen.getByText(/동일 샘플 계약을 확인할 수 없습니다/),
     ).not.toBeNull()
+  })
+
+  it('separates observer sampling from the primary-ray parity contract', () => {
+    render(<ComputeExecutionStatus configuredBackend="gpu_cuda" samplingScope="observer" performance={{
+      compute_execution_state: 'gpu_active', gpu_cuda_gpu_success_count: 3, gpu_cuda_gpu_attempt_count: 3,
+      observer_sample_contract: 'observer_counter_latin_v1', observer_resident_success_count: 3,
+      api_preparation_sec: 1.25, api_geometry_cache_hit: true,
+    }} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Compute device · GPU 활성' }))
+    expect(screen.getByText('GPU 역추적 · 3묶음')).not.toBeNull()
+    expect(screen.getByText('형상·BVH 재사용 · 준비 1.25 s')).not.toBeNull()
+    expect(screen.getByText('역추적 CPU/GPU 전체 정합 검증 정보가 없습니다.')).not.toBeNull()
+    expect(screen.queryByText(/이전 결과입니다/)).toBeNull()
+    expect(screen.queryByText('CPU/GPU 동일 샘플 계약')).toBeNull()
+    expect(screen.queryByText(/GPU Resident ·/)).toBeNull()
+  })
+
+  it('shows valid reverse evidence separately from zero forward hits', () => {
+    render(<ComputeExecutionStatus configuredBackend="cpu" performance={{ observer_receiver_validation: [{
+      receiver_id: 'preview-1', path_valid: true, forward_hit_count: 0, diagnosis: 'valid_reference_path_zero_forward_samples',
+    }] }} />)
+    expect(screen.getByText('preview-1 · 대표 경로 유효 · 순방향 0 Ray')).not.toBeNull()
   })
 })

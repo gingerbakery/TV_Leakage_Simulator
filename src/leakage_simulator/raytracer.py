@@ -2649,6 +2649,8 @@ def run_direct_ray_trace(
             if observer_summary is None:
                 from .observer_radiance import unstarted_summary
                 observer_summary = unstarted_summary(trace_input.observer_probe, observer_plans, trace_input.config.compute_backend)
+            from .observer_path_validation import validate_observer_paths
+            validate_observer_paths(trace_input, observer_summary, resolved_optical_by_face)
             snapshot_metrics["_observer_probe_summary"] = observer_summary
         snapshot_metrics["_resume_state_summary"] = dict(stage="observer_radiance" if observer_summary and
             "forward_incomplete" not in observer_summary.get("limitations",[]) else "forward",
@@ -3430,6 +3432,8 @@ def run_direct_ray_trace(
             progress_callback=observer_progress_callback,
             pause_callback=pause_with_snapshot if pause_callback is not None and resumable_observer else None,
         )
+        from .observer_path_validation import validate_observer_paths
+        validate_observer_paths(trace_input, metrics["_observer_probe_summary"], resolved_optical_by_face)
         stopped_early = stopped_early or metrics["_observer_probe_summary"]["stopped"]
     if trace_input.analysis_roi:
         metrics["_roi_scope_summary"] = trace_input.analysis_roi
@@ -3460,7 +3464,9 @@ def run_direct_ray_trace(
             and gpu_resident_stats.success_count == 0):
         compute_execution_state = "gpu_mixed"
         compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
+    from .observer_path_validation import validate_receiver_evidence
     metrics["_performance_summary"] = {
+        "observer_receiver_validation": validate_receiver_evidence(trace_input, receiver_frames, receiver_grids, resolved_optical_by_face, metrics.get("_termination_summary")),
         "resume_contract": ("live_preview_radiance_v1" if resumable_observer else "live_primary_boundary_v1")
             if pause_callback is not None and (trace_input.observer_probe is None or resumable_observer) else None,
         "pause_count": pause_count,

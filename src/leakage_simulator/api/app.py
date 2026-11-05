@@ -373,6 +373,36 @@ def create_app(
         except Exception as exc:
             return _error(500, str(exc))
 
+    @application.post("/api/raytrace/compare-sensor/start", response_class=JSONResponse)
+    def start_sensor_comparison(payload: dict[str, Any] = Body(...)) -> Any:
+        try:
+            return api_runtime.start_sensor_comparison(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+
+    @application.get("/api/raytrace/compare-sensor/status", response_class=JSONResponse)
+    def sensor_comparison_status(job_id: Optional[str] = None) -> Any:
+        try:
+            return api_runtime.sensor_comparison_status(job_id)
+        except ValueError as exc:
+            return _error(400, str(exc))
+
+    @application.post("/api/raytrace/compare-sensor/stop", response_class=JSONResponse)
+    def stop_sensor_comparison(job_id: str) -> Any:
+        try:
+            return api_runtime.sensor_comparison_status(job_id, stop=True)
+        except ValueError as exc:
+            return _error(400, str(exc))
+
+    @application.post("/api/raytrace/validate-observer", response_class=JSONResponse)
+    def validate_observer_receiver(payload: dict[str, Any] = Body(...)) -> Any:
+        try:
+            return api_runtime.validate_observer_receiver(payload)
+        except (TypeError, ValueError) as exc:
+            return _error(400, str(exc))
+        except Exception as exc:
+            return _error(500, str(exc))
+
     @application.get("/outputs/{output_name}")
     def output_file(output_name: str) -> Any:
         try:

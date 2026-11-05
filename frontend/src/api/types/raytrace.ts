@@ -112,6 +112,8 @@ export interface ReceiverSpec {
   reference_vertex_points: Vec3[]
   reference_edge_points: [Vec3, Vec3][]
   view_distance_mm: number | null
+  /** Diagnostic evidence only; never adds hits or flux to the simulation. */
+  observer_reference_path?: Vec3[] | null
   base_center: Vec3 | null
   base_u_axis: Vec3 | null
   base_v_axis: Vec3 | null

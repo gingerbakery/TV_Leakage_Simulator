@@ -1,4 +1,5 @@
 import { migrateAllowedAreas } from './blocker-groups'
+import { previewSignature } from './leak-preview-signature'
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
@@ -484,7 +485,7 @@ export function snapshotLeakPreviewProjectState(): LeakPreviewProjectState {
 function rebindSignature(signature: string | null, sceneToken: string | null): string | null {
   if (!signature) return null
   try {
-    return JSON.stringify({ ...JSON.parse(signature), sceneToken })
+    return previewSignature({ ...JSON.parse(signature), sceneToken })
   } catch {
     return null
   }

@@ -260,6 +260,25 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertTrue(second.geometry_cache_hit)
         self.assertIs(first.mesh, second.mesh)
 
+    def test_precision_face_index_is_reused_and_replaced_with_new_scene_array(self):
+        class CountedSources(list):
+            scans = 0
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+        sources = CountedSources([10, 10, 20, 30])
+        mesh = {"_viewer_face_source_ids": [10, 20, 30], "face_source_ids": sources}
+        request = {"emitters": [{"emitter_type": "face", "face_indices": [0]}]}
+        first = ApiRuntime._map_viewer_faces_to_trace(mesh, request)
+        second = ApiRuntime._map_viewer_faces_to_trace(mesh, {"roi_faces": [2]})
+        self.assertEqual(first["emitters"][0]["face_indices"], [0, 1])
+        self.assertEqual(second["roi_faces"], [3])
+        self.assertEqual(sources.scans, 1)
+        self.assertEqual(request["emitters"][0]["face_indices"], [0])
+        mesh["face_source_ids"] = [30, 10]
+        third = ApiRuntime._map_viewer_faces_to_trace(mesh, request)
+        self.assertEqual(third["emitters"][0]["face_indices"], [1])
+
     def test_dual_mesh_expands_viewer_face_references_to_trace_faces(self):
         scene_mesh = {
             "face_source_ids": [10, 10, 20, 30],

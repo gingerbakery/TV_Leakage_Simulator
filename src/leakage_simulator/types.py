@@ -424,6 +424,7 @@ class ReceiverSpec:
     reference_vertex_points: List[Vec3] = field(default_factory=list)
     reference_edge_points: List[Tuple[Vec3, Vec3]] = field(default_factory=list)
     view_distance_mm: Optional[float] = None
+    observer_reference_path: Optional[List[Vec3]] = None
     base_center: Optional[Vec3] = None
     base_u_axis: Optional[Vec3] = None
     base_v_axis: Optional[Vec3] = None
@@ -493,6 +494,10 @@ class ReceiverSpec:
         ]
         if self.view_distance_mm is not None:
             self.view_distance_mm = require_positive(self.view_distance_mm, "view_distance_mm")
+        if self.observer_reference_path is not None:
+            if not 2 <= len(self.observer_reference_path) <= 4098:
+                raise ValueError("observer_reference_path must contain 2..4098 points")
+            self.observer_reference_path = [vec3_from(p, "observer_reference_path") for p in self.observer_reference_path]
         if self.base_center is not None:
             self.base_center = vec3_from(self.base_center, "base_center")
         if self.base_u_axis is not None:

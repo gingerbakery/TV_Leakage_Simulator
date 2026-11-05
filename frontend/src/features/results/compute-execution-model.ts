@@ -47,6 +47,10 @@ function readableReason(reason: string | null): string | null {
       '이 Emitter 형식은 CUDA batch를 지원하지 않아 CPU scalar로 실행됨',
     gpu_cuda_below_hybrid_threshold:
       '작은 wave만 있어 CUDA 대신 CPU 최적화 경로로 실행됨',
+    gpu_cuda_hybrid_small_waves:
+      'GPU 실행과 작은 wave의 CPU 보조 처리 병행',
+    observer_transport_cpu_host_roundtrip:
+      'GPU 교차 판정 · 역추적 반사·휘도 계산은 CPU',
   }
   return labels[reason] ?? reason.replaceAll('_', ' ')
 }

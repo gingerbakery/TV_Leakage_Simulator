@@ -76,6 +76,7 @@ import {
 import { TransformEditorDialog } from '@/features/transforms'
 import { receiverMeetsStatisticalTarget } from '@/features/raytracing/ray-tracing-model'
 import { createLeakPreviewPointTransform } from '@/features/leak-preview/leak-preview-geometry'
+import { previewSignature } from '@/features/leak-preview/leak-preview-signature'
 import {
   leakPreviewStore,
   snapshotLeakPreviewProjectState,
@@ -402,7 +403,7 @@ export function SimulatorShell() {
   useEffect(() => {
     const active = cadCases.find((item) => item.caseId === activeCadCaseId)
     if (!active?.leakPreviewState) return
-    if (JSON.stringify(snapshotLeakPreviewProjectState()) !== JSON.stringify(active.leakPreviewState)) {
+    if (previewSignature(snapshotLeakPreviewProjectState()) !== previewSignature(active.leakPreviewState)) {
       leakPreviewStore.getState().restoreProjectState(active.leakPreviewState, active.leakPreviewResult)
     }
   }, [activeCadCaseId, cadCases])

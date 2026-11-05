@@ -134,6 +134,8 @@ export interface LeakPreviewPoint {
 
 export interface LeakPreviewCandidate {
   peakLuminanceNit?: number
+  peakDirectLuminanceNit?: number
+  peakReflectedLuminanceNit?: number
   representativePath?: Vec3[]
   groupedCount?: number
   observerAngles?: Array<{ horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number }>
@@ -157,7 +159,7 @@ export interface LeakPreviewCandidate {
   maxReflectionCount: number | null
   meanExitAngleDeg: number | null
   clipBox: RoiClipBox
-  observerEvidence?: { axis: LeakPreviewDirection; stepDeg: number; horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3 }
+  observerEvidence?: { axis: LeakPreviewDirection; stepDeg: number; horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3; footprintCenter?: Vec3 }
 }
 
 export interface LeakPreviewDetection {
@@ -745,6 +747,9 @@ export function buildLeakPreviewRequest({
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
       }
       request.observer_probe = settings
+      // Observer occlusion must use the same detailed geometry as precision
+      // tracing; a decimated viewer wall cannot certify a physical opening.
+      request.geometry_mode = 'precision'
     }
     request.escape_collection = {
       direction: directions[0] ?? 'neg_z',
@@ -1149,6 +1154,9 @@ interface ObserverProbeView {
   direction: Vec3; observer_center: Vec3; u_axis: Vec3; v_axis: Vec3; spacing_mm: [number, number]
 }
 interface ObserverProbeCell {
+  direct_luminance_nit?: number
+  reflected_luminance_nit?: number
+  path_validation?: { status: 'valid' | 'invalid' | 'unverified'; endpoint_kind?: 'cad_surface' | 'virtual_emitter'; reason?: string }
   luminance_nit?: number
   sample_count?: number
   representative_path?: Vec3[]
@@ -1156,6 +1164,8 @@ interface ObserverProbeCell {
   direct_count: number; reflected_count: number; min_depth: number; max_depth: number
 }
 export interface ObserverProbeSummary {
+  path_classification_contract?: string
+  path_validation_summary?: { contract: string; checked: number; valid: number; invalid: number; missing: number; virtual_emitter: number }
   display_truncated?: boolean
   limitations?: string[]
   calibration_state?: string
@@ -1173,6 +1183,10 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
   const summary = raw as ObserverProbeSummary
   const count = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
   const vector = (x: unknown, size = 3): boolean => Array.isArray(x) && x.length === size && x.every((v) => typeof v === 'number' && Number.isFinite(v))
+  const audit = summary.path_validation_summary
+  if (audit !== undefined && (!audit || audit.contract !== 'observer_path_geometry_audit_v1' ||
+    ![audit.checked, audit.valid, audit.invalid, audit.missing, audit.virtual_emitter].every(count) ||
+    audit.checked !== audit.valid+audit.invalid || audit.virtual_emitter > audit.valid)) return null
   const radiance = summary.contract === 'observer_radiance_parallel_v1' && summary.measure === 'luminance_cd_m2'
   if (radiance && (summary.settings?.measurement !== 'radiance' || summary.calibration_state !== 'uncalibrated' ||
     !Array.isArray(summary.limitations) || !summary.limitations.includes('finite_sampling'))) return null
@@ -1186,14 +1200,18 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
     summary.attempted_count > summary.planned_count || summary.direct_count + summary.reflected_count + summary.excluded_count > summary.attempted_count ||
     typeof summary.complete !== 'boolean' || typeof summary.stopped !== 'boolean' || summary.complete === summary.stopped ||
     !Array.isArray(summary.views) || summary.views.length > (summary.settings.coverage === 'hemisphere' ? 2048 : 121) || !Array.isArray(summary.cells)) return null
-  if (summary.execution_backend === 'gpu_cuda' && (summary.requested_backend !== 'gpu_cuda' || summary.sample_contract !== 'observer_per_ray_seed_batch_v1' || !summary.performance ||
+  const residentSamples = summary.sample_contract === 'observer_counter_latin_v1' && summary.performance?.observer_transport_contract === 'strict_float64_observer_resident_v1' && Number(summary.performance?.observer_resident_success_count) > 0
+  if (summary.execution_backend === 'gpu_cuda' && (summary.requested_backend !== 'gpu_cuda' || (!residentSamples && summary.sample_contract !== 'observer_per_ray_seed_batch_v1') || !summary.performance ||
     !['gpu_active', 'gpu_mixed'].includes(String(summary.performance.compute_execution_state)) ||
     !(Number(summary.performance.gpu_cuda_gpu_success_count) > 0))) return null
   if (summary.views.some((view) => !vector(view.direction) || !vector(view.observer_center) || !vector(view.u_axis) || !vector(view.v_axis) || !vector(view.spacing_mm, 2) ||
     (view.grid_resolution !== undefined && (!vector(view.grid_resolution, 2) || !view.grid_resolution.every((n) => count(n) && n > 0))) ||
     !Number.isFinite(view.horizontal_deg) || !Number.isFinite(view.vertical_deg) || !count(view.direct_count) || !count(view.reflected_count))) return null
   if (summary.cells.some((cell) => !count(cell.view_index) || cell.view_index >= summary.views.length || !vector(cell.position) ||
+    (cell.path_validation !== undefined && (!cell.path_validation || !['valid', 'invalid', 'unverified'].includes(cell.path_validation.status) ||
+      (cell.path_validation.endpoint_kind !== undefined && !['cad_surface', 'virtual_emitter'].includes(cell.path_validation.endpoint_kind)))) ||
     (radiance && (!Number.isFinite(cell.luminance_nit) || cell.luminance_nit! <= 0 || !count(cell.sample_count) || cell.sample_count < 1)) ||
+    ([cell.direct_luminance_nit, cell.reflected_luminance_nit].some(value => value !== undefined && (!Number.isFinite(value) || value < 0))) ||
     (cell.representative_path !== undefined && (!Array.isArray(cell.representative_path) || cell.representative_path.length < 2 || !cell.representative_path.every((p) => vector(p)))) ||
     !count(cell.row) || !count(cell.column) || cell.row >= (summary.views[cell.view_index].grid_resolution?.[1] ?? summary.settings.resolution) || cell.column >= (summary.views[cell.view_index].grid_resolution?.[0] ?? summary.settings.resolution) ||
     !count(cell.direct_count) || !count(cell.reflected_count) || cell.direct_count + cell.reflected_count <= 0 ||
@@ -1213,9 +1231,9 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
   const modelDepth = Math.max(...bounds.size, 1) * .18
   const radiance = summary.measure === 'luminance_cd_m2'
   const strength = (cell: ObserverProbeCell) => radiance ? cell.luminance_nit! : cell.direct_count + cell.reflected_count
-  const maximum = summary.cells.reduce((value, cell) => Math.max(value, strength(cell)), Number.MIN_VALUE)
+  const maximum = summary.cells.filter((cell) => cell.path_validation?.status !== 'invalid').reduce((value, cell) => Math.max(value, strength(cell)), Number.MIN_VALUE)
   summary.views.forEach((view, viewIndex) => {
-    const cells = summary.cells.filter((cell) => cell.view_index === viewIndex)
+    const cells = summary.cells.filter((cell) => cell.view_index === viewIndex && cell.path_validation?.status !== 'invalid')
     const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.position, flux: strength(cell) }))
     const lookup = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]))
     const resolution = view.grid_resolution ?? [summary.settings.resolution, summary.settings.resolution]
@@ -1228,6 +1246,7 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const candidateId = `observer-${viewIndex}-${index}`
       cluster.forEach((cell) => {
         const sample = lookup.get(`${cell.row}:${cell.column}`)!
+        if (sample.path_validation && (sample.path_validation.status !== 'valid' || sample.path_validation.endpoint_kind === 'virtual_emitter')) return
         const position = sample.representative_path?.at(-2) ?? cell.position
         points.push({ position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
           observerAngles: [view.horizontal_deg, view.vertical_deg] })
@@ -1242,7 +1261,11 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const angle = Math.acos(Math.max(-1, Math.min(1, dot(view.direction, directionVector(result.metrics._escape_direction_summary))))) * 180 / Math.PI
       candidates.push({ id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
         ...(radiance ? { peakLuminanceNit: Math.max(...evidence.map(strength)) } : {}),
-        representativePath: [...evidence].sort((a, b) => strength(b) - strength(a)).find((cell) => cell.representative_path)?.representative_path,
+        ...(evidence.some(cell => cell.direct_luminance_nit !== undefined) ? {
+          peakDirectLuminanceNit: Math.max(...evidence.map(cell => cell.direct_luminance_nit ?? 0)),
+          peakReflectedLuminanceNit: Math.max(...evidence.map(cell => cell.reflected_luminance_nit ?? 0)),
+        } : {}),
+        representativePath: [...evidence].sort((a, b) => Number(b.representative_path?.length === 2) - Number(a.representative_path?.length === 2) || strength(b) - strength(a)).find((cell) => cell.representative_path)?.representative_path,
         receiverId: receiver.receiver_id, center, normal: receiver.normal, uAxis: view.u_axis, vAxis: view.v_axis,
         widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0] + 10),
         heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1] + 10),
@@ -1252,7 +1275,10 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
         meanExitAngleDeg: angle, clipBox: candidateClipBox(cluster, receiver, grid, modelDepth),
         observerEvidence: { axis: directionAxis(result.metrics._escape_direction_summary), stepDeg: summary.settings.step_deg,
           horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg, directCount, reflectedCount, direction: view.direction,
-          receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)) },
+          receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)),
+          footprintCenter: [0, 1, 2].map((axis) => view.observer_center[axis] +
+            view.u_axis[axis]*(Math.min(...columns)+Math.max(...columns)+1-resolution[0])*view.spacing_mm[0]/2 +
+            view.v_axis[axis]*(Math.min(...rows)+Math.max(...rows)+1-resolution[1])*view.spacing_mm[1]/2) as Vec3 },
       })
     })
   })
@@ -1301,6 +1327,8 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     target.cellCount += candidate.cellCount
     target.grazingPathCount += candidate.grazingPathCount
     target.relativeStrength = Math.max(target.relativeStrength, candidate.relativeStrength)
+    if (candidate.peakDirectLuminanceNit !== undefined) target.peakDirectLuminanceNit = Math.max(target.peakDirectLuminanceNit ?? 0, candidate.peakDirectLuminanceNit)
+    if (candidate.peakReflectedLuminanceNit !== undefined) target.peakReflectedLuminanceNit = Math.max(target.peakReflectedLuminanceNit ?? 0, candidate.peakReflectedLuminanceNit)
     target.clipBox = { xMin: Math.min(target.clipBox.xMin, candidate.clipBox.xMin), xMax: Math.max(target.clipBox.xMax, candidate.clipBox.xMax),
       yMin: Math.min(target.clipBox.yMin, candidate.clipBox.yMin), yMax: Math.max(target.clipBox.yMax, candidate.clipBox.yMax),
       zMin: Math.min(target.clipBox.zMin ?? 0, candidate.clipBox.zMin ?? 0), zMax: Math.max(target.clipBox.zMax ?? 0, candidate.clipBox.zMax ?? 0) }
@@ -1561,8 +1589,11 @@ export function createCandidateReceiver(
 ): ReceiverSpec {
   if (candidate.observerEvidence && scene) {
     const evidence = candidate.observerEvidence
+    const target = evidence.footprintCenter && candidate.representativePath
+      ? addScaled(evidence.footprintCenter, evidence.direction, dot(subtract(candidate.center, evidence.footprintCenter), evidence.direction))
+      : candidate.representativePath?.at(-2) ?? candidate.center
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
-      scene, candidate.center, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
+      scene, target, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
         vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
       leakPreviewReceiverDistanceMm, transforms)
     // Preserve coverage of the Preview grid footprint when converting from
@@ -1573,6 +1604,7 @@ export function createCandidateReceiver(
     const widthMm = Math.max(1, extent(receiver.u_axis!)), heightMm = Math.max(1, extent(receiver.v_axis!))
     const pixelSize = Math.max(widthMm, heightMm) / 40
     return { ...receiver, display_name: `Preview Receiver ${index}`, reference_mode: 'leak_preview_candidate',
+      observer_reference_path: candidate.representativePath && candidate.representativePath.length <= 4098 ? candidate.representativePath.map((p) => [...p] as Vec3) : null,
       width_mm: widthMm, height_mm: heightMm,
       resolution: [Math.max(8, Math.round(widthMm / pixelSize)), Math.max(8, Math.round(heightMm / pixelSize))] }
   }

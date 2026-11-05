@@ -22,6 +22,20 @@ from .reflection import (effective_surface_reflectance, ideal_specular_direction
 CONTRACT = "observer_radiance_parallel_v1"
 
 
+def prefer_observer_path(depth, contribution, previous, previous_contribution):
+    """Preserve any physically sampled direct path before ranking by strength.
+
+    This changes diagnostic path choice only, never the total radiance sum.
+    Within either class retain the largest single contribution.
+    """
+    if contribution <= 0:
+        return False
+    if not previous:
+        return True
+    direct, previous_direct = depth == 0, len(previous) == 2
+    return direct if direct != previous_direct else contribution > previous_contribution
+
+
 def _angle(a, b):
     cross = vec_cross(a, b)
     return math.atan2(math.sqrt(vec_dot(cross, cross)), vec_dot(a, b))
@@ -280,7 +294,7 @@ def unstarted_summary(spec, plans, requested):
 
 
 def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
-                            *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None):
+                            *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None, sensor=None):
     from .observer_probe import (_source_geometry, _sample_source, _triangle_intersection,
                                  sampling_plan, _execute_probes, FULL_DETAIL_CELL_LIMIT)
     from .raytracer import _IntersectionDispatchStats
@@ -289,9 +303,27 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     epsilon = max(config.epsilon_mm, 1e-8)
     sources = _source_geometry(mesh, trace_input.emitters)
     validate_sources(sources)
-    plans = sampling_plan(spec, collector.minimum, collector.maximum, collector.direction, 0, epsilon)
+    plans = sensor.plans() if sensor is not None else sampling_plan(spec, collector.minimum, collector.maximum, collector.direction, 0, epsilon)
     planned = sum(p["grid_samples"] for p in plans)
     requested = getattr(config, "compute_backend", "cpu")
+    resident = None
+    resident_reason = None
+    resident_batches = 0
+    resident_cpu_batches = 0
+    if requested == "gpu_cuda":
+        from .gpu_cuda_observer import ResidentObserver
+        try:
+            resident = ResidentObserver(trace_input, sources, resolved, **({"sensor": sensor} if sensor is not None else {}))
+            # Allowed predicates are per sample/segment; preserve that path
+            # whenever regions exist. Otherwise reduce ordered cells in NumPy
+            # and download one representative path per partial cell.
+            resident.compact_cells = sensor is None and not collector.regions
+        except Exception as exc:
+            if sensor is not None:
+                raise ValueError(f"GPU 센서 역추적 준비 실패: {exc}") from exc
+            # Preserve the exact reference optical model on unsupported scenes.
+            resident_reason = str(exc) or type(exc).__name__
+            print(f"[OBSERVER] GPU resident unavailable | {resident_reason} | using host transport", flush=True)
     stats = _IntersectionDispatchStats(intersection_backend=config.intersection_backend,
         requested_provider="gpu_cuda" if requested == "gpu_cuda" else "python_cpu")
     faces, virtual = {}, []
@@ -306,6 +338,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     threshold = spec.get("min_luminance_nit", 0.)
     attempted = depth_limited = excluded = filtered = 0
     committed = committed_depth_limited = pause_count = 0
+    sensor_sum = sensor_square_sum = 0.
+    sensor_positive = 0
     stopped = display_truncated = False
     cells, views = [], []
     cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(plans)))
@@ -326,8 +360,18 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     def result(out_cells, out_views, is_stopped):
         performance = stats.to_summary()
         state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
+        if state == "gpu_active" and resident is None:
+            state, reason = "gpu_mixed", "observer_transport_cpu_host_roundtrip"
         performance.update(compute_execution_state=state, compute_execution_reason=reason)
-        return dict(contract=CONTRACT, measure="luminance_cd_m2", sample_contract="observer_per_ray_seed_batch_v1",
+        performance.update(observer_transport_contract="strict_float64_observer_resident_v1" if resident_batches else "observer_host_wavefront_v1",
+            observer_resident_success_count=resident_batches, observer_resident_cpu_batch_count=resident_cpu_batches,
+            observer_resident_fallback_reason=resident_reason,
+            observer_kernel_timing_scope="launch_sync_including_first_jit" if resident_batches else None,
+            observer_resident_prepare_sec=getattr(resident, "prepare_sec", 0.),
+            observer_resident_runtime_guard_sec=getattr(resident, "validation_sec", 0.),
+            observer_sample_contract="observer_counter_latin_v1" if resident is not None else "observer_per_ray_seed_batch_v1")
+        return dict(contract=CONTRACT, measure="luminance_cd_m2", sample_contract="observer_counter_latin_v1" if resident is not None else "observer_per_ray_seed_batch_v1",
+            path_classification_contract="direct_presence_priority_v1",
             search_contract="observer_full_spacing_v1" if spec.get("search_mode") == "full_detail" else "observer_grid_v1",
             progress_contract="committed_samples_v1", resume_contract="live_observer_wave_v1" if pause_callback else None,
             execution_backend="gpu_cuda" if state in ("gpu_active", "gpu_mixed") else "cpu", requested_backend=requested,
@@ -339,6 +383,14 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             display_truncated=display_truncated, calibration_state="uncalibrated", observation_state="estimated" if out_cells else "not_observed",
             limitations=["parallel_camera", "finite_sampling", "reflection_only", "uncalibrated_source_material_threshold"]
                 + (["depth_truncated"] if committed_depth_limited else []) + (["partial_result"] if is_stopped else []))
+
+    @lru_cache(maxsize=8192)
+    def cell_permutation(seed):
+        # All repetitions of a cell share this layout. Keep its EXACT legacy
+        # RNG stream while avoiding samples_per_cell identical MT/shuffle work.
+        permutation = list(range(samples))
+        random.Random(seed).shuffle(permutation)
+        return tuple(permutation)
 
     for view_index, plan in enumerate(plans):
         columns, rows = plan["columns"], plan["rows"]
@@ -353,17 +405,22 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             # Per-cell random Latin hypercube, including zero-hit cells. No
             # fixed centre plus random samples (that mixture biases a pixel).
             seed = (config.seed*0x9E3779B1 + view_index*1_000_003 + pixel*9176) & ((1 << 64)-1)
-            layout = random.Random(seed)
-            permutation = list(range(samples))
-            layout.shuffle(permutation)
             rng = random.Random(seed + (pass_index+1)*0x85EBCA77)
-            jx = (pass_index+rng.random())/samples
-            jy = (permutation[pass_index]+rng.random())/samples
-            launch = vec_add(vec_add(vec_add(center, vec_mul(outward, plan["distance"])),
-                vec_mul(u, plan["min_u"]+(column+jx)*plan["width"]/columns)),
-                vec_mul(v, plan["min_v"]+(row+jy)*plan["height"]/rows))
-            origin, direction = launch, vec_mul(outward, -1)
-            throughput, value = 1., 0.
+            camera_weight = 1.
+            if sensor is None:
+                permutation = cell_permutation(seed)
+                jx = (pass_index+rng.random())/samples
+                jy = (permutation[pass_index]+rng.random())/samples
+                launch = vec_add(vec_add(vec_add(center, vec_mul(outward, plan["distance"])),
+                    vec_mul(u, plan["min_u"]+(column+jx)*plan["width"]/columns)),
+                    vec_mul(v, plan["min_v"]+(row+jy)*plan["height"]/rows))
+                direction = vec_mul(outward, -1)
+            else:
+                launch, direction, camera_weight = sensor.launch(index, rng)
+                if camera_weight == 0:
+                    return index, 0., None, 0, launch, 0.
+            origin = launch
+            throughput, value, direct_value = 1., 0., 0.
             previous_delta = True
             previous_pdf = 0.
             vertices = []
@@ -372,11 +429,13 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             max_depth = 0
 
             def record(contribution, point, depth):
-                nonlocal value, representative, best, max_depth
+                nonlocal value, direct_value, representative, best, max_depth
                 if not math.isfinite(contribution) or contribution < 0:
                     raise ValueError("Observer radiance has non-finite/negative contribution")
                 value += contribution
-                if contribution > best:
+                if depth == 0:
+                    direct_value += contribution
+                if prefer_observer_path(depth, contribution, representative, best):
                     best = contribution
                     max_depth = depth
                     representative = [point] + list(reversed(vertices)) + [launch]
@@ -461,7 +520,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 # No deterministic energy cutoff. Roulette survivors retain
                 # the reciprocal probability weight; finite depth is explicit.
                 origin, direction = vec_add(hit.point, vec_mul(new_direction, epsilon)), new_direction
-            return index, value, representative, max_depth, launch, best
+            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight
 
         pending = None
 
@@ -470,6 +529,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 return None
             cell = dict(cell)
             cell["luminance_nit"] = cell.pop("sum")/cell["sample_count"]
+            cell["direct_luminance_nit"] = cell.pop("direct_sum", 0.)/cell["sample_count"]
+            cell["reflected_luminance_nit"] = max(0., cell["luminance_nit"]-cell["direct_luminance_nit"])
             # Standard error is intentionally absent: stratified low-sample
             # zero variance is not evidence of absence or calibrated confidence.
             cell["observation_state"] = "estimated"
@@ -508,22 +569,76 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             started += time.perf_counter()-wait_started
             return keep_running
 
-        for start in range(0, plan["grid_samples"], batch_size):
+        effective_batch_size = resident.batch_size(batch_size) if resident is not None else batch_size
+        for start in range(0, plan["grid_samples"], effective_batch_size):
             if should_stop and should_stop():
                 if pause_callback is None or not pause_current():
                     stopped = True
                     break
-            completed, interrupted = _execute_probes(mesh,
-                [probe(i) for i in range(start, min(plan["grid_samples"], start+batch_size))],
-                stats, dispatch, should_stop, pause_current if pause_callback is not None else None)
+            if resident is not None:
+                # Commit only after the entire chunk has validated. Failure does
+                # not publish an incomplete or duplicated radiance accumulator.
+                completed, execution, limited = resident.run(plan, center, view_index, start,
+                    min(effective_batch_size, plan["grid_samples"]-start))
+                if getattr(execution, "cpu_fallback", False):
+                    resident_cpu_batches += 1
+                    resident_reason = execution.reason
+                    stats.reference_scalar_query_count += execution.logical_intersection_rows
+                    stats.fallback_count += 1
+                    stats.fallback_ray_count += getattr(completed, "sample_count", len(completed))
+                    stats.fallback_phase = "observer_resident"
+                    stats.fallback_reason = execution.reason
+                else:
+                    stats.record_gpu_resident_execution(execution)
+                    resident_batches += 1
+                attempted += getattr(completed, "sample_count", len(completed))
+                depth_limited += limited
+                interrupted = False
+            else:
+                completed, interrupted = _execute_probes(mesh,
+                    [probe(i) for i in range(start, min(plan["grid_samples"], start+effective_batch_size))],
+                    stats, dispatch, should_stop, pause_current if pause_callback is not None else None)
+            if sensor is not None:
+                values = [item[1] for item in completed if item is not None]
+                sensor_sum += math.fsum(values)
+                sensor_square_sum += math.fsum(value*value for value in values)
+                sensor_positive += sum(value > 0 for value in values)
+                committed += len(values)
+                committed_depth_limited = depth_limited
+                if progress_callback:
+                    progress_callback(committed, planned)
+                if interrupted:
+                    stopped = True
+                    break
+                continue
+            if hasattr(completed, "sample_count"):
+                for cell in completed:
+                    if pending is None or (pending["row"], pending["column"]) != (cell["row"], cell["column"]):
+                        finish(pending)
+                        pending = cell
+                    else:
+                        for key in ("sample_count", "sum", "direct_sum", "direct_count", "reflected_count"):
+                            pending[key] += cell[key]
+                        pending["min_depth"] = min(pending["min_depth"], cell["min_depth"])
+                        pending["max_depth"] = max(pending["max_depth"], cell["max_depth"])
+                        if prefer_observer_path(len(cell["representative_path"])-2 if cell["representative_path"] else -1,
+                            cell["representative_contribution_nit"], pending["representative_path"], pending["representative_contribution_nit"]):
+                            for key in ("position", "representative_path", "representative_contribution_nit"):
+                                pending[key] = cell[key]
+                committed += completed.sample_count
+                committed_depth_limited = depth_limited
+                if progress_callback:
+                    progress_callback(committed, planned)
+                continue
             for item in completed:
                 if item is None:
                     continue
-                index, value, path, depth, launch, contribution = item
+                index, value, path, depth, launch, contribution = item[:6]
+                direct_value = item[6] if len(item) > 6 else (value if depth == 0 else 0.)
                 row, column = divmod(index//samples, columns)
                 if pending is None or (pending["row"], pending["column"]) != (row, column):
                     finish(pending)
-                    pending = dict(view_index=view_index, row=row, column=column, sample_count=0, sum=0.,
+                    pending = dict(view_index=view_index, row=row, column=column, sample_count=0, sum=0., direct_sum=0.,
                         direct_count=0, reflected_count=0, min_depth=config.max_depth+1, max_depth=0,
                         representative_path=None, position=None, representative_contribution_nit=0.)
                 pending["sample_count"] += 1
@@ -532,10 +647,11 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         excluded += 1
                         continue
                     pending["sum"] += value
+                    pending["direct_sum"] += direct_value
                     pending["direct_count" if depth == 0 else "reflected_count"] += 1
                     pending["min_depth"] = min(pending["min_depth"], depth)
                     pending["max_depth"] = max(pending["max_depth"], depth)
-                    if contribution > pending["representative_contribution_nit"]:
+                    if prefer_observer_path(depth, contribution, pending["representative_path"], pending["representative_contribution_nit"]):
                         pending.update(position=path[-2], representative_path=path, representative_contribution_nit=contribution)
             committed += sum(item is not None for item in completed)
             committed_depth_limited = depth_limited
@@ -553,4 +669,9 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
         views.append(view_summary(plan, view_cells))
         if stopped:
             break
+    if sensor is not None:
+        return dict(contract="finite_receiver_reverse_flux_v1", flux_lumen=sensor_sum/committed if committed else None,
+            sample_second_moment=sensor_square_sum/committed if committed else None, sample_count=committed,
+            positive_samples=sensor_positive, planned_count=planned, complete=not stopped and committed == planned,
+            runtime_sec=time.perf_counter()-started, compute_backend=requested, performance=result([], [], stopped)["performance"])
     return result(cells, views, stopped)

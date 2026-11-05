@@ -482,6 +482,7 @@ function isReceiverSpec(value: unknown): value is ReceiverSpec {
     isString(value.receiver_id) &&
     value.receiver_type === 'rectangle' &&
     (value.view_angles === undefined || isReceiverViewAngles(value.view_angles)) &&
+    (value.observer_reference_path == null || (Array.isArray(value.observer_reference_path) && value.observer_reference_path.length >= 2 && value.observer_reference_path.length <= 4098 && value.observer_reference_path.every(isVec3))) &&
     isString(value.display_name) &&
     isOneOf(value.placement_mode, [
       'datum_plane',
@@ -618,6 +619,7 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
       !['minReflectionCount','maxReflectionCount','meanExitAngleDeg'].every((key) => candidate[key] === null || isFiniteNumber(candidate[key]))) return false
     if (candidate.representativePath !== undefined && (!Array.isArray(candidate.representativePath) || candidate.representativePath.length < 2 || !candidate.representativePath.every(isVec3))) return false
     if (candidate.peakLuminanceNit !== undefined && (!isFiniteNumber(candidate.peakLuminanceNit) || candidate.peakLuminanceNit < 0)) return false
+    if (['peakDirectLuminanceNit', 'peakReflectedLuminanceNit'].some(key => candidate[key] !== undefined && (!isFiniteNumber(candidate[key]) || Number(candidate[key]) < 0))) return false
     if (candidate.groupedCount !== undefined && (!Number.isSafeInteger(candidate.groupedCount) || Number(candidate.groupedCount) < 1)) return false
     if (candidate.observerAngles !== undefined && (!Array.isArray(candidate.observerAngles) || !candidate.observerAngles.every((angle: unknown) =>
       isRecord(angle) && ['horizontalDeg','verticalDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(angle[key])) &&
@@ -627,7 +629,7 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
     const observer = candidate.observerEvidence
     if (observer !== undefined && (!isRecord(observer) || !isOneOf(observer.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z']) ||
       !['horizontalDeg','verticalDeg','stepDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(observer[key])) ||
-      !isVec3(observer.direction) || !isVec3(observer.receiverCenter))) return false
+      !isVec3(observer.direction) || !isVec3(observer.receiverCenter) || (observer.footprintCenter !== undefined && !isVec3(observer.footprintCenter)))) return false
     ids.add(candidate.id)
   }
   if (value.selectedCandidateId !== null && !ids.has(value.selectedCandidateId)) return false

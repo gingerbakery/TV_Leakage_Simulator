@@ -39,6 +39,26 @@ def physical(summary):
 
 
 class ObserverWaveResumeTests(TestCase):
+    def test_cached_cell_layout_keeps_legacy_samples_and_avoids_repeated_shuffles(self):
+        import random
+        from test_observer_radiance import render, black, plate, source
+        from leakage_simulator.geometry import TriangleMesh
+        mesh = TriangleMesh()
+        plate(mesh, 9, 20)
+        counts = [0]
+        original = random.Random.shuffle
+        def shuffle(rng, values):
+            counts[0] += 1
+            return original(rng, values)
+        with patch.object(random.Random, "shuffle", shuffle):
+            cached = render(mesh, source((0, 0, -5), 40), [black()])
+            cached_count = counts[0]
+            counts[0] = 0
+            with patch("leakage_simulator.observer_radiance.lru_cache", new=lambda **kwargs: lambda fn: fn):
+                uncached = render(mesh, source((0, 0, -5), 40), [black()])
+        self.assertEqual(physical(cached), physical(uncached))
+        self.assertEqual(counts[0], cached_count*8)
+
     def test_preview_grid_hemisphere_resumes_across_view_boundary(self):
         trace = preview_fixture()
         trace.observer_probe.update(search_mode="preview", coverage="hemisphere", step_deg=90., samples_per_cell=1)
@@ -99,6 +119,9 @@ class ObserverWaveResumeTests(TestCase):
         self.assertEqual(len(snapshots),2)
         self.assertEqual(snapshots[0]["metrics"]["_resume_state_summary"]["stage"],"forward")
         self.assertEqual(snapshots[1]["metrics"]["_resume_state_summary"]["stage"],"observer_radiance")
+        partial = snapshots[1]["metrics"]["_observer_probe_summary"]
+        self.assertIn("path_validation_summary", partial)
+        self.assertTrue(all("path_validation" in cell for cell in partial["cells"]))
         self.assertEqual(physical(resumed.metrics["_observer_probe_summary"]),physical(baseline.metrics["_observer_probe_summary"]))
         self.assertEqual(resumed.receiver_grids,baseline.receiver_grids)
         self.assertEqual(resumed.stored_paths,baseline.stored_paths)
@@ -137,6 +160,8 @@ class PreviewApiResumeTests(TestCase):
                 self.assertTrue(gate.wait(3)); runtime.stop_raytrace_job(job["job_id"]); release.set()
                 paused=terminal(job)
                 self.assertTrue(paused["resume_available"])
+                self.assertIn("api_preparation_sec", paused["result"]["metrics"]["_performance_summary"])
+                self.assertIn("api_geometry_cache_hit", paused["result"]["metrics"]["_observer_probe_summary"]["performance"])
                 summary=paused["result"]["metrics"]["_observer_probe_summary"]
                 self.assertEqual(paused["processed_rays"],16+summary["attempted_count"])
                 self.assertEqual(paused["total_rays"],16+summary["planned_count"])

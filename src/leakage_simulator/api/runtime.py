@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 import uuid
+from array import array
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
@@ -117,6 +118,7 @@ class ApiRuntime:
         self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
+        self._sensor_comparison_jobs: dict[str, dict[str, Any]] = {}
         self._raytrace_sessions: dict[str, _RayTraceSession] = {}
         try:
             self._supports_pause = "pause_callback" in inspect.signature(trace_runner).parameters
@@ -980,6 +982,8 @@ class ApiRuntime:
             "created_at": time.time(),
         }
         with self._state_lock:
+            if any(j["status"] in {"queued", "running"} for j in self._sensor_comparison_jobs.values()):
+                raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
             resume = next((session for session in self._raytrace_sessions.values()
                 if session.paused and not session.cancelled and session.fingerprint == fingerprint), None) if not restart else None
             predecessors = []
@@ -1074,6 +1078,9 @@ class ApiRuntime:
         self,
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        with self._state_lock:
+            if any(j["status"] in {"queued", "running"} for j in self._sensor_comparison_jobs.values()):
+                raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
         validate_bsdf_request(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         trace_input = self._build_trace_input_for_request(
@@ -1081,6 +1088,92 @@ class ApiRuntime:
             request_payload,
         )
         return self._trace_runner(trace_input).to_dict()
+
+    def start_sensor_comparison(self, payload):
+        from leakage_simulator.sensor_comparison import ComparisonOptions, run_sensor_comparison
+        options = ComparisonOptions(**payload.get("options", {}))
+        request = json.loads(json.dumps(payload["request"], allow_nan=False))
+        validate_bsdf_request(request)
+        scene = self._scene_mesh_for_request(request)
+        job_id = uuid.uuid4().hex
+        job = dict(job_id=job_id, status="queued", phase="preparing", stop_requested=False,
+            scene_token=request.get("scene_token"), execution_backend="gpu_cuda", progress=0., batch=0, report=None, error=None)
+        with self._state_lock:
+            if any(j.get("status") in {"queued", "running"} for j in list(self._raytrace_jobs.values())+list(self._sensor_comparison_jobs.values())):
+                raise ValueError("진행 중인 해석을 마치거나 중지한 후 비교하세요.")
+            self._sensor_comparison_jobs[job_id] = job
+            while len(self._sensor_comparison_jobs) > 8:
+                self._sensor_comparison_jobs.pop(next(iter(self._sensor_comparison_jobs)))
+        def stopped():
+            with self._state_lock:
+                return job["stop_requested"]
+        def progress(batch, phase, done, total):
+            with self._state_lock:
+                job.update(batch=batch+1, phase=phase, progress=max(job["progress"], min(.99, (batch*2+(phase == "reverse")+done/max(1,total))/(options.batches*2))))
+        def worker():
+            try:
+                with self._state_lock:
+                    job["status"] = "running"
+                trace = self._build_trace_input_for_request(scene, request, should_stop=stopped)
+                report = run_sensor_comparison(trace, options, stopped, progress)
+                with self._state_lock:
+                    job.update(report=report, status="stopped" if report.get("reason") == "stopped" else "completed",
+                        phase="finished", progress=1. if report.get("complete") else job["progress"],
+                        geometry_cache_hit=trace.geometry_cache_hit)
+            except InterruptedError:
+                with self._state_lock:
+                    job.update(status="stopped", phase="finished")
+            except Exception as exc:
+                traceback.print_exc()
+                with self._state_lock:
+                    job.update(status="failed", phase="finished", error=str(exc))
+        threading.Thread(target=worker, daemon=True, name="sensor-comparison").start()
+        return self.sensor_comparison_status(job_id)
+
+    def sensor_comparison_status(self, job_id=None, stop=False):
+        with self._state_lock:
+            if not job_id:
+                job_id = next(reversed(self._sensor_comparison_jobs), None)
+            job = self._sensor_comparison_jobs.get(job_id)
+            if job is None:
+                if stop or job_id:
+                    raise ValueError("광량 비교 작업을 찾을 수 없습니다.")
+                return None
+            if stop and job["status"] in {"queued", "running"}:
+                job["stop_requested"] = True
+            return json.loads(json.dumps(job, allow_nan=False))
+
+    def validate_observer_receiver(self, request_payload):
+        """Geometry-only diagnostic. Never starts/cancels a tracing worker."""
+        with self._state_lock:
+            if any(job.get("status") in {"queued", "running"} for job in list(self._raytrace_jobs.values())+list(self._sensor_comparison_jobs.values())):
+                raise ValueError("진행 중인 해석을 마친 후 경로를 검증하세요.")
+        validate_bsdf_request(request_payload)
+        started = time.perf_counter()
+        scene = self._scene_mesh_for_request(request_payload)
+        trace = self._build_trace_input_for_request(scene, request_payload)
+        from leakage_simulator.bsdf_guard import bind_bsdf_profiles
+        from leakage_simulator.optics import OpticalPropertyResolver
+        from leakage_simulator.raytracer import _build_receiver_frame
+        from leakage_simulator.types import ReceiverGrid
+        from leakage_simulator.observer_path_validation import validate_receiver_evidence
+        profiles, _ = bind_bsdf_profiles(trace.optical_profiles, trace.bsdf_assets, trace.config)
+        resolved = OpticalPropertyResolver(trace.mesh, profiles, trace.optical_assignments).resolve_all()
+        frames = [_build_receiver_frame(r) for r in trace.receivers if r.enabled]
+        for frame in frames:
+            if trace.analysis_roi:
+                frame.roi_boxes = tuple(trace.analysis_roi.get("detection_boxes", []))
+        if not any(frame.receiver.observer_reference_path for frame in frames):
+            raise ValueError("검증할 대표 경로가 없습니다.")
+        grids = {f.receiver.receiver_id: ReceiverGrid.empty(f.receiver) for f in frames}
+        checks = validate_receiver_evidence(trace, frames, grids, resolved)
+        for check in checks:
+            if check["path_valid"]:
+                check["diagnosis"] = "reference_path_valid"
+            check["forward_hit_count"] = None
+            check["forward_energy_cutoff_count"] = None
+        return dict(receiver_checks=checks, simulation_run_started=False,
+            geometry_cache_hit=trace.geometry_cache_hit, runtime_sec=time.perf_counter()-started)
 
     def build_section_cap(
         self,
@@ -1181,7 +1274,8 @@ class ApiRuntime:
                 "emitter_id", "emitter_type", "face_indices", "source_component_ids", "center", "u_axis", "v_axis",
                 "width_mm", "height_mm", "surface_construction", "polygon_vertices")}
                 for item in request_payload.get("emitters", [])] if request_payload.get("analysis_roi") or request_payload.get("roi_faces") else [],
-            "roi_depth_receivers": request_payload.get("receivers", []) if any(
+            "roi_depth_receivers": [{key: value for key, value in receiver.items() if key != "observer_reference_path"}
+                for receiver in request_payload.get("receivers", [])] if any(
                 box.get("z_unbounded") is True for box in [
                     *request_payload.get("roi_clip_boxes", []),
                     *(request_payload.get("analysis_roi") or {}).get("clip_boxes", [])]) else [],
@@ -1378,24 +1472,25 @@ class ApiRuntime:
         if not referenced_viewer_faces:
             return request_payload
 
-        requested_sources = {
-            int(viewer_sources[face_index])
-            for face_index in referenced_viewer_faces
-            if 0 <= face_index < len(viewer_sources)
-        }
-        source_to_trace: dict[int, list[int]] = {
-            source_id: [] for source_id in requested_sources
-        }
-        for trace_face_index, source_id in enumerate(trace_sources):
-            if (
-                trace_face_index % 4096 == 0
-                and should_stop is not None
-                and should_stop()
-            ):
-                raise InterruptedError("Ray trace preparation stopped")
-            target = source_to_trace.get(int(source_id))
-            if target is not None:
-                target.append(trace_face_index)
+        # CAD source arrays are immutable within a loaded scene. Keep the
+        # source->precision index with that scene rather than scanning every
+        # precision triangle again for each angle/material/Ray-count change.
+        lock = scene_mesh.setdefault("_trace_face_mapping_lock", threading.RLock())
+        with lock:
+            cached = scene_mesh.get("_trace_face_mapping")
+            if cached is not None and cached[0] is trace_sources and cached[1] == len(trace_sources):
+                source_to_trace = cached[2]
+            else:
+                source_to_trace: dict[int, array] = {}
+                for trace_face_index, source_id in enumerate(trace_sources):
+                    if trace_face_index % 4096 == 0 and should_stop is not None and should_stop():
+                        raise InterruptedError("Ray trace preparation stopped")
+                    source = int(source_id)
+                    target = source_to_trace.get(source)
+                    if target is None:
+                        target = source_to_trace[source] = array("Q")
+                    target.append(trace_face_index)
+                scene_mesh["_trace_face_mapping"] = (trace_sources, len(trace_sources), source_to_trace)
 
         def expand(face_indices: Any) -> list[int]:
             source_ids = {
@@ -1524,6 +1619,16 @@ class ApiRuntime:
                 if emitter.enabled
             )
             trace_started_at = time.time()
+
+            def annotate_preparation(payload):
+                metrics = payload.setdefault("metrics", {})
+                summaries = [metrics.setdefault("_performance_summary", {})]
+                observer = metrics.get("_observer_probe_summary")
+                if isinstance(observer, dict):
+                    summaries.append(observer.setdefault("performance", {}))
+                for summary in summaries:
+                    summary["api_preparation_sec"] = preparation_elapsed_sec
+                    summary["api_geometry_cache_hit"] = geometry_cache_hit
             update_job(
                 phase="tracing",
                 phase_detail="Ray 계산 진행 중",
@@ -1603,6 +1708,7 @@ class ApiRuntime:
                 nonlocal trace_started_at
                 wait_started = time.perf_counter()
                 payload = partial_result.to_dict()
+                annotate_preparation(payload)
                 processed = int(payload["total_rays"])
                 observer = (payload.get("metrics") or {}).get("_observer_probe_summary") or {}
                 total = total_ray_count+int(observer.get("planned_count",0))
@@ -1636,6 +1742,7 @@ class ApiRuntime:
                     estimated_remaining_sec=None,
                 )
             result_payload = result.to_dict()
+            annotate_preparation(result_payload)
             processed_ray_count = max(
                 0,
                 min(int(result_payload.get("total_rays", 0)), total_ray_count),
