@@ -1,0 +1,29 @@
+{
+  "contract_version": "visible_leak_design_v1",
+  "status": "design_only_not_production_api",
+  "measure": "luminance_cd_m2",
+  "legacy_measure": "path_support_counts",
+  "coordinate_unit": "mm",
+  "transport_distance_unit": "m",
+  "area_pdf_unit": "m^-2",
+  "angle_convention": "datum_outward_hv_v1",
+  "camera_required": ["position_mm", "target_mm", "up", "projection", "vertical_fov_deg", "aspect", "image_size_px", "datum", "pose_seq"],
+  "snapshot_required": ["geometry_hash", "source_hash", "material_hash", "camera_hash", "model_version", "seed"],
+  "source_basis": ["physical_led", "calibrated_equivalent", "uncalibrated_equivalent"],
+  "execution_states": ["running", "completed", "stopped", "budget_limited", "failed", "unsupported_transport", "stale"],
+  "observation_states": ["detected_model", "below_threshold_estimate", "uncertain", "not_observed"],
+  "calibration_states": ["uncalibrated", "calibrated", "reference_validated"],
+  "coverage_required": ["angular_cell_deg", "pixel_footprint", "sample_count", "unsearched_regions", "depth_truncated", "limitations"],
+  "sampling_rules": {
+    "explore_zero_cells": true,
+    "independent_confirmation_seed": true,
+    "zero_sample_variance_proves_absence": false,
+    "reverse_physical_emission_for_efficiency": false,
+    "legacy_counts_convert_to_nits": false
+  },
+  "examples": [
+    {"execution_state": "budget_limited", "observation_state": "uncertain", "coverage_complete": false, "physical_validation_complete": false},
+    {"execution_state": "stopped", "observation_state": "not_observed", "coverage_complete": false, "physical_validation_complete": false},
+    {"execution_state": "completed", "observation_state": "detected_model", "coverage_complete": true, "physical_validation_complete": false}
+  ]
+}
