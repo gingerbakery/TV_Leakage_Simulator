@@ -43,3 +43,16 @@ it('labels a completed zero-sample result inconclusive and does not claim GPU ex
   expect(screen.getByText('GPU 실행 미확인')).toBeTruthy()
   expect(screen.getByRole('alert').textContent).toContain('이전 작업 결과')
 })
+
+it('identifies BSDF host evaluation with CUDA intersections as mixed execution', async () => {
+  const input = request()
+  vi.spyOn(apiClient, 'getSensorComparison').mockResolvedValue({ job_id: 'bsdf', status: 'completed', scene_token: input.scene_token,
+    progress: 1, batch: 8, phase: 'finished', stop_requested: false, error: null, report: {
+      sensor: { receiver_id: 'sensor' }, options: { receiver_id: 'sensor', batches: 8, forward_samples: 16384, reverse_samples: 1024, tolerance_percent: 5 },
+      verdict: 'inconclusive', reason: 'uncertainty_too_large', gpu_execution_proven: true, compute_execution_state: 'gpu_mixed',
+      batches: [{ forward_execution: { gpu_cuda_gpu_success_count: 1 }, reverse_execution: { observer_bsdf_evaluation_backend: 'cpu', gpu_cuda_gpu_success_count: 2 } }],
+    } })
+  render(<SensorComparisonDialog request={input} onClose={() => undefined} />)
+  await waitFor(() => expect(screen.getByText('BSDF CPU 평가 · CAD 교차 GPU')).toBeTruthy())
+  expect(screen.getByText('GPU 실행 확인 · CPU 보조 포함')).toBeTruthy()
+})

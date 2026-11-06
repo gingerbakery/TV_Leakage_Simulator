@@ -1,4 +1,5 @@
 import { planObserverSampling, type ObserverSamplingMode } from './observer-sampling'
+import { leakPathPattern, similarLeakPathPatterns } from './leak-path-pattern'
 import type {
   EmitterSpec,
   RayTraceConfigRequest,
@@ -1286,6 +1287,7 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
 }
 
 export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: LeakPreviewCandidate[], distance: number): LeakPreviewDetection {
+  const patterns = new Map(candidates.map(candidate => [candidate.id, leakPathPattern(candidate.representativePath, distance)]))
   const groups: LeakPreviewCandidate[] = []
   const buckets = new Map<string, LeakPreviewCandidate[]>()
   const ids = new Map<string, string>()
@@ -1297,14 +1299,12 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     }
     const target = nearby.find((group) => {
       if (Math.hypot(...subtract(group.center, candidate.center)) > distance) return false
-      const a = group.representativePath?.slice(0, -1), b = candidate.representativePath?.slice(0, -1)
-      if (!a || !b) return false
-      return a.length === b.length && a.every((point, i) => Math.hypot(...subtract(point, b[i])) <= distance)
+      return similarLeakPathPatterns(patterns.get(group.id) ?? null, patterns.get(candidate.id) ?? null, distance)
     })
     if (!target) {
       const evidence = candidate.observerEvidence
-      const group = { ...candidate, groupedCount: 1, sourceCandidateIds: [...(candidate.sourceCandidateIds ?? [candidate.id])],
-        ...(evidence ? { observerAngles: [{ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg,
+      const group = { ...candidate, groupedCount: candidate.groupedCount ?? 1, sourceCandidateIds: [...(candidate.sourceCandidateIds ?? [candidate.id])],
+        ...(evidence ? { observerAngles: candidate.observerAngles?.map(angle => ({ ...angle })) ?? [{ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg,
           directCount: evidence.directCount, reflectedCount: evidence.reflectedCount }] } : {}) }
 
       groups.push(group)
@@ -1315,13 +1315,14 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     }
     ids.set(candidate.id, target.id)
     target.sourceCandidateIds!.push(...(candidate.sourceCandidateIds ?? [candidate.id]))
-    target.groupedCount = (target.groupedCount ?? 1) + 1
+    target.groupedCount = (target.groupedCount ?? 1) + (candidate.groupedCount ?? 1)
     if (target.observerEvidence && candidate.observerEvidence) {
       const evidence = candidate.observerEvidence
-      const angle = target.observerAngles!.find((item) => item.horizontalDeg === evidence.horizontalDeg && item.verticalDeg === evidence.verticalDeg)
-      if (angle) { angle.directCount += evidence.directCount; angle.reflectedCount += evidence.reflectedCount }
-      else target.observerAngles!.push({ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg,
-        directCount: evidence.directCount, reflectedCount: evidence.reflectedCount })
+      for (const entry of candidate.observerAngles ?? [{ horizontalDeg: evidence.horizontalDeg, verticalDeg: evidence.verticalDeg, directCount: evidence.directCount, reflectedCount: evidence.reflectedCount }]) {
+        const angle = target.observerAngles!.find(item => item.horizontalDeg === entry.horizontalDeg && item.verticalDeg === entry.verticalDeg)
+        if (angle) { angle.directCount += entry.directCount; angle.reflectedCount += entry.reflectedCount }
+        else target.observerAngles!.push({ ...entry })
+      }
     }
     target.sampledPathCount += candidate.sampledPathCount
     target.cellCount += candidate.cellCount

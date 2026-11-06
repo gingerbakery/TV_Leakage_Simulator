@@ -26,6 +26,48 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('runs one shared action on the selected point and shows a spinning validation indicator until completion', async () => {
+  workspaceStore.getState().actions.addCadCase({ path: 'toolbar.step', displayName: 'toolbar' })
+  workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
+  const saved = createSavedLeakPreviewFixture()
+  const candidates = [0,1].map(i => ({ ...saved.candidates[0], id: `point-${i}`, label: `point ${i}`,
+    representativePath: [[i,0,0],[i,0,-100]] as [number,number,number][], observerEvidence: { axis: 'neg_z' as const,
+      stepDeg: 1, horizontalDeg: 0, verticalDeg: 0, directCount: 1, reflectedCount: 0, direction: [0,0,-1] as [number,number,number], receiverCenter: [i,0,-100] as [number,number,number] } }))
+  let finish!: (value: Awaited<ReturnType<typeof apiClient.validateObserverReceiver>>) => void
+  const validate = vi.spyOn(apiClient, 'validateObserverReceiver').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+  try {
+    render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+    act(() => leakPreviewStore.getState().setDetection(saved.result, [], candidates))
+    expect(screen.getAllByRole('button', { name: '경로 검증' })).toHaveLength(1)
+    expect(within(screen.getByRole('article', { name: 'Candidate 01' })).queryByRole('button', { name: '경로 검증' })).toBeNull()
+    act(() => leakPreviewStore.getState().selectCandidate('point-1','viewer'))
+    fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
+    await waitFor(() => expect(screen.getByRole('img', { name: '경로 검증 진행 중' })).toBeTruthy())
+    expect(validate.mock.calls[0][0].receivers[0].observer_reference_path).toEqual(candidates[1].representativePath)
+    expect(screen.getByRole('img', { name: '경로 검증 진행 중' }).classList.contains('animate-spin')).toBe(true)
+    await act(async () => finish({ simulation_run_started: false, geometry_cache_hit: true, runtime_sec: 1,
+      receiver_checks: [{ receiver_id: 'x', path_valid: true, diagnosis: 'reference_path_valid', forward_hit_count: null }] }))
+    await waitFor(() => expect(screen.queryByRole('img', { name: '경로 검증 진행 중' })).toBeNull())
+    expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy()
+  } finally { validate.mockRestore() }
+})
+
+it('groups current candidates without removing points and can undo the grouping', () => {
+  const saved = createSavedLeakPreviewFixture()
+  const candidates = [0,1].map(i => ({ ...saved.candidates[0], id: `similar-${i}`, sourceCandidateIds: undefined,
+    center: [i,0,0] as [number,number,number], representativePath: [[i,0,-5],[i,0,0],[i,0,10]] as [number,number,number][] }))
+  const points = candidates.map(candidate => ({ position: candidate.center, candidateId: candidate.id, relativeStrength: 1 }))
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(saved.result, points, candidates))
+  fireEvent.click(screen.getByRole('button', { name: '유사 경로 묶기' }))
+  expect(leakPreviewStore.getState().candidates).toHaveLength(1)
+  expect(leakPreviewStore.getState().points).toHaveLength(2)
+  expect(new Set(leakPreviewStore.getState().points.map(point => point.candidateId)).size).toBe(1)
+  fireEvent.click(screen.getByRole('button', { name: '묶음 되돌리기' }))
+  expect(leakPreviewStore.getState().candidates).toHaveLength(2)
+  expect(leakPreviewStore.getState().points).toHaveLength(2)
+})
+
 it('validates saved representative evidence without starting another Preview or ray-tracing run', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'witness.step', displayName: 'Witness' })
   workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
@@ -524,6 +566,7 @@ it('connects both angle tables to viewer highlights and deletes their candidate 
   expect(screen.getByRole('button', { name: '10 / 20' }).getAttribute('aria-pressed')).toBe('true')
   fireEvent.click(screen.getByRole('button', { name: '80–90°' }))
   expect(leakPreviewStore.getState().highlight).toEqual({ kind: 'escape', bin: 3 })
+  fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
   fireEvent.click(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0])
   expect(workspaceStore.getState().roiScopes[0]?.clipBox).toMatchObject({ plane: 'xy', zUnbounded: true })
   const deletedId = leakPreviewStore.getState().candidates[0].id

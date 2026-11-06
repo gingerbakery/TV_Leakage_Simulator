@@ -66,6 +66,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
       <div>최근 작업 · {report.sensor.width_mm} × {report.sensor.height_mm} mm · {report.sensor.acceptance_angle_deg}° · 허용 {report.options.tolerance_percent}%</div>
       {!sameSensor ? <div role="alert">이전 작업 결과 · 현재 조건과 동일한지 확인 필요</div> : null}
       <div>{report.gpu_execution_proven ? report.compute_execution_state === 'gpu_mixed' ? 'GPU 실행 확인 · CPU 보조 포함' : 'GPU 실행 확인' : 'GPU 실행 미확인'}</div>
+      {executions.some(row => row.observer_bsdf_evaluation_backend === 'cpu') ? <div>BSDF CPU 평가 · CAD 교차 GPU</div> : null}
       <div>CUDA 성공/시도 {count('gpu_cuda_gpu_success_count')}/{count('gpu_cuda_gpu_attempt_count')} · CPU 보조 {count('gpu_cuda_hybrid_cpu_success_count')} · 대체 {count('fallback_count')}</div>
       <div role="status">{({ match: '일치', mismatch: '불일치', inconclusive: '미확정' })[report.verdict]} · {reasons[report.reason] ?? report.reason}</div>
       <table className="w-full"><tbody>

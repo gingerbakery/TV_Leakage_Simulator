@@ -1,3 +1,4 @@
+import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { useEffect, useMemo, useState } from 'react'
 import {
   BoxSelect,
@@ -359,7 +360,7 @@ export function RoiSelectionPanel({
         ) : null}
       </div>
 
-      <section aria-labelledby="roi-list-title">
+      <CollapsibleSection title="ROI 목록" count={roiScopes.length} defaultOpen={roiScopes.length <= 6}><section aria-labelledby="roi-list-title">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
             <div
@@ -572,7 +573,7 @@ export function RoiSelectionPanel({
             })
           )}
         </div>
-      </section>
+      </section></CollapsibleSection>
 
     </div>
   )

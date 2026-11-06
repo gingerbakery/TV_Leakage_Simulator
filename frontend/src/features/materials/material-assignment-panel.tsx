@@ -1,3 +1,4 @@
+import { CollapsibleSection } from '@/components/common/collapsible-section'
 import type { ScenePayload } from '@/api'
 import { bsdfAssetName } from './bsdf-asset'
 import { Layers3, Palette, Trash2 } from 'lucide-react'
@@ -69,6 +70,7 @@ export function MaterialAssignmentPanel({
         <Badge variant="outline">{assignments.length}</Badge>
       </div>
 
+      <CollapsibleSection title="재질 적용 목록" count={assignments.length} defaultOpen={assignments.length <= 6}>
       {assignments.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-background/30 p-4 text-center">
           <Palette className="mx-auto size-5 text-muted-foreground" />
@@ -142,6 +144,7 @@ export function MaterialAssignmentPanel({
           })}
         </div>
       )}
+      </CollapsibleSection>
     </div>
   )
 }

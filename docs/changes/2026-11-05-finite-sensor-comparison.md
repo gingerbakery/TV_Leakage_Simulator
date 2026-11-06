@@ -19,7 +19,7 @@ F/R은 서로 다른 salted seed를 사용한다. 역추적 카메라는 Receive
 
 ## GPU 계약
 
-API/UI 비교는 NVIDIA CUDA를 요청한다. private CPU 경로는 단위 테스트 수식 oracle용이며 API 선택지로 노출하지 않는다. 시작 시 production preflight의 available/strict_float64/kernel_executed/kernel_verified 및 scope/provider 계약을 모두 요구한다. 양쪽 **각 반복**에 `gpu_active` 또는 `gpu_mixed`, CUDA 성공 >0을 요구한다. 미충족은 미확정이며 GPU 성공으로 표시하지 않는다. CPU hybrid/대체·fallback 이유·시간·장치·샘플 수를 JSON에 남긴다. CPU 보조는 혼합 실행으로 표시한다. 역추적 resident 미지원 재질(예: 측정 BSDF) 또는 CUDA 실패는 명시적 오류로 중단한다. 다른 BRDF로 근사하지 않는다.
+API/UI 비교는 NVIDIA CUDA를 요청한다. private CPU 경로는 단위 테스트 수식 oracle용이며 API 선택지로 노출하지 않는다. 시작 시 production preflight의 available/strict_float64/kernel_executed/kernel_verified 및 scope/provider 계약을 모두 요구한다. 양쪽 **각 반복**에 `gpu_active` 또는 `gpu_mixed`, CUDA 성공 >0을 요구한다. 미충족은 미확정이며 GPU 성공으로 표시하지 않는다. CPU hybrid/대체·fallback 이유·시간·장치·샘플 수를 JSON에 남긴다. CPU 보조는 혼합 실행으로 표시한다. 2026-11-06 보완: 측정 BSDF는 기존 CPU 광학 평가와 CUDA BVH 교차 검사의 혼합 경로를 사용한다. 각 반복의 실제 CUDA 성공 증거는 계속 요구하며 CPU-only는 미확정이다. 그 외 resident 준비·CUDA 실패는 명시적 오류로 중단한다. 다른 BRDF로 근사하지 않는다.
 
 정량 비교는 현 반사 전용 transport 범위이며 자동 aperture 귀속·실물 휘도 교정·guided estimator를 추가한 것이 아니다. 외관 개구부 미확정 표시는 유지한다.
 

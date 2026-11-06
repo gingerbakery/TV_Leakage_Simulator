@@ -1,3 +1,4 @@
+import { CollapsibleSection } from '@/components/common/collapsible-section'
 import type { ScenePayload } from '@/api'
 import { Move3D, Power, Trash2 } from 'lucide-react'
 
@@ -53,6 +54,7 @@ export function TransformRulePanel({
         </span>
         <Badge variant="outline">{rules.length}</Badge>
       </div>
+      <CollapsibleSection title="변환 목록" count={rules.length} defaultOpen={rules.length <= 6}>
       {rules.map((rule) => {
         const component = componentsById.get(rule.componentId)
         const componentName = component
@@ -118,6 +120,7 @@ export function TransformRulePanel({
           </div>
         )
       })}
+      </CollapsibleSection>
     </div>
   )
 }

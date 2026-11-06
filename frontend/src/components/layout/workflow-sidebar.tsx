@@ -542,6 +542,7 @@ export function WorkflowSidebar({
                     />
                     <AccordionContent
                       data-workflow-section-content={section.id}
+                      style={section.id === 'leak-preview' ? { overflow: 'clip' } : undefined}
                       className="mt-1.5 mb-2 min-w-0 rounded-lg border border-blue-300/80 bg-slate-200/70 px-2.5 pt-2.5 dark:border-blue-700/70 dark:bg-slate-900/85"
                     >
                       {renderPanel(section.id)}

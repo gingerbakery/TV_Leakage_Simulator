@@ -311,7 +311,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     resident_batches = 0
     resident_cpu_batches = 0
     if requested == "gpu_cuda":
-        from .gpu_cuda_observer import ResidentObserver
+        from .gpu_cuda_observer import ResidentObserver, ObserverGpuUnsupported
         try:
             resident = ResidentObserver(trace_input, sources, resolved, **({"sensor": sensor} if sensor is not None else {}))
             # Allowed predicates are per sample/segment; preserve that path
@@ -319,11 +319,19 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             # and download one representative path per partial cell.
             resident.compact_cells = sensor is None and not collector.regions
         except Exception as exc:
-            if sensor is not None:
+            # Measured BSDF retains its exact host optical evaluator while
+            # every primary/continuation/shadow intersection uses CUDA BVH.
+            # Only this declared unsupported optical law may choose hybrid;
+            # CUDA initialization/kernel failures still fail closed here.
+            bsdf_hybrid = isinstance(exc, ObserverGpuUnsupported) and str(exc) == "observer_resident_bsdf_requires_host"
+            if sensor is not None and not bsdf_hybrid:
                 raise ValueError(f"GPU 센서 역추적 준비 실패: {exc}") from exc
             # Preserve the exact reference optical model on unsupported scenes.
             resident_reason = str(exc) or type(exc).__name__
-            print(f"[OBSERVER] GPU resident unavailable | {resident_reason} | using host transport", flush=True)
+            if bsdf_hybrid:
+                print("[OBSERVER] BSDF hybrid | exact CPU optical evaluation | CUDA BVH wavefront requested", flush=True)
+            else:
+                print(f"[OBSERVER] GPU resident unavailable | {resident_reason} | using host transport", flush=True)
     stats = _IntersectionDispatchStats(intersection_backend=config.intersection_backend,
         requested_provider="gpu_cuda" if requested == "gpu_cuda" else "python_cpu")
     faces, virtual = {}, []
@@ -364,6 +372,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             state, reason = "gpu_mixed", "observer_transport_cpu_host_roundtrip"
         performance.update(compute_execution_state=state, compute_execution_reason=reason)
         performance.update(observer_transport_contract="strict_float64_observer_resident_v1" if resident_batches else "observer_host_wavefront_v1",
+            observer_bsdf_evaluation_backend="cpu" if resident_reason == "observer_resident_bsdf_requires_host" else None,
             observer_resident_success_count=resident_batches, observer_resident_cpu_batch_count=resident_cpu_batches,
             observer_resident_fallback_reason=resident_reason,
             observer_kernel_timing_scope="launch_sync_including_first_jit" if resident_batches else None,

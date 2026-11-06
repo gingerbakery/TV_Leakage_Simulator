@@ -1,3 +1,4 @@
+import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { createViewAngleReceiver, defaultReceiverView, receiverViewDirections, receiverViewAnglePairs } from './receiver-view'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -2411,7 +2412,7 @@ export function RayTracingPanel({
             등록된 광원이 없습니다.
           </p>
         ) : (
-          <div className="space-y-1.5">
+          <CollapsibleSection title="광원 목록" count={emitters.length} defaultOpen={emitters.length <= 6}><div className="space-y-1.5">
             {emitterRows.map((row) => {
               if (!row.groupId || row.emitters.length === 1) {
                 const emitter = row.emitters[0]
@@ -2503,7 +2504,7 @@ export function RayTracingPanel({
                 </details>
               )
             })}
-          </div>
+          </div></CollapsibleSection>
         )}
       </section>
 
@@ -2555,7 +2556,7 @@ export function RayTracingPanel({
             등록된 수광부가 없습니다.
           </p>
         ) : (
-          <div className="space-y-1.5">
+          <CollapsibleSection title="수광부 목록" count={receivers.length} defaultOpen={receivers.length <= 6}><div className="space-y-1.5">
             {receivers.map((receiver) => (
               <div
                 key={receiver.receiver_id}
@@ -2626,7 +2627,7 @@ export function RayTracingPanel({
                 </Button>
               </div>
             ))}
-          </div>
+          </div></CollapsibleSection>
         )}
       </section>
 
