@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { SensorComparisonJob } from '@/api/client'
+import { SensorBatchDiagnostics } from './sensor-batch-diagnostics'
 
 const reasons: Record<string, string> = {
   difference_interval_inside_tolerance: '차이 구간이 허용 범위 안', difference_interval_outside_tolerance: '차이 구간이 허용 범위 밖',
@@ -49,8 +50,8 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     <div className="grid grid-cols-2 gap-3 text-xs">
       <label>독립 반복<select aria-label="독립 반복" value={batches} disabled={active || pending} onChange={e => setBatches(Number(e.target.value))} className="block w-full rounded border p-1">{[4, 8, 16].map(n => <option key={n}>{n}</option>)}</select></label>
       <label>허용 차이 (%)<NumberInput aria-label="허용 차이" value={tolerance} onValueChange={setTolerance} min={.1} max={25} disabled={active || pending} /></label>
-      <label>순방향 / 반복<NumberInput aria-label="순방향 표본" value={forward} onValueChange={setForward} min={32} max={250000} disabled={active || pending} /></label>
-      <label>역추적 / 반복<NumberInput aria-label="역추적 표본" value={reverse} onValueChange={setReverse} min={32} max={100000} disabled={active || pending} /></label>
+      <label>순방향 표본 / 회<NumberInput aria-label="순방향 표본" value={forward} onValueChange={setForward} min={32} max={250000} disabled={active || pending} /></label>
+      <label>역추적 표본 / 회<NumberInput aria-label="역추적 표본" value={reverse} onValueChange={setReverse} min={32} max={100000} disabled={active || pending} /></label>
     </div>
     <div className="flex gap-2"><Button disabled={active || pending} onClick={async () => {
       setPending(true); setError('')
@@ -77,6 +78,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
         <tr><th className="text-left">순방향 검출 / 역추적 양수</th><td>{report.forward_hits ?? '—'} / {report.reverse_positive_samples ?? '—'}</td></tr>
         <tr><th className="text-left">유효 표본 F / R</th><td>{report.forward_effective_samples?.toFixed(1) ?? '—'} / {report.reverse_effective_samples?.toFixed(1) ?? '—'}</td></tr>
       </tbody></table>
+      {report.batches?.length ? <SensorBatchDiagnostics rows={report.batches} /> : null}
       {report.original_termination_probe ? <div>기존 종료 조건 · {flux(report.original_termination_probe.forward_flux_lumen)} lm · {report.original_termination_probe.forward_hits} hits</div> : null}
       <Button size="sm" variant="outline" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'sensor-comparison.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000) }}>검증 JSON 저장</Button>
     </div> : null}

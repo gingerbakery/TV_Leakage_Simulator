@@ -22,6 +22,12 @@ FULL_DETAIL_SAMPLE_LIMIT = 100_000_000
 FULL_DETAIL_CELL_LIMIT = 65_536
 
 
+def source_connection_visible(mesh, hit, distance, epsilon):
+    """The shifted shadow ray includes its endpoint: emitting CAD is allowed,
+    but an actual blocker there or any earlier CAD hit occludes the source."""
+    return hit is None or (abs(hit.t-(distance-epsilon)) <= 1e-9 and not mesh.metadata(hit.face_index).get("preview_blocker_id"))
+
+
 def validate_settings(spec):
     if not isinstance(spec, dict):
         raise ValueError("Observer settings must be an object")
@@ -340,7 +346,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 source_hit = None
                 for emitter, triangle, normal in virtual:
                     t = _triangle_intersection(origin, direction, triangle, epsilon)
-                    if t is not None and t <= closest + 1e-9:
+                    overlaps_blocker = t is not None and hit is not None and bool(mesh.metadata(hit.face_index).get("preview_blocker_id")) and abs(t-hit.t) <= 1e-9
+                    if t is not None and t <= closest + 1e-9 and not overlaps_blocker:
                         point = vec_add(origin, vec_mul(direction, t))
                         if emission_supported(emitter, point, normal, vec_mul(direction, -1)):
                             closest, source_hit = t, point
@@ -370,9 +377,9 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                     if source_distance <= 4*epsilon:
                         break
                     toward_source = vec_norm(vec_sub(point, hit.point))
-                    block = yield (vec_add(hit.point, vec_mul(toward_source, epsilon)), toward_source, epsilon, source_distance-2*epsilon)
+                    block = yield (vec_add(hit.point, vec_mul(toward_source, epsilon)), toward_source, epsilon, source_distance-epsilon+1e-9)
                     proposal = vertices + [(hit.point, hit.normal, profile)]
-                    if block is None and emission_supported(emitter, point, normal, vec_mul(toward_source, -1)) and supported(proposal, point, launch):
+                    if source_connection_visible(mesh, block, source_distance, epsilon) and emission_supported(emitter, point, normal, vec_mul(toward_source, -1)) and supported(proposal, point, launch):
                         found = (first_point, depth+1, [point] + [v[0] for v in reversed(proposal)] + [launch])
                         break
                 normal = hit.normal if vec_dot(direction, hit.normal) < 0 else vec_mul(hit.normal, -1)

@@ -329,6 +329,9 @@ export function WorkflowSidebar({
     if (sectionId === 'model-import') {
       return (
         <ModelImportCard
+          scene={scene}
+          geometryBusy={isSceneLoading || Boolean(sceneErrorMessage)}
+          onAccessoryImported={() => onActiveSectionChange('model-import')}
           sceneStatus={sceneStatus}
           onImported={() => onActiveSectionChange('leak-preview')}
         />

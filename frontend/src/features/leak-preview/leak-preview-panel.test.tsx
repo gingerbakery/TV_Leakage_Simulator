@@ -26,6 +26,19 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('shows measured below-threshold diagnostics instead of treating all zero lists as zero light', () => {
+  const result = createRayTraceResultFixture()
+  result.metrics._observer_probe_summary = { contract:'observer_radiance_parallel_v1', measure:'luminance_cd_m2', execution_backend:'cpu',
+    calibration_state:'uncalibrated', limitations:['finite_sampling'], settings:{...defaultObserverSettings,resolution:8,min_luminance_nit:.01},
+    attempted_count:64,planned_count:64,direct_count:0,reflected_count:0,excluded_count:0,depth_limited_count:0,
+    complete:true,stopped:false,runtime_sec:0,views:[],cells:[],filtered_count:8,positive_before_threshold_count:8,
+    peak_luminance_before_threshold_nit:.005,photometric_diagnostics_scope:'finalized_cells_after_allowed_regions' }
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result,[],[]))
+  expect(screen.getByText('최소 휘도 0.01 nit 미달로 제외 · 빛샘 없음 판정이 아닙니다.')).toBeTruthy()
+  expect(screen.getByText(/필터 전 최고 5.000e-3 nit/)).toBeTruthy()
+})
+
 it('runs one shared action on the selected point and shows a spinning validation indicator until completion', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'toolbar.step', displayName: 'toolbar' })
   workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
@@ -522,26 +535,6 @@ it('accepts extreme compound observer angles and sends the sweep without changin
   expect(active?.leakPreviewState?.observer).toMatchObject({ enabled: true, horizontal_deg: -89.9, vertical_deg: 20 })
 })
 
-it('migrates Allowed Areas to Block groups with independent visibility and application', () => {
-  workspaceStore.getState().actions.addCadCase({ path: 'visibility.step', displayName: 'Visibility' })
-  const store = leakPreviewStore.getState()
-  store.beginIgnoreAreaSelection()
-  store.addIgnoreAreaRegion({ plane: 'xy', xMin: 0, xMax: 1, yMin: 0, yMax: 1 })
-  store.finishIgnoreAreaSelection()
-  store.addBlocker({ id: 'block', label: 'Block', enabled: true, baseCenter: [0,0,0], uAxis: [1,0,0], vAxis: [0,1,0], normal: [0,0,1], widthMm: 1, heightMm: 1, offsetMm: 0, depthMm: 1, reverse: false })
-  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
-  fireEvent.click(screen.getByLabelText('Block 2 Hide'))
-  fireEvent.click(screen.getByLabelText('Block Hide'))
-  expect(leakPreviewStore.getState().blockers[1]).toMatchObject({ label: 'Block 2', enabled: true, visible: false })
-  expect(leakPreviewStore.getState().ignoreAreas).toEqual([])
-  expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: true, visible: false })
-  fireEvent.click(screen.getByLabelText('Block 2 적용'))
-  fireEvent.click(screen.getByLabelText('Block 적용'))
-  expect(leakPreviewStore.getState().blockers[1]).toMatchObject({ enabled: false, visible: false })
-  expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: false, visible: false })
-  fireEvent.click(screen.getByLabelText('Block Show'))
-  expect(leakPreviewStore.getState().blockers[0]).toMatchObject({ enabled: false, visible: true })
-})
 
 it('connects both angle tables to viewer highlights and deletes their candidate glow points', () => {
   const scene = createSceneFixture()

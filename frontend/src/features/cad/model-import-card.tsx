@@ -1,3 +1,5 @@
+import { CaseGeometryPanel } from './case-geometry-panel'
+import type { ScenePayload } from '@/api'
 import { useRef, type ChangeEvent } from 'react'
 import { Check, Eye, EyeOff, FolderOpen, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 
@@ -11,10 +13,13 @@ import {
 
 interface ModelImportCardProps {
   sceneStatus?: string
+  scene?: ScenePayload
+  geometryBusy?: boolean
+  onAccessoryImported?(): void
   onImported(): void
 }
 
-export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProps) {
+export function ModelImportCard({ sceneStatus, scene, geometryBusy = false, onImported, onAccessoryImported = onImported }: ModelImportCardProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const accessoryInputRef = useRef<HTMLInputElement>(null)
   const activeCad = useWorkspaceStore(workspaceSelectors.activeCad)
@@ -58,7 +63,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
         path: uploaded.path,
         displayName: uploaded.display_name,
       })
-      onImported()
+      onAccessoryImported()
     } catch {
       // The shared API error is rendered below.
     }
@@ -171,7 +176,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
           {activeCad ? `${sceneStatus ?? 'Loading'} · Step 03 follows the active Case.` : 'STEP (AP214/AP242) · STP · STL · OBJ'}
         </div>
         {activeCase ? (
-          <div className="mt-3 border-t border-border pt-2">
+          <CaseGeometryPanel key={activeCase.caseId} scene={scene} disabled={geometryBusy || executionLocked}><div className="border-t border-border pt-2">
             <div className="mb-1.5 flex items-center justify-between px-1">
               <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Accessory CAD</span>
               <span className="text-xs text-muted-foreground">{(activeCase.accessoryCads ?? []).length}</span>
@@ -206,7 +211,7 @@ export function ModelImportCard({ sceneStatus, onImported }: ModelImportCardProp
               {uploadMutation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}
               Add Accessory CAD
             </Button>
-          </div>
+          </div></CaseGeometryPanel>
         ) : null}
       </div>
       <input ref={inputRef} type="file" className="sr-only" aria-label="Choose CAD file" accept=".step,.stp,.stl,.obj" disabled={executionLocked || uploadMutation.isPending} onChange={handleFileChange} />

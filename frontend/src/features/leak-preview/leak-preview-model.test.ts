@@ -15,6 +15,9 @@ import {
   createEscapeEnclosureReceivers,
   escapeDirectionSummary,
   observerProbeSummary,
+  verifiedLeakPreviewSurfacePoints,
+  observerNoDetectionMessage,
+  type ObserverProbeSummary,
   defaultObserverSettings,
   createCandidateReceiver,
   candidateRoiWithSources,
@@ -27,6 +30,15 @@ import {
   resolveLeakPreviewRoiFaces,
   resizeLeakPreviewBlockerOnFace,
 } from './leak-preview-model'
+
+it('distinguishes threshold filtering, zero contribution and invalid path evidence', () => {
+  const summary = { measure:'luminance_cd_m2', settings:{min_luminance_nit:.01}, excluded_count:0 } as ObserverProbeSummary
+  expect(observerNoDetectionMessage({ ...summary, filtered_count:8 })).toContain('최소 휘도 0.01 nit 미달')
+  expect(observerNoDetectionMessage({ ...summary, positive_before_threshold_count:0 })).toContain('양수 휘도 기여 미검출')
+  expect(observerNoDetectionMessage({ ...summary, positive_before_threshold_count:0, excluded_count:3 })).toContain('Allowed 영역에서 제외')
+  expect(observerNoDetectionMessage({ ...summary, path_validation_summary:{contract:'observer_path_geometry_audit_v1',checked:1,valid:0,invalid:1,missing:0,virtual_emitter:0} })).toContain('대표 경로 차폐·조건 불일치')
+  expect(observerNoDetectionMessage(null)).toContain('빛샘 없음 판정이 아닙니다')
+})
 
 it('centres the generated Receiver on the observer footprint rather than the brightness centroid', () => {
   const scene = createSceneFixture(), result = createRayTraceResultFixture()
@@ -925,4 +937,33 @@ it('creates Preview ROI with unlimited Z even without result emitter metadata', 
   expect(clip.zMax).toBeGreaterThan(20)
   // Even stale display depths must not exclude deep CAD faces.
   expect(resolveLeakPreviewRoiFaces(scene, { ...clip, zMin: 0, zMax: 1 }, [], [])).toEqual([0, 1, 2, 3, 4])
+})
+
+
+it('shows only the audited observer-visible CAD endpoint, excluding internal bounces and floating estimates', () => {
+  const endpoint: Vec3 = [2, 0, 0]
+  const firstBounce: Vec3 = [1, 0, 0]
+  const summary = {
+    views: [{ horizontal_deg: 0, vertical_deg: 0 }],
+    cells: [{ view_index: 0, representative_path: [[0,0,0], firstBounce, endpoint, [3,0,0]],
+      path_validation: { status: 'valid', endpoint_kind: 'cad_surface' } }],
+  } as ObserverProbeSummary
+  const points = [firstBounce, endpoint, [20,0,0] as Vec3].map(position => ({
+    position, observerAngles: [0,0] as [number,number], relativeStrength: 1,
+  }))
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([points[1]])
+  const weakerDuplicate = { ...points[1], relativeStrength: .1 }
+  expect(verifiedLeakPreviewSurfacePoints([weakerDuplicate, points[1]], summary)).toEqual([points[1]])
+  expect(verifiedLeakPreviewSurfacePoints([points[1], weakerDuplicate], summary)).toEqual([points[1]])
+  expect(points).toHaveLength(3) // display filtering must not destroy saved evidence
+
+  expect(verifiedLeakPreviewSurfacePoints(points, null)).toEqual([])
+  summary.cells[0].path_validation = { status: 'invalid', endpoint_kind: 'cad_surface' }
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
+  summary.cells[0].path_validation = { status: 'unverified', endpoint_kind: 'cad_surface' }
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
+  summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'virtual_emitter' }
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
+  summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'cad_surface' }
+  expect(verifiedLeakPreviewSurfacePoints([{...points[1], observerAngles:[90,0]}], summary)).toEqual([])
 })

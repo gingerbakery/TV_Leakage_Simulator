@@ -295,7 +295,7 @@ def unstarted_summary(spec, plans, requested):
 
 def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                             *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None, sensor=None):
-    from .observer_probe import (_source_geometry, _sample_source, _triangle_intersection,
+    from .observer_probe import (_source_geometry, _sample_source, _triangle_intersection, source_connection_visible,
                                  sampling_plan, _execute_probes, FULL_DETAIL_CELL_LIMIT)
     from .raytracer import _IntersectionDispatchStats
     started = time.perf_counter()
@@ -348,6 +348,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     committed = committed_depth_limited = pause_count = 0
     sensor_sum = sensor_square_sum = 0.
     sensor_positive = 0
+    positive_before_threshold = 0
+    peak_before_threshold = 0.
     stopped = display_truncated = False
     cells, views = [], []
     cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(plans)))
@@ -388,6 +390,9 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             in_flight_sample_count=attempted-committed, pause_count=pause_count,
             direct_count=sum(c["direct_count"] for c in out_cells), reflected_count=sum(c["reflected_count"] for c in out_cells),
             excluded_count=excluded, filtered_count=filtered, depth_limited_count=committed_depth_limited,
+            positive_before_threshold_count=positive_before_threshold,
+            peak_luminance_before_threshold_nit=peak_before_threshold,
+            photometric_diagnostics_scope="finalized_cells_after_allowed_regions",
             stopped=is_stopped, complete=not is_stopped, runtime_sec=time.perf_counter()-started, views=out_views, cells=out_cells,
             display_truncated=display_truncated, calibration_state="uncalibrated", observation_state="estimated" if out_cells else "not_observed",
             limitations=["parallel_camera", "finite_sampling", "reflection_only", "uncalibrated_source_material_threshold"]
@@ -465,7 +470,12 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 # In particular their non-emitting back must not hide a leak.
                 for source, triangle, normal in virtual:
                     t = _triangle_intersection(origin, direction, triangle, epsilon)
-                    if t is not None and t < closest:
+                    # A Datum may lie on a real CAD surface. At the same hit
+                    # event it emits before that surface scatters/absorbs.
+                    # Match path-support's 1e-9 mm numerical coincidence;
+                    # do not use epsilon-sized offsets through opaque walls.
+                    overlaps_blocker = t is not None and hit is not None and bool(mesh.metadata(hit.face_index).get("preview_blocker_id")) and abs(t-closest) <= 1e-9
+                    if t is not None and t <= closest+1e-9 and not overlaps_blocker:
                         point = vec_add(origin, vec_mul(direction, t))
                         # Shared triangle edges must not emit twice.
                         key = (id(source), round(t, 10))
@@ -501,10 +511,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         f = brdf(profile, normal, wi, wo, config.angle_dependent_reflectance)
                         cosine_light = abs(vec_dot(source_normal, vec_mul(wi, -1)))
                         if f > 0 and cosine_light > 1e-14:
-                            # Includes every mesh face; finite endpoints keep
-                            # the sampled source face out of its own shadow.
-                            block = yield vec_add(hit.point, vec_mul(wi, epsilon)), wi, epsilon, distance-2*epsilon
-                            if block is None:
+                            # Include endpoint CAD so a Block covering the
+                            # source is not skipped as an emitter self-hit.
+                            block = yield vec_add(hit.point, vec_mul(wi, epsilon)), wi, epsilon, distance-epsilon+1e-9
+                            if source_connection_visible(mesh, block, distance, epsilon):
                                 pdf = distance2/(sources[source_index][3]*cosine_light*len(sources))
                                 le = emission_radiance(sources[source_index], point, source_normal, vec_mul(wi, -1))
                                 # All lengths in the solid-angle ratio are mm;
@@ -548,7 +558,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             return cell
 
         def finish(cell):
-            nonlocal filtered, display_truncated
+            nonlocal filtered, display_truncated, positive_before_threshold, peak_before_threshold
+            if cell and cell["sample_count"]:
+                positive_before_threshold += cell["direct_count"]+cell["reflected_count"]
+                peak_before_threshold = max(peak_before_threshold, cell["sum"]/cell["sample_count"])
             formatted = format_cell(cell)
             if formatted is None:
                 if cell:

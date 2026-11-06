@@ -101,6 +101,13 @@ def validate_observer_paths(trace, summary, resolved=None):
                 # zone before it: even a blocker immediately in front counts.
                 queries.append((path[j], direction, epsilon, distance+tolerance if endpoint else distance))
                 owners.append(i); lengths.append(distance); endpoint_checks.append(j+1 if endpoint else None)
+            # Independently include the light-connection endpoint as well.
+            # A virtual source on CAD may emit, but a covering Block may not.
+            source_delta = vec_sub(path[0], path[1])
+            source_distance = math.sqrt(vec_dot(source_delta, source_delta))
+            if source_distance > epsilon*2:
+                queries.append((path[1], tuple(x/source_distance for x in source_delta), epsilon, source_distance+1e-9))
+                owners.append(i); lengths.append(source_distance); endpoint_checks.append("source")
             delta = vec_sub(path[-2], path[-1])
             distance = math.sqrt(vec_dot(delta, delta))
             if distance > epsilon*2:
@@ -120,6 +127,10 @@ def validate_observer_paths(trace, summary, resolved=None):
                 if states.get(i) is not None:
                     continue
                 face, distance = int(hits.face_indices[k]), float(hits.t[k])
+                if endpoint_checks[k] == "source":
+                    if face >= 0 and (abs(distance-lengths[k]) > 1e-9 or mesh.metadata(face).get("preview_blocker_id")):
+                        states[i] = "source_covered_by_blocker" if mesh.metadata(face).get("preview_blocker_id") else "occluded_segment"
+                    continue
                 if face >= 0 and (endpoint_checks[k] is None or distance < lengths[k]-tolerance):
                     states[i] = "occluded_segment"
                 elif isinstance(endpoint_checks[k], int) and face < 0:

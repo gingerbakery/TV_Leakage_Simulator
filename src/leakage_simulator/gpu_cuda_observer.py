@@ -75,14 +75,14 @@ def pack_scene(mesh, sources, resolved):
     from .aim_sampling import aim_sphere_rotation
     from .observer_radiance import source_flux, _quadrature
     from .geometry import vec_norm
-    materials = np.zeros((len(mesh.faces), 7), dtype=np.float64)
+    materials = np.zeros((len(mesh.faces), 8), dtype=np.float64)
     normals = np.asarray([mesh.normal(i) for i in range(len(mesh.faces))], dtype=np.float64).reshape(-1, 3)
     for i in range(len(mesh.faces)):
         p = resolved[i].profile
         if p.bsdf_asset_id:
             raise ObserverGpuUnsupported("observer_resident_bsdf_requires_host")
         diffuse, delta, gaussian = (1., 0., 0.) if p.scatter_model == "lambertian" else (0., 1., 0.) if p.scatter_model == "specular" else (0., 0., 1.) if p.scatter_model == "gaussian" else (1-p.specular_ratio, p.specular_ratio if p.gaussian_sigma_deg <= .01 else 0., p.specular_ratio if p.gaussian_sigma_deg > .01 else 0.) if p.scatter_model == "mixed" else (0., 0., 0.)
-        materials[i] = p.reflectance, p.roughness, diffuse, delta, float(p.scatter_model != "none"), gaussian, math.radians(max(1e-6, p.gaussian_sigma_deg))
+        materials[i] = p.reflectance, p.roughness, diffuse, delta, float(p.scatter_model != "none"), gaussian, math.radians(max(1e-6, p.gaussian_sigma_deg)), float(bool(mesh.metadata(i).get("preview_blocker_id")))
     # Triangles carry emitter identity, CAD face (-1=non-opaque virtual), and
     # cumulative area within that emitter. Adjacent triangle seams emit once.
     triangles, source_rows = [], []
@@ -356,7 +356,9 @@ def make_kernel(cuda, intersect, helpers=None):
                 for j in range(light_start, light_end):
                     source_face = int(triangles[j, 13])
                     hit_t = triangle_hit(origin, direction, triangles, j, epsilon) if source_face < 0 else t
-                    if (source_face < 0 and not hit_t < t) or (source_face >= 0 and source_face != face):
+                    if (source_face < 0 and not hit_t <= t+1e-9) or (source_face >= 0 and source_face != face):
+                        continue
+                    if source_face < 0 and face >= 0 and materials[face, 7] > 0 and abs(hit_t-t) <= 1e-9:
                         continue
                     if math.isinf(hit_t) or abs(hit_t-previous_t) <= 1e-10:
                         continue
@@ -412,12 +414,12 @@ def make_kernel(cuda, intersect, helpers=None):
                     if f > 0 and cl > 1e-14:
                         shadow = add(point, wi, epsilon)
                         st, sf, status = intersect(ray, stack_width, shadow[0], shadow[1], shadow[2], wi[0], wi[1], wi[2],
-                            epsilon, distance-2*epsilon, -1, v0, edge1, edge2, bmin, bmax, left, right, node_start, node_count, order, mask, stack_entries, stack_nodes)
+                            epsilon, distance-epsilon+1e-9, -1, v0, edge1, edge2, bmin, bmax, left, right, node_start, node_count, order, mask, stack_entries, stack_nodes)
                         queries += 1
                         if status != 0:
                             error = 1
                             break
-                        if sf < 0:
+                        if sf < 0 or (abs(st-(distance-epsilon)) <= 1e-9 and materials[sf, 7] == 0):
                             pdf = distance2/(lights[light, 2]*cl*lights.shape[0])
                             q = continuous_pdf(materials, face, normal, wo, wi, quadrature)
                             contribution = throughput*f*ci*emission(lights, light, light_normal, neg(wi))/pdf*balance(pdf, q)
@@ -553,15 +555,18 @@ def verify_resident_optics(session_type):
     from .observer_probe import _source_geometry, sampling_plan
     from .optics import OpticalPropertyResolver
     from .types import EmitterSpec, OpticalProfile, RayTraceConfig
-    for mode in ("direct", "blocked", "specular", "lambertian", "gaussian", "mixed"):
-        reflected = mode not in ("direct", "blocked")
+    for mode in ("direct", "blocked", "coplanar", "coplanar_blocked", "coplanar_blocker", "specular", "lambertian", "gaussian", "mixed"):
+        reflected = mode not in ("direct", "blocked", "coplanar", "coplanar_blocked", "coplanar_blocker")
         mesh = TriangleMesh()
         def plate(z):
             ids = [mesh.add_vertex(p) for p in ((-20, -20, z), (20, -20, z), (20, 20, z), (-20, 20, z))]
             mesh.add_face(ids[0], ids[1], ids[2], "surface")
             mesh.add_face(ids[0], ids[2], ids[3], "surface")
-        plate(0. if reflected else 9.)
-        if mode == "blocked":
+        plate(-5. if mode.startswith("coplanar") else 0. if reflected else 9.)
+        if mode == "coplanar_blocker":
+            for face in range(len(mesh.faces)):
+                mesh.metadata(face)["preview_blocker_id"] = "preflight-cover"
+        if mode in ("blocked", "coplanar_blocked"):
             plate(-7.)
         profile = OpticalProfile(profile_id="surface", reflectance=.9 if reflected else 0., scatter_model=mode if reflected else "none", gaussian_sigma_deg=18., specular_ratio=.3)
         trace = SimpleNamespace(mesh=mesh,
@@ -577,7 +582,7 @@ def verify_resident_optics(session_type):
         completed, execution, _ = probe.run(plan, (0., 0., 0.), 0, 0, 32)
         if getattr(execution, "cpu_fallback", False) or not probe.validated:
             raise ObserverGpuUnsupported(f"observer_resident_optical_preflight_failed:{mode}")
-        analytic = {"direct": 100., "blocked": 0., "specular": 90.}.get(mode)
+        analytic = {"direct": 100., "coplanar": 100., "blocked": 0., "coplanar_blocked": 0., "coplanar_blocker": 0., "specular": 90.}.get(mode)
         values = np.array([item[1] for item in completed])
         if (analytic is not None and not np.allclose(values, analytic, rtol=1e-9, atol=1e-10)) or (reflected and not np.any(values > 0)):
             raise ObserverGpuUnsupported(f"observer_resident_optical_preflight_mismatch:{mode}")

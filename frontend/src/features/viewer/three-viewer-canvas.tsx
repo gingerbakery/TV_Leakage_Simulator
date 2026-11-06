@@ -7,7 +7,7 @@ import { fullViewPipRect, type FullViewPipSize } from './full-view-pip-layout'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
 import { findCadHoleLoops, pickRoundCadHole, type CadHoleLoop } from '@/features/leak-preview/hole-recognition'
 import { syncBlockerDisplays, syncBlockerSectionCaps, pickBlocker } from './blocker-display'
-import { isLeakPreviewPointHighlighted } from '@/features/leak-preview/leak-preview-model'
+import { isLeakPreviewPointHighlighted, observerProbeSummary, verifiedLeakPreviewSurfacePoints } from '@/features/leak-preview/leak-preview-model'
 import { clipEmitterDisplayToRoi, emitterPointInRoi } from './emitter-roi-display'
 import { HelpTooltip } from '@/components/common/help-tooltip'
 import { applyRayObjectOcclusion } from './ray-object-display'
@@ -2014,9 +2014,12 @@ export function ThreeViewerCanvas({
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
+  const leakPreviewResult = useLeakPreviewStore((state) => state.result)
   const visibleLeakPreviewPoints = useMemo(
-    () => leakPreviewPointsInRoi(leakPreviewPoints, roiScopes),
-    [leakPreviewPoints, roiScopes],
+    () => leakPreviewPointsInRoi(verifiedLeakPreviewSurfacePoints(
+      leakPreviewPoints, leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null,
+    ), roiScopes),
+    [leakPreviewPoints, leakPreviewResult, roiScopes],
   )
   const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
   const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
@@ -3991,7 +3994,7 @@ export function ThreeViewerCanvas({
         vertexColors: true,
         transparent: true,
         opacity: 0.72,
-        depthTest: false,
+        depthTest: true,
         depthWrite: false,
         blending: AdditiveBlending,
         toneMapped: false,
@@ -4012,7 +4015,7 @@ export function ThreeViewerCanvas({
         vertexColors: true,
         transparent: true,
         opacity: 1,
-        depthTest: false,
+        depthTest: true,
         depthWrite: false,
         blending: AdditiveBlending,
         toneMapped: false,

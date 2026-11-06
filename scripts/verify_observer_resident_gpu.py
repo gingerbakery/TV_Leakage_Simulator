@@ -32,8 +32,8 @@ def run_case(name, rays, repeats):
     mesh = TriangleMesh()
     mirror = name in ("mirror", "direct_mirror")
     reflected = name in ("mirror", "direct_mirror", "diffuse", "gaussian", "mixed")
-    plate(mesh, 0 if reflected else 9, 20)
-    if name == "blocked":
+    plate(mesh, -5 if name.startswith("coplanar") else 0 if reflected else 9, 20)
+    if name in ("blocked", "coplanar_blocked"):
         plate(mesh, -7, 20)
     profile = OpticalProfile(profile_id="black", reflectance=.9 if reflected else 0.,
         scatter_model="specular" if mirror else "lambertian" if name == "diffuse" else name if reflected else "none",
@@ -79,7 +79,7 @@ def run_case(name, rays, repeats):
                 passed = False
             if path and not np.allclose(path, expected_paths[i, :len(path)], rtol=1e-9, atol=1e-8):
                 passed = False
-        analytic = {"direct": 100., "mirror": 90., "direct_mirror": 91., "blocked": 0.}.get(name)
+        analytic = {"direct": 100., "coplanar": 100., "mirror": 90., "direct_mirror": 91., "blocked": 0., "coplanar_blocked": 0.}.get(name)
         if analytic is not None and not np.allclose([item[1] for item in results], analytic, rtol=1e-9, atol=1e-10):
             passed = False
     return dict(case=name, rays=rays, emitter_types=[e.emitter_type for e in trace.emitters],
@@ -109,7 +109,7 @@ def main():
     report["preflight"] = dict(asdict(preflight), provider_contract=backend.PROVIDER_CONTRACT)
     if preflight.available and preflight.kernel_verified and preflight.strict_float64 and preflight.kernel_executed and preflight.preflight_scope == "production_ray_bvh" and backend.PROVIDER_CONTRACT == "strict_float64_bvh_v1":
         try:
-            report["cases"] = [run_case(name, args.rays, args.repeats) for name in ("direct", "mirror", "direct_mirror", "blocked", "diffuse", "gaussian", "mixed")]
+            report["cases"] = [run_case(name, args.rays, args.repeats) for name in ("direct", "coplanar", "coplanar_blocked", "mirror", "direct_mirror", "blocked", "diffuse", "gaussian", "mixed")]
             report["passed"] = all(c["passed"] for c in report["cases"])
         except Exception as exc:
             report["error"] = str(exc)

@@ -4,10 +4,9 @@ import { planObserverSampling } from './observer-sampling'
 import { SensorComparisonDialog } from './sensor-comparison-dialog'
 import { previewSignature, samePreviewSignature } from './leak-preview-signature'
 import { expandBlockerGroups } from './blocker-groups'
-import { BlockerEditor } from './blocker-editor'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Cuboid, Eye, EyeOff, Lightbulb, LocateFixed, LoaderCircle, Minus, Play, Plus, ScanSearch, StopCircle, Trash2 } from 'lucide-react'
+import { Cuboid, Eye, EyeOff, LocateFixed, LoaderCircle, Minus, Play, Plus, ScanSearch, StopCircle, Trash2 } from 'lucide-react'
 
 import {
   apiClient,
@@ -36,6 +35,7 @@ import {
   buildLeakPreviewRequest,
   escapeDirectionSummary,
   observerProbeSummary,
+  observerNoDetectionMessage,
   createLeakPreviewBodyPlaneEmitters,
   createCandidateReceiver,
   getLeakPreviewBounds,
@@ -298,7 +298,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           ? `Preview를 중지했습니다. 중지 시점까지 빛샘 후보 ${detection.candidates.length}개가 검출되었습니다.`
           : detection.candidates.length > 0
           ? `빛샘 후보 ${detection.candidates.length}개를 찾았습니다.`
-          : '현재 탐색 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.',
+          : observerNoDetectionMessage(probe),
       )
     } catch (error) {
       console.error(`[Preview] result processing failed | Job ${jobId}`, error)
@@ -496,7 +496,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       if (leakPreviewStore.getState().sceneToken !== scene.metadata.scene_token || workspaceStore.getState().activeCadCaseId !== activeCadCaseId) return
       const check = response.receiver_checks[0]
       const reasons: Record<string, string> = {
-        source_position_or_emission_mismatch: '광원 위치·방출·출력 불일치', occluded_segment: '기구물·Block 차폐',
+        source_position_or_emission_mismatch: '광원 위치·방출·출력 불일치', source_covered_by_blocker: '발광 위치가 Block에 차폐됨', occluded_segment: '기구물·Block 차폐',
         reflection_vertex_off_surface: '반사점이 실제 면 밖', visible_endpoint_off_surface: '관찰 점이 실제 면 밖',
         reflection_material_mismatch: '반사 재질·방향 불일치', reflection_depth_mismatch: '최대 반사 횟수 초과',
         reflection_disabled: '반사 계산 꺼짐', receiver_position_direction_acceptance_or_roi_mismatch: 'Receiver 위치·방향·Acceptance·ROI 불일치',
@@ -593,7 +593,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           progress={job?.progress} terminal={terminalStatus} failed={Boolean(queryError) || activeJob?.status === 'failed' || message.includes('실패')}
           phase={isPreparing || isFinalizing ? job?.phase_detail : isRunning ? `${Math.round((job?.progress ?? 0)*100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays` : undefined} />
         <div role="toolbar" aria-label="선택 Leak 작업" className="space-y-2 rounded-lg border border-orange-300 bg-background p-2">
-          <div className="flex items-center gap-1 text-xs font-semibold">{selectedCandidate ? `선택 Leak · Candidate ${String(candidates.indexOf(selectedCandidate)+1).padStart(2,'0')} · ${selectedCandidate.label}` : 'Leak 선택 없음'}<HelpTooltip label="선택 Leak 작업 도움말">뷰어의 점 또는 후보 행을 선택한 뒤 공통 작업 버튼을 누르세요. 묶음은 대표 경로·대표 시야각 한 곳을 검사하며 모든 구성원의 검증 통과를 뜻하지 않습니다. 경로 검증 중 회전 표시는 요청 대기 상태이며 서버 세부 진행률은 아닙니다.</HelpTooltip></div>
+          <div className="flex items-center gap-1 text-xs font-semibold">{selectedCandidate ? `선택 Leak · Candidate ${String(candidates.indexOf(selectedCandidate)+1).padStart(2,'0')} · ${selectedCandidate.label}` : 'Leak 선택 없음'}<HelpTooltip label="선택 Leak 작업 도움말">뷰어의 점 또는 후보 행을 선택한 뒤 공통 작업 버튼을 누르세요. 묶음은 대표 경로·대표 시야각 한 곳을 검사하며 모든 구성원의 검증 통과를 뜻하지 않습니다. 경로 검증 중 회전 표시는 요청 대기 상태이며 서버 세부 진행률은 아닙니다.</HelpTooltip><HelpTooltip label="Preview 결과 저장 도움말">프로젝트 저장 시 Preview 결과·검출점·후보 목록·각도별 집계와 선택·표시 상태를 함께 저장합니다. 삭제한 후보도 그대로 유지합니다. 다시 열거나 Case를 전환하면 결과를 복원하며 실행 중 작업은 재개하지 않습니다. 광원·재질·형상 등 검사 조건이 달라지면 재실행이 필요합니다.</HelpTooltip></div>
           <div className="grid grid-cols-2 gap-1.5">
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate) }}>시야각 Receiver 생성</Button>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) void validateCandidatePath(selectedCandidate) }}>{validatingCandidateId ? <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" /> : null}경로 검증</Button>
@@ -604,14 +604,6 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
       </div>
       {comparisonRequest ? <SensorComparisonDialog key={`${scene?.metadata.scene_token}:${activeCadCaseId}`} request={comparisonRequest} onClose={() => setComparisonRequest(null)} /> : null}
-      <div className="rounded-lg border border-sky-200 bg-gradient-to-br from-sky-50 to-blue-50 p-3 dark:border-sky-800 dark:from-sky-950/45 dark:to-blue-950/35">
-        <div className="flex items-center gap-2 text-sm font-semibold text-sky-900 dark:text-sky-100">
-          <Lightbulb className="size-4 text-amber-500" />
-          Whole Set Lighting Preview
-          <HelpTooltip label="Preview 결과 저장 도움말">프로젝트 저장 시 Preview 결과·검출점·후보 목록·각도별 집계와 선택·표시 상태를 함께 저장합니다. 삭제한 후보도 그대로 유지합니다. 다시 열거나 Case를 전환하면 결과를 복원하며 실행 중 작업은 재개하지 않습니다. 광원·재질·형상 등 검사 조건이 달라지면 재실행이 필요합니다.</HelpTooltip>
-        </div>
-      </div>
-
       <CollapsibleSection title="광원 설정">
         <div className="flex items-center gap-1 text-sm font-semibold">Preview Light Source
           <HelpTooltip label="Preview 광원 도움말">
@@ -825,12 +817,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
       </section>
 
-      <BlockerEditor scene={scene} disabled={isRunning} onStart={() => {
-        finishIgnoreAreaSelection()
-        actions.setEmitterFaceSelectionArmed(false)
-        actions.setSelectedFaceIds([])
-        setPickingTarget(null)
-      }} />
+
 
       {previewResult && resultRestored ? <div role="status" className="text-xs text-muted-foreground">저장된 Preview 결과</div> : null}
       {previewResult ? <ComputeExecutionStatus configuredBackend={previewResult.config.compute_backend ?? 'cpu'}
@@ -843,11 +830,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         {observerSummary.path_validation_summary ? <div role={observerSummary.path_validation_summary.invalid ? 'alert' : 'status'} className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">대표 경로 검증 · 실패 {observerSummary.path_validation_summary.invalid} · 가상 광원 {observerSummary.path_validation_summary.virtual_emitter} · 외관 미확정<HelpTooltip label="대표 경로 검증 도움말">현재 정밀 형상과 Block으로 대표 경로의 차폐·반사면·발광 위치를 CPU에서 다시 검사합니다. 실패한 경로는 후보에서 제외하고, 가상 발광면의 공중 좌표는 Leak 점으로 표시하지 않습니다. 유효한 관찰 면과 실제 외관의 틈·홀 위치는 서로 다르며, 외관 개구부 좌표를 확정했다는 뜻은 아닙니다.</HelpTooltip></div> : null}
         {observerSummary.measure === 'luminance_cd_m2' && observerSummary.path_classification_contract !== 'direct_presence_priority_v1' ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">이전 경로 분류 · Preview 재실행 필요</div> : null}
         {observerSummary.measure === 'luminance_cd_m2' ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">평행 관찰 휘도 추정 · 실측 미보정 · 투과 미포함</div> : null}
+        {observerSummary.peak_luminance_before_threshold_nit !== undefined ? <div className="flex items-center gap-1 text-xs">필터 전 최고 {observerSummary.peak_luminance_before_threshold_nit.toExponential(3)} nit · 휘도 미달 제외 {observerSummary.filtered_count ?? 0}표본<HelpTooltip label="휘도 미검출 진단 도움말">완료된 셀 중 Allowed 영역을 제외한 뒤의 평균 휘도 최댓값이며, 최소 휘도 필터를 적용하기 전 값입니다. 0은 이번 표본에서 양수 기여를 얻지 못했다는 뜻입니다. 경로 탐색은 광원 투영 표본도 사용하지만 관찰 휘도는 균일 관찰 면적을 확률 적분하므로 좁은 틈은 경로가 있어도 표본에서 놓칠 수 있습니다. 경로 수를 nit로 바꾸거나 발견 경로를 광량에 강제로 더하지 않습니다.</HelpTooltip></div> : null}
         {observerSummary.display_truncated ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">표시 한도 초과 · 밝은 셀 우선 표시</div> : null}
         {observerSummary.views.some((view) => (view.display_stride ?? 1) > 1) ? <div role="status" className="text-xs">검출점 묶음 표시 · 검사 간격 유지<HelpTooltip label="검출점 묶음 표시 도움말">메모리를 제한하기 위해 가까운 표시 셀을 묶었습니다. 지정 간격으로 전체 검사를 수행하며 검출 경로 수는 유지합니다. 표시 위치는 묶인 표본의 평균이고 개별 틈이 한 후보로 합쳐질 수 있습니다.</HelpTooltip></div> : null}
         {observerSummary.measure === 'luminance_cd_m2' ? <label className="flex items-center justify-end gap-1 text-xs">정렬<select aria-label="시야각 결과 정렬" className="h-7 rounded border border-border bg-background px-1" value={observerSort} onChange={(event) => setObserverSort(event.currentTarget.value as 'brightness' | 'angle')}><option value="brightness">휘도 높은 순</option><option value="angle">각도순</option></select></label> : null}
         <CollapsibleSection title="시야각 결과 목록" count={observerViews.length} defaultOpen={observerViews.length <= 8}><div className="max-h-48 overflow-auto"><table aria-label="시야각 역추적 결과" className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th>{observerSummary.measure === 'luminance_cd_m2' ? <th>최고 (nit)</th> : null}</tr></thead><tbody>{observerViews.map(({view,index}) => <tr key={index} className={cn(highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg && 'bg-orange-500/20')}><td><button type="button" className="w-full py-1 text-right" aria-pressed={highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg} onClick={() => setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })}>{view.horizontal_deg} / {view.vertical_deg}</button></td><td>{view.direct_count}</td><td>{view.reflected_count}</td>{observerSummary.measure === 'luminance_cd_m2' ? <td>{view.peak_luminance_nit?.toExponential(2)}</td> : null}</tr>)}</tbody></table></div></CollapsibleSection>
-        {observerSummary.direct_count + observerSummary.reflected_count === 0 ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">현재 조건에서 미검출 · 빛샘 없음 판정이 아닙니다.</div> : null}
+        {observerSummary.direct_count + observerSummary.reflected_count === 0 ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">{observerNoDetectionMessage(observerSummary)}</div> : null}
       </section> : null}
       {angularSummary ? <section className="space-y-2 rounded-lg border border-border p-3">
         <div className="text-sm font-semibold">{previewDirectionOptions.find((item) => item.id === angularSummary.direction)?.label} · 방향별 유출광</div>

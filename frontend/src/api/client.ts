@@ -21,10 +21,18 @@ export interface ApiRequestOptions {
 export interface SensorComparisonOptions {
   receiver_id: string; batches: number; forward_samples: number; reverse_samples: number; tolerance_percent: number
 }
+export interface SensorComparisonBatch {
+  index?: number;
+  forward_flux_lumen?: number; reverse_flux_lumen?: number;
+  forward_hits?: number; reverse_positive_samples?: number;
+  forward_flux_square_sum?: number; reverse_second_moment?: number; reverse_sample_count?: number;
+  forward_sec?: number; reverse_sec?: number;
+  forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown>;
+}
 export interface SensorComparisonReport {
   sensor: { receiver_id: string; width_mm?: number; height_mm?: number; acceptance_angle_deg?: number }; options: SensorComparisonOptions; verdict: 'match' | 'mismatch' | 'inconclusive'; reason: string;
   gpu_execution_proven?: boolean; compute_execution_state?: string;
-  batches?: Array<{ forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown> }>;
+  batches?: SensorComparisonBatch[];
   forward_flux_lumen?: number; reverse_flux_lumen?: number; difference_interval_lumen?: number[]; tolerance_lumen?: number;
   forward_hits?: number; reverse_positive_samples?: number; forward_effective_samples?: number; reverse_effective_samples?: number;
   original_termination_probe?: { forward_flux_lumen: number; forward_hits: number }

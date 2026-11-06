@@ -1165,6 +1165,10 @@ interface ObserverProbeCell {
   direct_count: number; reflected_count: number; min_depth: number; max_depth: number
 }
 export interface ObserverProbeSummary {
+  filtered_count?: number
+  positive_before_threshold_count?: number
+  peak_luminance_before_threshold_nit?: number
+  photometric_diagnostics_scope?: string
   path_classification_contract?: string
   path_validation_summary?: { contract: string; checked: number; valid: number; invalid: number; missing: number; virtual_emitter: number }
   display_truncated?: boolean
@@ -1185,6 +1189,9 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
   const count = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
   const vector = (x: unknown, size = 3): boolean => Array.isArray(x) && x.length === size && x.every((v) => typeof v === 'number' && Number.isFinite(v))
   const audit = summary.path_validation_summary
+  if ((summary.filtered_count !== undefined && !count(summary.filtered_count)) ||
+    (summary.positive_before_threshold_count !== undefined && !count(summary.positive_before_threshold_count)) ||
+    (summary.peak_luminance_before_threshold_nit !== undefined && (!Number.isFinite(summary.peak_luminance_before_threshold_nit) || summary.peak_luminance_before_threshold_nit < 0))) return null
   if (audit !== undefined && (!audit || audit.contract !== 'observer_path_geometry_audit_v1' ||
     ![audit.checked, audit.valid, audit.invalid, audit.missing, audit.virtual_emitter].every(count) ||
     audit.checked !== audit.valid+audit.invalid || audit.virtual_emitter > audit.valid)) return null
@@ -1221,6 +1228,46 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
     if (summary.cells.reduce((sum, cell) => sum + cell[key], 0) !== summary[key] || summary.views.reduce((sum, view) => sum + view[key], 0) !== summary[key]) return null
   }
   return summary
+}
+
+export function observerNoDetectionMessage(summary: ObserverProbeSummary | null | undefined): string {
+  const warning = '빛샘 없음 판정이 아닙니다.'
+  if (summary?.path_validation_summary?.invalid && summary.path_validation_summary.valid === 0) return `대표 경로 차폐·조건 불일치로 후보 제외 · ${warning}`
+  if ((summary?.filtered_count ?? 0) > 0) return `최소 휘도 ${summary?.settings.min_luminance_nit ?? 0} nit 미달로 제외 · ${warning}`
+  if (summary?.measure === 'luminance_cd_m2' && summary.positive_before_threshold_count === 0) {
+    return summary.excluded_count > 0 ? `Allowed 영역에서 제외 · 관찰 휘도 미검출 · ${warning}` : `관찰 표본에서 양수 휘도 기여 미검출 · ${warning}`
+  }
+  return `현재 탐색 조건에서 미검출 · ${warning}`
+}
+
+/** Display only audited observer-visible CAD endpoints, never envelope/centroid estimates.
+ * Keep the underlying detection evidence unchanged for analysis and saved projects.
+ */
+export function verifiedLeakPreviewSurfacePoints(
+  points: LeakPreviewPoint[], summary: ObserverProbeSummary | null,
+): LeakPreviewPoint[] {
+  if (!summary) return []
+  const key = (position: Vec3, angles: [number, number]) =>
+    JSON.stringify([...position, ...angles])
+  const endpoints = new Set<string>()
+  for (const cell of summary.cells) {
+    if (cell.path_validation?.status !== 'valid' || cell.path_validation.endpoint_kind !== 'cad_surface') continue
+    const endpoint = cell.representative_path?.at(-2)
+    const view = summary.views[cell.view_index]
+    if (!endpoint || !view) continue
+    endpoints.add(key(endpoint, [view.horizontal_deg, view.vertical_deg]))
+  }
+  // Repeated cells can produce the same marker. Do not add their strengths:
+  // these are duplicate display samples, not independent optical energy.
+  // Preserve angle/candidate identity for selection and angular highlighting.
+  const unique = new Map<string, LeakPreviewPoint>()
+  for (const point of points) {
+    if (!point.observerAngles || !endpoints.has(key(point.position, point.observerAngles))) continue
+    const identity = JSON.stringify([point.position, point.observerAngles, point.candidateId ?? null])
+    const previous = unique.get(identity)
+    if (!previous || point.relativeStrength > previous.relativeStrength) unique.set(identity, point)
+  }
+  return [...unique.values()]
 }
 
 function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, options: LeakPreviewDetectionOptions): LeakPreviewDetection {

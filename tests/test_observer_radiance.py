@@ -59,6 +59,9 @@ class ObserverRadianceTests(TestCase):
                     self.assertAlmostEqual(cell["luminance_nit"],luminance,delta=1e-10)
                 filtered=render(mesh,source((0,0,-5),40,luminance),[black()],threshold=1.)
                 self.assertEqual(bool(filtered["cells"]),luminance>=1.)
+                self.assertAlmostEqual(filtered["peak_luminance_before_threshold_nit"],luminance,delta=1e-10)
+                self.assertGreater(filtered["positive_before_threshold_count"],0)
+                self.assertEqual(filtered["filtered_count"] > 0,luminance<1.)
                 self.assertTrue(filtered["complete"])
                 self.assertIn("finite_sampling",filtered["limitations"])
 
