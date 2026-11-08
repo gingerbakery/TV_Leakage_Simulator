@@ -94,6 +94,7 @@ it('validates saved representative evidence without starting another Preview or 
   try {
     render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
     act(() => leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates))
+    fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
     fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
     await waitFor(() => expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy())
     expect(validate).toHaveBeenCalledOnce()
@@ -322,7 +323,9 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
     views: [{ horizontal_deg: 80, vertical_deg: 20, direct_count: 1, reflected_count: 0,
       direction: canonical.normal.map((value) => -value), observer_center: canonical.center,
       u_axis: canonical.u_axis, v_axis: canonical.v_axis, spacing_mm: [1, 1] }],
-    cells: [{ view_index: 0, row: 0, column: 0, position: [30, 30, 10], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }] }
+    cells: [{ view_index: 0, row: 0, column: 0, position: [30, 30, 10], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0,
+      representative_path: [[30,30,10],canonical.center], path_validation:{status:'valid',endpoint_kind:'cad_surface'},
+      aperture:{contract:'bounded_planar_opening_v1',id:'test-opening',position:[30,30,10],exterior_shell_certified:false} }] }
   const onOpenPrecision = vi.fn()
   render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={onOpenPrecision} /></AppProviders>)
   const detection = detectLeakPreviewCandidates(scene, result)
@@ -333,6 +336,7 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
   })
   const before = structuredClone({ emitters: workspaceStore.getState().emitters,
     materialAssignments: workspaceStore.getState().materialAssignments, config: workspaceStore.getState().rayTraceConfig })
+  fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
   fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
   expect(onOpenPrecision).toHaveBeenCalledOnce()
   expect(workspaceStore.getState().roiScopes).toEqual([])
@@ -561,7 +565,8 @@ it('connects both angle tables to viewer highlights and deletes their candidate 
   expect(leakPreviewStore.getState().highlight).toEqual({ kind: 'escape', bin: 3 })
   fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
   fireEvent.click(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0])
-  expect(workspaceStore.getState().roiScopes[0]?.clipBox).toMatchObject({ plane: 'xy', zUnbounded: true })
+  expect(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0].hasAttribute('disabled')).toBe(true)
+  expect(workspaceStore.getState().roiScopes).toEqual([])
   const deletedId = leakPreviewStore.getState().candidates[0].id
   fireEvent.click(screen.getByRole('button', { name: 'Delete Candidate 1' }))
   expect(leakPreviewStore.getState().points.some((point) => point.candidateId === deletedId)).toBe(false)
@@ -681,4 +686,14 @@ it('distinguishes observer path detections from brightness priority and lists al
   expect(screen.getByText('좌우 -60° · 상하 15° · 직광 1 · 반사광 0')).toBeTruthy()
   expect(screen.getByText('좌우 -60° · 상하 30° · 직광 0 · 반사광 2')).toBeTruthy()
   expect(screen.getByText('직광 1 · 반사광 2')).toBeTruthy()
+})
+
+it('labels automatically estimated exits and depth variation without requiring face tags', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const candidate = {...detectLeakPreviewCandidates(scene,result).candidates[0], apertureId:'estimated:gap',
+    aperturePosition:[0,0,0] as [number,number,number], apertureMethod:'opposed_neighborhood_multiscale', apertureVariationMm:.03}
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result,[],[candidate]))
+  expect(screen.getByText('출구 추정 · 깊이 변동 0.03 mm')).toBeTruthy()
+  expect(screen.getByText('자동 출구 추정 · 최외곽 확정 아님')).toBeTruthy()
 })

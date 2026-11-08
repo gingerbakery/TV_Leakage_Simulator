@@ -120,7 +120,7 @@ describe('whole-set leak preview', () => {
     expect(detected.candidates[0].center[0]).toBeCloseTo(.8)
     expect(detected.candidates[0].peakLuminanceNit).toBe(9)
     expect(detected.candidates[0].representativePath).toEqual(probe.cells[1].representative_path)
-    expect(detected.points.map((point) => point.relativeStrength)).toEqual([1/9,1])
+    expect(detected.points).toEqual([]) // no aperture provenance: retain radiance evidence without surface markers
     probe.cells=[]; probe.direct_count=0; probe.views[0].direct_count=0
     expect(observerProbeSummary(result)).not.toBeNull()
     expect(detectLeakPreviewCandidates(scene,result)).toEqual({ points: [], candidates: [] })
@@ -351,14 +351,12 @@ describe('whole-set leak preview', () => {
     }
     expect(observerProbeSummary(result)).not.toBeNull()
     const detection = detectLeakPreviewCandidates(scene, result)
-    expect(detection.points).toHaveLength(1)
-    expect(detection.points[0].position).toEqual([1,2,3])
+    expect(detection.points).toHaveLength(0) // legacy positions are not opening evidence
     expect(detection.candidates).toHaveLength(1)
     const cells = (result.metrics._observer_probe_summary as { cells: Array<{ representative_path?: [number,number,number][] }> }).cells
     cells[0].representative_path = [[0,0,0],[2,3,4],[1000,0,-100]]
     const actual = detectLeakPreviewCandidates(scene,result)
-    expect(actual.points[0].position).toEqual([2,3,4])
-    expect(actual.points[0].surfacePosition).toEqual([2,3,4])
+    expect(actual.points).toHaveLength(0) // a surface path alone does not identify an exit
     const receiver = createCandidateReceiver(detection.candidates[0], 1)
     const observationDirection = detection.candidates[0].observerEvidence!.direction
     expect(receiver.center).toEqual(detection.candidates[0].observerEvidence!.receiverCenter)
@@ -940,16 +938,17 @@ it('creates Preview ROI with unlimited Z even without result emitter metadata', 
 })
 
 
-it('shows only the audited observer-visible CAD endpoint, excluding internal bounces and floating estimates', () => {
+it('shows only an audited opening crossing, excluding internal bounces and floating estimates', () => {
   const endpoint: Vec3 = [2, 0, 0]
   const firstBounce: Vec3 = [1, 0, 0]
   const summary = {
     views: [{ horizontal_deg: 0, vertical_deg: 0 }],
-    cells: [{ view_index: 0, representative_path: [[0,0,0], firstBounce, endpoint, [3,0,0]],
+    cells: [{ view_index: 0, representative_path: [[0,0,0], firstBounce, [1.5,0,0], [3,0,0]],
+      aperture: { contract:'bounded_planar_opening_v1', id:'hole-1', position:endpoint, exterior_shell_certified:false },
       path_validation: { status: 'valid', endpoint_kind: 'cad_surface' } }],
   } as ObserverProbeSummary
   const points = [firstBounce, endpoint, [20,0,0] as Vec3].map(position => ({
-    position, observerAngles: [0,0] as [number,number], relativeStrength: 1,
+    apertureId: 'hole-1', position, observerAngles: [0,0] as [number,number], relativeStrength: 1,
   }))
   expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([points[1]])
   const weakerDuplicate = { ...points[1], relativeStrength: .1 }
@@ -963,7 +962,43 @@ it('shows only the audited observer-visible CAD endpoint, excluding internal bou
   summary.cells[0].path_validation = { status: 'unverified', endpoint_kind: 'cad_surface' }
   expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
   summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'virtual_emitter' }
-  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([points[1]]) // direct light can cross a real opening
   summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'cad_surface' }
   expect(verifiedLeakPreviewSurfacePoints([{...points[1], observerAngles:[90,0]}], summary)).toEqual([])
+})
+
+
+it('groups different interior paths by opening identity and preserves separate neighboring openings', () => {
+  const base = detectLeakPreviewCandidates(createSceneFixture(), createRayTraceResultFixture()).candidates[0]
+  const make = (id:string, apertureId:string, x:number) => ({ ...base, id, sourceCandidateIds:[id], groupedCount:1, apertureId, aperturePosition:[x,0,0] as Vec3,
+    center:[x,0,0] as Vec3, representativePath:[[0,0,-10],[x,20,-5],[x,0,0],[x,0,10]] as Vec3[] })
+  const a = make('a','hole-a',0), b = make('b','hole-a',100), c = make('c','hole-b',.1)
+  const points = [a,b,c].map(candidate => ({candidateId:candidate.id, apertureId:candidate.apertureId,
+    position:candidate.aperturePosition, surfacePosition:candidate.aperturePosition, relativeStrength:1}))
+  const result = groupObserverCandidates(points, [a,b,c], 3)
+  expect(result.candidates).toHaveLength(2)
+  expect(result.candidates[0].sourceCandidateIds).toEqual(['a','b'])
+  expect(result.points).toHaveLength(2)
+  expect(result.points.map(point => point.position)).toEqual([[0,0,0],[.1,0,0]])
+  expect(result.candidates[0].representativePath).toEqual(a.representativePath)
+})
+
+it('accepts automatic exit estimates with measured variation but never shell certification', () => {
+  const result = createRayTraceResultFixture()
+  result.metrics._observer_probe_summary = {
+    contract:'observer_path_support_v1', execution_backend:'cpu', measure:'path_support_counts',
+    settings:{...defaultObserverSettings,resolution:8}, attempted_count:1,planned_count:1,
+    direct_count:1,reflected_count:0,excluded_count:0,depth_limited_count:0,complete:true,stopped:false,runtime_sec:0,
+    views:[{horizontal_deg:0,vertical_deg:0,direction:[0,0,1],observer_center:[0,0,5],u_axis:[1,0,0],v_axis:[0,1,0],spacing_mm:[1,1],direct_count:1,reflected_count:0}],
+    cells:[{view_index:0,row:0,column:0,position:[0,0,-5],direct_count:1,reflected_count:0,min_depth:0,max_depth:0,
+      representative_path:[[0,0,-5],[0,0,5]],path_validation:{status:'valid',endpoint_kind:'virtual_emitter'},
+      aperture:{contract:'automatic_exit_estimate_v1',id:'estimated:gap',position:[0,0,0],exterior_shell_certified:false,method:'opposed_neighborhood_multiscale',uncertainty_mm:.02}}],
+  }
+  const summary = observerProbeSummary(result)!
+  expect(summary).not.toBeNull()
+  const detection = detectLeakPreviewCandidates(createSceneFixture(),result)
+  expect(detection.candidates[0]).toMatchObject({apertureMethod:'opposed_neighborhood_multiscale',apertureVariationMm:.02,center:[0,0,0]})
+  expect(verifiedLeakPreviewSurfacePoints(detection.points,summary)).toHaveLength(1)
+  summary.cells[0].aperture!.uncertainty_mm = NaN
+  expect(observerProbeSummary(result)).toBeNull()
 })

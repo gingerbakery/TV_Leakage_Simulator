@@ -179,6 +179,11 @@ def validate_observer_paths(trace, summary, resolved=None):
         reference_cpu_batches=reference_batches, runtime_sec=time.perf_counter()-started,
         scope="representative_geometry_not_exterior_aperture_or_radiance_calibration")
     summary["path_validation_summary"] = report
+    if summary.get("views"):
+        from .observer_aperture import attribute_observer_apertures
+        from .observer_exit_estimate import estimate_observer_exits
+        attribute_observer_apertures(mesh, summary, budget_sec=3.)
+        estimate_observer_exits(mesh, summary, compute_backend=getattr(trace.config, "compute_backend", "cpu"))
     return report
 
 

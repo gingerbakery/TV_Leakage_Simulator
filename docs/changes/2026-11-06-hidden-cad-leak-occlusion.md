@@ -1,0 +1,9 @@
+# Physical occlusion for Leak markers with hidden or transparent CAD
+
+The previous depthTest change only used displayed CAD depth. Hiding the housing removed that depth, while transparent surfaces disabled depth writes. Consequently a valid internal observer endpoint could appear over other displayed parts.
+
+Leak core/halo now render in a separate depth-only CAD pass after the normal CAD colour pass. It uses shared component geometry and current world transforms, independent of Hide, transparency, wireframe, ROI or section display. Analysis-excluded/deleted components are omitted. Active Block solids have independent occlusion copies even if their display is hidden; disabled Blocks are omitted. The main and Full View render cameras use the same pass. Source CAD geometry and material ownership are preserved. The added depth draw is skipped without markers; it does not accelerate or rerun optical tracing.
+
+Screen-space picking now checks physical CAD/Block occlusion as well, so a masked marker cannot select a hidden candidate. Current-camera visibility does not reclassify a candidate or change stored flux. A real internal surface visible through an opening remains eligible. This does not attribute a marker to the exterior aperture or merge different internal/exterior endpoints. Candidate lists and analysis results remain unchanged.
+
+Validation: geometric tests cover hidden transparent walls, a real opening, a partial cover, moving a cover, omitting excluded/deleted geometry, preserving source geometry ownership and depth-only render state; picking tests cover masked markers. Existing related model tests passed (42 tests total). Production frontend build passed. Render orchestration was checked with a mocked WebGLRenderer; actual browser pixels and the user's CAD scene were not verified. No NVIDIA CUDA tracing was executed. Commit/push and user server restarts were not performed.

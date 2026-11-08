@@ -630,11 +630,16 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
     if (observer !== undefined && (!isRecord(observer) || !isOneOf(observer.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z']) ||
       !['horizontalDeg','verticalDeg','stepDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(observer[key])) ||
       !isVec3(observer.direction) || !isVec3(observer.receiverCenter) || (observer.footprintCenter !== undefined && !isVec3(observer.footprintCenter)))) return false
+    if ((candidate.apertureMethod !== undefined && !isString(candidate.apertureMethod)) ||
+      (candidate.apertureVariationMm !== undefined && (!isFiniteNumber(candidate.apertureVariationMm) || candidate.apertureVariationMm < 0)) ||
+      (candidate.apertureId !== undefined && !isString(candidate.apertureId)) ||
+      (candidate.aperturePosition !== undefined && !isVec3(candidate.aperturePosition))) return false
     ids.add(candidate.id)
   }
   if (value.selectedCandidateId !== null && !ids.has(value.selectedCandidateId)) return false
   return value.points.every((point: unknown) => isRecord(point) && isVec3(point.position) && isFiniteNumber(point.relativeStrength) &&
     (point.candidateId === undefined || isString(point.candidateId)) &&
+    (point.apertureId === undefined || isString(point.apertureId)) &&
     (point.surfacePosition === undefined || isVec3(point.surfacePosition)) &&
     (point.observerAngles === undefined || (Array.isArray(point.observerAngles) && point.observerAngles.length === 2 && point.observerAngles.every(isFiniteNumber))) &&
     (point.angleBins === undefined || (Array.isArray(point.angleBins) && point.angleBins.length === 4 && point.angleBins.every(isFiniteNumber))))

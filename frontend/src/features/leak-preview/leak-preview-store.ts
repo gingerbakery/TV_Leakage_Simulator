@@ -298,12 +298,12 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     candidates: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength),
     highlight: null,
     visualizationVisible: true,
-    selectedCandidateId: [...candidates].sort((a, b) => b.relativeStrength - a.relativeStrength)[0]?.id ?? null,
+    selectedCandidateId: null,
   }),
   removeCandidate: (candidateId) => setDetectionAndPersist((state) => {
     const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
     return { candidates, candidateRevealRequest: state.candidateRevealRequest?.candidateId === candidateId ? null : state.candidateRevealRequest, points: state.points.filter((point) => point.candidateId !== candidateId),
-      selectedCandidateId: state.selectedCandidateId === candidateId ? candidates[0]?.id ?? null : state.selectedCandidateId }
+      selectedCandidateId: state.selectedCandidateId === candidateId ? null : state.selectedCandidateId }
   }),
   clearDetection: () => setDetectionAndPersist({
     jobId: null,

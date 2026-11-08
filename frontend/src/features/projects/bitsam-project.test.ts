@@ -62,6 +62,9 @@ describe('BITSAM project format', () => {
     const saved = createSavedLeakPreviewFixture()
     saved.candidates[0].representativePath = [[0,0,0],[1,2,3]]
     saved.candidates[0].groupedCount = 4
+    saved.candidates[0].apertureId = 'opening-a'
+    saved.candidates[0].aperturePosition = [1,2,3]
+    saved.points[0].apertureId = 'opening-a'
     saved.candidates[0].observerAngles = [{ horizontalDeg: -60, verticalDeg: 15, directCount: 1, reflectedCount: 2 },
       { horizontalDeg: -60, verticalDeg: 30, directCount: 0, reflectedCount: 1 }]
     const project = createBitsamProject(createSceneFixture(), store.getState(), new Date(), null, settings, saved)
@@ -69,6 +72,11 @@ describe('BITSAM project format', () => {
     expect(restored.leak_preview?.observer).toMatchObject({ coverage: 'hemisphere', step_deg: 15 })
     expect(restored.preview_result?.candidates[0]).toMatchObject({ groupedCount: 4, representativePath: [[0,0,0],[1,2,3]] })
     expect(restored.preview_result?.candidates[0].observerAngles).toEqual(saved.candidates[0].observerAngles)
+    expect(restored.preview_result?.candidates[0].aperturePosition).toEqual([1,2,3])
+    expect(restored.preview_result?.points[0].apertureId).toBe('opening-a')
+    const malformedOpening = JSON.parse(serializeBitsamProject(project))
+    malformedOpening.preview_result.candidates[0].aperturePosition = [1,2]
+    expect(() => parseBitsamProject(JSON.stringify(malformedOpening))).toThrow('손상')
     const corrupt = JSON.parse(serializeBitsamProject(project))
     corrupt.preview_result.candidates[0].representativePath = [[0,0,0],[1,2]]
     expect(() => parseBitsamProject(JSON.stringify(corrupt))).toThrow('손상')

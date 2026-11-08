@@ -81,7 +81,7 @@ describe('leak preview Allowed Area groups', () => {
     leakPreviewStore.getState().removeCandidate(first.id)
     expect(leakPreviewStore.getState().candidates.map((candidate) => candidate.id)).toEqual([second.id])
     expect(leakPreviewStore.getState().points.map((point) => point.candidateId)).toEqual([second.id])
-    expect(leakPreviewStore.getState().selectedCandidateId).toBe(second.id)
+    expect(leakPreviewStore.getState().selectedCandidateId).toBeNull()
     expect(leakPreviewStore.getState().result).toBe(result)
     leakPreviewStore.getState().removeCandidate(second.id)
     expect(leakPreviewStore.getState().points).toEqual([])
@@ -275,7 +275,8 @@ it('highlights exact view angles and every matching angular bin, and removes del
   const points = detection.points.map((point) => ({ ...point, angleBins: [1, 0, 0, 2], observerAngles: [10, 20] as [number, number] }))
   leakPreviewStore.getState().setDetection(result, points, [low, high])
   expect(leakPreviewStore.getState().candidates.map((item) => item.id)).toEqual([high.id, low.id])
-  expect(leakPreviewStore.getState().selectedCandidateId).toBe(high.id)
+  expect(leakPreviewStore.getState().selectedCandidateId).toBeNull() // internal paths require explicit selection
+  leakPreviewStore.getState().selectCandidate(high.id)
   leakPreviewStore.getState().setHighlight({ kind: 'escape', bin: 3 })
   expect(points.every((point) => isLeakPreviewPointHighlighted(point, leakPreviewStore.getState().highlight, null))).toBe(true)
   expect(isLeakPreviewPointHighlighted(points[0], { kind: 'escape', bin: 1 }, null)).toBe(false)

@@ -1,3 +1,4 @@
+import { LeakMarkerOcclusion } from './leak-marker-occlusion'
 import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
@@ -107,6 +108,7 @@ import {
 } from '@/features/roi/roi-clipped-geometry'
 import {
   useWorkspaceStore,
+  workspaceStore,
   workspaceSelectors,
   type ComponentTransformRule,
   type MaterialAssignment,
@@ -241,6 +243,7 @@ interface ViewerRuntime {
   camera: PerspectiveCamera
   controls: ViewerTrackballControls
   leakPreviewRoot: Group
+  leakMarkerOcclusion: LeakMarkerOcclusion
   globalOriginAxes: Group
   modelRoot: Group
   nodes: Map<number, ComponentRenderNode>
@@ -2291,6 +2294,7 @@ export function ThreeViewerCanvas({
     })
 
     const runtime: ViewerRuntime = {
+      leakMarkerOcclusion: new LeakMarkerOcclusion(),
       axisScalePercent: 50,
       camera,
       controls,
@@ -2448,6 +2452,16 @@ export function ThreeViewerCanvas({
       renderer.setViewport(0, 0, viewportWidth, viewportHeight)
       renderer.clear()
       renderer.render(threeScene, camera)
+      if (runtime.leakMarkerOcclusion.markers.children.length > 0) {
+        const workspace = workspaceStore.getState()
+        const unavailable = new Set([...workspace.excludedComponentIds, ...workspace.deletedComponentIds])
+        const occluders: Mesh[] = [...runtime.nodes].flatMap(([id, node]) => unavailable.has(id) ? [] : [node.surface])
+        runtime.leakMarkerOcclusion.blockers.traverse(object => {
+          if (object instanceof Mesh) occluders.push(object)
+        })
+        runtime.leakMarkerOcclusion.sync(occluders)
+        runtime.leakMarkerOcclusion.render(renderer, camera)
+      }
 
       const gizmoSize = Math.max(
         44,
@@ -2553,6 +2567,7 @@ export function ThreeViewerCanvas({
             renderer.setViewport(0, 0, pipWidth, pipHeight)
             renderer.clear()
             renderer.render(threeScene, pipCamera)
+            runtime.leakMarkerOcclusion.render(renderer, pipCamera)
             renderer.setRenderTarget(null)
             runtime.modelRoot.visible = false
             runtime.roiPreviewRoot.visible = true
@@ -3354,8 +3369,9 @@ export function ThreeViewerCanvas({
         }
         if (!blockerAreaSelectionIdRef.current) {
           const rect = canvas.getBoundingClientRect()
-          const candidateId = pickLeakPreviewCandidate(runtime.leakPreviewRoot, camera,
-            { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect)
+          const candidateId = pickLeakPreviewCandidate(runtime.leakMarkerOcclusion.markers, camera,
+            { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect,
+            point => runtime.leakMarkerOcclusion.isPointVisible(point, camera))
           const preview = leakPreviewStore.getState()
           const index = preview.candidates.findIndex((candidate) => candidate.id === candidateId)
           if (candidateId && index >= 0) {
@@ -3910,6 +3926,9 @@ export function ThreeViewerCanvas({
       detachBlockerBoxDrawing()
       detachBlockerEscape()
       controls.dispose()
+      runtime.leakMarkerOcclusion.dispose()
+      disposeObject(runtime.leakMarkerOcclusion.markers)
+      disposeObject(runtime.leakMarkerOcclusion.blockers)
       disposeObject(threeScene)
       disposeObject(orientationScene)
       disposeObject(pipCompositeScene)
@@ -3923,6 +3942,7 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
     clearGroup(runtime.leakPreviewRoot)
+    clearGroup(runtime.leakMarkerOcclusion.markers)
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
@@ -3956,7 +3976,8 @@ export function ThreeViewerCanvas({
       }
     }
 
-    if (!leakPreviewVisualizationVisible || visibleLeakPreviewPoints.length === 0) return
+    if (!leakPreviewVisualizationVisible) return
+    if (visibleLeakPreviewPoints.length > 0) {
     const positions = new Float32Array(visibleLeakPreviewPoints.length * 3)
     const haloColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
     const coreColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
@@ -4024,12 +4045,13 @@ export function ThreeViewerCanvas({
     glowPoints.name = 'leak-preview-glow-points'
     glowPoints.userData.leakCandidateIds = visibleLeakPreviewPoints.map((point) => point.candidateId)
     glowPoints.renderOrder = 220
-    runtime.leakPreviewRoot.add(glowHalo, glowPoints)
+    runtime.leakMarkerOcclusion.markers.add(glowHalo, glowPoints)
+    }
 
     const selected = leakPreviewCandidates.find(
       (candidate) => candidate.id === selectedLeakCandidateId,
     )
-    if (selected && visibleLeakPreviewPoints.some((point) => point.candidateId === selected.id)) {
+    if (selected?.representativePath) {
       const addArrow = (start: number[], end: number[], color: number, name: string) => {
         const origin = new Vector3(...start)
         const delta = new Vector3(...end).sub(origin)
@@ -4082,6 +4104,8 @@ export function ThreeViewerCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
+    syncBlockerDisplays(runtime.leakMarkerOcclusion.blockers,
+      expandBlockerGroups(leakPreviewBlockers).filter(blocker => blocker.enabled).map(blocker => ({ ...blocker, visible: true })), null, null)
     syncBlockerDisplays(runtime.blockerRoot, leakPreviewBlockersVisible ? expandBlockerGroups(leakPreviewBlockers) : [],
       selectedBlocker, sectionView.enabled ? sectionClippingPlaneRef.current : null)
   }, [leakPreviewBlockers, leakPreviewBlockersVisible, selectedBlocker, sectionView.enabled, scene])

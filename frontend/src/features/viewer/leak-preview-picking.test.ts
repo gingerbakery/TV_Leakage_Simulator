@@ -65,3 +65,10 @@ it('projects transformed points with orthographic cameras in CSS viewport pixels
   expect(pickLeakPreviewCandidate(root, view, { x: 520, y: 160 }, viewport)).toBe('leak-one')
   expect(pickLeakPreviewCandidate(root, view, { x: 400, y: 200 }, viewport)).toBeNull()
 })
+
+it('rejects occluded dots before choosing an overlapping visible candidate', () => {
+  const { root } = dots([0,0,0, 0,0,1], ['covered','visible'])
+  const isVisible = (point: Vector3) => point.z === 1
+  expect(pickLeakPreviewCandidate(root, camera(), {x:400,y:200}, viewport, isVisible)).toBe('visible')
+  expect(pickLeakPreviewCandidate(root, camera(), {x:400,y:200}, viewport, () => false)).toBeNull()
+})

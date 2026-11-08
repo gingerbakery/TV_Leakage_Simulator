@@ -125,6 +125,7 @@ export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight
 }
 
 export interface LeakPreviewPoint {
+  apertureId?: string
   candidateId?: string
   observerAngles?: [number, number]
   surfacePosition?: Vec3
@@ -134,6 +135,10 @@ export interface LeakPreviewPoint {
 }
 
 export interface LeakPreviewCandidate {
+  apertureMethod?: string
+  apertureVariationMm?: number
+  apertureId?: string
+  aperturePosition?: Vec3
   peakLuminanceNit?: number
   peakDirectLuminanceNit?: number
   peakReflectedLuminanceNit?: number
@@ -1155,6 +1160,7 @@ interface ObserverProbeView {
   direction: Vec3; observer_center: Vec3; u_axis: Vec3; v_axis: Vec3; spacing_mm: [number, number]
 }
 interface ObserverProbeCell {
+  aperture?: { contract: 'bounded_planar_opening_v1' | 'automatic_exit_estimate_v1'; id: string; position: Vec3; exterior_shell_certified: false; method?: string; uncertainty_mm?: number }
   direct_luminance_nit?: number
   reflected_luminance_nit?: number
   path_validation?: { status: 'valid' | 'invalid' | 'unverified'; endpoint_kind?: 'cad_surface' | 'virtual_emitter'; reason?: string }
@@ -1165,6 +1171,7 @@ interface ObserverProbeCell {
   direct_count: number; reflected_count: number; min_depth: number; max_depth: number
 }
 export interface ObserverProbeSummary {
+  aperture_summary?: { contract: string; attributed: number; unresolved: number; reason: string }
   filtered_count?: number
   positive_before_threshold_count?: number
   peak_luminance_before_threshold_nit?: number
@@ -1220,6 +1227,7 @@ export function observerProbeSummary(result: RayTraceResult): ObserverProbeSumma
       (cell.path_validation.endpoint_kind !== undefined && !['cad_surface', 'virtual_emitter'].includes(cell.path_validation.endpoint_kind)))) ||
     (radiance && (!Number.isFinite(cell.luminance_nit) || cell.luminance_nit! <= 0 || !count(cell.sample_count) || cell.sample_count < 1)) ||
     ([cell.direct_luminance_nit, cell.reflected_luminance_nit].some(value => value !== undefined && (!Number.isFinite(value) || value < 0))) ||
+    (cell.aperture !== undefined && (!cell.aperture || !['bounded_planar_opening_v1','automatic_exit_estimate_v1'].includes(cell.aperture.contract) || typeof cell.aperture.id !== 'string' || !cell.aperture.id || !vector(cell.aperture.position) || cell.aperture.exterior_shell_certified !== false || (cell.aperture.contract === 'automatic_exit_estimate_v1' && (!Number.isFinite(cell.aperture.uncertainty_mm) || cell.aperture.uncertainty_mm! < 0 || typeof cell.aperture.method !== 'string')))) ||
     (cell.representative_path !== undefined && (!Array.isArray(cell.representative_path) || cell.representative_path.length < 2 || !cell.representative_path.every((p) => vector(p)))) ||
     !count(cell.row) || !count(cell.column) || cell.row >= (summary.views[cell.view_index].grid_resolution?.[1] ?? summary.settings.resolution) || cell.column >= (summary.views[cell.view_index].grid_resolution?.[0] ?? summary.settings.resolution) ||
     !count(cell.direct_count) || !count(cell.reflected_count) || cell.direct_count + cell.reflected_count <= 0 ||
@@ -1240,7 +1248,7 @@ export function observerNoDetectionMessage(summary: ObserverProbeSummary | null 
   return `현재 탐색 조건에서 미검출 · ${warning}`
 }
 
-/** Display only audited observer-visible CAD endpoints, never envelope/centroid estimates.
+/** Display only recognized opening crossings on audited observer paths.
  * Keep the underlying detection evidence unchanged for analysis and saved projects.
  */
 export function verifiedLeakPreviewSurfacePoints(
@@ -1251,18 +1259,18 @@ export function verifiedLeakPreviewSurfacePoints(
     JSON.stringify([...position, ...angles])
   const endpoints = new Set<string>()
   for (const cell of summary.cells) {
-    if (cell.path_validation?.status !== 'valid' || cell.path_validation.endpoint_kind !== 'cad_surface') continue
-    const endpoint = cell.representative_path?.at(-2)
+    if (cell.path_validation?.status !== 'valid' || !cell.aperture) continue
+    const endpoint = cell.aperture.position
     const view = summary.views[cell.view_index]
     if (!endpoint || !view) continue
-    endpoints.add(key(endpoint, [view.horizontal_deg, view.vertical_deg]))
+    endpoints.add(JSON.stringify([cell.aperture.id, key(endpoint, [view.horizontal_deg, view.vertical_deg])]))
   }
   // Repeated cells can produce the same marker. Do not add their strengths:
   // these are duplicate display samples, not independent optical energy.
   // Preserve angle/candidate identity for selection and angular highlighting.
   const unique = new Map<string, LeakPreviewPoint>()
   for (const point of points) {
-    if (!point.observerAngles || !endpoints.has(key(point.position, point.observerAngles))) continue
+    if (!point.apertureId || !point.observerAngles || !endpoints.has(JSON.stringify([point.apertureId, key(point.position, point.observerAngles)]))) continue
     const identity = JSON.stringify([point.position, point.observerAngles, point.candidateId ?? null])
     const previous = unique.get(identity)
     if (!previous || point.relativeStrength > previous.relativeStrength) unique.set(identity, point)
@@ -1282,7 +1290,7 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
   const maximum = summary.cells.filter((cell) => cell.path_validation?.status !== 'invalid').reduce((value, cell) => Math.max(value, strength(cell)), Number.MIN_VALUE)
   summary.views.forEach((view, viewIndex) => {
     const cells = summary.cells.filter((cell) => cell.view_index === viewIndex && cell.path_validation?.status !== 'invalid')
-    const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.position, flux: strength(cell) }))
+    const active = cells.map((cell) => ({ row: cell.row, column: cell.column, position: cell.aperture?.position ?? cell.position, flux: strength(cell) }))
     const lookup = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]))
     const resolution = view.grid_resolution ?? [summary.settings.resolution, summary.settings.resolution]
     const receiver = { ...result.receivers[0], receiver_id: `observer-${viewIndex}`, center: [0, 0, 0] as Vec3,
@@ -1290,13 +1298,21 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       width_mm: view.spacing_mm[0] * resolution[0], height_mm: view.spacing_mm[1] * resolution[1] }
     const grid = { resolution } as ReceiverGrid
 
-    connectedClusters(active).forEach((cluster, index) => {
+    const byOpening = new Map<string, typeof active>()
+    for (const cell of active) {
+      const id = lookup.get(`${cell.row}:${cell.column}`)?.aperture?.id ?? '__unresolved'
+      let bucket = byOpening.get(id)
+      if (!bucket) { bucket = []; byOpening.set(id, bucket) }
+      bucket.push(cell)
+    }
+    const clusters = [...byOpening.values()].flatMap(cells => connectedClusters(cells))
+    clusters.forEach((cluster, index) => {
       const candidateId = `observer-${viewIndex}-${index}`
       cluster.forEach((cell) => {
         const sample = lookup.get(`${cell.row}:${cell.column}`)!
-        if (sample.path_validation && (sample.path_validation.status !== 'valid' || sample.path_validation.endpoint_kind === 'virtual_emitter')) return
-        const position = sample.representative_path?.at(-2) ?? cell.position
-        points.push({ position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
+        if (sample.path_validation?.status !== 'valid' || !sample.aperture) return
+        const position = sample.aperture.position
+        points.push({ apertureId: sample.aperture.id, position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
           observerAngles: [view.horizontal_deg, view.vertical_deg] })
       })
       const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
@@ -1304,16 +1320,18 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const reflectedCount = evidence.reduce((sum, cell) => sum + cell.reflected_count, 0)
       const count = directCount + reflectedCount
       const totalStrength = cluster.reduce((sum, cell) => sum + cell.flux, 0)
-      const center = [0, 1, 2].map((axis) => cluster.reduce((sum, cell) => sum + cell.position[axis] * cell.flux, 0) / totalStrength) as Vec3
+      const representative = [...evidence].sort((a, b) => Number(b.representative_path?.length === 2) - Number(a.representative_path?.length === 2) || strength(b) - strength(a)).find(cell => cell.representative_path)
+      const aperture = representative?.aperture
+      const center = aperture?.position ?? [0, 1, 2].map((axis) => cluster.reduce((sum, cell) => sum + cell.position[axis] * cell.flux, 0) / totalStrength) as Vec3
       const columns = cluster.map((cell) => cell.column), rows = cluster.map((cell) => cell.row)
       const angle = Math.acos(Math.max(-1, Math.min(1, dot(view.direction, directionVector(result.metrics._escape_direction_summary))))) * 180 / Math.PI
-      candidates.push({ id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
+      candidates.push({ ...(aperture ? { apertureId: aperture.id, aperturePosition: aperture.position, ...(aperture.method ? {apertureMethod:aperture.method, apertureVariationMm:aperture.uncertainty_mm} : {}) } : {}), id: `observer-${viewIndex}-${index}`, label: `시야각 ${view.horizontal_deg}° / ${view.vertical_deg}°`,
         ...(radiance ? { peakLuminanceNit: Math.max(...evidence.map(strength)) } : {}),
         ...(evidence.some(cell => cell.direct_luminance_nit !== undefined) ? {
           peakDirectLuminanceNit: Math.max(...evidence.map(cell => cell.direct_luminance_nit ?? 0)),
           peakReflectedLuminanceNit: Math.max(...evidence.map(cell => cell.reflected_luminance_nit ?? 0)),
         } : {}),
-        representativePath: [...evidence].sort((a, b) => Number(b.representative_path?.length === 2) - Number(a.representative_path?.length === 2) || strength(b) - strength(a)).find((cell) => cell.representative_path)?.representative_path,
+        representativePath: representative?.representative_path,
         receiverId: receiver.receiver_id, center, normal: receiver.normal, uAxis: view.u_axis, vAxis: view.v_axis,
         widthMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0] + 10),
         heightMm: Math.max(leakPreviewRoiMinimumSizeMm, (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1] + 10),
@@ -1338,13 +1356,15 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
   const groups: LeakPreviewCandidate[] = []
   const buckets = new Map<string, LeakPreviewCandidate[]>()
   const ids = new Map<string, string>()
+  const openings = new Map<string, LeakPreviewCandidate>()
   for (const candidate of [...candidates].sort((a, b) => (b.peakLuminanceNit ?? b.sampledPathCount) - (a.peakLuminanceNit ?? a.sampledPathCount))) {
     const cell = candidate.center.map((x) => Math.floor(x / distance))
     const nearby: LeakPreviewCandidate[] = []
     for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
       nearby.push(...(buckets.get(`${cell[0]+x}:${cell[1]+y}:${cell[2]+z}`) ?? []))
     }
-    const target = nearby.find((group) => {
+    const target = (candidate.apertureId ? openings.get(candidate.apertureId) : undefined) ?? nearby.find((group) => {
+      if (group.apertureId || candidate.apertureId) return Boolean(group.apertureId && group.apertureId === candidate.apertureId)
       if (Math.hypot(...subtract(group.center, candidate.center)) > distance) return false
       return similarLeakPathPatterns(patterns.get(group.id) ?? null, patterns.get(candidate.id) ?? null, distance)
     })
@@ -1355,6 +1375,7 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
           directCount: evidence.directCount, reflectedCount: evidence.reflectedCount }] } : {}) }
 
       groups.push(group)
+      if (group.apertureId) openings.set(group.apertureId, group)
       const key = cell.join(':')
       buckets.set(key, [...(buckets.get(key) ?? []), group])
       ids.set(candidate.id, candidate.id)
@@ -1386,7 +1407,18 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
       group.label = `대표 ${group.observerEvidence.horizontalDeg}° / ${group.observerEvidence.verticalDeg}° · ${group.observerAngles.length}방향`
     }
   }
-  return { candidates: groups, points: points.map((point) => ({ ...point, candidateId: ids.get(point.candidateId ?? '') ?? point.candidateId })) }
+  const mapped = points.map((point) => ({ ...point, candidateId: ids.get(point.candidateId ?? '') ?? point.candidateId }))
+  // Exactly one marker per recognized opening; optical evidence stays in the
+  // raw summary and group members, not in duplicate internal/exit markers.
+  const indexedPoints = new Map(mapped.filter(point => point.apertureId).map(point => [
+    JSON.stringify([point.candidateId, point.apertureId, point.position]), point,
+  ]))
+  const openingPoints = groups.flatMap(group => {
+    if (!group.apertureId || !group.aperturePosition) return []
+    const point = indexedPoints.get(JSON.stringify([group.id, group.apertureId, group.aperturePosition]))
+    return point ? [point] : []
+  })
+  return { candidates: groups, points: [...mapped.filter(point => !point.apertureId), ...openingPoints] }
 }
 
 function directionAxis(raw: unknown): LeakPreviewDirection {
@@ -1637,9 +1669,9 @@ export function createCandidateReceiver(
 ): ReceiverSpec {
   if (candidate.observerEvidence && scene) {
     const evidence = candidate.observerEvidence
-    const target = evidence.footprintCenter && candidate.representativePath
+    const target = candidate.aperturePosition ?? (evidence.footprintCenter && candidate.representativePath
       ? addScaled(evidence.footprintCenter, evidence.direction, dot(subtract(candidate.center, evidence.footprintCenter), evidence.direction))
-      : candidate.representativePath?.at(-2) ?? candidate.center
+      : candidate.representativePath?.at(-2) ?? candidate.center)
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
       scene, target, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
         vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
