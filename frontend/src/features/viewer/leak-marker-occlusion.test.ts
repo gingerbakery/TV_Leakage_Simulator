@@ -78,3 +78,32 @@ it('preserves the colour buffer and renderer state for the dedicated depth/marke
   expect(renderer.render).toHaveBeenCalledOnce()
   expect(renderer.autoClear).toBe(true)
 })
+
+it('tests the clicked visible halo pixel instead of rejecting it at the covered sprite centre', () => {
+  const { pass, camera } = setup()
+  const rim = new Mesh(new BoxGeometry(.08, 4, .1), new MeshBasicMaterial())
+  rim.position.z = 1
+  pass.sync([rim])
+  const point = new Vector3()
+  expect(pass.isPointVisible(point, camera)).toBe(false)
+  expect(pass.isPointVisible(point, camera, { x: 208, y: 200, width: 400, height: 400 })).toBe(true)
+  expect(pass.isPointVisible(point, camera, { x: 200, y: 200, width: 400, height: 400 })).toBe(false)
+  const wall = new Mesh(new BoxGeometry(4,4,.1), new MeshBasicMaterial())
+  wall.position.z = 1
+  pass.sync([wall])
+  expect(pass.isPointVisible(point, camera, { x: 208, y: 200, width: 400, height: 400 })).toBe(false)
+})
+
+it('shares one lazy CAD intersection across all dots tested for the same click', () => {
+  const { pass, camera } = setup()
+  const wall = new Mesh(new BoxGeometry(4,4,.1), new MeshBasicMaterial())
+  wall.position.z = 1
+  pass.sync([wall])
+  const raycast = vi.spyOn(Mesh.prototype, 'raycast')
+  try {
+    const visible = pass.pixelVisibilityTest(camera, {x:200,y:200,width:400,height:400})
+    expect(raycast).not.toHaveBeenCalled()
+    for (let i=0; i<100; i++) expect(visible(new Vector3(0,0,-i/100))).toBe(false)
+    expect(raycast).toHaveBeenCalledTimes(1)
+  } finally { raycast.mockRestore() }
+})

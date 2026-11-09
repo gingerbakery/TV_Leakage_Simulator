@@ -985,6 +985,28 @@ it('groups different interior paths by opening identity and preserves separate n
   expect(result.candidates[0].representativePath).toEqual(a.representativePath)
 })
 
+it('preserves a faint oblique direct path when grouping it with a brighter reflected view at zero nit', () => {
+  const base = detectLeakPreviewCandidates(createSceneFixture(), createRayTraceResultFixture()).candidates[0]
+  const reflected = { ...base, id: 'reflection', apertureId: 'same-gap', peakLuminanceNit: 90,
+    relativeStrength: 1, sampledPathCount: 4, representativePath: [[0,0,-5],[0,0,0],[0,0,10]] as Vec3[],
+    observerEvidence: { axis: 'neg_z' as const, stepDeg: 10, horizontalDeg: 0, verticalDeg: 0,
+      direction: [0,0,1] as Vec3, receiverCenter: [0,0,10] as Vec3, directCount: 0, reflectedCount: 4 } }
+  const direct = { ...reflected, id: 'direct', peakLuminanceNit: 1e-12, relativeStrength: 1e-12,
+    sampledPathCount: 1, representativePath: [[0,0,-5],[10,0,10]] as Vec3[],
+    observerEvidence: { ...reflected.observerEvidence, horizontalDeg: 45, directCount: 1, reflectedCount: 0 } }
+  const points = [reflected, direct].map(candidate => ({ candidateId: candidate.id, apertureId: candidate.apertureId,
+    position: candidate.representativePath.at(-2)!, relativeStrength: candidate.relativeStrength,
+    observerAngles: [candidate.observerEvidence.horizontalDeg, 0] as [number,number] }))
+  const result = groupObserverCandidates(points, [reflected,direct], 3)
+  expect(result.candidates).toHaveLength(1)
+  expect(result.candidates[0].representativePath).toEqual(direct.representativePath)
+  expect(result.candidates[0].observerEvidence?.horizontalDeg).toBe(45)
+  expect(result.candidates[0].peakLuminanceNit).toBe(90)
+  expect(result.candidates[0].sampledPathCount).toBe(5)
+  expect(result.candidates[0].observerAngles).toHaveLength(2)
+  expect(result.points).toHaveLength(2)
+})
+
 it('accepts automatic exit estimates with measured variation but never shell certification', () => {
   const result = createRayTraceResultFixture()
   result.metrics._observer_probe_summary = {

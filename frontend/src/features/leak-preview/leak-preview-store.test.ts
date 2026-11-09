@@ -287,3 +287,39 @@ it('highlights exact view angles and every matching angular bin, and removes del
   leakPreviewStore.getState().selectCandidate(low.id)
   expect(leakPreviewStore.getState().highlight).toBeNull()
 })
+
+it('selects a presentation group without an implicit single analysis target and resets it on single selection or restore', () => {
+  const saved = createSavedLeakPreviewFixture()
+  const candidates = [0,1].map(i => ({ ...saved.candidates[0], id: `group-member-${i}` }))
+  leakPreviewStore.getState().setDetection(saved.result, [], candidates)
+  leakPreviewStore.getState().selectCandidateGroup(['group-member-0','group-member-1','missing','group-member-0'])
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toEqual(['group-member-0','group-member-1'])
+  expect(leakPreviewStore.getState().selectedCandidateId).toBeNull()
+  for (const candidate of candidates) expect(isLeakPreviewPointHighlighted({position:[0,0,0],relativeStrength:1,candidateId:candidate.id},null,null,leakPreviewStore.getState().selectedGroupCandidateIds)).toBe(true)
+  leakPreviewStore.getState().removeCandidate('group-member-0')
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toEqual(['group-member-1'])
+  leakPreviewStore.getState().selectCandidate('group-member-1')
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toEqual([])
+  leakPreviewStore.getState().selectCandidateGroup(['group-member-1'])
+  leakPreviewStore.getState().restoreProjectState(undefined, saved)
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toEqual([])
+})
+
+it('retains a picked observation only until a new candidate/group/result is selected', () => {
+  const saved=createSavedLeakPreviewFixture()
+  leakPreviewStore.getState().setDetection(saved.result,saved.points,saved.candidates)
+  const id=saved.candidates[0].id
+  const observation={position:[1,2,3] as [number,number,number],angles:[45,0] as [number,number]}
+  leakPreviewStore.getState().selectCandidate(id,'viewer',observation)
+  expect(leakPreviewStore.getState().selectedObservation).toEqual(observation)
+  observation.position[0]=999
+  expect(leakPreviewStore.getState().selectedObservation?.position[0]).toBe(1)
+  leakPreviewStore.getState().selectCandidate(id)
+  expect(leakPreviewStore.getState().selectedObservation).toBeNull()
+  leakPreviewStore.getState().selectCandidate(id,'viewer',observation)
+  leakPreviewStore.getState().selectCandidateGroup([id])
+  expect(leakPreviewStore.getState().selectedObservation).toBeNull()
+  leakPreviewStore.getState().selectCandidate(id,'viewer',observation)
+  leakPreviewStore.getState().setDetection(saved.result,saved.points,saved.candidates)
+  expect(leakPreviewStore.getState().selectedObservation).toBeNull()
+})

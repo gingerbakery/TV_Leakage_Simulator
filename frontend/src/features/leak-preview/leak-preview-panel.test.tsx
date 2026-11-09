@@ -58,6 +58,16 @@ it('shows measured below-threshold diagnostics instead of treating all zero list
   expect(screen.getByText(/필터 전 최고 5.000e-3 nit/)).toBeTruthy()
 })
 
+it('exposes 16-sample full-detail radiance coverage without changing spacing', () => {
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined}/></AppProviders>)
+  act(() => leakPreviewStore.getState().setObserver({enabled:true,measurement:'radiance',search_mode:'full_detail',spacing_mm:2,range_deg:0}))
+  const repeats=screen.getByRole('combobox',{name:'정밀 휘도 셀 반복'})
+  expect((repeats as HTMLSelectElement).value).toBe('8')
+  fireEvent.change(repeats,{target:{value:'16'}})
+  expect(leakPreviewStore.getState().observer.samples_per_cell).toBe(16)
+  expect(leakPreviewStore.getState().observer.spacing_mm).toBe(2)
+})
+
 it('runs one shared action on the selected point and shows a spinning validation indicator until completion', async () => {
   workspaceStore.getState().actions.addCadCase({ path: 'toolbar.step', displayName: 'toolbar' })
   workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
@@ -317,6 +327,64 @@ it('limits rendered candidate rows and reveals the viewer-selected candidate on 
   act(() => leakPreviewStore.getState().selectCandidate('candidate-204', 'viewer'))
   expect(screen.getByRole('article', { name: 'Point205' })).toBeTruthy()
   expect(leakPreviewStore.getState().candidates).toHaveLength(205)
+})
+
+it('navigates Point rows by arrow keys across pages with focus and first/last bounds', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const base = detectLeakPreviewCandidates(scene, result).candidates[0]
+  const candidates = Array.from({ length: 205 }, (_, i) => ({ ...base, id: `keyboard-${i}`, relativeStrength: 1-i/1000 }))
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result, [], candidates))
+  const list = screen.getByRole('group', { name: 'Leak point List' })
+  fireEvent.keyDown(list, { key: 'ArrowDown' })
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe('keyboard-0')
+  expect(document.activeElement?.closest('article')?.getAttribute('aria-label')).toBe('Point1')
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' })
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe('keyboard-0')
+  act(() => leakPreviewStore.getState().selectCandidate('keyboard-99', 'viewer'))
+  const point100 = screen.getByRole('article', { name: 'Point100' }).querySelector('[data-leak-point-select]')!
+  fireEvent.keyDown(point100, { key: 'ArrowDown' })
+  expect(screen.getByRole('article', { name: 'Point101' }).getAttribute('aria-current')).toBe('true')
+  expect(document.activeElement?.closest('article')?.getAttribute('aria-label')).toBe('Point101')
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' })
+  expect(screen.getByRole('article', { name: 'Point100' }).getAttribute('aria-current')).toBe('true')
+  fireEvent.keyDown(document.activeElement!, { key: 'End' })
+  expect(document.activeElement?.closest('article')?.getAttribute('aria-label')).toBe('Point205')
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe('keyboard-204')
+  fireEvent.keyDown(document.activeElement!, { key: 'Home' })
+  expect(document.activeElement?.closest('article')?.getAttribute('aria-label')).toBe('Point1')
+  const row = screen.getByRole('article', { name: 'Point1' })
+  fireEvent.keyDown(within(row).getByText('상세 정보'), { key: 'ArrowDown' })
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe('keyboard-0')
+  fireEvent.keyDown(within(row).getByRole('button', { name: 'Delete Point1' }), { key: 'ArrowDown' })
+  expect(leakPreviewStore.getState().selectedCandidateId).toBe('keyboard-0')
+  expect(leakPreviewStore.getState().candidates).toHaveLength(205)
+})
+
+it('collapses similar-route groups, selects every member, filters groups and reveals viewer/keyboard selections across child pages', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  const base = detectLeakPreviewCandidates(scene, result).candidates[0]
+  const candidates = Array.from({length:206}, (_, i) => ({...base,id:`count-${i}`,sampledPathCount:i===205?2:1,relativeStrength:1-i/1000, representativePath:[[i===205?100:0,0,0],[i===205?100:0,0,10]] as [number,number,number][]}))
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined}/></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(result, [], candidates))
+  fireEvent.change(screen.getByRole('combobox',{name:'Point 목록 보기'}),{target:{value:'route'}})
+  expect(screen.queryAllByRole('article')).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button',{name:'경로 그룹1 · 205 Points'}))
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toHaveLength(205)
+  expect(screen.getByRole('button',{name:'ROI·Receiver 생성'}).hasAttribute('disabled')).toBe(true)
+  fireEvent.click(screen.getByRole('button',{name:'경로 그룹1 펼치기'}))
+  expect(screen.getAllByRole('article')).toHaveLength(100)
+  fireEvent.keyDown(screen.getByRole('article',{name:'Point100'}).querySelector('[data-leak-point-select]')!,{key:'ArrowDown'})
+  expect(document.activeElement?.closest('article')?.getAttribute('aria-label')).toBe('Point101')
+  expect(leakPreviewStore.getState().selectedGroupCandidateIds).toHaveLength(0)
+  const filter=screen.getByRole('combobox',{name:'Point 그룹 필터'})
+  const second=(filter.querySelectorAll('option')[2] as HTMLOptionElement).value
+  fireEvent.change(filter,{target:{value:second}})
+  expect(screen.queryByRole('button',{name:'경로 그룹1 · 205 Points'})).toBeNull()
+  act(() => leakPreviewStore.getState().selectCandidate('count-204','viewer'))
+  expect(screen.getByRole('article',{name:'Point205'}).getAttribute('aria-current')).toBe('true')
+  expect(leakPreviewStore.getState().candidates).toHaveLength(206)
 })
 
 it('creates only a view-angle receiver from the detected snapshot while preserving BSDF, sources, and sampling', () => {

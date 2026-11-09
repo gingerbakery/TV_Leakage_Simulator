@@ -48,6 +48,50 @@ def black():
 
 
 class ObserverRadianceTests(TestCase):
+    def test_fixed_offset_slit_missed_by_eight_samples_is_found_by_sixteen(self):
+        # Adversarial fixed-seed coverage fixture, not a detection-rate claim.
+        # The slit is offset from all eight primary samples but intersects one
+        # of sixteen strata. Keep geometry/seed/spacing identical for both runs.
+        x, y = -.02242682923143624, -.5001153947589299
+        mesh = TriangleMesh()
+        for z in (0., -1.):
+            plate(mesh, z, 1, (x, y, .02))
+        lamp = source((x, y, .5), .1)
+        common = dict(depth=0, spacing=2., bounds=((-1,-1,-2),(1,1,1)), threshold=0., seed=42)
+        eight = render(mesh, lamp, [black()], spec_extra=dict(samples_per_cell=8), **common)
+        sixteen = render(mesh, lamp, [black()], spec_extra=dict(samples_per_cell=16), **common)
+        self.assertEqual(eight['direct_count'], 0)
+        self.assertEqual(sixteen['direct_count'], 1)
+        self.assertEqual(sixteen['cells'][0]['sample_count'], 16)
+
+    def test_sixteen_strata_double_coverage_and_preserve_analytic_mean_and_batch_invariance(self):
+        mesh = TriangleMesh()
+        plate(mesh, 9, 20)
+        lamp = source((0,0,-5), 40, 7.)
+        eight = render(mesh, lamp, [black()], spec_extra=dict(samples_per_cell=8))
+        sixteen = render(mesh, lamp, [black()], batch_size=37, spec_extra=dict(samples_per_cell=16))
+        scalar = render(mesh, lamp, [black()], dispatch='scalar', batch_size=7, spec_extra=dict(samples_per_cell=16))
+        self.assertEqual(sixteen['planned_count'], eight['planned_count']*2)
+        self.assertEqual(sixteen['attempted_count'], sixteen['planned_count'])
+        self.assertEqual(sixteen['cells'], scalar['cells'])
+        for cell in sixteen['cells']:
+            self.assertEqual(cell['sample_count'], 16)
+            self.assertAlmostEqual(cell['luminance_nit'], 7., delta=1e-10)
+
+    def test_zero_nit_keeps_faint_direct_paths_at_oblique_views(self):
+        mesh = TriangleMesh()
+        plate(mesh, 9, 20)
+        for horizontal in (-45., 0., 45.):
+            with self.subTest(horizontal=horizontal):
+                result = render(mesh, source((0,0,-5),40,1e-12), [black()], threshold=0.,
+                    spec_extra=dict(horizontal_deg=horizontal, vertical_deg=0., range_deg=0., refine_angles=False))
+                self.assertGreater(result['direct_count'], 0)
+                self.assertEqual(result['filtered_count'], 0)
+                self.assertTrue(any(len(cell['representative_path']) == 2 for cell in result['cells']))
+                for cell in result['cells']:
+                    self.assertGreater(cell['luminance_nit'], 0.)
+                    self.assertLessEqual(cell['luminance_nit'], 1e-12 * (1+1e-9))
+
     def test_direct_luminance_and_threshold_are_not_path_counts(self):
         mesh=TriangleMesh(); plate(mesh,9,20)
         for luminance in (1e-6,100.):

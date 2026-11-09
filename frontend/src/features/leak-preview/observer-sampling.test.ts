@@ -8,6 +8,20 @@ import { createDefaultLeakPreviewProjectState, leakPreviewStore } from './leak-p
 const defaultObserverSettings = { ...newDefaults, measurement: 'paths' as const, refine_angles: false }
 
 describe('automatic observer sampling', () => {
+  it('doubles full-detail radiance samples at 16 repeats without coarsening space or angles and fails on budget overflow', () => {
+    const projection={minimum:[0,0,0] as [number,number,number],maximum:[100,60,10] as [number,number,number],direction:'neg_z' as const}
+    const spec={...newDefaults,enabled:true,search_mode:'full_detail' as const,range_deg:0,horizontal_deg:0,vertical_deg:0,spacing_mm:1}
+    const eight=planObserverSampling({...spec,samples_per_cell:8},1,projection)
+    const sixteen=planObserverSampling({...spec,samples_per_cell:16},1,projection)
+    expect(sixteen.error).toBeNull()
+    expect(sixteen.samples_per_cell).toBe(16)
+    expect(sixteen.plannedCount).toBe(eight.plannedCount*2)
+    expect(sixteen.views).toBe(eight.views)
+    const request=buildLeakPreviewRequest({scene:createSceneFixture(),sourceFaceIds:[0],quality:'fast',computeBackend:'cpu',materialAssignments:[],transformRules:[],excludedComponentIds:[],deletedComponentIds:[],detectionMode:'escape_directions',observer:{...spec,samples_per_cell:16}})
+    expect(request.observer_probe).toMatchObject({samples_per_cell:16,spacing_mm:1,horizontal_deg:0,vertical_deg:0})
+    const tooLarge=planObserverSampling({...spec,samples_per_cell:16,spacing_mm:.1},1,{...projection,maximum:[10000,10000,100]})
+    expect(tooLarge.error).toContain('한도')
+  })
   it('defaults to radiance and explores zero-hit angular midpoints with an explicit budget', () => {
     expect(newDefaults).toMatchObject({ measurement: 'radiance', refine_angles: true, min_luminance_nit: .01 })
     const plan = planObserverSampling({ ...newDefaults, coverage: 'hemisphere', step_deg: 15 })

@@ -118,10 +118,10 @@ export interface LeakPreviewProjectState {
 
 export type LeakPreviewHighlight = { kind: 'observer'; horizontal: number; vertical: number } | { kind: 'escape'; bin: number }
 
-export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight: LeakPreviewHighlight | null, candidateId: string | null): boolean {
+export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight: LeakPreviewHighlight | null, candidateId: string | null, groupIds: readonly string[] | ReadonlySet<string> = []): boolean {
   if (highlight?.kind === 'observer') return point.observerAngles?.[0] === highlight.horizontal && point.observerAngles?.[1] === highlight.vertical
   if (highlight?.kind === 'escape') return (point.angleBins?.[highlight.bin] ?? 0) > 0
-  return candidateId !== null && point.candidateId === candidateId
+  return candidateId !== null && point.candidateId === candidateId || Boolean(point.candidateId && ('has' in groupIds ? groupIds.has(point.candidateId) : groupIds.includes(point.candidateId)))
 }
 
 export interface LeakPreviewPoint {
@@ -1401,11 +1401,23 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     target.cellCount += candidate.cellCount
     target.grazingPathCount += candidate.grazingPathCount
     target.relativeStrength = Math.max(target.relativeStrength, candidate.relativeStrength)
+    if (candidate.peakLuminanceNit !== undefined) target.peakLuminanceNit = Math.max(target.peakLuminanceNit ?? 0, candidate.peakLuminanceNit)
     if (candidate.peakDirectLuminanceNit !== undefined) target.peakDirectLuminanceNit = Math.max(target.peakDirectLuminanceNit ?? 0, candidate.peakDirectLuminanceNit)
     if (candidate.peakReflectedLuminanceNit !== undefined) target.peakReflectedLuminanceNit = Math.max(target.peakReflectedLuminanceNit ?? 0, candidate.peakReflectedLuminanceNit)
     target.clipBox = { xMin: Math.min(target.clipBox.xMin, candidate.clipBox.xMin), xMax: Math.max(target.clipBox.xMax, candidate.clipBox.xMax),
       yMin: Math.min(target.clipBox.yMin, candidate.clipBox.yMin), yMax: Math.max(target.clipBox.yMax, candidate.clipBox.yMax),
       zMin: Math.min(target.clipBox.zMin ?? 0, candidate.clipBox.zMin ?? 0), zMax: Math.max(target.clipBox.zMax ?? 0, candidate.clipBox.zMax ?? 0) }
+    // Cell-level direct preservation must survive grouping across view angles.
+    // Keep aggregate photometry unchanged; replace diagnostic representative only.
+    if (candidate.representativePath?.length === 2 && target.representativePath?.length !== 2) {
+      Object.assign(target, {
+        representativePath: candidate.representativePath,
+        observerEvidence: candidate.observerEvidence,
+        center: candidate.center, normal: candidate.normal, uAxis: candidate.uAxis, vAxis: candidate.vAxis,
+        receiverId: candidate.receiverId, widthMm: candidate.widthMm, heightMm: candidate.heightMm,
+        aperturePosition: candidate.aperturePosition,
+      })
+    }
   }
   for (const group of groups) {
     if (group.observerAngles && group.observerAngles.length > 1 && group.observerEvidence) {

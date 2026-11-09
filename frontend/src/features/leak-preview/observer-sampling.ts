@@ -41,7 +41,7 @@ export function planObserverSampling(observer: LeakPreviewObserverSettings, sour
   let repeats = observer.samples_per_cell
   const fullDetail = observer.search_mode === 'full_detail'
   if (fullDetail) {
-    resolution = 64; repeats = radiance ? 8 : 2
+    resolution = 64; repeats = radiance ? observer.samples_per_cell >= 16 ? 16 : 8 : 2
     const spacing = observer.spacing_mm ?? 2
     let plannedCount = 0
     if (!Number.isFinite(spacing) || spacing < .1 || spacing > 100) error = '검사 간격은 0.1~100 mm로 지정하세요.'

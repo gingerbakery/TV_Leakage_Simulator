@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
-import { BufferGeometry, Float32BufferAttribute, Group, OrthographicCamera, PerspectiveCamera, Points, PointsMaterial, Vector3 } from 'three'
-import { pickLeakPreviewCandidate } from './leak-preview-picking'
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, Group, Mesh, MeshBasicMaterial, OrthographicCamera, PerspectiveCamera, Points, PointsMaterial, Vector3 } from 'three'
+import { pickLeakPreviewCandidate, pickLeakPreviewPoint } from './leak-preview-picking'
+import { exitGuideGeometry } from './leak-preview-exit-guides'
 
 function dots(positions = [0, 0, 0], ids: Array<string | undefined> = ['leak-one']) {
   const root = new Group()
@@ -21,12 +22,29 @@ function camera(distance = 10) {
 
 const viewport = { width: 800, height: 400 }
 
-it('uses the visible 26 px halo at every camera distance instead of a world-space tolerance', () => {
+it('keeps a generous 12 px click radius without enlarging the rendered dot', () => {
   const { root } = dots()
   for (const distance of [2, 10, 300]) {
-    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 412, y: 200 }, viewport)).toBe('leak-one')
-    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 414, y: 200 }, viewport)).toBeNull()
+    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 411, y: 200 }, viewport)).toBe('leak-one')
+    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 413, y: 200 }, viewport)).toBeNull()
   }
+})
+
+it('checks nearby points in screen-distance order and stops after the first visible one', () => {
+  const positions = Array.from({length:1000}, (_,i) => [i/10000,0,0]).flat()
+  const { root } = dots(positions, Array.from({length:1000},(_,i)=>`point-${i}`))
+  let checks = 0
+  expect(pickLeakPreviewCandidate(root, camera(), {x:400,y:200}, viewport, () => { checks++; return true })).toBe('point-0')
+  expect(checks).toBe(1)
+})
+
+it('retains exact observation identity for two points owned by the same grouped candidate', () => {
+  const {root,points}=dots([0,0,0,1,0,0],['group','group'])
+  points.userData.leakPoints=[{position:[0,0,0],observerAngles:[0,0]}, {position:[1,0,0],observerAngles:[45,0]}]
+  const view=camera();view.updateWorldMatrix(true,false)
+  const projected=new Vector3(1,0,0).project(view)
+  expect(pickLeakPreviewPoint(root,view,{x:(projected.x+1)*viewport.width/2,y:200},viewport))
+    .toEqual({candidateId:'group',observation:{position:[1,0,0],angles:[45,0]}})
 })
 
 it('chooses the closest dot on screen and the nearest depth for overlapping dots', () => {
@@ -71,4 +89,19 @@ it('rejects occluded dots before choosing an overlapping visible candidate', () 
   const isVisible = (point: Vector3) => point.z === 1
   expect(pickLeakPreviewCandidate(root, camera(), {x:400,y:200}, viewport, isVisible)).toBe('visible')
   expect(pickLeakPreviewCandidate(root, camera(), {x:400,y:200}, viewport, () => false)).toBeNull()
+})
+
+it('selects a visible exit gradient as its Leak and rejects invisible tails and covered guides', () => {
+  const root = new Group()
+  const guide = new Mesh(exitGuideGeometry([-1,0,0],[1,0,0],.2,.6), new MeshBasicMaterial({ side: DoubleSide, vertexColors: true }))
+  guide.userData.leakCandidateId = 'same-leak'
+  root.add(guide)
+  expect(pickLeakPreviewCandidate(root, camera(), { x: 400, y: 200 }, viewport)).toBe('same-leak')
+  const view = camera()
+  view.updateWorldMatrix(true, false)
+  const tail = new Vector3(.99, 0, 0).project(view)
+  expect(pickLeakPreviewCandidate(root, view, { x: (tail.x + 1) * viewport.width / 2, y: 200 }, viewport)).toBeNull()
+  expect(pickLeakPreviewCandidate(root, camera(), { x: 400, y: 200 }, viewport, () => false)).toBeNull()
+  guide.userData.leakCandidateId = undefined
+  expect(pickLeakPreviewCandidate(root, camera(), { x: 400, y: 200 }, viewport)).toBeNull()
 })

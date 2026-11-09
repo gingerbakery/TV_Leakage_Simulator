@@ -1,9 +1,10 @@
 import { LeakMarkerOcclusion } from './leak-marker-occlusion'
 import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
-import { exitGuideGeometry, leakPreviewExitGuides } from './leak-preview-exit-guides'
+import { leakPreviewDisplayStyle } from './leak-preview-display-style'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
-import { pickLeakPreviewCandidate } from './leak-preview-picking'
+import { pickLeakPreviewPoint } from './leak-preview-picking'
+import { createObserverObservationIndex, resolveObserverPoint } from '@/features/leak-preview/observer-point-selection'
 import { FullViewPipFrame } from './full-view-pip-frame'
 import { fullViewPipRect, type FullViewPipSize } from './full-view-pip-layout'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
@@ -17,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   ArrowHelper,
-  AdditiveBlending,
+  NormalBlending,
   Box3,
   BoxGeometry,
   BufferGeometry,
@@ -2019,11 +2020,12 @@ export function ThreeViewerCanvas({
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
   const leakPreviewResult = useLeakPreviewStore((state) => state.result)
+  const leakObserverSummary = useMemo(() => leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null, [leakPreviewResult])
   const visibleLeakPreviewPoints = useMemo(
     () => leakPreviewPointsInRoi(verifiedLeakPreviewSurfacePoints(
-      leakPreviewPoints, leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null,
+      leakPreviewPoints, leakObserverSummary,
     ), roiScopes),
-    [leakPreviewPoints, leakPreviewResult, roiScopes],
+    [leakPreviewPoints, leakObserverSummary, roiScopes],
   )
   const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
   const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
@@ -2037,6 +2039,12 @@ export function ThreeViewerCanvas({
   const selectedLeakCandidateId = useLeakPreviewStore(
     (state) => state.selectedCandidateId,
   )
+  const selectedLeakGroupIds = useLeakPreviewStore(state => state.selectedGroupCandidateIds)
+  const selectedObservation = useLeakPreviewStore(state => state.selectedObservation)
+  const observationIndex = useMemo(() => createObserverObservationIndex(leakPreviewPoints, leakObserverSummary), [leakPreviewPoints, leakObserverSummary])
+  const selectedLeakObservation = useMemo(() => resolveObserverPoint(
+    leakPreviewCandidates.find(candidate => candidate.id === selectedLeakCandidateId), selectedObservation,
+    leakPreviewPoints, leakObserverSummary, observationIndex), [leakPreviewCandidates, selectedLeakCandidateId, selectedObservation, leakPreviewPoints, leakObserverSummary, observationIndex])
   const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
   const selectedBlocker = useLeakPreviewStore((state) => state.selectedBlocker)
@@ -3370,14 +3378,18 @@ export function ThreeViewerCanvas({
         }
         if (!blockerAreaSelectionIdRef.current) {
           const rect = canvas.getBoundingClientRect()
-          const candidateId = pickLeakPreviewCandidate(runtime.leakMarkerOcclusion.markers, camera,
+          const pixel = { x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width, height: rect.height }
+          const pixelVisible = runtime.leakMarkerOcclusion.pixelVisibilityTest(camera, pixel)
+          const pickedPoint = pickLeakPreviewPoint(runtime.leakMarkerOcclusion.markers, camera,
             { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect,
-            point => runtime.leakMarkerOcclusion.isPointVisible(point, camera))
+            (point, distance) => distance <= (leakPreviewDisplayStyle.haloSize / 2) ** 2
+              ? pixelVisible(point) : runtime.leakMarkerOcclusion.isPointVisible(point, camera))
+          const candidateId = pickedPoint?.candidateId
           const preview = leakPreviewStore.getState()
           const index = preview.candidates.findIndex((candidate) => candidate.id === candidateId)
           if (candidateId && index >= 0) {
-            preview.selectCandidate(candidateId, 'viewer')
-            onStatusMessage(`Candidate ${String(index + 1).padStart(2, '0')} 선택됨`)
+            preview.selectCandidate(candidateId, 'viewer', pickedPoint?.observation)
+            onStatusMessage(`Point${index + 1} 선택됨`)
             return
           }
         }
@@ -3943,7 +3955,13 @@ export function ThreeViewerCanvas({
     const runtime = runtimeRef.current
     if (!runtime) return
     clearGroup(runtime.leakPreviewRoot)
-    clearGroup(runtime.leakMarkerOcclusion.markers)
+    const markers = runtime.leakMarkerOcclusion.markers
+    const reuseMarkers = markers.userData.displayPoints === visibleLeakPreviewPoints
+    if (!reuseMarkers) {
+      clearGroup(markers)
+      markers.userData.displayPoints = visibleLeakPreviewPoints
+    }
+    markers.visible = leakPreviewVisualizationVisible
 
     const bounds = getLeakPreviewBounds(scene, transformRules)
     const markerSize = Math.max(...bounds.size, 1) * 0.012
@@ -3978,31 +3996,47 @@ export function ThreeViewerCanvas({
     }
 
     if (!leakPreviewVisualizationVisible) return
+    const selectedGroupSet = new Set(selectedLeakGroupIds)
     if (visibleLeakPreviewPoints.length > 0) {
-    const positions = new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const haloColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const coreColors = new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const haloLow = new Color(0xfbbf24)
-    const haloHigh = new Color(0xfef08a)
-    const coreLow = new Color(0xdc2626)
-    const coreHigh = new Color(0xff1f0f)
+    const cachedHalo = reuseMarkers ? markers.getObjectByName('leak-preview-glow-halo') as Points | undefined : undefined
+    const cachedCore = reuseMarkers ? markers.getObjectByName('leak-preview-glow-points') as Points | undefined : undefined
+    const positions = cachedCore ? cachedCore.geometry.getAttribute('position').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
+    const haloColors = cachedHalo ? cachedHalo.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
+    const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
+    const haloLow = new Color(0xf8c75a)
+    const haloHigh = new Color(0xffe5a0)
+    const coreLow = new Color(0xd89b36)
+    const coreHigh = new Color(0xffd67a)
+    const selectedHaloColor = new Color(0x00ffff).toArray()
+    const selectedCoreColor = new Color(0xffffff).toArray()
+    const dimHaloColor = new Color(0x392619).toArray()
+    const dimCoreColor = new Color(0x542819).toArray()
+    const mixedHalo = new Color(), mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
-      positions.set(point.position, index * 3)
+      if (!cachedCore) positions.set(point.position, index * 3)
       const strength = Math.max(0, Math.min(1, point.relativeStrength))
-      const emphasized = isLeakPreviewPointHighlighted(point, leakHighlight, selectedLeakCandidateId)
+      const emphasized = selectedObservation && selectedLeakCandidateId
+        ? point.candidateId === selectedLeakCandidateId && point.position.every((value,i) => value === selectedObservation.position[i]) &&
+          point.observerAngles?.every((value,i) => value === selectedObservation.angles[i])
+        : isLeakPreviewPointHighlighted(point, leakHighlight, selectedLeakCandidateId, selectedGroupSet)
       if (emphasized) {
-        haloColors.set(new Color(0x00ffff).toArray(), index * 3)
-        coreColors.set(new Color(0xffffff).toArray(), index * 3)
+        haloColors.set(selectedHaloColor, index * 3)
+        coreColors.set(selectedCoreColor, index * 3)
         return
       }
-      if (leakHighlight || selectedLeakCandidateId) {
-        haloColors.set(new Color(0x392619).toArray(), index * 3)
-        coreColors.set(new Color(0x542819).toArray(), index * 3)
+      if (leakHighlight || selectedLeakCandidateId || selectedLeakGroupIds.length) {
+        haloColors.set(dimHaloColor, index * 3)
+        coreColors.set(dimCoreColor, index * 3)
         return
       }
-      haloColors.set(haloLow.clone().lerp(haloHigh, strength).toArray(), index * 3)
-      coreColors.set(coreLow.clone().lerp(coreHigh, strength).toArray(), index * 3)
+      mixedHalo.copy(haloLow).lerp(haloHigh, strength).toArray(haloColors, index * 3)
+      mixedCore.copy(coreLow).lerp(coreHigh, strength).toArray(coreColors, index * 3)
     })
+    if (cachedHalo && cachedCore) {
+      cachedHalo.geometry.getAttribute('color').needsUpdate = true
+      cachedCore.geometry.getAttribute('color').needsUpdate = true
+      cachedHalo.visible = Boolean(selectedLeakCandidateId || selectedGroupSet.size || leakHighlight)
+    } else {
     const haloGeometry = new BufferGeometry()
     haloGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
     haloGeometry.setAttribute('color', new Float32BufferAttribute(haloColors, 3))
@@ -4011,18 +4045,19 @@ export function ThreeViewerCanvas({
       new PointsMaterial({
         map: createLeakPreviewDotTexture(true),
         alphaTest: 0.015,
-        size: 26,
+        size: leakPreviewDisplayStyle.haloSize,
         sizeAttenuation: false,
         vertexColors: true,
         transparent: true,
-        opacity: 0.72,
+        opacity: leakPreviewDisplayStyle.haloOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: AdditiveBlending,
+        blending: NormalBlending,
         toneMapped: false,
       }),
     )
     glowHalo.name = 'leak-preview-glow-halo'
+    glowHalo.visible = Boolean(selectedLeakCandidateId || selectedGroupSet.size || leakHighlight)
     glowHalo.renderOrder = 219
     const coreGeometry = new BufferGeometry()
     coreGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
@@ -4032,39 +4067,26 @@ export function ThreeViewerCanvas({
       new PointsMaterial({
         map: createLeakPreviewDotTexture(false),
         alphaTest: 0.08,
-        size: 8,
+        size: leakPreviewDisplayStyle.coreSize,
         sizeAttenuation: false,
         vertexColors: true,
         transparent: true,
-        opacity: 1,
+        opacity: leakPreviewDisplayStyle.coreOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: AdditiveBlending,
+        blending: NormalBlending,
         toneMapped: false,
       }),
     )
     glowPoints.name = 'leak-preview-glow-points'
     glowPoints.userData.leakCandidateIds = visibleLeakPreviewPoints.map((point) => point.candidateId)
+    glowPoints.userData.leakPoints = visibleLeakPreviewPoints
     glowPoints.renderOrder = 220
     runtime.leakMarkerOcclusion.markers.add(glowHalo, glowPoints)
     }
-
-    const summary = leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null
-    for (const guide of leakPreviewExitGuides(visibleLeakPreviewPoints, summary, markerSize * 4)) {
-      const selected = !selectedLeakCandidateId || guide.candidateId === selectedLeakCandidateId
-      const ribbon = new Mesh(
-        exitGuideGeometry(guide.start, guide.end, markerSize * .16, (selected ? .48 : .12) * (.35 + .65 * guide.strength)),
-        new MeshBasicMaterial({ vertexColors: true, transparent: true, side: DoubleSide,
-          depthTest: true, depthWrite: false, toneMapped: false, blending: AdditiveBlending }),
-      )
-      ribbon.name = 'leak-preview-exit-gradient'
-      ribbon.renderOrder = 218
-      runtime.leakMarkerOcclusion.markers.add(ribbon)
     }
 
-    const selected = leakPreviewCandidates.find(
-      (candidate) => candidate.id === selectedLeakCandidateId,
-    )
+    const selected = selectedLeakObservation
     if (selected?.representativePath) {
       const addArrow = (start: number[], end: number[], color: number, name: string) => {
         const origin = new Vector3(...start)
@@ -4131,7 +4153,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+  }, [selectedLeakObservation, leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, selectedLeakGroupIds, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

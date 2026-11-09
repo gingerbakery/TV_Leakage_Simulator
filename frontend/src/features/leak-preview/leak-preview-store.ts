@@ -1,3 +1,4 @@
+import type { ObserverPointSelection } from './observer-point-selection'
 import { migrateAllowedAreas } from './blocker-groups'
 import { previewSignature } from './leak-preview-signature'
 import { useStore } from 'zustand'
@@ -86,6 +87,9 @@ interface LeakPreviewState {
   highlight: LeakPreviewHighlight | null
   setHighlight(highlight: LeakPreviewState['highlight']): void
   selectedCandidateId: string | null
+  selectedObservation: ObserverPointSelection | null
+  selectedGroupCandidateIds: string[]
+  selectCandidateGroup(candidateIds: string[]): void
   candidateRevealRequest: { candidateId: string } | null
   ignoreAreaSelectionArmed: boolean
   activeIgnoreAreaId: string | null
@@ -113,7 +117,7 @@ interface LeakPreviewState {
   setVisualizationVisible(visible: boolean): void
   setIgnoreAreasVisible(visible: boolean): void
   setBlockersVisible(visible: boolean): void
-  selectCandidate(candidateId: string | null, source?: 'list' | 'viewer'): void
+  selectCandidate(candidateId: string | null, source?: 'list' | 'viewer', observation?: ObserverPointSelection): void
   beginIgnoreAreaSelection(areaId?: string): void
   finishIgnoreAreaSelection(): void
   addIgnoreAreaRegion(clipBox: LeakPreviewIgnoreArea['regions'][number]): void
@@ -202,6 +206,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   blockersVisible: true,
   highlight: null,
   selectedCandidateId: null,
+  selectedObservation: null,
+  selectedGroupCandidateIds: [],
   candidateRevealRequest: null,
   ignoreAreaSelectionArmed: false,
   activeIgnoreAreaId: null,
@@ -252,6 +258,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           blockersVisible: preserved?.blockersVisible ?? true,
           highlight: null,
           selectedCandidateId: null,
+          selectedObservation: null,
+          selectedGroupCandidateIds: [],
           candidateRevealRequest: null,
           ignoreAreaSelectionArmed: false,
           activeIgnoreAreaId: null,
@@ -299,11 +307,14 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     highlight: null,
     visualizationVisible: true,
     selectedCandidateId: null,
+    selectedObservation: null,
+    selectedGroupCandidateIds: [],
   }),
   removeCandidate: (candidateId) => setDetectionAndPersist((state) => {
     const candidates = state.candidates.filter((candidate) => candidate.id !== candidateId)
-    return { candidates, candidateRevealRequest: state.candidateRevealRequest?.candidateId === candidateId ? null : state.candidateRevealRequest, points: state.points.filter((point) => point.candidateId !== candidateId),
-      selectedCandidateId: state.selectedCandidateId === candidateId ? null : state.selectedCandidateId }
+    return { candidates, selectedGroupCandidateIds: state.selectedGroupCandidateIds.filter(id => id !== candidateId), candidateRevealRequest: state.candidateRevealRequest?.candidateId === candidateId ? null : state.candidateRevealRequest, points: state.points.filter((point) => point.candidateId !== candidateId),
+      selectedCandidateId: state.selectedCandidateId === candidateId ? null : state.selectedCandidateId,
+      selectedObservation: state.selectedCandidateId === candidateId ? null : state.selectedObservation }
   }),
   clearDetection: () => setDetectionAndPersist({
     jobId: null,
@@ -313,14 +324,21 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     candidates: [],
     highlight: null,
     selectedCandidateId: null,
+    selectedObservation: null,
+    selectedGroupCandidateIds: [],
     candidateRevealRequest: null,
     runSignature: null,
   }),
   setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
   setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
   setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
-  setHighlight: (highlight) => setDetectionAndPersist({ highlight, selectedCandidateId: null, candidateRevealRequest: null, visualizationVisible: true }),
-  selectCandidate: (selectedCandidateId, source = 'list') => setDetectionAndPersist({ selectedCandidateId, highlight: null, visualizationVisible: true,
+  setHighlight: (highlight) => setDetectionAndPersist({ highlight, selectedCandidateId: null, selectedObservation: null, selectedGroupCandidateIds: [], candidateRevealRequest: null, visualizationVisible: true }),
+  selectCandidateGroup: (candidateIds) => setDetectionAndPersist(state => {
+    const valid = new Set(state.candidates.map(candidate => candidate.id))
+    return { selectedGroupCandidateIds: [...new Set(candidateIds)].filter(id => valid.has(id)),
+      selectedCandidateId: null, selectedObservation: null, highlight: null, candidateRevealRequest: null, visualizationVisible: true }
+  }),
+  selectCandidate: (selectedCandidateId, source = 'list', observation) => setDetectionAndPersist({ selectedCandidateId, selectedObservation: selectedCandidateId && observation ? structuredClone(observation) : null, selectedGroupCandidateIds: [], highlight: null, visualizationVisible: true,
     candidateRevealRequest: source === 'viewer' && selectedCandidateId ? { candidateId: selectedCandidateId } : null,
   }),
   beginIgnoreAreaSelection: (areaId) => setAndPersist((state) => {
@@ -437,6 +455,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
       candidates: saved?.candidates ?? [],
       highlight: saved?.highlight ?? null,
       selectedCandidateId: saved?.selectedCandidateId ?? null,
+      selectedObservation: null,
+      selectedGroupCandidateIds: [],
       candidateRevealRequest: null,
       ignoreAreaSelectionArmed: false,
       activeIgnoreAreaId: null,
@@ -467,6 +487,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     blockersVisible: true,
     highlight: null,
     selectedCandidateId: null,
+    selectedObservation: null,
+    selectedGroupCandidateIds: [],
     candidateRevealRequest: null,
     ignoreAreaSelectionArmed: false,
     activeIgnoreAreaId: null,

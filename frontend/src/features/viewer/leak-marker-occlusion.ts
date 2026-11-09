@@ -54,14 +54,43 @@ export class LeakMarkerOcclusion {
     }
   }
 
-  isPointVisible(point: Vector3, camera: Camera): boolean {
+  isPointVisible(point: Vector3, camera: Camera, pixel?: { x: number; y: number; width: number; height: number }): boolean {
+    if (pixel) return this.pixelVisibilityTest(camera, pixel)(point)
     camera.updateWorldMatrix(true, false)
     const projected = point.clone().project(camera)
-    this.raycaster.setFromCamera(new Vector2(projected.x, projected.y), camera)
+    // A fixed-size sprite may be visible through a slot at the clicked pixel
+    // even when its centre is covered by a rim. Match rasterized sprite depth
+    // at that pixel, rather than testing the centre for every halo click.
+    const screen = new Vector2(projected.x, projected.y)
+    this.raycaster.setFromCamera(screen, camera)
     this.raycaster.near = 0
-    this.raycaster.far = Math.max(0, this.raycaster.ray.origin.distanceTo(point) - 1e-4)
+    const forward = camera.getWorldDirection(new Vector3())
+    const denominator = this.raycaster.ray.direction.dot(forward)
+    if (denominator <= 0) return false
+    const distance = point.clone().sub(this.raycaster.ray.origin).dot(forward) / denominator
+    this.raycaster.far = Math.max(0, distance - 1e-4)
     this.scene.updateMatrixWorld(true)
     return this.raycaster.intersectObjects([...this.proxies.values()], false).length === 0
+  }
+
+  /** One lazy CAD intersection for a whole click, shared by overlapping dots. */
+  pixelVisibilityTest(camera: Camera, pixel: { x: number; y: number; width: number; height: number }): (point: Vector3) => boolean {
+    camera.updateWorldMatrix(true, false)
+    const raycaster = new Raycaster()
+    raycaster.setFromCamera(new Vector2(pixel.x / pixel.width * 2 - 1, 1 - pixel.y / pixel.height * 2), camera)
+    const forward = camera.getWorldDirection(new Vector3())
+    const denominator = raycaster.ray.direction.dot(forward)
+    let nearest: number | undefined
+    return point => {
+      if (denominator <= 0) return false
+      const distance = point.clone().sub(raycaster.ray.origin).dot(forward) / denominator
+      if (distance <= 0) return false
+      if (nearest === undefined) {
+        this.scene.updateMatrixWorld(true)
+        nearest = raycaster.intersectObjects([...this.proxies.values()], false)[0]?.distance ?? Infinity
+      }
+      return nearest >= distance - 1e-4
+    }
   }
 
   dispose(): void {
