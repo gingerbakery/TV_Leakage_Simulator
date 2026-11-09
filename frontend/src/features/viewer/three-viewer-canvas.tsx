@@ -1,6 +1,7 @@
 import { LeakMarkerOcclusion } from './leak-marker-occlusion'
 import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
+import { exitGuideGeometry, leakPreviewExitGuides } from './leak-preview-exit-guides'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewCandidate } from './leak-preview-picking'
 import { FullViewPipFrame } from './full-view-pip-frame'
@@ -4048,6 +4049,19 @@ export function ThreeViewerCanvas({
     runtime.leakMarkerOcclusion.markers.add(glowHalo, glowPoints)
     }
 
+    const summary = leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null
+    for (const guide of leakPreviewExitGuides(visibleLeakPreviewPoints, summary, markerSize * 4)) {
+      const selected = !selectedLeakCandidateId || guide.candidateId === selectedLeakCandidateId
+      const ribbon = new Mesh(
+        exitGuideGeometry(guide.start, guide.end, markerSize * .16, (selected ? .48 : .12) * (.35 + .65 * guide.strength)),
+        new MeshBasicMaterial({ vertexColors: true, transparent: true, side: DoubleSide,
+          depthTest: true, depthWrite: false, toneMapped: false, blending: AdditiveBlending }),
+      )
+      ribbon.name = 'leak-preview-exit-gradient'
+      ribbon.renderOrder = 218
+      runtime.leakMarkerOcclusion.markers.add(ribbon)
+    }
+
     const selected = leakPreviewCandidates.find(
       (candidate) => candidate.id === selectedLeakCandidateId,
     )
@@ -4072,6 +4086,24 @@ export function ThreeViewerCanvas({
       for (const segment of leakPreviewArrowSegments(selected, length)) {
         addArrow(segment.start, segment.end, segment.kind === 'ray' ? 0xff7a00 : 0x38bdf8,
           segment.kind === 'ray' ? 'leak-preview-representative-ray' : 'leak-preview-observer-direction')
+      }
+      // Intermediate reflections are path annotations, not luminous Leak points.
+      // Exclude the source, visible endpoint and external observer endpoint.
+      const reflections = selected.representativePath.slice(1, -2)
+      if (reflections.length) {
+        const geometry = new BufferGeometry()
+        geometry.setAttribute('position', new Float32BufferAttribute(reflections.flat(), 3))
+        const dots = new Points(geometry, new PointsMaterial({
+          color: 0xff7a00,
+          size: 3,
+          sizeAttenuation: false,
+          depthTest: true,
+          depthWrite: false,
+          toneMapped: false,
+        }))
+        dots.name = 'leak-preview-reflection-points'
+        dots.renderOrder = 230
+        runtime.leakPreviewRoot.add(dots)
       }
       const clip = selected.clipBox
       const sizeX = Math.max(clip.xMax - clip.xMin, markerSize)
@@ -4099,7 +4131,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [leakHighlight, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
+  }, [leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

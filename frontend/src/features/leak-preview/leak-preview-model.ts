@@ -1248,32 +1248,36 @@ export function observerNoDetectionMessage(summary: ObserverProbeSummary | null 
   return `현재 탐색 조건에서 미검출 · ${warning}`
 }
 
-/** Display only recognized opening crossings on audited observer paths.
- * Keep the underlying detection evidence unchanged for analysis and saved projects.
- */
+/** Show the audited visible endpoint, never intermediate bounces. Opening
+ * provenance controls exit guides, not whether optical evidence is visible.
+ * Resolve legacy opening markers without modifying saved results. */
 export function verifiedLeakPreviewSurfacePoints(
   points: LeakPreviewPoint[], summary: ObserverProbeSummary | null,
 ): LeakPreviewPoint[] {
   if (!summary) return []
   const key = (position: Vec3, angles: [number, number]) =>
     JSON.stringify([...position, ...angles])
-  const endpoints = new Set<string>()
+  const endpoints = new Map<string, Vec3>()
   for (const cell of summary.cells) {
-    if (cell.path_validation?.status !== 'valid' || !cell.aperture) continue
-    const endpoint = cell.aperture.position
+    if (cell.path_validation?.status !== 'valid') continue
+    const endpoint = cell.representative_path?.at(-2)
     const view = summary.views[cell.view_index]
     if (!endpoint || !view) continue
-    endpoints.add(JSON.stringify([cell.aperture.id, key(endpoint, [view.horizontal_deg, view.vertical_deg])]))
+    const angles: [number, number] = [view.horizontal_deg, view.vertical_deg]
+    endpoints.set(key(endpoint, angles), endpoint)
+    if (cell.aperture) endpoints.set(key(cell.aperture.position, angles), endpoint)
   }
   // Repeated cells can produce the same marker. Do not add their strengths:
   // these are duplicate display samples, not independent optical energy.
   // Preserve angle/candidate identity for selection and angular highlighting.
   const unique = new Map<string, LeakPreviewPoint>()
   for (const point of points) {
-    if (!point.apertureId || !point.observerAngles || !endpoints.has(JSON.stringify([point.apertureId, key(point.position, point.observerAngles)]))) continue
-    const identity = JSON.stringify([point.position, point.observerAngles, point.candidateId ?? null])
+    if (!point.observerAngles) continue
+    const position = endpoints.get(key(point.position, point.observerAngles))
+    if (!position) continue
+    const identity = JSON.stringify([position, point.observerAngles, point.candidateId ?? null])
     const previous = unique.get(identity)
-    if (!previous || point.relativeStrength > previous.relativeStrength) unique.set(identity, point)
+    if (!previous || point.relativeStrength > previous.relativeStrength) unique.set(identity, { ...point, position, surfacePosition: position })
   }
   return [...unique.values()]
 }
@@ -1310,9 +1314,10 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
       const candidateId = `observer-${viewIndex}-${index}`
       cluster.forEach((cell) => {
         const sample = lookup.get(`${cell.row}:${cell.column}`)!
-        if (sample.path_validation?.status !== 'valid' || !sample.aperture) return
-        const position = sample.aperture.position
-        points.push({ apertureId: sample.aperture.id, position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
+        if (sample.path_validation?.status !== 'valid') return
+        const position = sample.representative_path?.at(-2)
+        if (!position) return
+        points.push({ ...(sample.aperture ? { apertureId: sample.aperture.id } : {}), position, surfacePosition: position, relativeStrength: cell.flux / maximum, candidateId,
           observerAngles: [view.horizontal_deg, view.vertical_deg] })
       })
       const evidence = cluster.map((cell) => lookup.get(`${cell.row}:${cell.column}`)!)
@@ -1408,17 +1413,13 @@ export function groupObserverCandidates(points: LeakPreviewPoint[], candidates: 
     }
   }
   const mapped = points.map((point) => ({ ...point, candidateId: ids.get(point.candidateId ?? '') ?? point.candidateId }))
-  // Exactly one marker per recognized opening; optical evidence stays in the
-  // raw summary and group members, not in duplicate internal/exit markers.
-  const indexedPoints = new Map(mapped.filter(point => point.apertureId).map(point => [
-    JSON.stringify([point.candidateId, point.apertureId, point.position]), point,
-  ]))
-  const openingPoints = groups.flatMap(group => {
-    if (!group.apertureId || !group.aperturePosition) return []
-    const point = indexedPoints.get(JSON.stringify([group.id, group.apertureId, group.aperturePosition]))
-    return point ? [point] : []
-  })
-  return { candidates: groups, points: [...mapped.filter(point => !point.apertureId), ...openingPoints] }
+  // Group identity must not erase distinct visible patches behind one opening.
+  const unique = new Map<string, LeakPreviewPoint>()
+  for (const point of mapped) {
+    const key = JSON.stringify([point.candidateId, point.position, point.observerAngles])
+    if (!unique.has(key) || point.relativeStrength > unique.get(key)!.relativeStrength) unique.set(key, point)
+  }
+  return { candidates: groups, points: [...unique.values()] }
 }
 
 function directionAxis(raw: unknown): LeakPreviewDirection {

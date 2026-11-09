@@ -26,6 +26,25 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('keeps Point rows on one line and puts coordinates, exit metadata and grouping inside closed details', () => {
+  const saved = createSavedLeakPreviewFixture()
+  const candidate = { ...saved.candidates[0], peakLuminanceNit: .0023, groupedCount: 12,
+    apertureId: 'gap', apertureMethod: 'opposed_neighborhood_multiscale', apertureVariationMm: .02,
+    observerEvidence: { axis: 'neg_z' as const, stepDeg: 10, horizontalDeg: 45, verticalDeg: 0,
+      directCount: 1, reflectedCount: 0, direction: [0,0,-1] as [number,number,number], receiverCenter: [0,0,-100] as [number,number,number] } }
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(saved.result, [], [candidate]))
+  expect(screen.getByRole('button', { name: 'Leak point List 접기' })).toBeTruthy()
+  const row = screen.getByRole('article', { name: 'Point1' })
+  const label = within(row).getByRole('button', { name: 'Point1 · 45°/0° · 광량 2.30e-3 nit' })
+  expect(label.classList.contains('whitespace-nowrap')).toBe(true)
+  expect(label.classList.contains('truncate')).toBe(true)
+  expect(row.querySelector('details')!.open).toBe(false)
+  expect(within(row).getByText(/깊이 변동/).closest('details')).toBe(row.querySelector('details'))
+  fireEvent.click(within(row).getByText('상세 정보'))
+  expect(row.querySelector('details')!.open).toBe(true)
+})
+
 it('shows measured below-threshold diagnostics instead of treating all zero lists as zero light', () => {
   const result = createRayTraceResultFixture()
   result.metrics._observer_probe_summary = { contract:'observer_radiance_parallel_v1', measure:'luminance_cd_m2', execution_backend:'cpu',
@@ -52,7 +71,7 @@ it('runs one shared action on the selected point and shows a spinning validation
     render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
     act(() => leakPreviewStore.getState().setDetection(saved.result, [], candidates))
     expect(screen.getAllByRole('button', { name: '경로 검증' })).toHaveLength(1)
-    expect(within(screen.getByRole('article', { name: 'Candidate 01' })).queryByRole('button', { name: '경로 검증' })).toBeNull()
+    expect(within(screen.getByRole('article', { name: 'Point1' })).queryByRole('button', { name: '경로 검증' })).toBeNull()
     act(() => leakPreviewStore.getState().selectCandidate('point-1','viewer'))
     fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
     await waitFor(() => expect(screen.getByRole('img', { name: '경로 검증 진행 중' })).toBeTruthy())
@@ -94,7 +113,7 @@ it('validates saved representative evidence without starting another Preview or 
   try {
     render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
     act(() => leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates))
-    fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
+    fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
     fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
     await waitFor(() => expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy())
     expect(validate).toHaveBeenCalledOnce()
@@ -291,12 +310,12 @@ it('limits rendered candidate rows and reveals the viewer-selected candidate on 
   expect(screen.getAllByRole('article')).toHaveLength(100)
   act(() => leakPreviewStore.getState().selectCandidate('candidate-204', 'viewer'))
   expect(screen.getAllByRole('article')).toHaveLength(5)
-  expect(screen.getByRole('article', { name: 'Candidate 205' }).getAttribute('aria-current')).toBe('true')
+  expect(screen.getByRole('article', { name: 'Point205' }).getAttribute('aria-current')).toBe('true')
   fireEvent.click(screen.getByRole('button', { name: '이전 후보' }))
   expect(screen.getAllByRole('article')).toHaveLength(100)
-  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Leak point List 접기' }))
   act(() => leakPreviewStore.getState().selectCandidate('candidate-204', 'viewer'))
-  expect(screen.getByRole('article', { name: 'Candidate 205' })).toBeTruthy()
+  expect(screen.getByRole('article', { name: 'Point205' })).toBeTruthy()
   expect(leakPreviewStore.getState().candidates).toHaveLength(205)
 })
 
@@ -336,7 +355,7 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
   })
   const before = structuredClone({ emitters: workspaceStore.getState().emitters,
     materialAssignments: workspaceStore.getState().materialAssignments, config: workspaceStore.getState().rayTraceConfig })
-  fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
+  fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
   fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
   expect(onOpenPrecision).toHaveBeenCalledOnce()
   expect(workspaceStore.getState().roiScopes).toEqual([])
@@ -381,26 +400,26 @@ it('reveals and scrolls to the viewer-picked candidate, including repeated picks
   render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={() => undefined} /></AppProviders>)
   act(() => leakPreviewStore.getState().setDetection(result, detection.points, detection.candidates))
   const [first, second] = leakPreviewStore.getState().candidates
-  const firstRow = screen.getByRole('article', { name: 'Candidate 01' })
-  const secondRow = screen.getByRole('article', { name: 'Candidate 02' })
+  const firstRow = screen.getByRole('article', { name: 'Point1' })
+  const secondRow = screen.getByRole('article', { name: 'Point2' })
   const scroll = vi.fn()
   firstRow.scrollIntoView = scroll
   secondRow.scrollIntoView = scroll
   act(() => leakPreviewStore.getState().setHighlight({ kind: 'escape', bin: 0 }))
-  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Leak point List 접기' }))
   act(() => leakPreviewStore.getState().selectCandidate(second.id, 'viewer'))
-  expect(screen.getByRole('button', { name: 'Leak Candidates 접기' }).getAttribute('aria-expanded')).toBe('true')
+  expect(screen.getByRole('button', { name: 'Leak point List 접기' }).getAttribute('aria-expanded')).toBe('true')
   expect(secondRow.getAttribute('aria-current')).toBe('true')
   expect(firstRow.hasAttribute('aria-current')).toBe(false)
   expect(scroll.mock.contexts.at(-1)).toBe(secondRow)
   expect(scroll).toHaveBeenLastCalledWith({ block: 'nearest' })
   expect(leakPreviewStore.getState().highlight).toBeNull()
   scroll.mockClear()
-  fireEvent.click(screen.getByRole('button', { name: 'Leak Candidates 접기' }))
-  expect(screen.queryByRole('article', { name: 'Candidate 02' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Leak point List 접기' }))
+  expect(screen.queryByRole('article', { name: 'Point2' })).toBeNull()
   expect(scroll).not.toHaveBeenCalled()
   act(() => leakPreviewStore.getState().selectCandidate(second.id, 'viewer'))
-  expect(screen.getByRole('article', { name: 'Candidate 02' }).getAttribute('aria-current')).toBe('true')
+  expect(screen.getByRole('article', { name: 'Point2' }).getAttribute('aria-current')).toBe('true')
   expect(scroll.mock.contexts.at(-1)).toBe(secondRow)
   fireEvent.click(firstRow)
   expect(leakPreviewStore.getState().selectedCandidateId).toBe(first.id)
@@ -408,7 +427,7 @@ it('reveals and scrolls to the viewer-picked candidate, including repeated picks
   expect(leakPreviewStore.getState().points).toEqual(detection.points)
   expect(leakPreviewStore.getState().result).toBe(result)
   act(() => leakPreviewStore.getState().removeCandidate(second.id))
-  expect(screen.queryByRole('article', { name: 'Candidate 02' })).toBeNull()
+  expect(screen.queryByRole('article', { name: 'Point2' })).toBeNull()
 })
 
 it('enables Ray Tracing datum emitters and starts a BSDF Preview using CPU Source without changing the original', async () => {
@@ -469,17 +488,17 @@ it('invalidates old Preview results after Allowed Area changes and includes the 
   await waitFor(() => expect(leakPreviewStore.getState().candidates.length).toBeGreaterThan(0))
   const previous = leakPreviewStore.getState().result
   const candidates = leakPreviewStore.getState().candidates
-  fireEvent.click(screen.getByRole('button',{name:'Leak Candidates 접기'}))
-  expect(screen.getByRole('button',{name:'Leak Candidates 펼치기'}).getAttribute('aria-expanded')).toBe('false')
-  expect(screen.queryByRole('button',{name:'Delete Candidate 1'})).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Leak point List 접기'}))
+  expect(screen.getByRole('button',{name:'Leak point List 펼치기'}).getAttribute('aria-expanded')).toBe('false')
+  expect(screen.queryByRole('button',{name:'Delete Point1'})).toBeNull()
   expect(leakPreviewStore.getState().candidates).toBe(candidates)
   expect(leakPreviewStore.getState().result).toBe(previous)
-  fireEvent.click(screen.getByRole('button',{name:'Leak Candidates 펼치기'}))
-  expect(screen.getByRole('button',{name:'Delete Candidate 1'})).toBeTruthy()
+  fireEvent.click(screen.getByRole('button',{name:'Leak point List 펼치기'}))
+  expect(screen.getByRole('button',{name:'Delete Point1'})).toBeTruthy()
   act(() => actions.setEmitterVisible('emitter_001', false))
   expect(leakPreviewStore.getState().result).toBe(previous)
   expect(leakPreviewStore.getState().candidates.length).toBeGreaterThan(0)
-  fireEvent.click(screen.getByRole('button', { name: 'Delete Candidate 1' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Point1' }))
   expect(leakPreviewStore.getState().candidates).toEqual([])
   expect(leakPreviewStore.getState().points).toEqual([])
   expect(leakPreviewStore.getState().result).toBe(previous)
@@ -563,12 +582,12 @@ it('connects both angle tables to viewer highlights and deletes their candidate 
   expect(screen.getByRole('button', { name: '10 / 20' }).getAttribute('aria-pressed')).toBe('true')
   fireEvent.click(screen.getByRole('button', { name: '80–90°' }))
   expect(leakPreviewStore.getState().highlight).toEqual({ kind: 'escape', bin: 3 })
-  fireEvent.click(screen.getByRole('article', { name: 'Candidate 01' }))
+  fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
   fireEvent.click(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0])
   expect(screen.getAllByRole('button', { name: 'ROI·Receiver 생성' })[0].hasAttribute('disabled')).toBe(true)
   expect(workspaceStore.getState().roiScopes).toEqual([])
   const deletedId = leakPreviewStore.getState().candidates[0].id
-  fireEvent.click(screen.getByRole('button', { name: 'Delete Candidate 1' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Point1' }))
   expect(leakPreviewStore.getState().points.some((point) => point.candidateId === deletedId)).toBe(false)
 })
 

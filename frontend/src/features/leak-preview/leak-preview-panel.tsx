@@ -59,6 +59,15 @@ function riskPriority(value: number): 'High' | 'Medium' | 'Low' {
   return 'Low'
 }
 
+function pointRowLabel(candidate: LeakPreviewCandidate, index: number): string {
+  const view = candidate.observerEvidence
+  const angle = view ? `${view.horizontalDeg}°/${view.verticalDeg}°` : candidate.meanExitAngleDeg != null ? `${candidate.meanExitAngleDeg.toFixed(1)}°` : '—'
+  const value = candidate.peakLuminanceNit !== undefined
+    ? `광량 ${candidate.peakLuminanceNit.toExponential(2)} nit`
+    : view ? `경로 ${candidate.sampledPathCount.toLocaleString()}` : `광량 ${candidate.fluxLumen.toExponential(2)} lm`
+  return `Point${index + 1} · ${angle} · ${value}`
+}
+
 function coordinate(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : '0.0'
 }
@@ -593,7 +602,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           progress={job?.progress} terminal={terminalStatus} failed={Boolean(queryError) || activeJob?.status === 'failed' || message.includes('실패')}
           phase={isPreparing || isFinalizing ? job?.phase_detail : isRunning ? `${Math.round((job?.progress ?? 0)*100)}% · ${(job?.processed_rays ?? 0).toLocaleString()} / ${(job?.total_rays ?? 0).toLocaleString()} Rays` : undefined} />
         <div role="toolbar" aria-label="선택 Leak 작업" className="space-y-2 rounded-lg border border-orange-300 bg-background p-2">
-          <div className="flex items-center gap-1 text-xs font-semibold">{selectedCandidate ? `${selectedCandidate.apertureId ? '선택 Leak' : '선택 경로'} · Candidate ${String(candidates.indexOf(selectedCandidate)+1).padStart(2,'0')} · ${selectedCandidate.label}` : 'Leak 선택 없음'}<HelpTooltip label="선택 Leak 작업 도움말">뷰어의 점 또는 후보 행을 선택한 뒤 공통 작업 버튼을 누르세요. 개구부 미확정 경로는 점을 표시하지 않고 경로만 검사합니다. 개구부가 확인된 경우에 Receiver·정밀해석을 생성할 수 있습니다. 묶음은 대표 경로·대표 시야각 한 곳을 검사하며 모든 구성원의 검증 통과를 뜻하지 않습니다. 경로 검증 중 회전 표시는 요청 대기 상태이며 서버 세부 진행률은 아닙니다.</HelpTooltip><HelpTooltip label="Preview 결과 저장 도움말">프로젝트 저장 시 Preview 결과·검출점·후보 목록·각도별 집계와 선택·표시 상태를 함께 저장합니다. 삭제한 후보도 그대로 유지합니다. 다시 열거나 Case를 전환하면 결과를 복원하며 실행 중 작업은 재개하지 않습니다. 광원·재질·형상 등 검사 조건이 달라지면 재실행이 필요합니다.</HelpTooltip></div>
+          <div className="flex items-center gap-1 text-xs font-semibold">{selectedCandidate ? pointRowLabel(selectedCandidate, candidates.indexOf(selectedCandidate)) : 'Leak 선택 없음'}<HelpTooltip label="선택 Leak 작업 도움말">뷰어의 점 또는 후보 행을 선택한 뒤 공통 작업 버튼을 누르세요. 검증된 관찰 면을 Leak 점으로 표시하고, 출구 정보가 있으면 방향 그라데이션을 표시합니다. 그라데이션은 공기 중 산란광이나 광량 측정값이 아닙니다. 개구부가 확인된 경우에 Receiver·정밀해석을 생성할 수 있습니다. 묶음은 대표 경로·대표 시야각 한 곳을 검사하며 모든 구성원의 검증 통과를 뜻하지 않습니다. 경로 검증 중 회전 표시는 요청 대기 상태이며 서버 세부 진행률은 아닙니다.</HelpTooltip><HelpTooltip label="Preview 결과 저장 도움말">프로젝트 저장 시 Preview 결과·검출점·후보 목록·각도별 집계와 선택·표시 상태를 함께 저장합니다. 삭제한 후보도 그대로 유지합니다. 다시 열거나 Case를 전환하면 결과를 복원하며 실행 중 작업은 재개하지 않습니다. 광원·재질·형상 등 검사 조건이 달라지면 재실행이 필요합니다.</HelpTooltip></div>
           {candidates.length > 0 ? <div role="status" className="text-xs">개구부 경유 {candidates.filter(candidate => candidate.apertureId).length} · 개구부 미확정 {candidates.filter(candidate => !candidate.apertureId).length}</div> : null}
           {candidates.some(candidate => candidate.apertureId) ? <div role="status" className="text-xs text-amber-700">자동 출구 추정 · 최외곽 확정 아님</div> : null}
           {observerSummary?.aperture_summary?.reason === 'exit_estimation_cuda_failed' ? <div role="alert" className="text-xs text-destructive">자동 출구 추정 CUDA 실패 · CPU 대체 없이 미확정 유지</div> : null}
@@ -856,11 +865,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <div className="flex items-center gap-2 text-sm font-semibold">
             <ScanSearch className="size-4 text-orange-500" />
             <Button size="sm" variant="ghost" className="h-7 gap-1 px-1 text-sm font-semibold"
-              aria-label={`Leak Candidates ${candidatesCollapsed ? '펼치기' : '접기'}`} aria-expanded={!candidatesCollapsed}
+              aria-label={`Leak point List ${candidatesCollapsed ? '펼치기' : '접기'}`} aria-expanded={!candidatesCollapsed}
               aria-controls={candidateListId} onClick={() => setCandidatesCollapsed(!candidatesCollapsed)}>
-              {candidatesCollapsed ? <Plus className="size-3" /> : <Minus className="size-3" />}Leak Candidates · {candidates.length}
+              {candidatesCollapsed ? <Plus className="size-3" /> : <Minus className="size-3" />}<span className="whitespace-nowrap">Leak point List · {candidates.length}</span>
             </Button>
-            <HelpTooltip label="후보 도움말">Viewer의 Leak 점을 클릭하면 해당 후보를 강조하고 목록을 펼쳐 이동합니다. 출구를 수동 지정하지 않고, 검증 경로 주변의 서로 반대쪽 CAD 교점을 여러 거리에서 비교해 곡면과 열린 부품 사이 틈의 출구를 자동 추정합니다. 두 거리의 깊이가 일치하고 양쪽 지지가 있을 때만 표시합니다. 깊이 변동은 표본 간 변동이며 실제 위치 오차의 보증 범위가 아닙니다. 출구 추정은 세트 최외곽의 수학적 확정이나 실제 빛샘 검증이 아닙니다. 내부 반사점은 선택한 대표 경로로만 표시합니다. 같은 인식 개구부의 경로는 하나로 묶고, 자동 추정 위치는 인접한 국부 구간별로 묶습니다. 추정 그룹은 동일한 실제 틈이라는 확정이 아닙니다. 관찰자 쪽에서 가장 마지막에 인식된 개구부를 사용하며, 전체 외장 경계임을 보증하지 않습니다. 주변 지지가 부족한 곡면·열린 틈, 여러 외곽 깊이가 섞인 위치, 비정상 메시와 처리 예산 초과는 미확정으로 남기며 점을 만들지 않습니다. 이전 결과에 개구부 정보가 없으면 재해석이 필요합니다. CAD Hide·투명도·단면 표시는 Leak 점의 차폐를 해제하지 않습니다. 활성 CAD와 Block으로 실제 가려지는 점은 표시·클릭에서 제외하며, 해석 제외·삭제 부품은 차폐에서 제외합니다. 셀 평균보다 저장된 실제 경로의 표본 위치를 우선합니다. 선택 시 주황 화살표는 검출된 대표 Ray의 광원→관찰자 경로, 하늘색 화살표는 저장된 경로의 관찰 끝점에서 바깥으로 표시하는 방향 안내이며 광량이나 추가 교차 검사를 뜻하지 않습니다. 인접 위치와 유사한 광원·반사점 경로의 후보를 묶으며 대표 각도로 Receiver를 생성합니다. 경로 탐색의 대표 각도는 가장 밝은 각도가 아닙니다. 휘도 모드는 직광이 확인된 셀의 직광 경로를 우선 보존하며 총 휘도는 모든 유효 기여를 합산합니다. 후보의 추정 최고 휘도는 연속 각도의 최대값이나 가시 범위 경계는 아닙니다. 묶음의 검출 각도 목록에서 각 방향을 확인하세요. 경로 검출은 방향 조건을 만족하는 경로의 존재이며 lm·nit나 육안 가시성 판정이 아닙니다. BSDF의 미약한 산란 성분도 검출될 수 있습니다. 상대 Priority는 광원 추적 후보 간 상대값이며 절대 위험도나 측정값이 아닙니다. 저장된 경로가 없으면 두 종류의 화살표를 표시하지 않습니다. 목록에서 후보를 선택하면 해당 점을 강조합니다. 역추적 후보의 시야각 Receiver 생성은 검출 당시의 기준 축·좌우·상하 각도로 Receiver만 만들고 정밀해석 설정을 엽니다. 다른 수광면이 Ray를 먼저 받지 않도록 해당 Receiver만 ON으로 전환하며 기존 항목은 보존합니다. 처음에는 단일 각도이며 주변 범위·간격은 Receiver 편집에서 변경합니다. ROI·광원·재질·샘플링 설정은 변경하지 않습니다. 삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
+            <HelpTooltip label="후보 도움말">Viewer의 Leak 점을 클릭하면 해당 후보를 강조하고 목록을 펼쳐 이동합니다. 출구를 수동 지정하지 않고, 검증 경로 주변의 서로 반대쪽 CAD 교점을 여러 거리에서 비교해 곡면과 열린 부품 사이 틈의 출구를 자동 추정합니다. 출구 추정이 가능한 검증 경로에만 방향 그라데이션을 표시합니다. 관찰 면의 점은 출구 추정과 별개로 유지합니다. 깊이 변동은 표본 간 변동이며 실제 위치 오차의 보증 범위가 아닙니다. 출구 추정은 세트 최외곽의 수학적 확정이나 실제 빛샘 검증이 아닙니다. 관찰되는 내부 광원·면에는 Leak 점을 표시하고, 중간 반사점은 선택한 경로에서 작은 점으로만 표시합니다. 같은 인식 개구부의 경로는 하나로 묶고, 자동 추정 위치는 인접한 국부 구간별로 묶습니다. 추정 그룹은 동일한 실제 틈이라는 확정이 아닙니다. 관찰자 쪽에서 가장 마지막에 인식된 개구부를 사용하며, 전체 외장 경계임을 보증하지 않습니다. 주변 지지가 부족한 곡면·열린 틈, 여러 외곽 깊이가 섞인 위치, 비정상 메시와 처리 예산 초과는 미확정으로 남기며 출구 그라데이션을 만들지 않습니다. 이전 결과에 개구부 정보가 없으면 재해석이 필요합니다. CAD Hide·투명도·단면 표시는 Leak 점의 차폐를 해제하지 않습니다. 활성 CAD와 Block으로 실제 가려지는 점은 표시·클릭에서 제외하며, 해석 제외·삭제 부품은 차폐에서 제외합니다. 셀 평균보다 저장된 실제 경로의 표본 위치를 우선합니다. 선택 시 주황 화살표는 검출된 대표 Ray의 광원→관찰자 경로, 하늘색 화살표는 저장된 경로의 관찰 끝점에서 바깥으로 표시하는 방향 안내이며 광량이나 추가 교차 검사를 뜻하지 않습니다. 인접 위치와 유사한 광원·반사점 경로의 후보를 묶으며 대표 각도로 Receiver를 생성합니다. 경로 탐색의 대표 각도는 가장 밝은 각도가 아닙니다. 휘도 모드는 직광이 확인된 셀의 직광 경로를 우선 보존하며 총 휘도는 모든 유효 기여를 합산합니다. 후보의 추정 최고 휘도는 연속 각도의 최대값이나 가시 범위 경계는 아닙니다. 묶음의 검출 각도 목록에서 각 방향을 확인하세요. 경로 검출은 방향 조건을 만족하는 경로의 존재이며 lm·nit나 육안 가시성 판정이 아닙니다. BSDF의 미약한 산란 성분도 검출될 수 있습니다. 상대 Priority는 광원 추적 후보 간 상대값이며 절대 위험도나 측정값이 아닙니다. 저장된 경로가 없으면 두 종류의 화살표를 표시하지 않습니다. 목록에서 후보를 선택하면 해당 점을 강조합니다. 역추적 후보의 시야각 Receiver 생성은 검출 당시의 기준 축·좌우·상하 각도로 Receiver만 만들고 정밀해석 설정을 엽니다. 다른 수광면이 Ray를 먼저 받지 않도록 해당 Receiver만 ON으로 전환하며 기존 항목은 보존합니다. 처음에는 단일 각도이며 주변 범위·간격은 Receiver 편집에서 변경합니다. ROI·광원·재질·샘플링 설정은 변경하지 않습니다. 삭제하면 현재 결과 목록과 해당 강조점에서 제거합니다. 해석 원본과 각도별 집계, 이미 생성한 ROI·Receiver는 유지합니다. Preview를 다시 실행하면 새 결과에서 다시 검출될 수 있습니다.</HelpTooltip>
           </div>
           <div className="flex flex-wrap items-center gap-1 text-xs"><span>묶음 거리 (mm)</span><NumberInput aria-label="Leak 묶음 거리 (mm)" className="h-7 w-16 rounded border border-border px-1" value={groupDistance} min={1} max={100} onValueChange={value => setGroupDistance(Math.max(1,Math.min(100,value)))} /><HelpTooltip label="Leak 묶음 도움말">근접한 관찰 위치와 비슷한 내부 경로 모양을 묶습니다. 중간 점의 작은 차이와 일직선 위 추가 점을 허용하며 다른 반사 경로는 구분합니다. 표시 목록만 합치고 해석 원본과 점은 유지합니다. 거리를 늘리면 가까운 다른 틈이 합쳐질 수 있으므로 대표 경로를 확인하세요. 되돌리기는 마지막 수동 묶음 전 상태를 복원합니다. 후보를 삭제하면 되돌리기 기록을 해제합니다.</HelpTooltip>
             <Button size="sm" variant="outline" disabled={candidates.length < 2 || isRunning || validatingCandidateId !== null} onClick={() => {
@@ -890,7 +899,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               <article
                 key={candidate.id}
                 ref={(node) => { if (node) candidateRows.current.set(candidate.id, node); else candidateRows.current.delete(candidate.id) }}
-                aria-label={`Candidate ${String(index + 1).padStart(2, '0')}`}
+                aria-label={`Point${index + 1}`}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(
                   'rounded-lg border p-2.5 transition-colors',
@@ -899,16 +908,15 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                 onClick={() => selectCandidate(candidate.id)}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <Button size="icon-xs" variant="ghost" aria-label={`Delete Candidate ${index + 1}`} onClick={(event) => { event.stopPropagation(); setGroupUndo(null); removeCandidate(candidate.id) }}><Trash2 /></Button>
-                  <button type="button" aria-pressed={selected} className="min-w-0 flex-1 text-left text-sm font-semibold" onClick={event => { event.stopPropagation(); selectCandidate(candidate.id) }}>Candidate {String(index + 1).padStart(2, '0')} · {candidate.observerEvidence && (candidate.groupedCount ?? 1) > 1 ? `대표 ${candidate.observerEvidence.horizontalDeg}° / ${candidate.observerEvidence.verticalDeg}°` : candidate.label}{(candidate.groupedCount ?? 1) > 1 ? ` · ${candidate.groupedCount}개 묶음` : ''}</button>
-                  <span className="text-xs text-muted-foreground">{candidate.apertureMethod ? `출구 추정 · 깊이 변동 ${candidate.apertureVariationMm?.toFixed(2)} mm` : candidate.apertureId ? '개구부 경유' : '개구부 미확정'}</span>
-                  <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs font-semibold text-orange-700 dark:text-orange-300">
-                    {candidate.peakLuminanceNit !== undefined ? `추정 ${candidate.peakLuminanceNit.toExponential(3)} nit` : candidate.observerEvidence ? '경로 검출 · 광량 미평가' : `상대 Priority · ${riskPriority(candidate.relativeStrength)}`}
-                  </span>
+                  <Button size="icon-xs" variant="ghost" aria-label={`Delete Point${index + 1}`} onClick={(event) => { event.stopPropagation(); setGroupUndo(null); removeCandidate(candidate.id) }}><Trash2 /></Button>
+                  <button type="button" aria-pressed={selected} title={pointRowLabel(candidate, index)} className="min-w-0 flex-1 truncate whitespace-nowrap text-left text-xs font-semibold" onClick={event => { event.stopPropagation(); selectCandidate(candidate.id) }}>{pointRowLabel(candidate, index)}</button>
                 </div>
-                <details className="mt-1 text-xs" onClick={event => event.stopPropagation()}><summary className="cursor-pointer">상세 정보</summary>
+                <details className="mt-1 text-xs" onClick={event => event.stopPropagation()}><summary className="cursor-pointer whitespace-nowrap">상세 정보</summary>
+                  <div className="mt-1">{candidate.label}{(candidate.groupedCount ?? 1) > 1 ? ` · ${candidate.groupedCount}개 묶음` : ''}</div>
+                  <div className="mt-1">{candidate.apertureMethod ? `출구 추정 · 깊이 변동 ${candidate.apertureVariationMm?.toFixed(2)} mm` : candidate.apertureId ? '개구부 경유' : '출구 미확정'}</div>
+                  <div className="mt-1">{candidate.peakLuminanceNit !== undefined ? `추정 휘도 ${candidate.peakLuminanceNit.toExponential(3)} nit` : candidate.observerEvidence ? '경로 검출 · 광량 미평가' : `상대 Priority · ${riskPriority(candidate.relativeStrength)}`}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {candidate.observerEvidence ? '관찰 면 · 외관 위치 미확정' : 'Candidate Center'} ({candidate.center.map(coordinate).join(', ')}) mm
+                  {candidate.observerEvidence ? '관찰 면 · 외관 위치 미확정' : 'Point 위치'} ({candidate.center.map(coordinate).join(', ')}) mm
                 </div>
                 {candidate.observerEvidence ? <div className="mt-1 text-xs">직광 {candidate.observerAngles?.reduce((sum, angle) => sum + angle.directCount, 0) ?? candidate.observerEvidence.directCount} · 반사광 {candidate.observerAngles?.reduce((sum, angle) => sum + angle.reflectedCount, 0) ?? candidate.observerEvidence.reflectedCount}</div> : null}
                 {candidate.peakDirectLuminanceNit !== undefined ? <div className="mt-1 text-xs">성분 최대 · 직광 {candidate.peakDirectLuminanceNit.toExponential(2)} nit · 반사 {candidate.peakReflectedLuminanceNit?.toExponential(2)} nit</div> : null}

@@ -66,7 +66,8 @@ it('centres the generated Receiver on the observer footprint rather than the bri
   summary.cells[0].path_validation = { status: 'invalid', reason: 'occluded_segment' }
   summary.cells[1].path_validation = { status: 'valid', endpoint_kind: 'virtual_emitter' }
   const checked = detectLeakPreviewCandidates(scene, result)
-  expect(checked.points.some((p) => p.position[0] === cells[0].position[0] || p.position[0] === cells[1].position[0])).toBe(false)
+  expect(checked.points.some((p) => p.position[0] === cells[0].position[0])).toBe(false)
+  expect(checked.points.some((p) => p.position[0] === cells[1].position[0])).toBe(true)
   summary.execution_backend = 'gpu_cuda'
   summary.requested_backend = 'gpu_cuda'
   summary.sample_contract = 'observer_counter_latin_v1'
@@ -938,7 +939,7 @@ it('creates Preview ROI with unlimited Z even without result emitter metadata', 
 })
 
 
-it('shows only an audited opening crossing, excluding internal bounces and floating estimates', () => {
+it('shows audited visible endpoints and migrates opening markers without adding intermediate bounces', () => {
   const endpoint: Vec3 = [2, 0, 0]
   const firstBounce: Vec3 = [1, 0, 0]
   const summary = {
@@ -950,10 +951,11 @@ it('shows only an audited opening crossing, excluding internal bounces and float
   const points = [firstBounce, endpoint, [20,0,0] as Vec3].map(position => ({
     apertureId: 'hole-1', position, observerAngles: [0,0] as [number,number], relativeStrength: 1,
   }))
-  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([points[1]])
+  const visiblePoint = { ...points[1], position: [1.5,0,0], surfacePosition: [1.5,0,0] }
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([visiblePoint])
   const weakerDuplicate = { ...points[1], relativeStrength: .1 }
-  expect(verifiedLeakPreviewSurfacePoints([weakerDuplicate, points[1]], summary)).toEqual([points[1]])
-  expect(verifiedLeakPreviewSurfacePoints([points[1], weakerDuplicate], summary)).toEqual([points[1]])
+  expect(verifiedLeakPreviewSurfacePoints([weakerDuplicate, points[1]], summary)).toEqual([visiblePoint])
+  expect(verifiedLeakPreviewSurfacePoints([points[1], weakerDuplicate], summary)).toEqual([visiblePoint])
   expect(points).toHaveLength(3) // display filtering must not destroy saved evidence
 
   expect(verifiedLeakPreviewSurfacePoints(points, null)).toEqual([])
@@ -962,7 +964,7 @@ it('shows only an audited opening crossing, excluding internal bounces and float
   summary.cells[0].path_validation = { status: 'unverified', endpoint_kind: 'cad_surface' }
   expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([])
   summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'virtual_emitter' }
-  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([points[1]]) // direct light can cross a real opening
+  expect(verifiedLeakPreviewSurfacePoints(points, summary)).toEqual([visiblePoint]) // direct light can cross a real opening
   summary.cells[0].path_validation = { status: 'valid', endpoint_kind: 'cad_surface' }
   expect(verifiedLeakPreviewSurfacePoints([{...points[1], observerAngles:[90,0]}], summary)).toEqual([])
 })
@@ -978,8 +980,8 @@ it('groups different interior paths by opening identity and preserves separate n
   const result = groupObserverCandidates(points, [a,b,c], 3)
   expect(result.candidates).toHaveLength(2)
   expect(result.candidates[0].sourceCandidateIds).toEqual(['a','b'])
-  expect(result.points).toHaveLength(2)
-  expect(result.points.map(point => point.position)).toEqual([[0,0,0],[.1,0,0]])
+  expect(result.points).toHaveLength(3)
+  expect(result.points.map(point => point.position)).toEqual([[0,0,0],[100,0,0],[.1,0,0]])
   expect(result.candidates[0].representativePath).toEqual(a.representativePath)
 })
 
