@@ -2,7 +2,7 @@
 export const leakPreviewDisplayStyle = {
   haloSize: 12,
   pickRadius: 12,
-  coreSize: 3,
-  haloOpacity: .08,
-  coreOpacity: .55,
+  coreSize: 7,
+  haloOpacity: .45,
+  coreOpacity: 1,
 } as const

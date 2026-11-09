@@ -36,6 +36,8 @@ export function leakPathPattern(path: Vec3[] | undefined, tolerance: number) {
   return { vertices: simplified.length, start: simplified[0], end: simplified.at(-1)!, samples }
 }
 export function similarLeakPathPatterns(a: ReturnType<typeof leakPathPattern>, b: ReturnType<typeof leakPathPattern>, tolerance: number) {
-  return !!a && !!b && a.vertices === b.vertices && distance(a.end,b.end) <= tolerance && distance(a.start,b.start) <= tolerance*2 &&
+  // Sampling compares the physical route, independent of how many vertices
+  // the representative ray retained (including small reflection variations).
+  return !!a && !!b && distance(a.end,b.end) <= tolerance && distance(a.start,b.start) <= tolerance*2 &&
     a.samples.every((p,i) => distance(p,b.samples[i]) <= tolerance*2)
 }

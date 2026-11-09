@@ -4005,12 +4005,12 @@ export function ThreeViewerCanvas({
     const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
     const haloLow = new Color(0xf8c75a)
     const haloHigh = new Color(0xffe5a0)
-    const coreLow = new Color(0xd89b36)
-    const coreHigh = new Color(0xffd67a)
+    const coreLow = new Color(0xffcc00)
+    const coreHigh = new Color(0xffed80)
     const selectedHaloColor = new Color(0x00ffff).toArray()
     const selectedCoreColor = new Color(0xffffff).toArray()
-    const dimHaloColor = new Color(0x392619).toArray()
-    const dimCoreColor = new Color(0x542819).toArray()
+    const dimHaloColor = new Color(0xb88a20).toArray()
+    const dimCoreColor = new Color(0xe6b83d).toArray()
     const mixedHalo = new Color(), mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
       if (!cachedCore) positions.set(point.position, index * 3)
@@ -4035,7 +4035,7 @@ export function ThreeViewerCanvas({
     if (cachedHalo && cachedCore) {
       cachedHalo.geometry.getAttribute('color').needsUpdate = true
       cachedCore.geometry.getAttribute('color').needsUpdate = true
-      cachedHalo.visible = Boolean(selectedLeakCandidateId || selectedGroupSet.size || leakHighlight)
+      cachedHalo.visible = true
     } else {
     const haloGeometry = new BufferGeometry()
     haloGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
@@ -4057,7 +4057,7 @@ export function ThreeViewerCanvas({
       }),
     )
     glowHalo.name = 'leak-preview-glow-halo'
-    glowHalo.visible = Boolean(selectedLeakCandidateId || selectedGroupSet.size || leakHighlight)
+    glowHalo.visible = true
     glowHalo.renderOrder = 219
     const coreGeometry = new BufferGeometry()
     coreGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
