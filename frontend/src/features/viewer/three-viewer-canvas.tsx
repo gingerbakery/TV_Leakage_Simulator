@@ -2,6 +2,7 @@ import { LeakMarkerOcclusion } from './leak-marker-occlusion'
 import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
 import { ObserverViewCamera, observerViewPose, captureObserverCamera, restoreObserverCamera } from './observer-view-camera'
+import { createCandidateReceiver } from '@/features/leak-preview/leak-preview-model'
 import { leakPreviewDisplayStyle } from './leak-preview-display-style'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewPoint } from './leak-preview-picking'
@@ -434,10 +435,9 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
       gradient.addColorStop(1, 'rgba(250, 204, 21, 0)')
     } else {
       gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.72, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.76, 'rgba(25, 25, 25, 1)')
-      gradient.addColorStop(0.9, 'rgba(25, 25, 25, 1)')
-      gradient.addColorStop(1, 'rgba(25, 25, 25, 0)')
+      gradient.addColorStop(0.7, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(0.82, 'rgba(255, 255, 255, 0.8)')
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
     }
     context.fillStyle = gradient
     context.fillRect(0, 0, 64, 64)
@@ -4013,10 +4013,12 @@ export function ThreeViewerCanvas({
     const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
     const haloLow = new Color(0xf8c75a)
     const haloHigh = new Color(0xffe5a0)
-    const coreLow = new Color(0xffff00)
-    const coreHigh = new Color(0xffff00)
+    const coreLow = new Color(0xffcc00)
+    const coreHigh = new Color(0xffed80)
     const selectedHaloColor = new Color(0x00ffff).toArray()
     const selectedCoreColor = new Color(0xffffff).toArray()
+    const dimHaloColor = new Color(0xb88a20).toArray()
+    const dimCoreColor = new Color(0xe6b83d).toArray()
     const mixedHalo = new Color(), mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
       if (!cachedCore) positions.set(point.position, index * 3)
@@ -4028,6 +4030,11 @@ export function ThreeViewerCanvas({
       if (emphasized) {
         haloColors.set(selectedHaloColor, index * 3)
         coreColors.set(selectedCoreColor, index * 3)
+        return
+      }
+      if (leakHighlight || selectedLeakCandidateId || selectedLeakGroupIds.length) {
+        haloColors.set(dimHaloColor, index * 3)
+        coreColors.set(dimCoreColor, index * 3)
         return
       }
       mixedHalo.copy(haloLow).lerp(haloHigh, strength).toArray(haloColors, index * 3)
@@ -4215,7 +4222,8 @@ export function ThreeViewerCanvas({
       return
     }
     const pose = observerViewPose(observerCameraRequest.candidate,
-      new Box3().setFromObject(runtime.modelRoot), camera.aspect)
+      new Box3().setFromObject(runtime.modelRoot), camera.aspect,
+      createCandidateReceiver(observerCameraRequest.candidate, 1, scene, transformRules))
     if (!pose) return
     previousObserverCamera.current ??= captureObserverCamera(camera, controls.target)
     camera.position.copy(pose.position)

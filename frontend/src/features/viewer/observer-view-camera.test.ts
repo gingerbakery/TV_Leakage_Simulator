@@ -4,6 +4,7 @@ import { ObserverViewCamera, captureObserverCamera, observerViewPose, restoreObs
 import { detectLeakPreviewCandidates } from '@/features/leak-preview/leak-preview-model'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
+import { createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
 
 it('uses parallel picking rays, preserves projection after resize, and restores the previous camera', () => {
   const camera = new ObserverViewCamera(45, 2, .01, 1000)
@@ -57,4 +58,31 @@ it('places the camera outside the model along the saved outward direction and ce
   expect(projected.x).toBeCloseTo(0)
   expect(projected.y).toBeCloseTo(0)
   expect(observerViewPose({ ...candidate, observerEvidence: undefined }, bounds, 2)).toBeNull()
+})
+
+it('keeps projected world X horizontal, fits the entire set, and uses the external receiver distance', () => {
+  const base = detectLeakPreviewCandidates(createSceneFixture(), createRayTraceResultFixture()).candidates[0]
+  const bounds = new Box3(new Vector3(-100,-50,-10), new Vector3(100,50,10))
+  const outward = new Vector3(1,2,3).normalize()
+  const target = new Vector3(90,40,0)
+  const receiver = createDatumReceiver('view', target.clone().addScaledVector(outward, 500).toArray(), [0,0,0])
+  const candidate = { ...base, vAxis: [1,0,0] as [number,number,number],
+    representativePath: [target.toArray(), receiver.center],
+    observerEvidence: { ...base.observerEvidence!, direction: outward.toArray() } }
+  const pose = observerViewPose(candidate, bounds, 1.5, receiver)!
+  expect(pose.position.distanceTo(new Vector3(...receiver.center))).toBeLessThan(1e-8)
+  const camera = new ObserverViewCamera(45,1.5,pose.near,pose.far)
+  camera.position.copy(pose.position)
+  camera.up.copy(pose.up)
+  camera.lookAt(pose.target)
+  camera.viewHeight = pose.height
+  camera.setParallel(true)
+  camera.updateMatrixWorld(true)
+  expect(target.clone().add(new Vector3(1,0,0)).project(camera).y).toBeCloseTo(0)
+  for (const x of [-100,100]) for (const y of [-50,50]) for (const z of [-10,10]) {
+    const projected = new Vector3(x,y,z).project(camera)
+    expect(Math.abs(projected.x)).toBeLessThan(1)
+    expect(Math.abs(projected.y)).toBeLessThan(1)
+    expect(Math.abs(projected.z)).toBeLessThan(1)
+  }
 })
