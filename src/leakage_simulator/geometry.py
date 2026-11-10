@@ -1050,7 +1050,7 @@ class TriangleMesh:
                         should_stop=should_stop,
                     )
                 self._bvh_build_sec = time.perf_counter() - started
-            except InterruptedError:
+            except Exception:
                 self._bvh_nodes = None
                 self._bvh_face_indices = None
                 self._bvh_leaf_count = 0
@@ -1338,14 +1338,21 @@ class TriangleMesh:
         ordered_faces = self._bvh_face_indices
         if nodes is None or ordered_faces is None:
             raise RuntimeError("BVH storage was not initialized")
-        bounds_min = tuple(
-            min(prepared[index].bounds_min[axis] for index in face_indices)
-            for axis in range(3)
-        )
-        bounds_max = tuple(
-            max(prepared[index].bounds_max[axis] for index in face_indices)
-            for axis in range(3)
-        )
+        # Keep recursive BVH reductions explicit: each coordinate is read
+        # directly, without generators capturing a comprehension's axis.
+        lower = [float("inf")] * 3
+        upper = [-float("inf")] * 3
+        centroid_lower = [float("inf")] * 3
+        centroid_upper = [-float("inf")] * 3
+        for face_index in face_indices:
+            triangle = prepared[face_index]
+            for axis in range(3):
+                lower[axis] = min(lower[axis], triangle.bounds_min[axis])
+                upper[axis] = max(upper[axis], triangle.bounds_max[axis])
+                centroid_lower[axis] = min(centroid_lower[axis], triangle.centroid[axis])
+                centroid_upper[axis] = max(centroid_upper[axis], triangle.centroid[axis])
+        bounds_min = tuple(lower)
+        bounds_max = tuple(upper)
         node_index = len(nodes)
         nodes.append(_FlatBvhNode(bounds_min=bounds_min, bounds_max=bounds_max))
         if len(face_indices) <= leaf_size:
@@ -1355,11 +1362,7 @@ class TriangleMesh:
             nodes[node_index].count = len(face_indices)
             self._bvh_leaf_count += 1
             return node_index
-        extents = [
-            max(prepared[index].centroid[axis] for index in face_indices)
-            - min(prepared[index].centroid[axis] for index in face_indices)
-            for axis in range(3)
-        ]
+        extents = [centroid_upper[axis] - centroid_lower[axis] for axis in range(3)]
         split_axis = max(range(3), key=lambda axis: extents[axis])
         ordered = sorted(
             face_indices,

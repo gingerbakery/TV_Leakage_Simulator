@@ -4,6 +4,7 @@ import math
 import random
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -38,6 +39,33 @@ def build_box_array() -> TriangleMesh:
 
 
 class FlatBvhPerf2Tests(unittest.TestCase):
+    def test_failed_recursive_build_is_discarded_and_can_be_retried(self) -> None:
+        mesh = build_box_array()
+        build = mesh._build_flat_bvh
+        calls = 0
+
+        def fail_during_recursion(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                raise TypeError("'list_iterator' object is not subscriptable")
+            return build(*args, **kwargs)
+
+        with patch.object(mesh, '_build_flat_bvh', side_effect=fail_during_recursion):
+            with self.assertRaisesRegex(TypeError, 'list_iterator'):
+                mesh.prepare_acceleration()
+        self.assertIsNone(mesh._bvh_nodes)
+        self.assertIsNone(mesh._bvh_face_indices)
+        self.assertEqual(mesh._bvh_leaf_count, 0)
+        mesh.prepare_acceleration()
+        self.assertEqual(sorted(mesh._bvh_face_indices), list(range(len(mesh.faces))))
+        origin, direction = (1., 1., -8.), (0., 0., 1.)
+        expected = mesh.intersect_ray(origin, direction, backend='brute_force')
+        actual = mesh.intersect_ray(origin, direction, backend='bvh')
+        self.assertIsNotNone(expected)
+        self.assertEqual(actual.face_index, expected.face_index)
+        self.assertAlmostEqual(actual.t, expected.t)
+
     def test_bvh_matches_brute_force_for_random_rays(self) -> None:
         mesh = build_box_array()
         rng = random.Random(20260717)

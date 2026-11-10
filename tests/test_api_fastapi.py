@@ -75,6 +75,30 @@ def _trace_runner(trace_input, progress_callback=None, should_stop=None):
 
 
 class FastApiLayerTests(unittest.TestCase):
+    def test_preparation_iterator_failure_exposes_source_before_any_rays_run(self):
+        def broken_builder(scene_mesh, request_payload):
+            values = iter([1, 2])
+            return values[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = unittest.mock.Mock(side_effect=AssertionError("Must not start tracing"))
+            runtime = ApiRuntime(Path(directory), scene_loader=_scene_loader,
+                trace_input_builder=broken_builder, trace_runner=runner)
+            scene = runtime.load_scene("failed-preparation.step")
+            with patch("builtins.print"), patch("leakage_simulator.api.runtime.traceback.print_exc"):
+                job = runtime.start_raytrace_job({"scene_token": scene["metadata"]["scene_token"],
+                    "emitters": [{"enabled": True, "ray_count": 2}]})
+                for _ in range(100):
+                    snapshot = runtime.raytrace_job_snapshot(job["job_id"])
+                    if snapshot["status"] == "failed":
+                        break
+                    time.sleep(.005)
+                self.assertEqual(snapshot["status"], "failed")
+                self.assertEqual(snapshot["processed_rays"], 0)
+                self.assertIn("'list_iterator' object is not subscriptable", snapshot["error"])
+                self.assertRegex(snapshot["error"], r"test_api_fastapi\.py:\d+ \(broken_builder\)")
+                runner.assert_not_called()
+
     def test_halfway_worker_exception_is_logged_and_exposed_in_status(self):
         def runner(trace_input, progress_callback=None, should_stop=None):
             progress_callback(1, 2)
@@ -94,7 +118,8 @@ class FastApiLayerTests(unittest.TestCase):
                     time.sleep(.005)
                 self.assertEqual(snapshot["status"], "failed")
                 self.assertEqual(snapshot["progress"], .5)
-                self.assertEqual(snapshot["error"], "synthetic halfway observer failure")
+                self.assertTrue(snapshot["error"].startswith("synthetic halfway observer failure · "))
+                self.assertRegex(snapshot["error"], r"test_api_fastapi\.py:\d+ \(runner\)")
                 stack.assert_called_once()
                 messages = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
                 self.assertIn("job exception", messages)

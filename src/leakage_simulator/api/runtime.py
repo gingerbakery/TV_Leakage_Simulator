@@ -1793,11 +1793,15 @@ class ApiRuntime:
             current_id = session.job_id if session else job_id
             print(f"[RAY] job exception | {current_id} | {type(exc).__name__}: {exc}", flush=True)
             traceback.print_exc()
+            frames = traceback.extract_tb(exc.__traceback__)
+            failure = frames[-1] if frames else None
+            location = f"{Path(failure.filename).name}:{failure.lineno} ({failure.name})" if failure else None
+            message = str(exc) or type(exc).__name__
             update_job(
                 status="failed",
                 phase="failed",
                 phase_detail="Ray Tracing 오류 발생",
-                error=str(exc) or type(exc).__name__,
+                error=f"{message} · {location}" if location else message,
                 estimated_remaining_sec=None,
                 completed_at=time.time(),
             )
