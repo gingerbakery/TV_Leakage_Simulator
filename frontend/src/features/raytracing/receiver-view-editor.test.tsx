@@ -10,6 +10,27 @@ import { RayTracingPanel } from './ray-tracing-panel'
 import { leakPreviewStore } from '@/features/leak-preview/leak-preview-store'
 
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear() })
+
+it('edits the distance from a fixed Leak Point through zero while retaining angle and sensor size', () => {
+  renderPanel()
+  const point: [number,number,number] = [30,30,10]
+  const original = { ...createViewAngleReceiver('receiver_001', createSceneFixture(), point,
+    { axis:'neg_z',horizontal_deg:30,vertical_deg:20,range_deg:0,step_deg:1 },3,[],[0,0,0],'leak_point'),
+    reference_mode:'leak_preview_candidate', display_name:'Near point', width_mm:26, height_mm:38,
+    observer_reference_path:[point,[30,30,-20]] as [number,number,number][] }
+  act(() => workspaceStore.getState().actions.upsertReceiver(original))
+  fireEvent.click(screen.getByRole('button',{name:'Edit Near point'}))
+  expect(screen.getByRole('combobox',{name:'Receiver 거리 기준'})).toHaveProperty('value','leak_point')
+  change('Receiver Leak Point 거리',0)
+  expect(workspaceStore.getState().placementPreviewReceiver?.center).toEqual(point)
+  expect(screen.getByText('0 mm · 검출면과 겹침')).toBeTruthy()
+  change('Receiver Leak Point 거리',1)
+  fireEvent.click(screen.getByRole('button',{name:'Save Receiver'}))
+  const saved = workspaceStore.getState().receivers[0]
+  expect(saved).toMatchObject({base_center:point,view_distance_mm:1,view_distance_reference:'leak_point',
+    width_mm:26,height_mm:38,view_angles:original.view_angles})
+  expect(Math.hypot(...saved.center.map((value,i) => value-point[i]))).toBeCloseTo(1)
+})
 function change(label: string, value: number) {
   const field=screen.getByRole('spinbutton',{name:label})
   fireEvent.change(field,{target:{value:String(value)}}); fireEvent.blur(field)

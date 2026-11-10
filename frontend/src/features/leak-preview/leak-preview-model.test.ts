@@ -197,11 +197,13 @@ describe('whole-set leak preview', () => {
         spacing_mm: [1, 1], direct_count: 1, reflected_count: 0 }],
       cells: [{ view_index: 0, row: 0, column: 0, position: target, direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0 }],
     }
-    const candidate = { ...detectLeakPreviewCandidates(scene, result).candidates[0], widthMm: 80, heightMm: 30 }
+    const candidate = { ...detectLeakPreviewCandidates(scene, result).candidates[0], widthMm: 80, heightMm: 30,
+      aperturePosition: [0,0,0] as [number,number,number], representativePath: [target, canonical.center] }
     const receiver = createCandidateReceiver(candidate, 1, scene)
     expect(receiver.view_angles).toEqual(view)
     expect(receiver.base_center).toEqual(target)
-    expect(receiver.center).toEqual(canonical.center)
+    expect(receiver.center).toEqual(target.map((value, axis) => value + direction[axis]*3))
+    expect(receiver.view_distance_reference).toBe('leak_point')
     expect(receiver.normal).toEqual(direction.map((value) => -value))
     expect(receiver.width_mm).toBeCloseTo(26)
     expect(receiver.height_mm).toBeCloseTo(76)

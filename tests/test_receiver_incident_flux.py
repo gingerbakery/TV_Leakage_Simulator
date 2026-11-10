@@ -39,6 +39,16 @@ def angled_receiver(angle_deg: float, acceptance_angle_deg: float = 90.0) -> Rec
 
 
 class ReceiverIncidentFluxTests(unittest.TestCase):
+    def test_point_distance_accepts_zero_but_not_negative_or_nonfinite_values(self):
+        receiver = ReceiverSpec(receiver_id="point", view_distance_reference="leak_point", view_distance_mm=0)
+        self.assertEqual(receiver.view_distance_mm, 0)
+        self.assertEqual(ReceiverSpec.from_dict(receiver.to_dict()).view_distance_reference, "leak_point")
+        for distance in (-1, float('inf'), float('nan')):
+            with self.assertRaises(ValueError):
+                ReceiverSpec(receiver_id="point", view_distance_reference="leak_point", view_distance_mm=distance)
+        with self.assertRaises(ValueError):
+            ReceiverSpec(receiver_id="legacy", view_distance_mm=0)
+
     def test_scalar_receiver_preserves_flux_packet_at_off_axis_angles(self) -> None:
         power_lumen = 2.0
         for angle_deg in (0.0, 45.0, 80.0):

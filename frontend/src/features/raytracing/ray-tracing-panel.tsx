@@ -1084,6 +1084,7 @@ function ReceiverDialog({
     currentViewDefaultDistanceMm,
   )
   const [positionOffset, setPositionOffset] = useState<Vec3>([0, 0, 0])
+  const [distanceReference, setDistanceReference] = useState<'set_bounds' | 'leak_point'>('set_bounds')
   const [tilt, setTilt] = useState<Vec3>([0, 0, 0])
   const [capturedFrame, setCapturedFrame] =
     useState<ViewerCameraFrame | null>(null)
@@ -1109,6 +1110,7 @@ function ReceiverDialog({
     const initialDistance =
       initialReceiver?.view_distance_mm ?? (mode === 'view_angle' ? 3 : currentViewDefaultDistanceMm)
     setViewAngles(initialReceiver?.view_angles ?? { ...defaultReceiverView })
+    setDistanceReference(initialReceiver?.view_distance_reference ?? 'set_bounds')
     setDisplayName(initialReceiver?.display_name ?? '')
     setCenter(
       initialReceiver?.base_center ??
@@ -1251,7 +1253,7 @@ function ReceiverDialog({
       : center
     const receiver =
       mode === 'view_angle' && scene
-        ? createViewAngleReceiver(initialReceiver?.receiver_id ?? '__placement_preview_receiver__', scene, center, viewAngles, viewDistance, transforms, positionOffset)
+        ? createViewAngleReceiver(initialReceiver?.receiver_id ?? '__placement_preview_receiver__', scene, center, viewAngles, viewDistance, transforms, positionOffset, distanceReference)
         : mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
             initialReceiver?.receiver_id ??
@@ -1292,12 +1294,25 @@ function ReceiverDialog({
     rotation,
     tilt,
     viewDistance,
+    distanceReference,
     width,
   ])
 
   useEffect(() => {
     actions.setPlacementPreviewReceiver(previewReceiver)
   }, [actions, previewReceiver])
+
+  const pointReceiverInsideSetBounds = useMemo(() => {
+    if (distanceReference !== 'leak_point' || !previewReceiver || !scene) return false
+    const bounds = getLeakPreviewBounds(scene, transforms)
+    const outward = previewReceiver.normal.map(value => -value)
+    let clearance = Infinity
+    for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
+      const corner = [x,y,z]
+      clearance = Math.min(clearance, previewReceiver.center.reduce((sum,value,i) => sum + (value-corner[i])*outward[i], 0))
+    }
+    return clearance < 0
+  }, [distanceReference, previewReceiver, scene, transforms])
 
   useEffect(
     () => () => actions.setPlacementPreviewReceiver(null),
@@ -1319,7 +1334,7 @@ function ReceiverDialog({
       : center
     const receiver =
       mode === 'view_angle' && scene
-        ? createViewAngleReceiver(receiverId, scene, center, viewAngles, viewDistance, transforms, positionOffset)
+        ? createViewAngleReceiver(receiverId, scene, center, viewAngles, viewDistance, transforms, positionOffset, distanceReference)
         : mode === 'current_view' && capturedFrame
         ? createCurrentViewReceiver(
             receiverId,
@@ -1388,7 +1403,7 @@ function ReceiverDialog({
       }
       help={
         mode === 'view_angle'
-          ? 'Preview 실행 없이 기준 방향과 좌우·상하 각도로 수광면을 배치합니다. 수광면은 선택 각도 방향의 전체 CAD 경계 밖에 놓입니다. 관찰 기준점은 수광면이 바라볼 위치입니다. 크기·격자·Acceptance Angle은 별도로 유지하며 평행 관찰 역추적과 같은 밝기 값은 아닙니다. 주변 범위가 있으면 각도별 독립 정밀해석으로 실행합니다.'
+          ? '기준 방향과 좌우·상하 각도로 수광면을 배치합니다. Leak Point 기준은 저장된 검출점을 0mm로 삼고, 세트 외부 기준은 전체 CAD 경계 바깥에 배치합니다. 크기·격자·Acceptance Angle은 별도로 유지하며 평행 관찰 역추적과 같은 밝기 값은 아닙니다. 주변 범위가 있으면 각도별 독립 정밀해석으로 실행합니다.'
           : mode === 'current_view'
           ? '현재 3D Viewer의 카메라 위치와 방향을 기준으로 Receiver를 생성합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
           : 'CAD Face 또는 중심 좌표와 Receiver Tilt로 사각 수광면을 배치합니다. Save As는 편집 중인 설정을 새 Receiver로 추가합니다.'
@@ -1499,8 +1514,19 @@ function ReceiverDialog({
           <div className="grid grid-cols-2 gap-2">{([['horizontal_deg','좌우 시야각 (°)',-90,90],['vertical_deg','상하 시야각 (°)',-90,90],['range_deg','주변 범위 (±°)',0,10],['step_deg','각도 간격 (°)',.1,90]] as const).map(([key,label,min,max]) => <NumberField key={key} label={label} ariaLabel={`Receiver ${label}`} value={viewAngles[key]} min={min} max={max} decimals={1} step={.1} onChange={(value) => setViewAngles({ ...viewAngles, [key]: Math.max(min,Math.min(max,value)) })} />)}</div>
           <div className="flex items-center justify-between gap-1"><span className="flex items-center gap-1 text-xs">{anglePlan.count}개 각도<HelpTooltip label="Receiver 시야각 범위 도움말">Preview와 같은 평행 관찰 방향 규칙입니다. 후면 −Z에서 좌우 +는 +X, 상하 +는 +Y입니다. 범위는 두 축에 각각 적용하고 중심·끝점을 포함합니다. 각도마다 Receiver 한 개로 독립 실행하므로 총 계산량도 각도 수만큼 증가합니다. Preview 검사 수준·해상도·셀 반복은 정밀해석 조건에 적용되지 않습니다.</HelpTooltip></span><Button size="sm" variant="outline" onClick={() => { const preview = leakPreviewStore.getState(); setViewAngles({ axis: preview.directions[0] ?? 'neg_z', horizontal_deg: preview.observer.horizontal_deg, vertical_deg: preview.observer.vertical_deg, range_deg: preview.observer.range_deg, step_deg: preview.observer.step_deg }) }}>Preview 각도 가져오기</Button></div>
           {anglePlan.error ? <div role="alert" className="text-xs text-destructive">{anglePlan.error}</div> : null}
-          <VectorFields label="관찰 기준점 (mm)" help="Receiver 중심을 투영할 모델 좌표입니다. 기본값은 변환된 전체 모델 중심입니다. 수광면은 이 지점에서 관찰 방향으로 투영해 CAD 경계 밖에 배치합니다." labels={['X','Y','Z']} ariaLabels={['Receiver target X','Receiver target Y','Receiver target Z']} value={center} decimals={2} onChange={setCenter} />
-          <NumberField label="외부 여유 (mm)" ariaLabel="Receiver 시야각 외부 여유" description="관찰 방향의 전체 CAD 경계에서 수광면까지의 거리입니다. 시야각을 바꿔도 모델 밖에 배치합니다." value={viewDistance} min={.001} decimals={2} step={.1} onChange={setViewDistance} />
+          {distanceReference === 'leak_point' ? <div className="flex items-center gap-1 text-xs">Leak Point (mm) · {center.map(value => value.toFixed(2)).join(' / ')}<HelpTooltip label="Receiver Leak Point 원점 도움말">저장된 검출점의 X/Y/Z 좌표이며 Point 거리의 0mm입니다. 기준점은 유지하고 거리로 Receiver를 이동합니다.</HelpTooltip></div> : <VectorFields label="관찰 기준점 (mm)" help="Receiver 중심을 투영할 모델 좌표입니다. 기본값은 변환된 전체 모델 중심입니다. 수광면은 이 지점에서 관찰 방향으로 투영해 CAD 경계 밖에 배치합니다." labels={['X','Y','Z']} ariaLabels={['Receiver target X','Receiver target Y','Receiver target Z']} value={center} decimals={2} onChange={setCenter} />}
+          {initialReceiver?.reference_mode === 'leak_preview_candidate' ? <label className={fieldLabelClassName}><span className="flex items-center gap-1">거리 기준<HelpTooltip label="Receiver 거리 기준 도움말">Leak Point는 저장된 검출점을 0mm로 삼고 검출 방향으로 이동합니다. 세트 외부는 전체 CAD 경계 바깥의 여유 거리입니다. 기존 Receiver는 저장된 기준을 유지합니다. Leak Point는 내부 반사면일 수 있어 가까운 Receiver가 실제 외부 유출 광량을 뜻하지 않을 수 있습니다.</HelpTooltip></span><select aria-label="Receiver 거리 기준" className={inputClassName} value={distanceReference} onChange={event => {
+            const reference = event.currentTarget.value as 'set_bounds' | 'leak_point'
+            setDistanceReference(reference)
+            if (reference === 'leak_point') {
+              const point = initialReceiver.observer_reference_path?.at(-2)
+              if (point) setCenter([...point])
+              setPositionOffset([0,0,0])
+            } else setViewDistance(value => Math.max(.001, value))
+          }}><option value="set_bounds">세트 외부</option><option value="leak_point" disabled={!initialReceiver.observer_reference_path?.length}>Leak Point</option></select></label> : null}
+          <NumberField label={distanceReference === 'leak_point' ? 'Point 거리 (mm)' : '외부 여유 (mm)'} ariaLabel={distanceReference === 'leak_point' ? 'Receiver Leak Point 거리' : 'Receiver 시야각 외부 여유'} description={distanceReference === 'leak_point' ? '0mm는 저장된 Leak Point입니다. 양수는 검출 시야각 방향으로 이동합니다. 시야각·크기는 유지하며 0mm에서는 검출면과 겹쳐 Ray가 집계되지 않을 수 있습니다.' : '관찰 방향의 전체 CAD 경계에서 수광면까지의 거리입니다. 시야각을 바꿔도 모델 밖에 배치합니다.'} value={viewDistance} min={distanceReference === 'leak_point' ? 0 : .001} decimals={2} step={.1} onChange={setViewDistance} />
+          {distanceReference === 'leak_point' && viewDistance === 0 ? <div role="status" className="text-xs text-amber-700">0 mm · 검출면과 겹침</div> : null}
+          {pointReceiverInsideSetBounds ? <div role="status" className="flex items-center gap-1 text-xs text-amber-700">전체 CAD 경계 안 · 외부 유출 여부 확인<HelpTooltip label="Receiver 외부 배치 확인 도움말">선택 관찰 방향의 전체 CAD 경계 상자보다 안쪽입니다. 실제 기구 내부라는 확정은 아니지만 Receiver가 빛이 외부로 나오기 전에 광선을 받을 수 있습니다. 검출점이 내부 반사면이면 실제 틈 바깥까지 거리를 늘려 확인하세요.</HelpTooltip></div> : null}
         </div> : (
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
             <div className="flex items-center gap-2 text-sm font-semibold">

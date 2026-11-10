@@ -36,7 +36,8 @@ export function receiverViewAnglePairs(view: ReceiverViewAngles): Array<[number,
 }
 
 export function createViewAngleReceiver(id: string, scene: ScenePayload, target: Vec3, view: ReceiverViewAngles,
-  clearanceMm: number, transforms: ComponentTransformRule[] = [], offset: Vec3 = [0,0,0]): ReceiverSpec {
+  clearanceMm: number, transforms: ComponentTransformRule[] = [], offset: Vec3 = [0,0,0],
+  distanceReference: 'set_bounds' | 'leak_point' = 'set_bounds'): ReceiverSpec {
   receiverViewAnglePairs(view)
   const outward = receiverViewDirection(view)
   const bounds = getLeakPreviewBounds(scene, transforms)
@@ -44,8 +45,8 @@ export function createViewAngleReceiver(id: string, scene: ScenePayload, target:
   for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
     support = Math.max(support, dot([x-target[0], y-target[1], z-target[2]], outward))
   }
-  const clearance = Math.max(.001, clearanceMm)
-  const center = target.map((value, i) => value + outward[i]*(support+clearance) + offset[i]) as Vec3
+  const clearance = Math.max(distanceReference === 'leak_point' ? 0 : .001, clearanceMm)
+  const center = target.map((value, i) => value + outward[i]*((distanceReference === 'leak_point' ? 0 : support)+clearance) + offset[i]) as Vec3
   const normal = outward.map((value) => -value) as Vec3
   const w = axes[view.axis]
   const reference: Vec3 = Math.abs(w[1]) < .9 ? [0,1,0] : [0,0,1]
@@ -54,6 +55,7 @@ export function createViewAngleReceiver(id: string, scene: ScenePayload, target:
   const v = unit(cross(u, outward))
   return { ...createDatumReceiver(id, center, [0,0,0]), center, normal, u_axis: u, v_axis: v,
     normal_flip: false, reference_mode: 'view_angle', view_angles: { ...view }, view_distance_mm: clearance,
+    view_distance_reference: distanceReference,
     base_center: [...target], base_u_axis: u, base_v_axis: v, base_normal: normal, position_offset_mm: [...offset] }
 }
 
@@ -62,7 +64,7 @@ export function expandReceiverView(receiver: ReceiverSpec, scene: ScenePayload, 
   return receiverViewAnglePairs(receiver.view_angles).map(([horizontal_deg, vertical_deg]) => ({
     ...receiver,
     ...createViewAngleReceiver(receiver.receiver_id, scene, receiver.base_center ?? receiver.center,
-      { ...receiver.view_angles!, horizontal_deg, vertical_deg, range_deg: 0 }, receiver.view_distance_mm ?? 3, transforms, receiver.position_offset_mm),
+      { ...receiver.view_angles!, horizontal_deg, vertical_deg, range_deg: 0 }, receiver.view_distance_mm ?? 3, transforms, receiver.position_offset_mm, receiver.view_distance_reference),
     display_name: `${receiver.display_name} · ${horizontal_deg}° / ${vertical_deg}°`,
     width_mm: receiver.width_mm, height_mm: receiver.height_mm, resolution: [...receiver.resolution],
     acceptance_angle_deg: receiver.acceptance_angle_deg, normal_flip: receiver.normal_flip, enabled: receiver.enabled,

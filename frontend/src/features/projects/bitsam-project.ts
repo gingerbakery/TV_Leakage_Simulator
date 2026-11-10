@@ -506,6 +506,7 @@ function isReceiverSpec(value: unknown): value is ReceiverSpec {
     isArrayOf(value.reference_vertex_points, isVec3) &&
     isArrayOf(value.reference_edge_points, isVec3Pair) &&
     isNumberOrNull(value.view_distance_mm) &&
+    (value.view_distance_reference === undefined || value.view_distance_reference === 'set_bounds' || value.view_distance_reference === 'leak_point') &&
     (value.base_center === null || isVec3(value.base_center)) &&
     (value.base_u_axis === null || isVec3(value.base_u_axis)) &&
     (value.base_v_axis === null || isVec3(value.base_v_axis)) &&

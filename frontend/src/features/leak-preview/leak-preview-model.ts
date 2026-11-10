@@ -1682,13 +1682,13 @@ export function createCandidateReceiver(
 ): ReceiverSpec {
   if (candidate.observerEvidence && scene) {
     const evidence = candidate.observerEvidence
-    const target = candidate.aperturePosition ?? candidate.representativePath?.at(-2) ?? (evidence.footprintCenter && candidate.representativePath
+    const target = candidate.representativePath?.at(-2) ?? candidate.aperturePosition ?? (evidence.footprintCenter && candidate.representativePath
       ? addScaled(evidence.footprintCenter, evidence.direction, dot(subtract(candidate.center, evidence.footprintCenter), evidence.direction))
       : candidate.representativePath?.at(-2) ?? candidate.center)
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
       scene, target, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
         vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
-      leakPreviewReceiverDistanceMm, transforms)
+      leakPreviewReceiverDistanceMm, transforms, [0,0,0], 'leak_point')
     // Preserve coverage of the Preview grid footprint when converting from
     // its arbitrary observer U/V basis to the angle editor's canonical basis.
     const width = Math.max(1, candidate.widthMm - leakPreviewReceiverOffsetMm * 2)

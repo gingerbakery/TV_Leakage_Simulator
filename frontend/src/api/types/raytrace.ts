@@ -112,6 +112,7 @@ export interface ReceiverSpec {
   reference_vertex_points: Vec3[]
   reference_edge_points: [Vec3, Vec3][]
   view_distance_mm: number | null
+  view_distance_reference?: 'set_bounds' | 'leak_point'
   /** Diagnostic evidence only; never adds hits or flux to the simulation. */
   observer_reference_path?: Vec3[] | null
   base_center: Vec3 | null

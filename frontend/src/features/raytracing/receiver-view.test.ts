@@ -8,6 +8,37 @@ import { createBitsamProject, serializeBitsamProject, parseBitsamProject } from 
 
 const dot = (a: number[], b: number[]) => a.reduce((sum, value, i) => sum+value*b[i],0)
 
+it('positions point-relative sensors at zero and the requested distance without a CAD-boundary offset', () => {
+  const scene = createSceneFixture(), point: [number,number,number] = [30,30,10]
+  const view = { ...defaultReceiverView, horizontal_deg: 35, vertical_deg: -20, range_deg: 1 }
+  const outward = receiverViewDirection(view)
+  for (const distance of [0, .1, 3, 20]) {
+    const receiver = createViewAngleReceiver('point', scene, point, view, distance, [], [0,0,0], 'leak_point')
+    receiver.center.forEach((value, axis) => expect(value).toBeCloseTo(point[axis] + outward[axis]*distance, 10))
+    expect(receiver.base_center).toEqual(point)
+    expect(receiver.view_distance_reference).toBe('leak_point')
+    for (const expanded of expandReceiverView(receiver, scene)) {
+      const delta = expanded.center.map((value,axis) => value-point[axis])
+      expect(Math.hypot(...delta)).toBeCloseTo(distance, 10)
+      expect(expanded.view_distance_reference).toBe('leak_point')
+    }
+  }
+})
+
+it('round-trips point-relative zero distance through projects and the tracing request', () => {
+  const scene = createSceneFixture(), fixture = createRayTraceResultFixture(), store = createWorkspaceStore()
+  store.getState().actions.addCadCase({path:'point.step',displayName:'Point'})
+  const receiver = createViewAngleReceiver('r', scene, [30,30,10], defaultReceiverView, 0, [], [0,0,0], 'leak_point')
+  store.getState().actions.upsertReceiver(receiver)
+  const restored = parseBitsamProject(serializeBitsamProject(createBitsamProject(scene, store.getState())))
+  expect(restored.workspace.receivers[0]).toMatchObject({view_distance_reference:'leak_point',view_distance_mm:0,center:[30,30,10]})
+  const request = buildRayTraceRequest({scene,projectName:'Point',emitters:fixture.emitters,receivers:restored.workspace.receivers,
+    materialAssignments:[],transformRules:[],excludedComponentIds:[],deletedComponentIds:[],roiScopes:[],config:fixture.config})
+  expect(request.receivers[0]).toMatchObject({view_distance_reference:'leak_point',view_distance_mm:0,center:[30,30,10]})
+  restored.workspace.receivers[0].view_distance_reference = 'invalid' as 'leak_point'
+  expect(() => parseBitsamProject(serializeBitsamProject(restored))).toThrow()
+})
+
 it('matches observer directions and places an inward-facing plane outside every CAD corner', () => {
   const scene = createSceneFixture()
   for (const axis of ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z'] as const) {
