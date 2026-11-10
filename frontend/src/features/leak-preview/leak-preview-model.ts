@@ -1682,7 +1682,7 @@ export function createCandidateReceiver(
 ): ReceiverSpec {
   if (candidate.observerEvidence && scene) {
     const evidence = candidate.observerEvidence
-    const target = candidate.aperturePosition ?? (evidence.footprintCenter && candidate.representativePath
+    const target = candidate.aperturePosition ?? candidate.representativePath?.at(-2) ?? (evidence.footprintCenter && candidate.representativePath
       ? addScaled(evidence.footprintCenter, evidence.direction, dot(subtract(candidate.center, evidence.footprintCenter), evidence.direction))
       : candidate.representativePath?.at(-2) ?? candidate.center)
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,

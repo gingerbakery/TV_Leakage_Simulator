@@ -387,7 +387,7 @@ it('collapses similar-route groups, selects every member, filters groups and rev
   expect(leakPreviewStore.getState().candidates).toHaveLength(206)
 })
 
-it('creates only a view-angle receiver from the detected snapshot while preserving BSDF, sources, and sampling', () => {
+it.each([true, false])('creates a view-angle receiver preserving the snapshot (confirmed opening: %s)', (confirmedOpening) => {
   const actions = workspaceStore.getState().actions
   actions.addCadCase({ path: 'bsdf-angle.step', displayName: 'BSDF angle' })
   actions.upsertEmitter(createDatumEmitter('emitter_001', [30, 30, 10], [0, 0, 0]))
@@ -412,7 +412,7 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
       u_axis: canonical.u_axis, v_axis: canonical.v_axis, spacing_mm: [1, 1] }],
     cells: [{ view_index: 0, row: 0, column: 0, position: [30, 30, 10], direct_count: 1, reflected_count: 0, min_depth: 0, max_depth: 0,
       representative_path: [[30,30,10],canonical.center], path_validation:{status:'valid',endpoint_kind:'cad_surface'},
-      aperture:{contract:'bounded_planar_opening_v1',id:'test-opening',position:[30,30,10],exterior_shell_certified:false} }] }
+      ...(confirmedOpening ? { aperture:{contract:'bounded_planar_opening_v1',id:'test-opening',position:[30,30,10],exterior_shell_certified:false} } : {}) }] }
   const onOpenPrecision = vi.fn()
   render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={onOpenPrecision} /></AppProviders>)
   const detection = detectLeakPreviewCandidates(scene, result)
@@ -424,6 +424,12 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
   const before = structuredClone({ emitters: workspaceStore.getState().emitters,
     materialAssignments: workspaceStore.getState().materialAssignments, config: workspaceStore.getState().rayTraceConfig })
   fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
+  expect(leakPreviewStore.getState().cameraViewRequest?.candidate ?? null).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '검출 시야각 보기' }))
+  expect(leakPreviewStore.getState().cameraViewRequest?.candidate?.observerEvidence?.horizontalDeg).toBe(80)
+  expect(leakPreviewStore.getState().cameraViewRequest?.candidate?.observerEvidence?.verticalDeg).toBe(20)
+  fireEvent.click(screen.getByRole('button', { name: '이전 보기' }))
+  expect(leakPreviewStore.getState().cameraViewRequest?.candidate).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
   expect(onOpenPrecision).toHaveBeenCalledOnce()
   expect(workspaceStore.getState().roiScopes).toEqual([])
@@ -450,6 +456,11 @@ it('creates only a view-angle receiver from the detected snapshot while preservi
   expect(workspaceStore.getState().receivers).toHaveLength(2)
   expect(workspaceStore.getState().receivers.filter((item) => item.enabled).map((item) => item.receiver_id)).toEqual([receiver.receiver_id])
   expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === competing.receiver_id)).toEqual({ ...competing, enabled: false })
+  if (!confirmedOpening) {
+    expect(screen.getByRole('button', { name: 'ROI·Receiver 생성' }).hasAttribute('disabled')).toBe(true)
+    expect(workspaceStore.getState().roiScopes).toHaveLength(0)
+    return
+  }
   fireEvent.click(screen.getByRole('button', { name: 'ROI·Receiver 생성' }))
   expect(workspaceStore.getState().roiScopes).toHaveLength(1)
   expect(workspaceStore.getState().receivers).toHaveLength(2)

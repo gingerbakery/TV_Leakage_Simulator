@@ -1,6 +1,7 @@
 import { LeakMarkerOcclusion } from './leak-marker-occlusion'
 import { projectBlockerDrag, type BlockerDrawingSurface } from './blocker-drawing'
 import { leakPreviewArrowSegments } from './leak-preview-paths'
+import { ObserverViewCamera, observerViewPose, captureObserverCamera, restoreObserverCamera } from './observer-view-camera'
 import { leakPreviewDisplayStyle } from './leak-preview-display-style'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewPoint } from './leak-preview-picking'
@@ -242,7 +243,7 @@ interface ViewerRuntime {
   blockerRoot: Group
   blockerSectionRoot: Group
   axisScalePercent: number
-  camera: PerspectiveCamera
+  camera: ObserverViewCamera
   controls: ViewerTrackballControls
   leakPreviewRoot: Group
   leakMarkerOcclusion: LeakMarkerOcclusion
@@ -433,9 +434,10 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
       gradient.addColorStop(1, 'rgba(250, 204, 21, 0)')
     } else {
       gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.7, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.82, 'rgba(255, 255, 255, 0.8)')
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+      gradient.addColorStop(0.72, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(0.76, 'rgba(25, 25, 25, 1)')
+      gradient.addColorStop(0.9, 'rgba(25, 25, 25, 1)')
+      gradient.addColorStop(1, 'rgba(25, 25, 25, 0)')
     }
     context.fillStyle = gradient
     context.fillRect(0, 0, 64, 64)
@@ -1527,6 +1529,10 @@ function fitCamera(
   const bounds = new Box3().setFromObject(fitRoot)
   if (bounds.isEmpty()) return
 
+  if (runtime.camera.isOrthographicCamera) {
+    runtime.camera.zoom = 1
+    runtime.camera.setParallel(false)
+  }
   runtime.camera.fov = cameraFovForPreset(
     preset,
     runtime.camera.fov,
@@ -2019,6 +2025,8 @@ export function ThreeViewerCanvas({
   )
   const actions = useWorkspaceStore(workspaceSelectors.actions)
   const leakPreviewPoints = useLeakPreviewStore((state) => state.points)
+  const observerCameraRequest = useLeakPreviewStore(state => state.cameraViewRequest)
+  const previousObserverCamera = useRef<ReturnType<typeof captureObserverCamera> | null>(null)
   const leakPreviewResult = useLeakPreviewStore((state) => state.result)
   const leakObserverSummary = useMemo(() => leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null, [leakPreviewResult])
   const visibleLeakPreviewPoints = useMemo(
@@ -2189,7 +2197,7 @@ export function ThreeViewerCanvas({
       10,
     )
     orientationScene.add(createOrientationGizmo())
-    const camera = new PerspectiveCamera(
+    const camera = new ObserverViewCamera(
       DEFAULT_CAMERA_FOV_DEGREES,
       1,
       0.01,
@@ -4005,12 +4013,10 @@ export function ThreeViewerCanvas({
     const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
     const haloLow = new Color(0xf8c75a)
     const haloHigh = new Color(0xffe5a0)
-    const coreLow = new Color(0xffcc00)
-    const coreHigh = new Color(0xffed80)
+    const coreLow = new Color(0xffff00)
+    const coreHigh = new Color(0xffff00)
     const selectedHaloColor = new Color(0x00ffff).toArray()
     const selectedCoreColor = new Color(0xffffff).toArray()
-    const dimHaloColor = new Color(0xb88a20).toArray()
-    const dimCoreColor = new Color(0xe6b83d).toArray()
     const mixedHalo = new Color(), mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
       if (!cachedCore) positions.set(point.position, index * 3)
@@ -4022,11 +4028,6 @@ export function ThreeViewerCanvas({
       if (emphasized) {
         haloColors.set(selectedHaloColor, index * 3)
         coreColors.set(selectedCoreColor, index * 3)
-        return
-      }
-      if (leakHighlight || selectedLeakCandidateId || selectedLeakGroupIds.length) {
-        haloColors.set(dimHaloColor, index * 3)
-        coreColors.set(dimCoreColor, index * 3)
         return
       }
       mixedHalo.copy(haloLow).lerp(haloHigh, strength).toArray(haloColors, index * 3)
@@ -4195,6 +4196,40 @@ export function ThreeViewerCanvas({
       )
     }
   }, [blockerAreaSelectionId, cameraPreset, cameraRequestId, onStatusMessage, roiBoxSelectionArmed, scene])
+
+  useEffect(() => {
+    previousObserverCamera.current = null
+  }, [scene])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime || !observerCameraRequest || observerCameraRequest.sceneToken !== scene.metadata.scene_token) return
+    const { camera, controls } = runtime
+    if (!observerCameraRequest.candidate) {
+      if (previousObserverCamera.current) {
+        restoreObserverCamera(camera, controls.target, previousObserverCamera.current)
+        previousObserverCamera.current = null
+        controls.update()
+        onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+      }
+      return
+    }
+    const pose = observerViewPose(observerCameraRequest.candidate,
+      new Box3().setFromObject(runtime.modelRoot), camera.aspect)
+    if (!pose) return
+    previousObserverCamera.current ??= captureObserverCamera(camera, controls.target)
+    camera.position.copy(pose.position)
+    camera.up.copy(pose.up)
+    camera.near = pose.near
+    camera.far = pose.far
+    camera.zoom = 1
+    camera.viewHeight = pose.height
+    controls.target.copy(pose.target)
+    camera.lookAt(pose.target)
+    camera.setParallel(true)
+    controls.update()
+    onCameraFrameChangeRef.current?.(viewerCameraFrame(runtime))
+  }, [observerCameraRequest])
 
   useEffect(() => {
     const runtime = runtimeRef.current

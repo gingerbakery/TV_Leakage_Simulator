@@ -65,6 +65,8 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
 }
 
 interface LeakPreviewState {
+  cameraViewRequest: { candidate: LeakPreviewCandidate | null; sceneToken: string | null } | null
+  requestCameraView(candidate: LeakPreviewCandidate | null): void
   sceneToken: string | null
   sceneIdentity: string | null
   sourceMode: LeakPreviewProjectState['sourceMode']
@@ -199,6 +201,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   jobId: null,
   result: null,
   resultRestored: false,
+  cameraViewRequest: null,
+  requestCameraView: (candidate) => set({ cameraViewRequest: { candidate: candidate ? structuredClone(candidate) : null, sceneToken: get().sceneToken } }),
   points: [],
   candidates: [],
   visualizationVisible: true,

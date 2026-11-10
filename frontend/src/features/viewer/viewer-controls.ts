@@ -15,8 +15,10 @@ export function projectionAwarePanSpeed(camera: PerspectiveCamera): number {
 
 export class ViewerTrackballControls extends TrackballControls {
   override update(): void {
-    if (this.object instanceof PerspectiveCamera) {
+    if (this.object instanceof PerspectiveCamera && this.object.isPerspectiveCamera) {
       this.panSpeed = projectionAwarePanSpeed(this.object)
+    } else {
+      this.panSpeed = DEFAULT_VIEWER_PAN_SPEED
     }
     super.update()
   }
