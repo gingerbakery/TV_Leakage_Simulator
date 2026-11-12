@@ -21,6 +21,13 @@ import {
 } from './workspace-store'
 
 describe('workspace store', () => {
+  it('preserves the forward diagnostic flag through config normalization', () => {
+    const store=createWorkspaceStore()
+    store.getState().actions.setRayTraceConfig({...store.getState().rayTraceConfig,receiver_diagnostics:true})
+    expect(store.getState().rayTraceConfig.receiver_diagnostics).toBe(true)
+    store.getState().actions.setRayTraceConfig({...store.getState().rayTraceConfig,receiver_diagnostics:false})
+    expect(store.getState().rayTraceConfig.receiver_diagnostics).toBe(false)
+  })
   it('keeps jobs, results and batch identity when an Emitter is hidden', () => {
     const store = createWorkspaceStore()
     const actions = store.getState().actions

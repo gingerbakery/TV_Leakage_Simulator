@@ -646,6 +646,7 @@ function normalizeRayTraceConfig(
         ? 'bvh'
         : requestedIntersectionBackend,
     compute_backend: computeBackend,
+    receiver_diagnostics: config.receiver_diagnostics === true,
     store_ray_paths: Boolean(config.store_ray_paths),
     max_stored_paths: Math.max(
       0,

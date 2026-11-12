@@ -8,6 +8,30 @@ import { isLeakPreviewPointHighlighted, createEscapeEnclosureReceivers, detectLe
 import { snapshotCadCasesForRayTrace, workspaceStore } from '@/stores'
 
 describe('leak preview Allowed Area groups', () => {
+  it('stores display criteria without changing the result, points or run signature, and restores defaults for older projects', () => {
+    leakPreviewStore.getState().clear()
+    workspaceStore.getState().actions.addCadCase({path:'filter.step',displayName:'Filter'})
+    const saved = createSavedLeakPreviewFixture()
+    leakPreviewStore.getState().setDetection(saved.result,saved.points,saved.candidates)
+    const originalCandidates = leakPreviewStore.getState().candidates
+    leakPreviewStore.getState().setRunSignature('original')
+    leakPreviewStore.getState().selectCandidate(saved.candidates[0].id)
+    const filter = {maxReflections:2,minNit:.1,minBrightnessRatio:.05}
+    leakPreviewStore.getState().setDisplayFilter(filter)
+    expect(leakPreviewStore.getState().result).toBe(saved.result)
+    expect(leakPreviewStore.getState().points).toBe(saved.points)
+    expect(leakPreviewStore.getState().candidates).toBe(originalCandidates)
+    expect(leakPreviewStore.getState().runSignature).toBe('original')
+    expect(leakPreviewStore.getState().selectedCandidateId).toBeNull()
+    const settings = snapshotLeakPreviewProjectState()
+    expect(settings.displayFilter).toEqual(filter)
+    leakPreviewStore.getState().restoreProjectState(settings,saved)
+    expect(leakPreviewStore.getState().displayFilter).toEqual(filter)
+    delete settings.displayFilter
+    leakPreviewStore.getState().restoreProjectState(settings,saved)
+    expect(leakPreviewStore.getState().displayFilter).toEqual({maxReflections:null,minNit:0,minBrightnessRatio:0})
+    leakPreviewStore.getState().clear()
+  })
   it('restores older envelope markers to their retained physical evidence locations', () => {
     const saved = createSavedLeakPreviewFixture()
     saved.points[0] = { ...saved.points[0], position:[100,100,100], surfacePosition:[1,2,3] }

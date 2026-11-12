@@ -1,3 +1,4 @@
+import { mergeReceiverDiagnostics } from '@/features/results/receiver-diagnostics-model'
 import type {
   EmitterSpec,
   OpticalAssignment,
@@ -490,6 +491,10 @@ export function mergeConvergenceRayTraceResults(
   } else {
     delete metrics._termination_summary
   }
+  const diagnostic = mergeReceiverDiagnostics(previous.metrics._receiver_diagnostics,
+    current.metrics._receiver_diagnostics, metrics._termination_summary)
+  if (diagnostic) metrics._receiver_diagnostics = diagnostic
+  else delete metrics._receiver_diagnostics
   for (const summaryKey of ['_reflection_summary', '_optical_summary']) {
     const previousSummary = previous.metrics[summaryKey]
     const currentSummary = current.metrics[summaryKey]

@@ -32,6 +32,48 @@ def fixture(mirror=False, blocked=False):
 
 
 class ResidentObserverEquationsTests(TestCase):
+    def test_large_face_source_uses_only_first_hit_face_records(self):
+        trace, _, plan, _ = fixture()
+        first = len(trace.mesh.faces)
+        plate(trace.mesh, -5, 20)
+        for x in range(1, 65):
+            plate(trace.mesh, 30+x, 20)
+        emitter=trace.emitters[0]
+        emitter.emitter_type='face'
+        emitter.face_indices=list(range(first,len(trace.mesh.faces)))
+        emitter.normal_mode,emitter.custom_normal='custom',(0.,0.,-1.)
+        resolved=OpticalPropertyResolver(trace.mesh,[OpticalProfile('black',0.,scatter_model='none')],[]).resolve_all()
+        host=pack_scene(trace.mesh,_source_geometry(trace.mesh,trace.emitters),resolved)
+        self.assertEqual(len(host['virtual_light_records']),0)
+        self.assertEqual(int(host['face_light_offsets'][first+1]-host['face_light_offsets'][first]),1)
+        values,_=reference_chunk(trace,host,plan,(0,0,0),0,0,16)
+        np.testing.assert_allclose(values[:,0],100.,atol=1e-10,rtol=1e-12)
+
+    def test_virtual_source_work_is_bounded_without_dropping_samples(self):
+        trace,host,_,_=fixture()
+        session=ResidentObserver.__new__(ResidentObserver)
+        session.trace=trace
+        session.host={**host,'virtual_light_records':np.arange(100000)}
+        self.assertEqual(session.batch_size(8192),1)
+        session.host=host
+        self.assertGreater(session.batch_size(8192),1)
+
+    def test_virtual_tree_matches_exhaustive_triangle_order_and_seam_values(self):
+        trace,host,plan,resolved=fixture()
+        emitter=trace.emitters[0]
+        emitter.surface_construction='polygon_auto'
+        # A fan contains shared edges; exact boundary ownership must survive.
+        emitter.polygon_vertices=[(-20,-20,-5),(20,-20,-5),(20,20,-5),(-20,20,-5)]
+        host=pack_scene(trace.mesh,_source_geometry(trace.mesh,trace.emitters),resolved)
+        accelerated,paths=reference_chunk(trace,host,plan,(0,0,0),0,0,32)
+        exhaustive={**host,
+            'virtual_node_bounds':np.array([[-math.inf]*3+[math.inf]*3]),
+            'virtual_node_ranges':np.array([[0,len(host['virtual_light_records']),1]],dtype=np.int64),
+            'virtual_light_trees':np.array([[0,1]],dtype=np.int64)}
+        expected,expected_paths=reference_chunk(trace,exhaustive,plan,(0,0,0),0,0,32)
+        np.testing.assert_array_equal(accelerated,expected)
+        np.testing.assert_array_equal(paths,expected_paths)
+
     def test_optical_preflight_never_accepts_cpu_fallback(self):
         class Fallback:
             validated = True

@@ -33,7 +33,7 @@ def validate_settings(spec):
         raise ValueError("Observer settings must be an object")
     for key, lo, hi in (("horizontal_deg", -89.9, 89.9), ("vertical_deg", -89.9, 89.9),
                         ("range_deg", 0, 10), ("step_deg", .1, 90),
-                        ("resolution", 8, 256), ("samples_per_cell", 1, 16)):
+                        ("resolution", 8, 256), ("samples_per_cell", 1, 64 if spec.get("search_mode") == "full_detail" and spec.get("measurement") == "radiance" else 16)):
         value = spec.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not lo <= value <= hi:
             raise ValueError(f"Invalid observer {key}: expected {lo}..{hi}")
@@ -287,6 +287,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 virtual.append((emitter, triangle, normal))
             else:
                 face_sources.setdefault(face, []).append(emitter)
+    from .observer_source_index import VirtualSourceIndex
+    virtual_source_index = VirtualSourceIndex([item[1] for item in virtual])
     center = tuple((collector.minimum[i]+collector.maximum[i])/2 for i in range(3))
     cells, summaries = [], []
     attempted = direct = reflected = excluded = depth_limited = 0
@@ -344,7 +346,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 hit = yield (origin, direction, epsilon, math.inf)
                 closest = hit.t if hit is not None else math.inf
                 source_hit = None
-                for emitter, triangle, normal in virtual:
+                for source_index in virtual_source_index.candidates(origin, direction, epsilon, closest+1e-9):
+                    emitter, triangle, normal = virtual[source_index]
                     t = _triangle_intersection(origin, direction, triangle, epsilon)
                     overlaps_blocker = t is not None and hit is not None and bool(mesh.metadata(hit.face_index).get("preview_blocker_id")) and abs(t-hit.t) <= 1e-9
                     if t is not None and t <= closest + 1e-9 and not overlaps_blocker:

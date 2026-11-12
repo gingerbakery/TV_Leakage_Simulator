@@ -48,6 +48,25 @@ def black():
 
 
 class ObserverRadianceTests(TestCase):
+    def test_dense_direct_sampling_preserves_analytic_radiance_and_solid_wall_occlusion(self):
+        for repeats in (32, 64):
+            with self.subTest(repeats=repeats):
+                mesh = TriangleMesh()
+                plate(mesh, 9, 20)
+                lamp = source((0,0,-5),40,100.)
+                options = dict(depth=0,spacing=2.,bounds=((-1,-1,-10),(1,1,10)),
+                    spec_extra=dict(samples_per_cell=repeats))
+                visible = render(mesh,lamp,[black()],**options)
+                self.assertEqual(visible['direct_count'],visible['planned_count'])
+                self.assertEqual(visible['reflected_count'],0)
+                for cell in visible['cells']:
+                    self.assertAlmostEqual(cell['luminance_nit'],100.,delta=1e-9)
+                    self.assertEqual(len(cell['representative_path']),2)
+                plate(mesh,-7,20)
+                blocked = render(mesh,lamp,[black()],**options)
+                self.assertEqual(blocked['direct_count'],0)
+                self.assertEqual(blocked['cells'],[])
+
     def test_fixed_offset_slit_missed_by_eight_samples_is_found_by_sixteen(self):
         # Adversarial fixed-seed coverage fixture, not a detection-rate claim.
         # The slit is offset from all eight primary samples but intersects one

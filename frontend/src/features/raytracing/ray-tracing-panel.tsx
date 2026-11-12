@@ -2924,6 +2924,12 @@ export function RayTracingPanel({
               </span>
             </label>
 
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" aria-label="순방향 원인 진단" checked={config.receiver_diagnostics ?? false}
+                disabled={isRunning} onChange={event => updateConfig({ receiver_diagnostics: event.currentTarget.checked })} />
+              순방향 원인 진단
+              <HelpTooltip label="순방향 원인 진단 도움말">실제 추적 구간의 센서 면적·차폐·수용각·ROI 제외와 최종 검출을 기록합니다. 반사 구간은 중복 집계되므로 발사 Ray 수와 다릅니다. 진단은 CPU에서 수행하며 GPU 선택 시 CAD 교차 계산은 선택 장치를 유지합니다. 일반 실행보다 느릴 수 있습니다. 결과 창의 순방향 원인 진단에서 확인하세요.</HelpTooltip>
+            </label>
             <details className="group/advanced rounded-lg border border-border bg-muted/20">
               <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted/45 [&::-webkit-details-marker]:hidden">
                 <span className="min-w-0 flex-1">고급 옵션</span>

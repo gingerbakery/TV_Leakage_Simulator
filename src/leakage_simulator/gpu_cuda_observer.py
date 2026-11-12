@@ -113,9 +113,42 @@ def pack_scene(mesh, sources, resolved):
             face_id = -1 if face is None or mesh.metadata(face).get("trace_excluded", False) else face
             triangles.append([*triangle[0], *triangle[1], *triangle[2], *normal, source_index, face_id, weight])
         source_rows.append(row)
+    # CAD first hits already identify the emitting face. Index those records
+    # instead of scanning every source triangle for every camera/bounce sample.
+    face_records = [[] for _ in mesh.faces]
+    virtual_records = [[] for _ in sources]
+    for j, triangle in enumerate(triangles):
+        face_id, source_id = int(triangle[13]), int(triangle[12])
+        (face_records[face_id] if face_id >= 0 else virtual_records[source_id]).append(j)
+    def compressed(rows):
+        offsets = np.zeros(len(rows)+1, dtype=np.int64)
+        offsets[1:] = np.cumsum([len(row) for row in rows])
+        return offsets, np.asarray([i for row in rows for i in row], dtype=np.int64)
+    face_offsets, face_records = compressed(face_records)
+    virtual_offsets, virtual_records = compressed(virtual_records)
+    from .observer_source_index import ordered_triangle_bounds
+    node_bounds, node_ranges, light_trees = [], [], []
+    # Build independent ordered trees within each emitter, preserving seams.
+    for light in range(len(sources)):
+        start, end = int(virtual_offsets[light]), int(virtual_offsets[light+1])
+        geometry = [np.asarray(triangles[int(virtual_records[i])][:9]).reshape(3,3) for i in range(start,end)]
+        bounds, ranges = ordered_triangle_bounds(geometry)
+        root = len(node_bounds)
+        if len(ranges):
+            ranges[:,2] += root
+            leaf = ranges[:,0] >= 0
+            ranges[leaf,:2] += start
+        node_bounds.extend(bounds)
+        node_ranges.extend(ranges)
+        light_trees.append((root,len(node_bounds)))
     return dict(materials=materials, normals=normals,
         lights=np.asarray(source_rows, dtype=np.float64).reshape(-1, 15),
         triangles=np.asarray(triangles, dtype=np.float64).reshape(-1, 15),
+        face_light_offsets=face_offsets, face_light_records=face_records,
+        virtual_light_offsets=virtual_offsets, virtual_light_records=virtual_records,
+        virtual_node_bounds=np.asarray(node_bounds,dtype=np.float64).reshape(-1,6),
+        virtual_node_ranges=np.asarray(node_ranges,dtype=np.int64).reshape(-1,3),
+        virtual_light_trees=np.asarray(light_trees,dtype=np.int64).reshape(-1,2),
         quadrature=np.column_stack(_quadrature()))
 
 
@@ -303,6 +336,33 @@ def make_kernel(cuda, intersect, helpers=None):
         return math.inf
 
     @device
+    def next_virtual(node, position, end_node, origin, direction, epsilon, maximum, bounds, ranges, records):
+        while node < end_node:
+            start, end, skip = ranges[node,0], ranges[node,1], ranges[node,2]
+            if position < 0:
+                enter, leave = epsilon, maximum
+                for axis in range(3):
+                    if direction[axis] == 0:
+                        if origin[axis] < bounds[node,axis] or origin[axis] > bounds[node,axis+3]:
+                            leave = -math.inf
+                            break
+                    else:
+                        a = (bounds[node,axis]-origin[axis])/direction[axis]
+                        b = (bounds[node,axis+3]-origin[axis])/direction[axis]
+                        enter, leave = max(enter,min(a,b)), min(leave,max(a,b))
+                if enter > leave:
+                    node, position = skip, -1
+                    continue
+                if start < 0:
+                    node += 1
+                    continue
+                position = start
+            if position < end:
+                return records[position], node, position+1
+            node, position = skip, -1
+        return -1, end_node, -1
+
+    @device
     def save_path(paths, vertices, ray, count, point, launch):
         for a in range(3):
             paths[ray, 0, a] = point[a]
@@ -313,7 +373,9 @@ def make_kernel(cuda, intersect, helpers=None):
 
     @cuda.jit(fastmath=False)
     def kernel(start, count, view, seed, samples, columns, plan, sensor_rays, epsilon, max_depth, angle, k_brdf,
-               materials, normals, lights, triangles, quadrature, stack_width,
+               materials, normals, lights, triangles, quadrature,
+               face_light_offsets, face_light_records, virtual_light_offsets, virtual_light_records,
+               virtual_node_bounds, virtual_node_ranges, virtual_light_trees, stack_width,
                v0, edge1, edge2, bmin, bmax, left, right, node_start, node_count, order, mask,
                stack_entries, stack_nodes, vertices, paths, output):
         ray = cuda.grid(1)
@@ -351,9 +413,23 @@ def make_kernel(cuda, intersect, helpers=None):
                 break
             # One hit per emitter, including seams of its virtual triangulation.
             for light in range(lights.shape[0]):
-                light_start, light_end = int(lights[light, 0]), int(lights[light, 0]+lights[light, 1])
+                face_start = face_light_offsets[face] if face >= 0 else 0
+                face_end = face_light_offsets[face+1] if face >= 0 else 0
+                face_pos = face_start
+                end_node = virtual_light_trees[light,1]
+                virtual_j, node, position = next_virtual(virtual_light_trees[light,0], -1, end_node,
+                    origin, direction, epsilon, t+1e-9, virtual_node_bounds, virtual_node_ranges, virtual_light_records)
                 previous_t = -math.inf
-                for j in range(light_start, light_end):
+                while virtual_j >= 0 or face_pos < face_end:
+                    if virtual_j >= 0 and (face_pos >= face_end or virtual_j < face_light_records[face_pos]):
+                        j = virtual_j
+                        virtual_j, node, position = next_virtual(node, position, end_node, origin, direction,
+                            epsilon, t+1e-9, virtual_node_bounds, virtual_node_ranges, virtual_light_records)
+                    else:
+                        j = face_light_records[face_pos]
+                        face_pos += 1
+                    if int(triangles[j, 12]) != light:
+                        continue
                     source_face = int(triangles[j, 13])
                     hit_t = triangle_hit(origin, direction, triangles, j, epsilon) if source_face < 0 else t
                     if (source_face < 0 and not hit_t <= t+1e-9) or (source_face >= 0 and source_face != face):
@@ -395,10 +471,15 @@ def make_kernel(cuda, intersect, helpers=None):
             lane_base = depth*4096
             if lights.shape[0] and materials[face, 2]+materials[face, 5] > 0:
                 light = min(lights.shape[0]-1, int(random(ray_key, lane_base+3)*lights.shape[0]))
-                selected = int(lights[light, 0])
+                low, high = int(lights[light, 0]), int(lights[light, 0]+lights[light, 1])-1
                 draw = random(ray_key, lane_base+4)*lights[light, 2]
-                while selected+1 < int(lights[light, 0]+lights[light, 1]) and triangles[selected, 14] < draw:
-                    selected += 1
+                while low < high:
+                    middle = (low+high)//2
+                    if triangles[middle, 14] < draw:
+                        low = middle+1
+                    else:
+                        high = middle
+                selected = low
                 root, fraction = math.sqrt(random(ray_key, lane_base+5)), random(ray_key, lane_base+6)
                 lamp = ((1-root)*triangles[selected, 0]+root*(1-fraction)*triangles[selected, 3]+root*fraction*triangles[selected, 6],
                         (1-root)*triangles[selected, 1]+root*(1-fraction)*triangles[selected, 4]+root*fraction*triangles[selected, 7],
@@ -541,7 +622,9 @@ def reference_chunk(trace, host, plan, center, view, start, count, *, compiled_h
         cpu.index = i
         kernel(start, count, view, int(c.seed)&0xffffffff, int(trace.observer_probe["samples_per_cell"]),
             plan["columns"], camera_plan(plan, center), sensor_rays, max(c.epsilon_mm, 1e-8), depth, c.angle_dependent_reflectance, c.k_brdf,
-            host["materials"], host["normals"], host["lights"], host["triangles"], host["quadrature"], 2,
+            host["materials"], host["normals"], host["lights"], host["triangles"], host["quadrature"],
+            host["face_light_offsets"], host["face_light_records"], host["virtual_light_offsets"], host["virtual_light_records"],
+            host["virtual_node_bounds"], host["virtual_node_ranges"], host["virtual_light_trees"], 2,
             dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy,
             dummy, dummy, vertices, paths, output)
     if np.any(output[:, 6] != 0):
@@ -633,7 +716,11 @@ class ResidentObserver:
 
     def batch_size(self, requested):
         # Two bounded geometry arrays; no allocation of the entire 180° grid.
-        return max(1, min(requested, 262144//(self.trace.config.max_depth+3)))
+        # A legacy excluded Body may contain many virtual emitting triangles.
+        # Bound that work per launch as well as path memory for Stop/progress.
+        virtual_count = len(self.host["virtual_light_records"])
+        work_limit = max(1, 262144//max(1, virtual_count*(self.trace.config.max_depth+1)))
+        return max(1, min(requested, 262144//(self.trace.config.max_depth+3), work_limit))
 
     def run(self, plan, center, view, start, count):
         if self.failure_reason is None:
@@ -683,6 +770,8 @@ class ResidentObserver:
         self.kernel[(count+127)//128, 128](start, count, view, int(c.seed)&0xffffffff,
             int(self.trace.observer_probe["samples_per_cell"]), plan["columns"], p, sensor_rays, max(c.epsilon_mm, 1e-8), depth,
             c.angle_dependent_reflectance, c.k_brdf, self.static["materials"], self.static["normals"], self.static["lights"], self.static["triangles"], self.static["quadrature"],
+            self.static["face_light_offsets"], self.static["face_light_records"], self.static["virtual_light_offsets"], self.static["virtual_light_records"],
+            self.static["virtual_node_bounds"], self.static["virtual_node_ranges"], self.static["virtual_light_trees"],
             self.scene.stack_width, d.triangle_v0, d.triangle_edge1, d.triangle_edge2, d.node_bounds_min, d.node_bounds_max,
             d.node_left, d.node_right, d.node_start, d.node_count, d.ordered_faces, d.traceable_face_mask, entries, nodes, vertices, paths, output)
         self.cuda.synchronize()

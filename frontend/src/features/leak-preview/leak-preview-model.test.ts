@@ -11,6 +11,7 @@ import { createSceneFixture } from '@/test/scene-fixture'
 import {
   buildLeakPreviewRequest,
   groupObserverCandidates,
+  isLeakPreviewPointHighlighted,
   getLeakPreviewBounds,
   createEscapeEnclosureReceivers,
   escapeDirectionSummary,
@@ -104,6 +105,16 @@ it('retains faint direct evidence in a bright reflected cluster and uses precisi
 })
 
 describe('whole-set leak preview', () => {
+  it('highlights observer markers from both exact view angles and forward polar angle bins', () => {
+    for (const [horizontal,vertical,bin] of [[0,0,0],[30,0,1],[60,0,2],[80,0,3],[89.9,0,3],[45,45,2]]) {
+      const point = {position:[0,0,0] as Vec3,relativeStrength:1,observerAngles:[horizontal,vertical] as [number,number]}
+      expect(isLeakPreviewPointHighlighted(point,{kind:'observer',horizontal,vertical},null)).toBe(true)
+      for (let index=0;index<4;index++) expect(isLeakPreviewPointHighlighted(point,{kind:'escape',bin:index},null)).toBe(index === bin)
+    }
+    const counted = {position:[0,0,0] as Vec3,relativeStrength:1,angleBins:[0,2,0,0],observerAngles:[0,0] as [number,number]}
+    expect(isLeakPreviewPointHighlighted(counted,{kind:'escape',bin:0},null)).toBe(false)
+    expect(isLeakPreviewPointHighlighted(counted,{kind:'escape',bin:1},null)).toBe(true)
+  })
   it('uses radiance for strength and centroid and never restores filtered forward escapes', () => {
     const result = createRayTraceResultFixture(), scene = createSceneFixture()
     const probe = { contract: 'observer_radiance_parallel_v1', execution_backend: 'cpu', measure: 'luminance_cd_m2',
@@ -519,7 +530,7 @@ describe('whole-set leak preview', () => {
     })
   })
 
-  it('converts a Body light source into one two-sided virtual plane', () => {
+  it('uses only real Body surfaces with two-sided Lambertian emission', () => {
     const request = buildLeakPreviewRequest({
       scene: createSceneFixture(),
       sourceFaceIds: [],
@@ -535,18 +546,16 @@ describe('whole-set leak preview', () => {
 
     expect(request.emitters).toHaveLength(2)
     expect(request.emitters.map((emitter) => emitter.emitter_type)).toEqual([
-      'datum_plane',
-      'datum_plane',
+      'face',
+      'face',
     ])
     expect(request.emitters[0].face_indices).toEqual([])
-    expect(request.emitters[0].source_component_ids).toBeUndefined()
+    expect(request.emitters[0].source_component_ids).toEqual([1])
     expect(request.emitters[0]).toMatchObject({
-      center: [30, 30, 5],
-      u_axis: [1, 0, 0],
-      v_axis: [0, 1, 0],
-      width_mm: 60,
-      height_mm: 60,
-      reference_mode: 'leak_preview_body_plane',
+      center: null,
+      width_mm: null,
+      height_mm: null,
+      direction_distribution: 'lambertian',
       emission_direction: 'forward',
     })
     expect(request.emitters[1].emission_direction).toBe('reverse')

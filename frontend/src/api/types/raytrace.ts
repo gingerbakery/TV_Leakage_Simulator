@@ -177,6 +177,7 @@ export type PrimarySamplingStrategy = 'source' | 'receiver_mis'
 export type BounceSamplingStrategy = 'source' | 'receiver_mis'
 
 export interface RayTraceConfig {
+  receiver_diagnostics?: boolean
   ray_count: number
   max_depth: number
   seed: number

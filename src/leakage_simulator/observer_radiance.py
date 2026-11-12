@@ -341,6 +341,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 virtual.append((source, triangle, normal))
             else:
                 faces.setdefault(face, []).append(source)
+    from .observer_source_index import VirtualSourceIndex
+    virtual_source_index = VirtualSourceIndex([item[1] for item in virtual])
+    print(f"[OBSERVER] sources={len(sources)} cad_source_faces={len(faces)} virtual_triangles={len(virtual)} "
+          f"planned_samples={planned} max_depth={config.max_depth} transport={'resident' if resident is not None else 'host'}", flush=True)
     center = tuple((collector.minimum[i]+collector.maximum[i])/2 for i in range(3))
     samples = int(spec["samples_per_cell"])
     threshold = spec.get("min_luminance_nit", 0.)
@@ -468,7 +472,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 virtual_seen = set()
                 # Virtual planes add radiance; they are not opaque CAD.
                 # In particular their non-emitting back must not hide a leak.
-                for source, triangle, normal in virtual:
+                for source_index in virtual_source_index.candidates(origin, direction, epsilon, closest+1e-9):
+                    source, triangle, normal = virtual[source_index]
                     t = _triangle_intersection(origin, direction, triangle, epsilon)
                     # A Datum may lie on a real CAD surface. At the same hit
                     # event it emits before that surface scatters/absorbs.
@@ -591,7 +596,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             started += time.perf_counter()-wait_started
             return keep_running
 
-        effective_batch_size = resident.batch_size(batch_size) if resident is not None else batch_size
+        # Transparent/excluded CAD sources require virtual triangle tests on
+        # the host too. Keep each committed chunk bounded for Stop/progress.
+        host_work_limit = max(1, 262144//max(1, len(virtual)*(config.max_depth+1)))
+        effective_batch_size = resident.batch_size(batch_size) if resident is not None else min(batch_size, host_work_limit)
         for start in range(0, plan["grid_samples"], effective_batch_size):
             if should_stop and should_stop():
                 if pause_callback is None or not pause_current():

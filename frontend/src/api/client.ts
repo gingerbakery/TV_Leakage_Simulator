@@ -30,6 +30,7 @@ export interface SensorComparisonBatch {
   forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown>;
 }
 export interface SensorComparisonReport {
+  witness?: Array<{ receiver_id: string; path_valid: boolean; diagnosis: string }>;
   sensor: { receiver_id: string; width_mm?: number; height_mm?: number; acceptance_angle_deg?: number }; options: SensorComparisonOptions; verdict: 'match' | 'mismatch' | 'inconclusive'; reason: string;
   gpu_execution_proven?: boolean; compute_execution_state?: string;
   batches?: SensorComparisonBatch[];

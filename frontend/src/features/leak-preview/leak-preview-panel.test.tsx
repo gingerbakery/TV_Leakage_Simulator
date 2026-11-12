@@ -26,6 +26,28 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('hides rows without renumbering or deleting raw candidates and keeps reset available when all are hidden', () => {
+  const saved = createSavedLeakPreviewFixture(), base = saved.candidates[0]
+  const candidates = [{...base,id:'deep',representativePath:undefined,maxReflectionCount:4},
+    {...base,id:'direct',representativePath:undefined,maxReflectionCount:0}]
+  const points = candidates.map((candidate,i) => ({...saved.points[0],candidateId:candidate.id,position:[i,0,0] as [number,number,number]}))
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setDetection(saved.result,points,candidates))
+  fireEvent.click(screen.getByRole('checkbox',{name:'최대 반사 필터 사용'}))
+  const field = screen.getByRole('spinbutton',{name:'표시 최대 반사 횟수'})
+  fireEvent.change(field,{target:{value:'0'}})
+  fireEvent.blur(field)
+  expect(screen.queryByRole('article',{name:'Point1'})).toBeNull()
+  expect(screen.getByRole('article',{name:'Point2'})).toBeTruthy()
+  expect(leakPreviewStore.getState().candidates).toHaveLength(2)
+  expect(leakPreviewStore.getState().points).toHaveLength(2)
+  expect(screen.getByRole('spinbutton',{name:'표시 최소 nit'})).toHaveProperty('disabled',true)
+  act(() => leakPreviewStore.getState().setDisplayFilter({minNit:1}))
+  expect(screen.queryByRole('article')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'초기화'}))
+  expect(screen.getAllByRole('article')).toHaveLength(2)
+})
+
 it('keeps Point rows on one line and puts coordinates, exit metadata and grouping inside closed details', () => {
   const saved = createSavedLeakPreviewFixture()
   const candidate = { ...saved.candidates[0], peakLuminanceNit: .0023, groupedCount: 12,
@@ -91,6 +113,13 @@ it('runs one shared action on the selected point and shows a spinning validation
       receiver_checks: [{ receiver_id: 'x', path_valid: true, diagnosis: 'reference_path_valid', forward_hit_count: null }] }))
     await waitFor(() => expect(screen.queryByRole('img', { name: '경로 검증 진행 중' })).toBeNull())
     expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy()
+    expect(screen.getByText('다음: 동일 센서 광량 비교')).toBeTruthy()
+    expect(screen.queryByText(/경로 한 개의 유효성이지/)).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'경로 검증 다음 단계 도움말'}))
+    expect(screen.getByText(/경로 한 개의 유효성이지/)).toBeTruthy()
+    fireEvent.keyDown(document.activeElement!,{key:'Escape'})
+    act(() => leakPreviewStore.getState().selectCandidate('point-0','viewer'))
+    expect(screen.queryByText('다음: 동일 센서 광량 비교')).toBeNull()
   } finally { validate.mockRestore() }
 })
 
@@ -402,7 +431,9 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   result.receivers = createEscapeEnclosureReceivers(scene)
   result.receiver_grids = result.receivers.map((receiver) => ({ receiver_id: receiver.receiver_id,
     resolution: [1, 1], flux_lumen: [[0]], bin_area_mm2: 1, hit_count: 0 }))
-  result.metrics._escape_direction_summary = { direction: 'neg_z' }
+  result.metrics._escape_direction_summary = { contract:'final_escape_directions_v1', direction: 'neg_z',
+    escaped_count:0,selected_count:0,excluded_count:0,cells:[],
+    bins:[[0,30],[30,60],[60,80],[80,90]].map(([min_deg,max_deg]) => ({min_deg,max_deg,count:0,flux_lumen:0})) }
   result.metrics._observer_probe_summary = { contract: 'observer_path_support_v1', execution_backend: 'cpu',
     measure: 'path_support_counts', settings: { ...defaultObserverSettings, step_deg: .5, resolution: 8 },
     attempted_count: 128, planned_count: 128, direct_count: 1, reflected_count: 0, excluded_count: 0,
@@ -423,6 +454,13 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   })
   const before = structuredClone({ emitters: workspaceStore.getState().emitters,
     materialAssignments: workspaceStore.getState().materialAssignments, config: workspaceStore.getState().rayTraceConfig })
+  fireEvent.click(screen.getByRole('button',{name:'80 / 20'}))
+  expect(screen.getByRole('article',{name:'Point1'}).getAttribute('aria-current')).toBe('true')
+  expect(leakPreviewStore.getState().highlight).toEqual({kind:'observer',horizontal:80,vertical:20})
+  fireEvent.click(screen.getByRole('button',{name:'80–90°'}))
+  expect(leakPreviewStore.getState().highlight).toEqual({kind:'escape',bin:3})
+  expect(screen.getByRole('article',{name:'Point1'}).getAttribute('aria-current')).toBe('true')
+  expect(result.metrics._escape_direction_summary).toMatchObject({selected_count:0})
   fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
   expect(leakPreviewStore.getState().cameraViewRequest?.candidate ?? null).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '검출 시야각 보기' }))
@@ -450,11 +488,15 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
     reference_mode: null, view_angles: undefined }
   act(() => {
     actions.upsertReceiver(competing)
-    actions.setReceiverEnabled(receiver.receiver_id, false)
+    actions.upsertReceiver({ ...receiver, enabled: false, normal_flip: true, acceptance_angle_deg: 1,
+      width_mm: .1, height_mm: .1, resolution: [1, 1],
+      view_angles: { ...receiver.view_angles!, range_deg: 2 },
+    })
   })
   fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
   expect(workspaceStore.getState().receivers).toHaveLength(2)
   expect(workspaceStore.getState().receivers.filter((item) => item.enabled).map((item) => item.receiver_id)).toEqual([receiver.receiver_id])
+  expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === receiver.receiver_id)).toEqual(receiver)
   expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === competing.receiver_id)).toEqual({ ...competing, enabled: false })
   if (!confirmedOpening) {
     expect(screen.getByRole('button', { name: 'ROI·Receiver 생성' }).hasAttribute('disabled')).toBe(true)
@@ -464,6 +506,10 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   fireEvent.click(screen.getByRole('button', { name: 'ROI·Receiver 생성' }))
   expect(workspaceStore.getState().roiScopes).toHaveLength(1)
   expect(workspaceStore.getState().receivers).toHaveLength(2)
+  fireEvent.click(screen.getByRole('button', { name: '순방향 진단 준비' }))
+  expect(workspaceStore.getState().rayTraceConfig.receiver_diagnostics).toBe(true)
+  expect(workspaceStore.getState().receivers.filter(item=>item.enabled)).toHaveLength(1)
+  expect(mocks.start).not.toHaveBeenCalled()
 })
 
 it('reveals and scrolls to the viewer-picked candidate, including repeated picks of a collapsed selection', () => {

@@ -316,6 +316,7 @@ class _MultiBounceWavefrontRay:
 
 @dataclass(slots=True)
 class _IntersectionDispatchStats:
+    receiver_diagnostics: Optional[object] = field(default=None, repr=False)
     intersection_backend: str = "auto"
     requested_provider: str = "auto"
     escape_collector: Optional[object] = field(default=None, repr=False)
@@ -2368,6 +2369,12 @@ def run_direct_ray_trace(
             if gpu_compute_requested and production_pipeline_auto_requested
             else "host_roundtrip"
         )
+    if trace_input.config.receiver_diagnostics:
+        # Observe actual host segments; keep the selected intersection device,
+        # source distributions and counter RNG. Never replay or inject a path.
+        wavefront_residency = "host_roundtrip"
+        wavefront_pipeline = "soa_event_tape"
+        wavefront_rng = "counter_rng_v2"
     monte_carlo_contract = (
         "cpu_gpu_deterministic_batch_v1"
         if (
@@ -2403,6 +2410,9 @@ def run_direct_ray_trace(
     if trace_input.analysis_roi:
         for frame in receiver_frames:
             frame.roi_boxes = tuple(trace_input.analysis_roi.get("detection_boxes", []))
+    if trace_input.config.receiver_diagnostics:
+        from .receiver_diagnostics import ReceiverDiagnostics
+        intersection_stats.receiver_diagnostics = ReceiverDiagnostics(receiver_frames)
     primary_sampling_stats = _PrimarySamplingStats(
         requested_strategy=trace_input.config.primary_sampling_strategy,
         receiver_fraction=trace_input.config.receiver_importance_fraction,
@@ -2643,6 +2653,9 @@ def run_direct_ray_trace(
                 primary_sampling_stats.applied_emitter_count > 0 or bounce_sampling_stats.eligible_surface_count > 0))
         if trace_input.analysis_roi:
             snapshot_metrics["_roi_scope_summary"] = copy.deepcopy(trace_input.analysis_roi)
+        if intersection_stats.receiver_diagnostics is not None:
+            snapshot_metrics["_receiver_diagnostics"] = intersection_stats.receiver_diagnostics.summary(
+                receiver_grids, total_rays, True, snapshot_metrics["_termination_summary"])
         if escape_collector is not None:
             snapshot_metrics["_escape_direction_summary"] = escape_collector.summary()
         if resumable_observer:
@@ -2660,6 +2673,8 @@ def run_direct_ray_trace(
             state, reason = "gpu_mixed", gpu_resident_stats.fallback_reason
         if bsdf_models and state == "gpu_active" and gpu_resident_stats.success_count == 0:
             state, reason = "gpu_mixed", "bsdf_reflection_cpu_host_roundtrip"
+        if trace_input.config.receiver_diagnostics and state == "gpu_active":
+            state, reason = "gpu_mixed", "receiver_diagnostics_cpu_host_roundtrip"
         snapshot_metrics["_performance_summary"] = dict(intersection_stats.to_summary(),
             **gpu_resident_stats.to_summary(), compute_execution_state=state, compute_execution_reason=reason,
             compute_backend="gpu_cuda" if gpu_compute_requested else "cpu",
@@ -3098,7 +3113,7 @@ def run_direct_ray_trace(
             previous_lobe: Optional[str] = None
             path_events: List[RayHit] = [emitter_event] if emitter_event is not None else []
 
-            if trace_input.config.max_depth <= 1 and escape_collector is None:
+            if trace_input.config.max_depth <= 1 and escape_collector is None and not trace_input.config.receiver_diagnostics:
                 fast_receiver_hits, fast_surface_hits, fast_terminated = _trace_single_bounce_fast(
                     trace_input.mesh,
                     origin,
@@ -3154,6 +3169,14 @@ def run_direct_ray_trace(
                     min_t=trace_input.config.epsilon_mm,
                     max_t=receiver_distance,
                 )
+
+                if intersection_stats.receiver_diagnostics is not None:
+                    selected = next((i for i, f in enumerate(receiver_frames)
+                                     if receiver_candidate and f.receiver.receiver_id == receiver_candidate.receiver_id), -1)
+                    intersection_stats.receiver_diagnostics.observe(
+                        [current_origin], [current_direction], [current_power], receiver_frames, trace_input.config,
+                        [surface_hit.t if surface_hit is not None else float("inf")],
+                        [selected], [receiver_distance if receiver_distance is not None else float("inf")])
 
                 if surface_hit is None:
                     if receiver_candidate is not None:
@@ -3444,6 +3467,9 @@ def run_direct_ray_trace(
         termination_thresholds, source_power_lumen, stopped_early,
         primary_sampling_stats.applied_emitter_count > 0 or bounce_sampling_stats.eligible_surface_count > 0,
     )
+    if intersection_stats.receiver_diagnostics is not None:
+        metrics["_receiver_diagnostics"] = intersection_stats.receiver_diagnostics.summary(
+            receiver_grids, total_rays, stopped_early, metrics["_termination_summary"])
     metrics["_contribution_summary"] = contribution_summary.to_dict()
     runtime_sec = time.time() - start_time
     acceleration_info = trace_input.mesh.acceleration_info(
@@ -3464,6 +3490,8 @@ def run_direct_ray_trace(
             and gpu_resident_stats.success_count == 0):
         compute_execution_state = "gpu_mixed"
         compute_execution_reason = "bsdf_reflection_cpu_host_roundtrip"
+    if trace_input.config.receiver_diagnostics and compute_execution_state == "gpu_active":
+        compute_execution_state, compute_execution_reason = "gpu_mixed", "receiver_diagnostics_cpu_host_roundtrip"
     from .observer_path_validation import validate_receiver_evidence
     metrics["_performance_summary"] = {
         "observer_receiver_validation": validate_receiver_evidence(trace_input, receiver_frames, receiver_grids, resolved_optical_by_face, metrics.get("_termination_summary")),
@@ -7596,6 +7624,8 @@ def _try_fused_cpu_transport(
     intersection_stats, planner_stats, wavefront_summary, bounce_sampling_stats,
     bounce_sampling_enabled,
 ):
+    if config.receiver_diagnostics:
+        return None
     if intersection_stats.escape_collector is not None or any(frame.roi_boxes for frame in receivers):
         return None
     requested_mode = os.environ.get("LEAKAGE_CPU_TRANSPORT", "auto")
@@ -7919,6 +7949,11 @@ def _trace_multi_bounce_wavefront_soa_batch(
                 depth == 0 and np.any(active.source_faces >= 0)
             ),
         )
+        if intersection_stats.receiver_diagnostics is not None:
+            intersection_stats.receiver_diagnostics.observe(
+                active.origins, active.directions, active.powers_lumen, receivers, config,
+                np.where(hit_batch.face_indices >= 0, hit_batch.t, np.inf),
+                receiver_batch.receiver_indices, receiver_batch.distances_mm)
         geometry_started = time.perf_counter()
         surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
         wavefront_summary["geometry_sec"] += (

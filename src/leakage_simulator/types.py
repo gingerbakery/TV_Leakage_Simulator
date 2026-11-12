@@ -627,8 +627,11 @@ class RayTraceConfig:
     bounce_sampling_strategy: str = "source"
     bounce_receiver_importance_fraction: float = 0.5
     min_energy_basis: str = "absolute_lumen"
+    receiver_diagnostics: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.receiver_diagnostics, bool):
+            raise ValueError("receiver_diagnostics must be boolean")
         self.ray_count = require_positive_int(self.ray_count, "ray_count")
         self.max_depth = int(self.max_depth)
         if self.max_depth < 0:

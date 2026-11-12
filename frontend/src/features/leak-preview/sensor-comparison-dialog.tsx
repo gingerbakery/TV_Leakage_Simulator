@@ -6,6 +6,9 @@ import { NumberInput } from '@/components/ui/number-input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { SensorComparisonJob } from '@/api/client'
 import { SensorBatchDiagnostics } from './sensor-batch-diagnostics'
+import { comparisonValidationAdvice } from './validation-guidance'
+import { ValidationNextStep } from './validation-next-step'
+import { ForwardDetectionDiagnostics } from './forward-detection-diagnostics'
 
 const reasons: Record<string, string> = {
   difference_interval_inside_tolerance: '차이 구간이 허용 범위 안', difference_interval_outside_tolerance: '차이 구간이 허용 범위 밖',
@@ -24,6 +27,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
   const [job, setJob] = useState<SensorComparisonJob | null>(null)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [settingsNotice, setSettingsNotice] = useState('')
   const receiver = request.receivers[0]
   const active = job?.status === 'queued' || job?.status === 'running'
   useEffect(() => {
@@ -43,7 +47,10 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
   const report = job?.report
   const executions = report?.batches?.flatMap(row => [row.forward_execution, row.reverse_execution]) ?? []
   const count = (key: string) => executions.reduce((sum, row) => sum + (typeof row[key] === 'number' ? row[key] as number : 0), 0)
-  const sameSensor = report?.sensor.receiver_id === receiver.receiver_id && job?.scene_token === request.scene_token
+  const sameSensor = report?.sensor.receiver_id === receiver.receiver_id && job?.scene_token === request.scene_token &&
+    report.sensor.width_mm === receiver.width_mm && report.sensor.height_mm === receiver.height_mm &&
+    report.sensor.acceptance_angle_deg === receiver.acceptance_angle_deg
+  const advice = report ? comparisonValidationAdvice(report, sameSensor) : null
   return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}><DialogContent ref={content} tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); content.current?.focus() }} className="max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
     <DialogHeader><DialogTitle className="flex items-center gap-1">동일 센서 광량 비교<HelpTooltip label="광량 비교 도움말">같은 유한 면적·수용각·ROI의 광량(lm)을 독립 순방향·역추적으로 적분합니다. Preview의 한 방향 휘도(nit)를 직접 비교하지 않습니다. NVIDIA CUDA GPU로 계산하며 양방향 모두 실제 CUDA 실행 증거가 있어야 비교를 완료합니다. CPU 보조가 있으면 혼합 실행으로 표시합니다. 검증 복사본에서 결정적 에너지 컷오프를 제거하며 원래 설정은 보존합니다. 원래 종료 조건도 같은 검증 표본 예산으로 한 번 별도 계산합니다. 기존 100만 Ray 결과의 재현은 아닙니다. 차이의 근사 95% 구간 전체가 허용 범위 안일 때만 일치입니다. 0 Ray·표본 부족은 미확정이며 실물 정확도를 보장하지 않습니다. 창을 닫아도 실행은 계속되며, 다시 열면 마지막 작업이 표시됩니다.</HelpTooltip></DialogTitle></DialogHeader>
     <div className="text-xs">NVIDIA CUDA GPU · {receiver.width_mm} × {receiver.height_mm} mm · 수용각 {receiver.acceptance_angle_deg}°</div>
@@ -54,7 +61,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
       <label>역추적 표본 / 회<NumberInput aria-label="역추적 표본" value={reverse} onValueChange={setReverse} min={32} max={100000} disabled={active || pending} /></label>
     </div>
     <div className="flex gap-2"><Button disabled={active || pending} onClick={async () => {
-      setPending(true); setError('')
+      setPending(true); setError(''); setSettingsNotice('')
       try { setJob(await apiClient.startSensorComparison(request, { receiver_id: receiver.receiver_id, batches, forward_samples: forward, reverse_samples: reverse, tolerance_percent: tolerance })) }
       catch (e) { setError(e instanceof Error ? e.message : String(e)) }
       finally { setPending(false) }
@@ -63,6 +70,10 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     }}>{job?.stop_requested ? '중지 요청됨' : '중지'}</Button></div>
     {job ? <div role="status" className="text-xs">{({ queued: '대기', running: '계산 중', completed: '완료', stopped: '중지', failed: '실패' })[job.status]} · {Math.round(job.progress * 100)}% · {job.batch}/{report?.options.batches ?? batches}회 · {({ preparing: '형상 준비', forward: '순방향', reverse: '역추적', original_policy: '기존 종료 조건', finished: '종료' } as Record<string, string>)[job.phase] ?? job.phase}</div> : null}
     {error || job?.error ? <div role="alert" className="text-xs text-destructive">{error || job?.error}</div> : null}
+    {(error || job?.status === 'failed') && !report ? <ValidationNextStep label="광량 비교 실행 오류 다음 단계" advice={{title:'실행 오류 확인 후 재비교',steps:[
+      '오류 문구와 서버 로그의 발생 위치를 확인하세요. 실행이 실패했으므로 광량 일치·불일치·빛샘 없음은 판정할 수 없습니다.',
+      'GPU 실행 오류라면 production 사전 검사와 해당 run의 CUDA 실행 증거를 확인한 뒤 같은 센서 조건으로 다시 시작하세요. CPU 대체 실행이나 표본 증가로 실행 오류를 성공 처리하지 않습니다.',
+    ]}} /> : null}
     {report ? <div className="space-y-2 text-xs">
       <div>최근 작업 · {report.sensor.width_mm} × {report.sensor.height_mm} mm · {report.sensor.acceptance_angle_deg}° · 허용 {report.options.tolerance_percent}%</div>
       {!sameSensor ? <div role="alert">이전 작업 결과 · 현재 조건과 동일한지 확인 필요</div> : null}
@@ -70,6 +81,16 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
       {executions.some(row => row.observer_bsdf_evaluation_backend === 'cpu') ? <div>BSDF CPU 평가 · CAD 교차 GPU</div> : null}
       <div>CUDA 성공/시도 {count('gpu_cuda_gpu_success_count')}/{count('gpu_cuda_gpu_attempt_count')} · CPU 보조 {count('gpu_cuda_hybrid_cpu_success_count')} · 대체 {count('fallback_count')}</div>
       <div role="status">{({ match: '일치', mismatch: '불일치', inconclusive: '미확정' })[report.verdict]} · {reasons[report.reason] ?? report.reason}</div>
+      <ForwardDetectionDiagnostics report={report} />
+      {advice && !active && !pending ? <div className="flex flex-wrap items-center gap-2">
+        <ValidationNextStep advice={advice} label="광량 비교 다음 단계" />
+        {advice.samples ? <span className="tabular-nums">{advice.samples.batches}회 · F {advice.samples.forward_samples.toLocaleString()} / R {advice.samples.reverse_samples.toLocaleString()}</span> : null}
+        {advice.samples ? <Button size="sm" variant="outline" onClick={() => {
+          setBatches(advice.samples!.batches); setForward(advice.samples!.forward_samples); setReverse(advice.samples!.reverse_samples)
+          setSettingsNotice('권장 표본 설정 적용 · 비교 시작 필요')
+        }}>권장 표본 적용</Button> : null}
+      </div> : null}
+      {settingsNotice ? <div role="status">{settingsNotice}</div> : null}
       <table className="w-full"><tbody>
         <tr><th className="text-left">순방향 (lm)</th><td>{flux(report.forward_flux_lumen)}</td></tr>
         <tr><th className="text-left">역추적 (lm)</th><td>{flux(report.reverse_flux_lumen)}</td></tr>

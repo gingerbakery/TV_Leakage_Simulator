@@ -4,6 +4,7 @@ import { leakPreviewArrowSegments } from './leak-preview-paths'
 import { ObserverViewCamera, observerViewPose, captureObserverCamera, restoreObserverCamera } from './observer-view-camera'
 import { createCandidateReceiver } from '@/features/leak-preview/leak-preview-model'
 import { leakPreviewDisplayStyle } from './leak-preview-display-style'
+import { filterLeakDisplay } from '@/features/leak-preview/leak-display-filter'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewPoint } from './leak-preview-picking'
 import { createObserverObservationIndex, resolveObserverPoint } from '@/features/leak-preview/observer-point-selection'
@@ -20,7 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   ArrowHelper,
-  NormalBlending,
+  AdditiveBlending,
   Box3,
   BoxGeometry,
   BufferGeometry,
@@ -83,7 +84,7 @@ import {
   getLeakPreviewBounds,
 } from '@/features/leak-preview/leak-preview-geometry'
 import {
-  createLeakPreviewBodyPlaneEmitters,
+  createLeakPreviewBodyEmitters,
 } from '@/features/leak-preview/leak-preview-model'
 import {
   leakPreviewStore,
@@ -428,15 +429,16 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
   const context = canvas.getContext('2d')
   if (context) {
     context.clearRect(0, 0, 64, 64)
-    const gradient = context.createRadialGradient(32, 32, halo ? 5 : 2, 32, 32, 30)
+    const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32)
     if (halo) {
-      gradient.addColorStop(0, 'rgba(255, 245, 120, 1)')
-      gradient.addColorStop(0.38, 'rgba(250, 204, 21, 0.9)')
-      gradient.addColorStop(1, 'rgba(250, 204, 21, 0)')
+      gradient.addColorStop(0, 'rgba(255, 255, 255, .8)')
+      gradient.addColorStop(.3, 'rgba(255, 255, 255, .5)')
+      gradient.addColorStop(.6, 'rgba(255, 255, 255, .16)')
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
     } else {
       gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.7, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.82, 'rgba(255, 255, 255, 0.8)')
+      gradient.addColorStop(.25, 'rgba(255, 255, 255, .7)')
+      gradient.addColorStop(.55, 'rgba(255, 255, 255, .25)')
       gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
     }
     context.fillStyle = gradient
@@ -2029,13 +2031,17 @@ export function ThreeViewerCanvas({
   const previousObserverCamera = useRef<ReturnType<typeof captureObserverCamera> | null>(null)
   const leakPreviewResult = useLeakPreviewStore((state) => state.result)
   const leakObserverSummary = useMemo(() => leakPreviewResult ? observerProbeSummary(leakPreviewResult) : null, [leakPreviewResult])
+  const rawLeakCandidates = useLeakPreviewStore(state => state.candidates)
+  const leakDisplayFilter = useLeakPreviewStore(state => state.displayFilter)
+  const leakDisplay = useMemo(() => filterLeakDisplay(leakPreviewPoints, rawLeakCandidates, leakObserverSummary, leakDisplayFilter),
+    [leakPreviewPoints, rawLeakCandidates, leakObserverSummary, leakDisplayFilter])
   const visibleLeakPreviewPoints = useMemo(
     () => leakPreviewPointsInRoi(verifiedLeakPreviewSurfacePoints(
-      leakPreviewPoints, leakObserverSummary,
+      leakDisplay.points, leakObserverSummary,
     ), roiScopes),
-    [leakPreviewPoints, leakObserverSummary, roiScopes],
+    [leakDisplay.points, leakObserverSummary, roiScopes],
   )
-  const leakPreviewCandidates = useLeakPreviewStore((state) => state.candidates)
+  const leakPreviewCandidates = leakDisplay.candidates
   const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
   const leakPreviewSourceComponentIds = useLeakPreviewStore(
     (state) => state.sourceComponentIds,
@@ -2049,7 +2055,7 @@ export function ThreeViewerCanvas({
   )
   const selectedLeakGroupIds = useLeakPreviewStore(state => state.selectedGroupCandidateIds)
   const selectedObservation = useLeakPreviewStore(state => state.selectedObservation)
-  const observationIndex = useMemo(() => createObserverObservationIndex(leakPreviewPoints, leakObserverSummary), [leakPreviewPoints, leakObserverSummary])
+  const observationIndex = useMemo(() => createObserverObservationIndex(leakDisplay.points, leakObserverSummary), [leakDisplay.points, leakObserverSummary])
   const selectedLeakObservation = useMemo(() => resolveObserverPoint(
     leakPreviewCandidates.find(candidate => candidate.id === selectedLeakCandidateId), selectedObservation,
     leakPreviewPoints, leakObserverSummary, observationIndex), [leakPreviewCandidates, selectedLeakCandidateId, selectedObservation, leakPreviewPoints, leakObserverSummary, observationIndex])
@@ -4060,7 +4066,7 @@ export function ThreeViewerCanvas({
         opacity: leakPreviewDisplayStyle.haloOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: NormalBlending,
+        blending: AdditiveBlending,
         toneMapped: false,
       }),
     )
@@ -4082,7 +4088,7 @@ export function ThreeViewerCanvas({
         opacity: leakPreviewDisplayStyle.coreOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: NormalBlending,
+        blending: AdditiveBlending,
         toneMapped: false,
       }),
     )
@@ -4703,7 +4709,7 @@ export function ThreeViewerCanvas({
       (emitter) => emitter.reference_mode === 'leak_preview_body_plane',
     )
     const leakPreviewBodyPlanes = leakPreviewSourceMode === 'body' && !hasSavedLeakPreviewBodyPlane
-      ? createLeakPreviewBodyPlaneEmitters(
+      ? createLeakPreviewBodyEmitters(
           scene,
           leakPreviewSourceComponentIds,
           transformRules,

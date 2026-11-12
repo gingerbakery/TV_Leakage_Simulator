@@ -797,6 +797,8 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', { name: 'Rx' }),
       { key: 'Enter' },
     )
+    // Numeric Enter commits the field; applying the dialog is explicit.
+    fireEvent.click(screen.getByRole('button', { name: 'Apply transform' }))
 
     expect(workspaceStore.getState().transformRules).toEqual([
       expect.objectContaining({
@@ -1006,6 +1008,7 @@ describe('Step 07·08 feature editors', () => {
       screen.getByRole('spinbutton', { name: 'Emitter center X' }),
       { key: 'Enter' },
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Add Emitter' }))
     expect(workspaceStore.getState().placementPreviewEmitter).toBeNull()
     expect(
       screen.queryByRole('dialog', { name: 'Datum Plane Emitter' }),

@@ -329,6 +329,12 @@ function isLeakPreviewProjectState(
   value: unknown,
 ): value is LeakPreviewProjectState {
   if (!isRecord(value)) return false
+  if (value.displayFilter !== undefined) {
+    const filter = value.displayFilter
+    if (!isRecord(filter) || !(filter.maxReflections === null || isSafeId(filter.maxReflections)) ||
+      !isFiniteNumber(filter.minNit) || filter.minNit < 0 || !isFiniteNumber(filter.minBrightnessRatio) ||
+      filter.minBrightnessRatio < 0 || filter.minBrightnessRatio > 1) return false
+  }
   const isIgnoreArea = (item: unknown): item is LeakPreviewIgnoreArea =>
     isRecord(item) &&
     isString(item.id) &&
@@ -388,7 +394,7 @@ function isObserverSettings(value: unknown): boolean {
   if (value.search_mode !== undefined && !isOneOf(value.search_mode, ['preview', 'full_detail'])) return false
   if (value.spacing_mm !== undefined && (!isFiniteNumber(value.spacing_mm) || value.spacing_mm < .1 || value.spacing_mm > 100)) return false
   return ([['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10],
-    ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const).every(([key, lo, hi]) => {
+    ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, value.search_mode === 'full_detail' && value.measurement === 'radiance' ? 64 : 16]] as const).every(([key, lo, hi]) => {
       const number = value[key]
       return isFiniteNumber(number) && number >= lo && number <= hi &&
         (!['resolution', 'samples_per_cell'].includes(key) || Number.isInteger(number))
@@ -537,6 +543,7 @@ function isRayTraceConfig(
       'russian_roulette',
     ]) &&
     isOneOf(value.contribution_mode, ['summary', 'detailed']) &&
+    (value.receiver_diagnostics === undefined || typeof value.receiver_diagnostics === 'boolean') &&
     (value.intersection_backend === undefined ||
       isOneOf(value.intersection_backend, [
         'auto',

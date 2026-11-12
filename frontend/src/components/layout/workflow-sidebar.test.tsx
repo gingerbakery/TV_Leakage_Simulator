@@ -39,11 +39,11 @@ it('opens Whole Set Lighting for a viewer pick after navigating away or collapsi
   expect(screen.getByRole('button', { name: 'Whole Set Lighting' }).getAttribute('aria-expanded')).toBe('false')
   act(() => leakPreviewStore.getState().selectCandidate(id, 'viewer'))
   expect(screen.getByRole('button', { name: 'Whole Set Lighting' }).getAttribute('aria-expanded')).toBe('true')
-  expect(screen.getByRole('article', { name: 'Candidate 01' }).getAttribute('aria-current')).toBe('true')
+  expect(screen.getByRole('article', { name: 'Point1' }).getAttribute('aria-current')).toBe('true')
   fireEvent.click(screen.getByRole('button', { name: 'Whole Set Lighting' }))
   expect(screen.getByRole('button', { name: 'Whole Set Lighting' }).getAttribute('aria-expanded')).toBe('false')
   act(() => leakPreviewStore.getState().selectCandidate(id, 'viewer'))
-  expect(screen.getByRole('article', { name: 'Candidate 01' }).getAttribute('aria-current')).toBe('true')
+  expect(screen.getByRole('article', { name: 'Point1' }).getAttribute('aria-current')).toBe('true')
 })
 
 it('owns Block creation in Model Import and ends drawing when navigating to Preview', () => {

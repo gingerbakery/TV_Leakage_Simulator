@@ -8,6 +8,21 @@ import { createDefaultLeakPreviewProjectState, leakPreviewStore } from './leak-p
 const defaultObserverSettings = { ...newDefaults, measurement: 'paths' as const, refine_angles: false }
 
 describe('automatic observer sampling', () => {
+  it('keeps full-detail spacing and view angles fixed at 32/64 radiance repeats', () => {
+    const projection={minimum:[0,0,0] as [number,number,number],maximum:[10,6,1] as [number,number,number],direction:'neg_z' as const}
+    const spec={...newDefaults,enabled:true,measurement:'radiance' as const,search_mode:'full_detail' as const,
+      range_deg:0,horizontal_deg:0,vertical_deg:0,spacing_mm:1}
+    const base=planObserverSampling({...spec,samples_per_cell:8},1,projection)
+    for (const repeats of [32,64]) {
+      const plan=planObserverSampling({...spec,samples_per_cell:repeats},1,projection)
+      expect(plan.error).toBeNull()
+      expect(plan.samples_per_cell).toBe(repeats)
+      expect(plan.plannedCount).toBe(base.plannedCount*repeats/8)
+      const request=buildLeakPreviewRequest({scene:createSceneFixture(),sourceFaceIds:[0],quality:'fast',computeBackend:'cpu',
+        materialAssignments:[],transformRules:[],excludedComponentIds:[],deletedComponentIds:[],detectionMode:'escape_directions',observer:{...spec,samples_per_cell:repeats}})
+      expect(request.observer_probe).toMatchObject({samples_per_cell:repeats,spacing_mm:1,horizontal_deg:0,vertical_deg:0})
+    }
+  })
   it('doubles full-detail radiance samples at 16 repeats without coarsening space or angles and fails on budget overflow', () => {
     const projection={minimum:[0,0,0] as [number,number,number],maximum:[100,60,10] as [number,number,number],direction:'neg_z' as const}
     const spec={...newDefaults,enabled:true,search_mode:'full_detail' as const,range_deg:0,horizontal_deg:0,vertical_deg:0,spacing_mm:1}

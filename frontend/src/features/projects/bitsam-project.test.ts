@@ -54,6 +54,18 @@ function createProjectFixture() {
 }
 
 describe('BITSAM project format', () => {
+  it('persists display filters independently of raw evidence and supports legacy settings', () => {
+    const {project} = createProjectFixture()
+    project.leak_preview = { ...createDefaultLeakPreviewProjectState(), displayFilter:{maxReflections:2,minNit:.1,minBrightnessRatio:.05} }
+    project.preview_result = createSavedLeakPreviewFixture()
+    const restored = parseBitsamProject(serializeBitsamProject(project))
+    expect(restored.leak_preview?.displayFilter).toEqual(project.leak_preview.displayFilter)
+    expect(restored.preview_result).toEqual(project.preview_result)
+    restored.leak_preview!.displayFilter!.minBrightnessRatio = 2
+    expect(() => parseBitsamProject(serializeBitsamProject(restored))).toThrow()
+    delete restored.leak_preview!.displayFilter
+    expect(parseBitsamProject(serializeBitsamProject(restored)).preview_result).toEqual(project.preview_result)
+  })
   it('preserves hemisphere settings and grouped representative paths and rejects corrupt paths', () => {
     const store = createWorkspaceStore()
     store.getState().actions.addCadCase({ path: 'hemisphere.step', displayName: 'Hemisphere' })

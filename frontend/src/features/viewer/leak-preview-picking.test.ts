@@ -22,11 +22,11 @@ function camera(distance = 10) {
 
 const viewport = { width: 800, height: 400 }
 
-it('keeps a generous 12 px click radius without enlarging the rendered dot', () => {
+it('keeps a 16 px click radius independent of camera distance', () => {
   const { root } = dots()
   for (const distance of [2, 10, 300]) {
-    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 411, y: 200 }, viewport)).toBe('leak-one')
-    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 413, y: 200 }, viewport)).toBeNull()
+    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 415, y: 200 }, viewport)).toBe('leak-one')
+    expect(pickLeakPreviewCandidate(root, camera(distance), { x: 417, y: 200 }, viewport)).toBeNull()
   }
 })
 

@@ -1,4 +1,5 @@
 import type { ObserverPointSelection } from './observer-point-selection'
+import { defaultLeakDisplayFilter, type LeakDisplayFilter } from './leak-display-filter'
 import { migrateAllowedAreas } from './blocker-groups'
 import { previewSignature } from './leak-preview-signature'
 import { useStore } from 'zustand'
@@ -28,6 +29,7 @@ function restoredObserver(observer?: LeakPreviewProjectState['observer']) {
 
 export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState {
   return {
+    displayFilter: { ...defaultLeakDisplayFilter },
     sourceMode: 'face',
     sourceEmitterIds: [],
     detectionMode: 'escape_directions',
@@ -47,6 +49,7 @@ export function createDefaultLeakPreviewProjectState(): LeakPreviewProjectState 
 
 function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState {
   return structuredClone({
+    displayFilter: state.displayFilter,
     sourceMode: state.sourceMode,
     detectionMode: state.detectionMode,
     observer: state.observer,
@@ -65,6 +68,8 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
 }
 
 interface LeakPreviewState {
+  displayFilter: LeakDisplayFilter
+  setDisplayFilter(patch: Partial<LeakDisplayFilter>): void
   cameraViewRequest: { candidate: LeakPreviewCandidate | null; sceneToken: string | null } | null
   requestCameraView(candidate: LeakPreviewCandidate | null): void
   sceneToken: string | null
@@ -201,6 +206,14 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   jobId: null,
   result: null,
   resultRestored: false,
+  displayFilter: { ...defaultLeakDisplayFilter },
+  setDisplayFilter: (patch) => {
+    setAndPersist(state => ({
+      displayFilter: { ...state.displayFilter, ...patch },
+      selectedCandidateId: null, selectedObservation: null, selectedGroupCandidateIds: [], highlight: null,
+    }))
+    persistDetection()
+  },
   cameraViewRequest: null,
   requestCameraView: (candidate) => set({ cameraViewRequest: { candidate: candidate ? structuredClone(candidate) : null, sceneToken: get().sceneToken } }),
   points: [],
@@ -244,6 +257,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
           sceneToken,
           sceneIdentity,
           observer: restoredObserver(preserved?.observer),
+          displayFilter: { ...defaultLeakDisplayFilter, ...preserved?.displayFilter },
           detectionMode: 'escape_directions',
           sourceMode: 'face',
           sourceEmitterIds: [],
@@ -445,6 +459,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     const restored = projectState ?? createDefaultLeakPreviewProjectState()
     set({
       ...structuredClone(restored),
+      displayFilter: { ...defaultLeakDisplayFilter, ...restored.displayFilter },
       blockers: structuredClone(migrateAllowedAreas(restored.blockers, restored.ignoreAreas, restored.ignoreAreasVisible)),
       ignoreAreas: [],
       sourceEmitterIds: restored.sourceEmitterIds ?? [],
@@ -470,6 +485,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     })
   },
   clear: () => set({
+    displayFilter: { ...defaultLeakDisplayFilter },
     detectionMode: 'escape_directions',
     observer: { ...defaultObserverSettings },
     sceneToken: null,

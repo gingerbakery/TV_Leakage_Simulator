@@ -59,6 +59,7 @@ import {
 } from './receiver-heatmap'
 import { RaySectionImage } from './ray-section-image'
 import { ComputeExecutionStatus } from './compute-execution-status'
+import { ReceiverDiagnostics } from './receiver-diagnostics'
 import { resultExcelDetailSheets } from './result-excel-details'
 import { resultExcelImageSheets } from './result-excel-images'
 
@@ -3265,6 +3266,7 @@ export function RayTraceResultWindow({
                 configuredBackend={result.config.compute_backend}
                 performance={performance}
               />
+              <ReceiverDiagnostics value={result.metrics._receiver_diagnostics} requested={result.config.receiver_diagnostics} />
               <p className="popup-guide flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
                 Acceleration structure
                 <HelpTooltip label="Acceleration structure 설명">

@@ -10,7 +10,7 @@ import type {
   ScenePayload,
   Vec3,
 } from '@/api'
-import { buildRayTraceRequest, createDatumEmitter, createFaceEmitter, distributeIntegerBudget } from '@/features/raytracing/ray-tracing-model'
+import { buildRayTraceRequest, createFaceEmitter, distributeIntegerBudget } from '@/features/raytracing/ray-tracing-model'
 import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import type {
   ComponentTransformRule,
@@ -100,6 +100,7 @@ export const defaultObserverSettings: LeakPreviewObserverSettings = {
 }
 
 export interface LeakPreviewProjectState {
+  displayFilter?: import('./leak-display-filter').LeakDisplayFilter
   sourceMode: 'face' | 'body' | 'emitters'
   sourceEmitterIds?: string[]
   detectionMode?: 'escape_directions' | 'planar'
@@ -120,7 +121,16 @@ export type LeakPreviewHighlight = { kind: 'observer'; horizontal: number; verti
 
 export function isLeakPreviewPointHighlighted(point: LeakPreviewPoint, highlight: LeakPreviewHighlight | null, candidateId: string | null, groupIds: readonly string[] | ReadonlySet<string> = []): boolean {
   if (highlight?.kind === 'observer') return point.observerAngles?.[0] === highlight.horizontal && point.observerAngles?.[1] === highlight.vertical
-  if (highlight?.kind === 'escape') return (point.angleBins?.[highlight.bin] ?? 0) > 0
+  if (highlight?.kind === 'escape') {
+    if (point.angleBins) return (point.angleBins[highlight.bin] ?? 0) > 0
+    if (!point.observerAngles) return false
+    // Observer azimuth/elevation use the same reference axis as escape bins.
+    // This associates directions, never adds reverse evidence to forward counts.
+    const [h,v] = point.observerAngles.map(value => value*Math.PI/180)
+    const angle = Number((Math.acos(Math.max(-1,Math.min(1,Math.cos(h)*Math.cos(v))))*180/Math.PI).toFixed(10))
+    if (angle > 90) return false
+    return highlight.bin === (angle < 30 ? 0 : angle < 60 ? 1 : angle < 80 ? 2 : 3)
+  }
   return candidateId !== null && point.candidateId === candidateId || Boolean(point.candidateId && ('has' in groupIds ? groupIds.has(point.candidateId) : groupIds.includes(point.candidateId)))
 }
 
@@ -525,95 +535,36 @@ function previewEmitter(
   }
 }
 
-function bodyPlaneFrame(
-  scene: ScenePayload,
-  componentId: number,
-  transformRules: ComponentTransformRule[],
-): { center: Vec3; uAxis: Vec3; vAxis: Vec3; widthMm: number; heightMm: number } | null {
-  const component = scene.components.find((item) => item.component_id === componentId)
-  if (!component) return null
-  const minimum = component.bbox_min
-  const maximum = component.bbox_max
-  const size: Vec3 = [
-    Math.max(0, maximum[0] - minimum[0]),
-    Math.max(0, maximum[1] - minimum[1]),
-    Math.max(0, maximum[2] - minimum[2]),
-  ]
-  const localCenter: Vec3 = [
-    (minimum[0] + maximum[0]) / 2,
-    (minimum[1] + maximum[1]) / 2,
-    (minimum[2] + maximum[2]) / 2,
-  ]
-  const normalAxis = size.indexOf(Math.min(...size))
-  const planeAxes = [0, 1, 2].filter((axis) => axis !== normalAxis)
-  const transformPoint = createLeakPreviewPointTransform(scene, transformRules)
-  const center = transformPoint(componentId, localCenter)
-  const worldAxis = (axis: number): Vec3 => {
-    const endpoint = [...localCenter] as Vec3
-    endpoint[axis] += 1
-    return normalized(subtract(transformPoint(componentId, endpoint), center))
-  }
-  return {
-    center,
-    uAxis: worldAxis(planeAxes[0]),
-    vAxis: worldAxis(planeAxes[1]),
-    widthMm: Math.max(size[planeAxes[0]], 0.1),
-    heightMm: Math.max(size[planeAxes[1]], 0.1),
-  }
-}
-
-/** Use a selected Body only as the placement reference for one rectangular
- * plane. No Body surface becomes an emitting face. */
-export function createLeakPreviewBodyPlaneEmitters(
+/** A Body source emits only on its real CAD faces, never its bounding box. */
+export function createLeakPreviewBodyEmitters(
   scene: ScenePayload,
   componentIds: number[],
-  transformRules: ComponentTransformRule[] = [],
+  _transformRules: ComponentTransformRule[] = [],
   rayCount = 100_000,
   splitDirections = true,
 ): EmitterSpec[] {
-  const planes = [...new Set(componentIds)].flatMap((componentId, index) => {
-    const frame = bodyPlaneFrame(scene, componentId, transformRules)
-    if (!frame) return []
-    return [{
-      ...createDatumEmitter(
-        `__leak_preview_body_${componentId}_${index + 1}`,
-        frame.center,
-        [0, 0, 0],
-      ),
-      u_axis: frame.uAxis,
-      v_axis: frame.vAxis,
-      custom_normal: normalized(cross(frame.uAxis, frame.vAxis)),
-      width_mm: frame.widthMm,
-      height_mm: frame.heightMm,
-      reference_mode: 'leak_preview_body_plane',
-    }]
-  })
-  if (planes.length === 0) return []
-  const directionCount = splitDirections ? 2 : 1
-  const emitterCount = planes.length * directionCount
-  const baseRays = Math.max(1, Math.floor(rayCount / emitterCount))
-  let assignedRays = 0
-  return planes.flatMap((plane, planeIndex) => {
-    const directions = splitDirections
-      ? (['forward', 'reverse'] as const)
-      : (['both'] as const)
-    return directions.map((direction, directionIndex) => {
-      const isLast = planeIndex === planes.length - 1 && directionIndex === directions.length - 1
-      const emitterRays = isLast ? Math.max(1, rayCount - assignedRays) : baseRays
-      assignedRays += emitterRays
-      return {
-        ...plane,
-        emitter_id: `${plane.emitter_id}_${direction}`,
-        emission_direction: direction,
-        normal_flip: direction === 'reverse',
-        power_mode: 'total' as const,
-        power_lumen: 1 / emitterCount,
-        luminance_nit: undefined,
-        ray_count: emitterRays,
-        seed: 42 + planeIndex * 2 + directionIndex,
-      }
-    })
-  })
+  const bodies = [...new Set(componentIds)].filter(id => scene.components.some(c => c.component_id === id))
+  if (!bodies.length) return []
+  const directions = splitDirections ? (['forward', 'reverse'] as const) : (['both'] as const)
+  const count = bodies.length * directions.length
+  let assigned = 0
+  return bodies.flatMap((componentId, bodyIndex) => directions.map((direction, sideIndex) => {
+    const last = bodyIndex === bodies.length - 1 && sideIndex === directions.length - 1
+    const rays = last ? Math.max(1, rayCount - assigned) : Math.max(1, Math.floor(rayCount / count))
+    assigned += rays
+    return {
+      ...createFaceEmitter(`__leak_preview_body_${componentId}_${bodyIndex + 1}_${direction}`, []),
+      source_component_ids: [componentId],
+      normal_flip: direction === 'reverse',
+      emission_direction: direction,
+      direction_distribution: 'lambertian' as const,
+      power_mode: 'total' as const,
+      power_lumen: 1 / count,
+      luminance_nit: undefined,
+      ray_count: rays,
+      seed: 42 + bodyIndex * 2 + sideIndex,
+    }
+  }))
 }
 
 export function buildLeakPreviewRequest({
@@ -695,7 +646,7 @@ export function buildLeakPreviewRequest({
     emitters: selectedEmitters
       ? selectedEmitters.map((emitter, index) => ({ ...structuredClone(emitter), ray_count: rayCounts[index] }))
       : sourceComponentIds.length > 0
-      ? createLeakPreviewBodyPlaneEmitters(
+      ? createLeakPreviewBodyEmitters(
           scene,
           sourceComponentIds,
           transformRules,
@@ -748,7 +699,7 @@ export function buildLeakPreviewRequest({
         settings.min_luminance_nit ??= .01
         if (!Number.isFinite(settings.min_luminance_nit) || settings.min_luminance_nit < 0) throw new Error('최소 관찰 휘도는 0 이상의 유한한 nit 값이어야 합니다.')
       }
-      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, 16]] as const) {
+      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, fullDetail && observer.measurement === 'radiance' ? 64 : 16]] as const) {
         const value = settings[key]
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
       }
@@ -1697,6 +1648,7 @@ export function createCandidateReceiver(
     const widthMm = Math.max(1, extent(receiver.u_axis!)), heightMm = Math.max(1, extent(receiver.v_axis!))
     const pixelSize = Math.max(widthMm, heightMm) / 40
     return { ...receiver, display_name: `Preview Receiver ${index}`, reference_mode: 'leak_preview_candidate',
+      acceptance_angle_deg: 90, normal_flip: false,
       observer_reference_path: candidate.representativePath && candidate.representativePath.length <= 4098 ? candidate.representativePath.map((p) => [...p] as Vec3) : null,
       width_mm: widthMm, height_mm: heightMm,
       resolution: [Math.max(8, Math.round(widthMm / pixelSize)), Math.max(8, Math.round(heightMm / pixelSize))] }
