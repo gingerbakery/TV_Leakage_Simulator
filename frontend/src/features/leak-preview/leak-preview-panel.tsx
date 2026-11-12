@@ -8,6 +8,8 @@ import { PreviewRunStatus } from './preview-run-status'
 import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { planObserverSampling } from './observer-sampling'
 import { SensorComparisonDialog } from './sensor-comparison-dialog'
+import { ForwardPathReplayResult } from './forward-path-replay-result'
+import type { ForwardPathReplay } from '@/api/client'
 import { previewSignature, samePreviewSignature } from './leak-preview-signature'
 import { expandBlockerGroups } from './blocker-groups'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -119,7 +121,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const [groupDistance, setGroupDistance] = useState(15)
   const [groupUndo, setGroupUndo] = useState<ReturnType<typeof leakPreviewStore.getState> | null>(null)
   const [validatingCandidateId, setValidatingCandidateId] = useState<string | null>(null)
-  const [pathCheck, setPathCheck] = useState<{candidateId:string;signature:string;pathIdentity:string;valid:boolean;reason:string} | null>(null)
+  const [pathCheck, setPathCheck] = useState<{candidateId:string;signature:string;pathIdentity:string;valid:boolean;reason:string;replay?:ForwardPathReplay} | null>(null)
   const [comparisonRequest, setComparisonRequest] = useState<RayTraceRequest | null>(null)
   const candidateListId = useId()
   const candidateRows = useRef(new Map<string, HTMLElement>())
@@ -563,7 +565,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       const response = await apiClient.validateObserverReceiver(request)
       if (leakPreviewStore.getState().sceneToken !== scene.metadata.scene_token || workspaceStore.getState().activeCadCaseId !== activeCadCaseId) return
       const check = response.receiver_checks[0]
-      setPathCheck({candidateId:candidate.id,signature:previewInputSignature,pathIdentity:JSON.stringify(candidate.representativePath),valid:Boolean(check?.path_valid),reason:check?.diagnosis ?? 'unknown'})
+      setPathCheck({candidateId:candidate.id,signature:previewInputSignature,pathIdentity:JSON.stringify(candidate.representativePath),valid:Boolean(check?.path_valid),reason:check?.diagnosis ?? 'unknown',replay:check?.forward_replay})
       const reasons: Record<string, string> = {
         source_position_or_emission_mismatch: '광원 위치·방출·출력 불일치', source_covered_by_blocker: '발광 위치가 Block에 차폐됨', occluded_segment: '기구물·Block 차폐',
         reflection_vertex_off_surface: '반사점이 실제 면 밖', visible_endpoint_off_surface: '관찰 점이 실제 면 밖',
@@ -729,7 +731,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           </div> : null}
           {selectedObservation ? <div role="status" className="text-xs">개별 관찰 표본 · {selectedCandidate?.representativePath?.length === 2 ? '직광' : '반사 경로'}</div> : null}
           {pathCheck && pathCheck.candidateId === selectedCandidate?.id && pathCheck.signature === previewInputSignature && pathCheck.pathIdentity === JSON.stringify(selectedCandidate.representativePath) ?
-            <ValidationNextStep advice={pathValidationAdvice(pathCheck.valid,pathCheck.reason)} label="경로 검증 다음 단계" /> : null}
+            <div className="space-y-2"><ValidationNextStep advice={pathValidationAdvice(pathCheck.valid,pathCheck.reason)} label="경로 검증 다음 단계" /><ForwardPathReplayResult report={pathCheck.replay} /></div> : null}
           <div className="grid grid-cols-2 gap-1.5">
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath} onClick={() => { if (selectedCandidate) leakPreviewStore.getState().requestCameraView(selectedCandidate) }}>검출 시야각 보기</Button>
             <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" onClick={() => leakPreviewStore.getState().requestCameraView(null)}>이전 보기</Button><HelpTooltip label="검출 시야각 보기 도움말">선택 Point에 저장된 검출 당시 방향으로 평행 투영 카메라를 맞춥니다. Point를 화면 중심으로 잡고 모델 외부에서 바라봅니다. 목록 선택만으로는 카메라가 움직이지 않습니다. 이전 보기는 전환 전 카메라 위치·방향·확대를 복원합니다. 카메라 거리는 화면 구도를 위한 값이며 사람의 실제 관찰 거리나 육안 밝기를 재현하지 않습니다.</HelpTooltip></div>

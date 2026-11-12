@@ -194,11 +194,20 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         physical_input_sha256=hashlib.sha256(json.dumps(snapshot, sort_keys=True, allow_nan=False).encode()).hexdigest(),
         geometry_sha256=geometry_digest.hexdigest(), execution_backend=backend, preflight=preflight_record, requested_project_backend=trace.config.compute_backend, gpu_execution_proven=False,
         witness=witness, options=options.__dict__, batches=[], complete=False, verdict="inconclusive",
+        forward_diagnostics=[],
         source_model_calibrated=False, comparison_unit="lumen", original_config_preserved=True,
         validation_overrides=dict(compute_backend=backend, min_energy=0., termination_mode="russian_roulette",
-            primary_sampling_strategy="source", bounce_sampling_strategy="source", single_receiver=True),
+            primary_sampling_strategy="source", bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
         limitations=["finite_sampling", "batch_t_approximation", "reflection_only", "not_real_TV_validation"])
     report["code_sha256"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path(__file__).parent.glob("*.py")}
+    from .forward_path_replay import replay_forward_path
+    if should_stop and should_stop():
+        report.update(reason='stopped',runtime_sec=time.perf_counter()-started)
+        return report
+    report['reference_replay'] = replay_forward_path(trace,receiver)
+    if report['reference_replay']['state'] == 'failed':
+        report.update(reason='reference_replay_failed',runtime_sec=time.perf_counter()-started)
+        return report
     if witness and not witness[0]["path_valid"]:
         report.update(reason="invalid_reference_path", runtime_sec=time.perf_counter()-started)
         return report
@@ -214,7 +223,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         rseed = (options.seed+batch*1000033+0x13198A2E) & 0x7fffffff
         base, extra = divmod(options.forward_samples, len(emitters))
         local_emitters = [replace(e, ray_count=base+int(i < extra), seed=(fseed+i*65537)&0x7fffffff) for i, e in enumerate(emitters)]
-        forward_input = replace(trace, emitters=local_emitters, receivers=[receiver], config=replace(local_config, seed=fseed),
+        forward_input = replace(trace, emitters=local_emitters, receivers=[receiver], config=replace(local_config, seed=fseed,receiver_diagnostics=True),
             observer_probe=None, escape_collection=None)
         phase_started = time.perf_counter()
         if progress:
@@ -223,6 +232,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
             progress_callback=(lambda n, total: progress(batch, "forward", n, total)) if progress else None)
         forward_sec = time.perf_counter()-phase_started
         forward_performance = result.metrics.get("_performance_summary", {})
+        report['forward_diagnostics'].append(dict(index=batch+1,report=result.metrics.get('_receiver_diagnostics')))
         if (should_stop and should_stop()) or forward_performance.get("stopped_early"):
             report.update(reason="stopped", runtime_sec=time.perf_counter()-started)
             return report
@@ -256,7 +266,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
                 progress(batch, "original_policy", 0, options.forward_samples)
             original = run_direct_ray_trace(replace(forward_input, config=replace(trace.config,
                 compute_backend=backend, intersection_backend="bvh", seed=fseed, auto_convergence=False,
-                store_ray_paths=False, primary_sampling_strategy="source", bounce_sampling_strategy="source")),
+                store_ray_paths=False, receiver_diagnostics=True, primary_sampling_strategy="source", bounce_sampling_strategy="source")),
                 should_stop=should_stop)
             if should_stop and should_stop():
                 report.update(reason="stopped", runtime_sec=time.perf_counter()-started)
@@ -266,6 +276,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
                 forward_hits=og.hit_count, min_energy=trace.config.min_energy, termination_mode=trace.config.termination_mode,
                 seed=fseed, sample_count=original.total_rays, included_in_equivalence=False,
                 termination=original.metrics.get("_termination_summary", {}))
+            report['original_termination_probe']['diagnostics'] = original.metrics.get('_receiver_diagnostics')
             report["original_termination_probe"]["execution"] = original.metrics.get("_performance_summary", {})
             report["original_termination_probe"]["gpu_execution_proven"] = gpu_proven(report["original_termination_probe"]["execution"])
     report.update(summarize_batches(report["batches"], options), complete=True, runtime_sec=time.perf_counter()-started,

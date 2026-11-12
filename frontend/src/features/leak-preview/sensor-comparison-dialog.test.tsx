@@ -17,7 +17,7 @@ const request = () => buildRayTraceRequest({ scene: createSceneFixture(), projec
 it('guides low forward ESS, reveals steps on demand, and applies a valid plan without starting a run', async () => {
   const input=request()
   const start=vi.spyOn(apiClient,'startSensorComparison')
-  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'done',status:'completed',scene_token:input.scene_token,
+  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'done',status:'completed',scene_token:input.scene_token,input_request:structuredClone(input),
     progress:1,batch:8,phase:'finished',stop_requested:false,error:null,report:{
       sensor:{receiver_id:'sensor',width_mm:input.receivers[0].width_mm,height_mm:input.receivers[0].height_mm,acceptance_angle_deg:input.receivers[0].acceptance_angle_deg},options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},
       verdict:'inconclusive',reason:'insufficient_effective_samples',gpu_execution_proven:true,
@@ -34,6 +34,17 @@ it('guides low forward ESS, reveals steps on demand, and applies a valid plan wi
   expect(screen.getByRole('spinbutton',{name:'허용 차이'})).toHaveProperty('value','5')
   expect(screen.getByText('권장 표본 설정 적용 · 비교 시작 필요')).toBeTruthy()
   expect(start).not.toHaveBeenCalled()
+})
+
+it('rejects a same-size result with a changed receiver pose',async()=>{
+  const input=request(),old=structuredClone(input); old.receivers[0].center[0]+=1
+  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'old-pose',input_request:old,status:'completed',scene_token:input.scene_token,
+    progress:1,batch:8,phase:'finished',stop_requested:false,error:null,report:{sensor:{receiver_id:'sensor',width_mm:input.receivers[0].width_mm,height_mm:input.receivers[0].height_mm,acceptance_angle_deg:input.receivers[0].acceptance_angle_deg},
+      options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},verdict:'inconclusive',reason:'insufficient_effective_samples',gpu_execution_proven:true,forward_hits:100,reverse_positive_samples:100,forward_effective_samples:16,reverse_effective_samples:100}})
+  render(<SensorComparisonDialog request={input} onClose={()=>undefined}/>)
+  await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('이전 작업 결과'))
+  expect(screen.getByText('다음: 현재 조건으로 다시 비교')).toBeTruthy()
+  expect(screen.queryByRole('button',{name:'권장 표본 적용'})).toBeNull()
 })
 
 it('starts GPU sensor comparison with the frozen request and can explicitly stop it', async () => {

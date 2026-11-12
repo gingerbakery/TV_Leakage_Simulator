@@ -48,6 +48,8 @@ function nextSamples(options: SensorComparisonOptions, f: boolean, r: boolean, m
 export function comparisonValidationAdvice(report: SensorComparisonReport, sameSensor: boolean): ValidationAdvice {
   if (!sameSensor) return {title:'현재 조건으로 다시 비교',steps:[
     '이전 작업 결과입니다. 현재 선택 센서·장면과 일치하는 결과인지 확인한 뒤 현재 조건으로 비교를 시작하세요. 이전 결과의 표본 진단을 현재 센서의 검증으로 사용하지 않습니다.']}
+  if (report.reason==='reference_replay_failed') return {title:'재생 실행 오류 확인 후 재비교',steps:[
+    '대표 경로의 격리된 순방향 재생이 실행 오류로 끝났습니다. 재생 오류와 검증 JSON을 확인하세요. Ray 수를 늘리거나 허용 차이를 바꿔 해결할 수 있는 표본 판정이 아닙니다.']}
   if (report.reason==='invalid_reference_path') return pathValidationAdvice(false,'unknown')
   if (report.reason==='stopped' || report.reason==='incomplete_batches') return {title:'독립 반복 완료 후 판정',steps:[
     '중지되거나 반복이 끝나지 않은 결과입니다. 같은 센서와 표본 설정으로 비교를 다시 시작하고 설정된 독립 반복을 완료하세요.']}

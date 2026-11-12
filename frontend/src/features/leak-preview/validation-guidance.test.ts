@@ -7,6 +7,11 @@ function report(patch:Partial<SensorComparisonReport>={}):SensorComparisonReport
     verdict:'inconclusive',reason:'insufficient_effective_samples',gpu_execution_proven:true,
     forward_hits:100,reverse_positive_samples:1000,forward_effective_samples:16.2,reverse_effective_samples:378,...patch}
 }
+it('does not recommend sample increases for an isolated replay execution error',()=>{
+  const advice=comparisonValidationAdvice(report({reason:'reference_replay_failed'}),true)
+  expect(advice.title).toBe('재생 실행 오류 확인 후 재비교')
+  expect(advice.samples).toBeUndefined()
+})
 
 it('prioritizes the deficient direction in the reported 16.2/378 case, without changing the other side', () => {
   const advice=comparisonValidationAdvice(report(),true)

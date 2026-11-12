@@ -30,6 +30,24 @@ def scene(distribution="uniform_solid_angle", mirror=False, blocked=False):
 
 
 class SensorComparisonTests(TestCase):
+    def test_replay_execution_failure_cannot_produce_a_passing_comparison(self):
+        with patch('leakage_simulator.forward_path_replay.replay_forward_path',return_value={'state':'failed','reason':'replay_execution_failed'}):
+            report=run_sensor_comparison(scene(),ComparisonOptions('common',batches=4,forward_samples=32,reverse_samples=32))
+        self.assertFalse(report['complete'])
+        self.assertEqual(report['verdict'],'inconclusive')
+        self.assertEqual(report['reason'],'reference_replay_failed')
+        self.assertEqual(report['forward_diagnostics'],[])
+    def test_comparison_keeps_forward_diagnostics_and_original_policy_report(self):
+        trace=scene(blocked=True)
+        report=run_sensor_comparison(trace,ComparisonOptions('common',batches=4,forward_samples=32,reverse_samples=32))
+        self.assertEqual(len(report['forward_diagnostics']),4)
+        for batch in report['forward_diagnostics']:
+            row=batch['report']['receivers'][0]
+            self.assertTrue(row['consistent'])
+            self.assertEqual(row['actual_receiver_hits'],0)
+        self.assertIn('diagnostics',report['original_termination_probe'])
+        self.assertEqual(report['reference_replay']['reason'],'missing_representative_path')
+        self.assertFalse(trace.config.receiver_diagnostics)
     def test_same_roi_masks_half_sensor_without_changing_area_or_sample_denominator(self):
         trace = replace(scene(), analysis_roi=dict(detection_boxes=[(-10, 0, -10, 10, -8, -4)]))
         report = run_sensor_comparison(trace, ComparisonOptions("common", batches=4, forward_samples=65536, reverse_samples=2048))
@@ -140,6 +158,8 @@ class SensorComparisonTests(TestCase):
             with patch("leakage_simulator.sensor_comparison.run_sensor_comparison", compare):
                 response = client.post("/api/raytrace/compare-sensor/start", json=dict(request=request, options=dict(receiver_id="common")))
                 self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['input_request'],request)
+                self.assertEqual(len(response.json()['input_request_sha256']),64)
                 self.assertTrue(entered.wait(5))
                 jid = response.json()["job_id"]
                 self.assertEqual(client.post("/api/raytrace/compare-sensor/start", json=dict(request=request, options=dict(receiver_id="common"))).status_code, 400)

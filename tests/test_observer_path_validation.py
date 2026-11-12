@@ -1,4 +1,4 @@
-"""Independent geometry evidence: no GPU or stochastic hit injection."""
+"""Independent geometry evidence and isolated CPU replay, no product hit injection."""
 import copy
 import tempfile
 from pathlib import Path
@@ -22,7 +22,7 @@ class ObserverPathValidationTests(TestCase):
         self.assertEqual(report["invalid"], 1)
         self.assertEqual(cell["path_validation"]["reason"], "occluded_segment")
 
-    def test_geometry_only_api_never_runs_the_ray_tracer(self):
+    def test_path_validation_replay_never_starts_a_product_tracing_job(self):
         from fastapi.testclient import TestClient
         from leakage_simulator.api import ApiRuntime, create_app
         from leakage_simulator.raytracer import DirectRayTraceInput
@@ -37,7 +37,7 @@ class ObserverPathValidationTests(TestCase):
         prepared = DirectRayTraceInput(mesh=trace.mesh, emitters=trace.emitters, receivers=[receiver],
             optical_profiles=[resolved[0].profile], config=trace.config)
         def no_tracing(*args, **kwargs):
-            self.fail("Geometry validation must not execute a ray-tracing run")
+            self.fail("Path validation must not launch the product tracing runner")
         with tempfile.TemporaryDirectory() as directory:
             runtime = ApiRuntime(Path(directory), scene_loader=_scene_loader,
                 trace_input_builder=lambda *args: prepared, trace_runner=no_tracing)
@@ -47,6 +47,8 @@ class ObserverPathValidationTests(TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()
             self.assertFalse(payload["simulation_run_started"])
+            self.assertTrue(payload['diagnostic_forward_replay_started'])
+            self.assertFalse(payload['receiver_checks'][0]['forward_replay']['included_in_flux'])
             self.assertTrue(payload["receiver_checks"][0]["path_valid"])
             self.assertEqual(payload["receiver_checks"][0]["diagnosis"], "reference_path_valid")
             self.assertIsNone(payload["receiver_checks"][0]["forward_hit_count"])

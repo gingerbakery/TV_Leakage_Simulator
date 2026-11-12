@@ -30,15 +30,26 @@ export interface SensorComparisonBatch {
   forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown>;
 }
 export interface SensorComparisonReport {
+  physical_input_sha256?: string
+  forward_diagnostics?: Array<{ index: number; report: unknown }>
+  reference_replay?: ForwardPathReplay
   witness?: Array<{ receiver_id: string; path_valid: boolean; diagnosis: string }>;
   sensor: { receiver_id: string; width_mm?: number; height_mm?: number; acceptance_angle_deg?: number }; options: SensorComparisonOptions; verdict: 'match' | 'mismatch' | 'inconclusive'; reason: string;
   gpu_execution_proven?: boolean; compute_execution_state?: string;
   batches?: SensorComparisonBatch[];
   forward_flux_lumen?: number; reverse_flux_lumen?: number; difference_interval_lumen?: number[]; tolerance_lumen?: number;
   forward_hits?: number; reverse_positive_samples?: number; forward_effective_samples?: number; reverse_effective_samples?: number;
-  original_termination_probe?: { forward_flux_lumen: number; forward_hits: number }
+  original_termination_probe?: { forward_flux_lumen: number; forward_hits: number; diagnostics?: unknown }
+}
+export interface ForwardPathReplay {
+  error?: string
+  state: string; reason: string; included_in_flux: false; execution_backend: 'cpu'
+  path_reproduced?: boolean; matched_surface_count?: number
+  first_difference?: {segment_index:number;expected_point:number[];actual_point:number[]|null}|null
+  actual_events?: unknown[]; diagnostics?: unknown
 }
 export interface SensorComparisonJob {
+  input_request?: RayTraceRequest; input_request_sha256?: string
   job_id: string; status: 'queued' | 'running' | 'completed' | 'stopped' | 'failed'; phase: string; progress: number;
   batch: number; scene_token?: string; stop_requested: boolean; error: string | null; report: SensorComparisonReport | null
 }
@@ -53,7 +64,7 @@ export interface LeakageApiClient {
   stopSensorComparison(jobId: string): Promise<SensorComparisonJob>
   validateObserverReceiver(request: RayTraceRequest, options?: ApiRequestOptions): Promise<{
     simulation_run_started: boolean; geometry_cache_hit: boolean; runtime_sec: number;
-    receiver_checks: Array<{ receiver_id: string; path_valid: boolean; diagnosis: string; forward_hit_count: number | null; visible_endpoint_kind?: string | null }>
+    receiver_checks: Array<{ receiver_id: string; path_valid: boolean; diagnosis: string; forward_hit_count: number | null; visible_endpoint_kind?: string | null; forward_replay?: ForwardPathReplay }>
   }>
   importBsdf(files: { name: string; text: string }[], options?: ApiRequestOptions): Promise<BsdfAsset>
   getScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<ScenePayload>

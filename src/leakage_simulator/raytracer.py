@@ -2156,6 +2156,7 @@ def run_direct_ray_trace(
     wavefront_rng: str = "auto",
     wavefront_reducer_commit: str = "auto",
     wavefront_residency: str = "auto",
+    diagnostic_primary_ray: Optional[tuple] = None,
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
     pause_callback: Optional[Callable[[RayTraceResult], bool]] = None,
@@ -2394,7 +2395,7 @@ def run_direct_ray_trace(
         requested_provider=intersection_provider,
         gpu_cuda_hybrid_cpu_below_rays=(
             8192
-            if gpu_compute_requested and intersection_provider == "gpu_cuda"
+            if gpu_compute_requested and intersection_provider == "gpu_cuda" and not trace_input.config.receiver_diagnostics
             else 0
         ),
     )
@@ -2703,6 +2704,15 @@ def run_direct_ray_trace(
             return True
         return not pause_with_snapshot()
 
+    if diagnostic_primary_ray is not None:
+        enabled = [e for e in trace_input.emitters if e.enabled]
+        if (len(enabled) != 1 or enabled[0].ray_count != 1 or trace_input.config.compute_backend != "cpu"
+                or not trace_input.config.receiver_diagnostics):
+            raise ValueError("Diagnostic primary override requires one isolated CPU ray")
+        origin, direction, source_face, packet = diagnostic_primary_ray
+        if (len(origin) != 3 or len(direction) != 3 or not all(math.isfinite(x) for x in (*origin,*direction,packet))
+                or packet <= 0 or abs(math.sqrt(sum(x*x for x in direction))-1.) > 1e-10):
+            raise ValueError("Invalid diagnostic primary ray")
     for emitter in trace_input.emitters:
         if not emitter.enabled:
             continue
@@ -2739,6 +2749,8 @@ def run_direct_ray_trace(
         else:
             emitter_area_mm2 = emitter.virtual_area_mm2()
         ray_power = emitter.effective_power_lumen(emitter_area_mm2) / float(emitter.ray_count)
+        if diagnostic_primary_ray is not None:
+            ray_power = diagnostic_primary_ray[3]
         emitter_config = emitter_termination_config(trace_input.config, ray_power)
         termination_thresholds.append(emitter_config.min_energy)
         source_power_lumen += ray_power * emitter.ray_count
@@ -2749,6 +2761,8 @@ def run_direct_ray_trace(
                 or use_face_batch_sampling
             )
         )
+        if diagnostic_primary_ray is not None:
+            use_batch_dispatch = True
         receiver_mis_enabled = bool(
             trace_input.config.primary_sampling_strategy == "receiver_mis"
             and not (emitter.aim is not None and emitter.aim.enabled)
@@ -2780,7 +2794,12 @@ def run_direct_ray_trace(
             if should_stop is not None and should_stop():
                 stopped_early = True
                 break
-            if use_face_batch_sampling and receiver_mis_enabled:
+            if diagnostic_primary_ray is not None:
+                origin, direction, source_face, _ = diagnostic_primary_ray
+                ray_batches = iter([(np.asarray([origin], dtype=np.float64),
+                    np.asarray([direction], dtype=np.float64), np.asarray([source_face], dtype=np.int64),
+                    np.ones(1, dtype=np.float64), 0)])
+            elif use_face_batch_sampling and receiver_mis_enabled:
                 assert face_batch_geometry is not None
                 assert receiver_importance_geometry is not None
                 ray_batches = iter_face_emitter_receiver_mis_batches(

@@ -1097,6 +1097,8 @@ class ApiRuntime:
         scene = self._scene_mesh_for_request(request)
         job_id = uuid.uuid4().hex
         job = dict(job_id=job_id, status="queued", phase="preparing", stop_requested=False,
+            input_request=json.loads(json.dumps(request,allow_nan=False)),
+            input_request_sha256=hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')).hexdigest(),
             scene_token=request.get("scene_token"), execution_backend="gpu_cuda", progress=0., batch=0, report=None, error=None)
         with self._state_lock:
             if any(j.get("status") in {"queued", "running"} for j in list(self._raytrace_jobs.values())+list(self._sensor_comparison_jobs.values())):
@@ -1116,6 +1118,7 @@ class ApiRuntime:
                     job["status"] = "running"
                 trace = self._build_trace_input_for_request(scene, request, should_stop=stopped)
                 report = run_sensor_comparison(trace, options, stopped, progress)
+                report.update(input_request=job['input_request'],input_request_sha256=job['input_request_sha256'])
                 with self._state_lock:
                     job.update(report=report, status="stopped" if report.get("reason") == "stopped" else "completed",
                         phase="finished", progress=1. if report.get("complete") else job["progress"],
@@ -1144,7 +1147,7 @@ class ApiRuntime:
             return json.loads(json.dumps(job, allow_nan=False))
 
     def validate_observer_receiver(self, request_payload):
-        """Geometry-only diagnostic. Never starts/cancels a tracing worker."""
+        """Path audit plus an isolated CPU replay; never commits a product run."""
         with self._state_lock:
             if any(job.get("status") in {"queued", "running"} for job in list(self._raytrace_jobs.values())+list(self._sensor_comparison_jobs.values())):
                 raise ValueError("진행 중인 해석을 마친 후 경로를 검증하세요.")
@@ -1167,12 +1170,17 @@ class ApiRuntime:
             raise ValueError("검증할 대표 경로가 없습니다.")
         grids = {f.receiver.receiver_id: ReceiverGrid.empty(f.receiver) for f in frames}
         checks = validate_receiver_evidence(trace, frames, grids, resolved)
+        from leakage_simulator.forward_path_replay import replay_forward_path
         for check in checks:
             if check["path_valid"]:
                 check["diagnosis"] = "reference_path_valid"
             check["forward_hit_count"] = None
             check["forward_energy_cutoff_count"] = None
+            receiver = next(f.receiver for f in frames if f.receiver.receiver_id == check['receiver_id'])
+            check['forward_replay'] = replay_forward_path(trace,receiver)
         return dict(receiver_checks=checks, simulation_run_started=False,
+            validation_scope='representative_geometry_and_isolated_forward_replay',
+            diagnostic_forward_replay_started=any(check['forward_replay']['state'] != 'unavailable' for check in checks),
             geometry_cache_hit=trace.geometry_cache_hit, runtime_sec=time.perf_counter()-started)
 
     def build_section_cap(

@@ -9,8 +9,12 @@ import { SensorBatchDiagnostics } from './sensor-batch-diagnostics'
 import { comparisonValidationAdvice } from './validation-guidance'
 import { ValidationNextStep } from './validation-next-step'
 import { ForwardDetectionDiagnostics } from './forward-detection-diagnostics'
+import { ReceiverDiagnostics } from '@/features/results/receiver-diagnostics'
+import { ForwardPathReplayResult } from './forward-path-replay-result'
+import { sameComparisonInput } from './comparison-input-identity'
 
 const reasons: Record<string, string> = {
+  reference_replay_failed:'대표 경로 재생 실행 실패',
   difference_interval_inside_tolerance: '차이 구간이 허용 범위 안', difference_interval_outside_tolerance: '차이 구간이 허용 범위 밖',
   uncertainty_too_large: '표본 오차가 큼', zero_samples_not_zero_light_proof: '0 검출 · 광량 0의 증거 아님',
   insufficient_effective_samples: '유효 표본 부족', sparse_independent_batches: '검출 반복 수 부족',
@@ -47,9 +51,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
   const report = job?.report
   const executions = report?.batches?.flatMap(row => [row.forward_execution, row.reverse_execution]) ?? []
   const count = (key: string) => executions.reduce((sum, row) => sum + (typeof row[key] === 'number' ? row[key] as number : 0), 0)
-  const sameSensor = report?.sensor.receiver_id === receiver.receiver_id && job?.scene_token === request.scene_token &&
-    report.sensor.width_mm === receiver.width_mm && report.sensor.height_mm === receiver.height_mm &&
-    report.sensor.acceptance_angle_deg === receiver.acceptance_angle_deg
+  const sameSensor = Boolean(report && sameComparisonInput(job?.input_request,request))
   const advice = report ? comparisonValidationAdvice(report, sameSensor) : null
   return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}><DialogContent ref={content} tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); content.current?.focus() }} className="max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
     <DialogHeader><DialogTitle className="flex items-center gap-1">동일 센서 광량 비교<HelpTooltip label="광량 비교 도움말">같은 유한 면적·수용각·ROI의 광량(lm)을 독립 순방향·역추적으로 적분합니다. Preview의 한 방향 휘도(nit)를 직접 비교하지 않습니다. NVIDIA CUDA GPU로 계산하며 양방향 모두 실제 CUDA 실행 증거가 있어야 비교를 완료합니다. CPU 보조가 있으면 혼합 실행으로 표시합니다. 검증 복사본에서 결정적 에너지 컷오프를 제거하며 원래 설정은 보존합니다. 원래 종료 조건도 같은 검증 표본 예산으로 한 번 별도 계산합니다. 기존 100만 Ray 결과의 재현은 아닙니다. 차이의 근사 95% 구간 전체가 허용 범위 안일 때만 일치입니다. 0 Ray·표본 부족은 미확정이며 실물 정확도를 보장하지 않습니다. 창을 닫아도 실행은 계속되며, 다시 열면 마지막 작업이 표시됩니다.</HelpTooltip></DialogTitle></DialogHeader>
@@ -77,11 +79,16 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     {report ? <div className="space-y-2 text-xs">
       <div>최근 작업 · {report.sensor.width_mm} × {report.sensor.height_mm} mm · {report.sensor.acceptance_angle_deg}° · 허용 {report.options.tolerance_percent}%</div>
       {!sameSensor ? <div role="alert">이전 작업 결과 · 현재 조건과 동일한지 확인 필요</div> : null}
+      {sameSensor ? <div>전체 요청 입력 일치</div> : null}
+      {report.physical_input_sha256 ? <div className="flex items-center gap-1">물리 입력 {report.physical_input_sha256.slice(0,12)}<HelpTooltip label="비교 입력 동일성 도움말">전체 요청 스냅샷의 위치·방향·광원·재질·ROI·형상 변환·해석 설정을 비교합니다. 물리 입력 SHA-256은 서버가 준비한 형상·재질 배치와 측정 조건의 식별자이며 검증 JSON에 기록됩니다. 해시 일치는 실물 정확도의 증명이 아닙니다.</HelpTooltip></div> : null}
       <div>{report.gpu_execution_proven ? report.compute_execution_state === 'gpu_mixed' ? 'GPU 실행 확인 · CPU 보조 포함' : 'GPU 실행 확인' : 'GPU 실행 미확인'}</div>
       {executions.some(row => row.observer_bsdf_evaluation_backend === 'cpu') ? <div>BSDF CPU 평가 · CAD 교차 GPU</div> : null}
       <div>CUDA 성공/시도 {count('gpu_cuda_gpu_success_count')}/{count('gpu_cuda_gpu_attempt_count')} · CPU 보조 {count('gpu_cuda_hybrid_cpu_success_count')} · 대체 {count('fallback_count')}</div>
       <div role="status">{({ match: '일치', mismatch: '불일치', inconclusive: '미확정' })[report.verdict]} · {reasons[report.reason] ?? report.reason}</div>
       <ForwardDetectionDiagnostics report={report} />
+      <ForwardPathReplayResult report={report.reference_replay} />
+      {report.forward_diagnostics?.map(row=><details key={row.index} className="rounded border p-2"><summary className="cursor-pointer">순방향 상세 진단 · {row.index}회</summary><ReceiverDiagnostics value={row.report} requested /></details>)}
+      {report.original_termination_probe?.diagnostics ? <details className="rounded border p-2"><summary className="cursor-pointer">기존 종료 조건 상세 진단</summary><ReceiverDiagnostics value={report.original_termination_probe.diagnostics} requested /></details> : null}
       {advice && !active && !pending ? <div className="flex flex-wrap items-center gap-2">
         <ValidationNextStep advice={advice} label="광량 비교 다음 단계" />
         {advice.samples ? <span className="tabular-nums">{advice.samples.batches}회 · F {advice.samples.forward_samples.toLocaleString()} / R {advice.samples.reverse_samples.toLocaleString()}</span> : null}
