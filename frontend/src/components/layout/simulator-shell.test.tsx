@@ -14,7 +14,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api'
 import { AppProviders } from '@/app/providers'
 import { createWorkspaceStore, workspaceStore, type MaterialAssignment } from '@/stores'
-import { createDefaultLeakPreviewProjectState, leakPreviewStore } from '@/features/leak-preview/leak-preview-store'
+import { createDefaultLeakPreviewProjectState, leakPreviewStore, snapshotLeakPreviewProjectState } from '@/features/leak-preview/leak-preview-store'
+import { previewSignature } from '@/features/leak-preview/leak-preview-signature'
 import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { buildRayTraceRequest } from '@/features/raytracing'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
@@ -94,6 +95,59 @@ afterEach(() => {
 })
 
 describe('SimulatorShell', () => {
+  it.each(['정밀해석 준비', '순방향 진단 준비'])('preserves Preview results and Body source selection through %s and return', async (action) => {
+    const scene = createSceneFixture()
+    apiHookState.scene = scene
+    workspaceStore.getState().actions.addCadCase({ path: 'handoff.step', displayName: 'Handoff' })
+    leakPreviewStore.getState().ensureScene(scene.metadata.scene_token)
+    leakPreviewStore.getState().setSourceBody([1], 3)
+    leakPreviewStore.getState().setObserver({ search_mode: 'full_detail', enabled: true })
+    const saved = createSavedLeakPreviewFixture()
+    saved.candidates[0] = { ...saved.candidates[0], apertureId: 'test-opening',
+      representativePath: [[30,30,10], [30,30,-20]],
+      observerEvidence: { axis: 'neg_z', stepDeg: 1, horizontalDeg: 0, verticalDeg: 0,
+        directCount: 1, reflectedCount: 0, direction: [0,0,-1], receiverCenter: [30,30,-20] } }
+    leakPreviewStore.getState().setDetection(saved.result, saved.points, saved.candidates)
+    const settings = snapshotLeakPreviewProjectState()
+    const workspace = workspaceStore.getState()
+    leakPreviewStore.getState().setRunSignature(previewSignature({
+      sceneToken: scene.metadata.scene_token, sourceFaceIds: settings.sourceFaceIds, sourceMode: settings.sourceMode,
+      sourceComponentIds: settings.sourceComponentIds, sourceBodyFaceCount: settings.sourceBodyFaceCount,
+      sourceEmitterIds: settings.sourceEmitterIds, quality: settings.quality, detectionMode: settings.detectionMode,
+      observer: settings.observer, precisionConfig: workspace.rayTraceConfig, directions: settings.directions,
+      materialAssignments: workspace.materialAssignments, bsdfAssets: [], transformRules: workspace.transformRules,
+      excludedComponentIds: workspace.excludedComponentIds, deletedComponentIds: workspace.deletedComponentIds,
+      blockers: [], allowedAreas: [],
+    }))
+    leakPreviewStore.getState().selectCandidate(saved.candidates[0].id)
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: 'Whole Set Lighting' }))
+    expect(leakPreviewStore.getState().result).toEqual(saved.result)
+    fireEvent.click(screen.getByRole('button', { name: action }))
+    await waitFor(() => expect(workspaceStore.getState().receivers.length).toBeGreaterThan(0))
+    expect(leakPreviewStore.getState().result).toEqual(saved.result)
+    expect(leakPreviewStore.getState().sourceComponentIds).toEqual([1])
+    fireEvent.click(screen.getByRole('button', { name: 'Whole Set Lighting' }))
+    expect(leakPreviewStore.getState().result).toEqual(saved.result)
+    expect(leakPreviewStore.getState().candidates).toEqual(saved.candidates)
+    expect(leakPreviewStore.getState().sourceMode).toBe('body')
+    expect(workspaceStore.getState().emitters.some(emitter => emitter.enabled)).toBe(true)
+    expect(screen.getByRole('button', { name: '경로 검증' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '광량 비교' }).hasAttribute('disabled')).toBe(false)
+    const validate = vi.spyOn(apiClient, 'validateObserverReceiver').mockResolvedValue({ simulation_run_started: false,
+      geometry_cache_hit: true, runtime_sec: .01, receiver_checks: [{ receiver_id: 'witness', path_valid: true,
+        diagnosis: 'reference_path_valid', forward_hit_count: null }] })
+    const comparison = vi.spyOn(apiClient, 'getSensorComparison').mockResolvedValue(null)
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
+        await waitFor(() => expect(validate).toHaveBeenCalledTimes(attempt + 1))
+        await waitFor(() => expect(screen.getByRole('button', { name: '광량 비교' }).hasAttribute('disabled')).toBe(false))
+      }
+      fireEvent.click(screen.getByRole('button', { name: '광량 비교' }))
+      expect(await screen.findByRole('dialog', { name: '동일 센서 광량 비교' })).toBeTruthy()
+    } finally { validate.mockRestore(); comparison.mockRestore() }
+  })
   it('saves Preview evidence without a precision result and keeps candidate deletion state', async () => {
     apiHookState.scene = createSceneFixture()
     workspaceStore.getState().actions.addCadCase({ path: 'preview.step', displayName: 'Preview' })

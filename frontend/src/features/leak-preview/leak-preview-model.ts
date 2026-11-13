@@ -156,6 +156,7 @@ export interface LeakPreviewCandidate {
   groupedCount?: number
   observerAngles?: Array<{ horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number }>
   sourceCandidateIds?: string[]
+  detectedFootprint?: { center: Vec3; widthMm: number; heightMm: number }
   id: string
   label: string
   receiverId: string
@@ -175,7 +176,7 @@ export interface LeakPreviewCandidate {
   maxReflectionCount: number | null
   meanExitAngleDeg: number | null
   clipBox: RoiClipBox
-  observerEvidence?: { axis: LeakPreviewDirection; stepDeg: number; horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3; footprintCenter?: Vec3 }
+  observerEvidence?: { axis: LeakPreviewDirection; stepDeg: number; horizontalDeg: number; verticalDeg: number; directCount: number; reflectedCount: number; direction: Vec3; receiverCenter: Vec3; footprintCenter?: Vec3; footprintWidthMm?: number; footprintHeightMm?: number }
 }
 
 export interface LeakPreviewDetection {
@@ -939,6 +940,14 @@ function mergeCornerCandidates(
       zMin: Math.min(target.clipBox.zMin ?? Infinity, candidate.clipBox.zMin ?? Infinity),
       zMax: Math.max(target.clipBox.zMax ?? -Infinity, candidate.clipBox.zMax ?? -Infinity),
     }
+    if (target.detectedFootprint && candidate.detectedFootprint) {
+      const corners = [target, candidate].flatMap(item => [-.5,.5].flatMap(u => [-.5,.5].map(v =>
+        addScaled(addScaled(item.detectedFootprint!.center, item.uAxis, u*item.detectedFootprint!.widthMm), item.vAxis, v*item.detectedFootprint!.heightMm))))
+      const us = corners.map(point => dot(point, target.uAxis)), vs = corners.map(point => dot(point, target.vAxis))
+      const center = addScaled(addScaled(target.center, target.uAxis, (Math.min(...us)+Math.max(...us))/2-dot(target.center,target.uAxis)),
+        target.vAxis, (Math.min(...vs)+Math.max(...vs))/2-dot(target.center,target.vAxis))
+      target.detectedFootprint = { center, widthMm: Math.max(...us)-Math.min(...us), heightMm: Math.max(...vs)-Math.min(...vs) }
+    } else target.detectedFootprint = undefined
   }
   return merged
 }
@@ -1298,6 +1307,8 @@ function detectObserverCandidates(scene: ScenePayload, result: RayTraceResult, o
         observerEvidence: { axis: directionAxis(result.metrics._escape_direction_summary), stepDeg: summary.settings.step_deg,
           horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg, directCount, reflectedCount, direction: view.direction,
           receiverCenter: addScaled(center, view.direction, dot(subtract(view.observer_center, center), view.direction)),
+          footprintWidthMm: (Math.max(...columns) - Math.min(...columns) + 1) * view.spacing_mm[0],
+          footprintHeightMm: (Math.max(...rows) - Math.min(...rows) + 1) * view.spacing_mm[1],
           footprintCenter: [0, 1, 2].map((axis) => view.observer_center[axis] +
             view.u_axis[axis]*(Math.min(...columns)+Math.max(...columns)+1-resolution[0])*view.spacing_mm[0]/2 +
             view.v_axis[axis]*(Math.min(...rows)+Math.max(...rows)+1-resolution[1])*view.spacing_mm[1]/2) as Vec3 },
@@ -1478,6 +1489,10 @@ export function detectLeakPreviewCandidates(
       const rows = cluster.map((cell) => cell.row)
       const cellWidth = receiver.width_mm / grid.resolution[0]
       const cellHeight = receiver.height_mm / grid.resolution[1]
+      const uAxis = receiver.u_axis ?? [1,0,0] as Vec3, vAxis = receiver.v_axis ?? [0,1,0] as Vec3
+      const us = cluster.map(cell => dot(cell.position,uAxis)), vs = cluster.map(cell => dot(cell.position,vAxis))
+      const footprintCenter = addScaled(addScaled(weightedCenter, uAxis, (Math.min(...us)+Math.max(...us))/2-dot(weightedCenter,uAxis)),
+        vAxis, (Math.min(...vs)+Math.max(...vs))/2-dot(weightedCenter,vAxis))
       const sampledCells = cluster.flatMap((cell) => cell.sample ? [cell.sample] : [])
       const sampledPathCount = sampledCells.reduce((sum, sample) => sum + sample.sampleCount, 0)
       candidates.push({
@@ -1485,6 +1500,7 @@ export function detectLeakPreviewCandidates(
         label: directionLabels[grid.receiver_id.replace('__leak_preview_', '')] ?? receiver.display_name,
         receiverId: grid.receiver_id,
         center: weightedCenter,
+        detectedFootprint: { center: footprintCenter, widthMm: Math.max(...us)-Math.min(...us)+cellWidth, heightMm: Math.max(...vs)-Math.min(...vs)+cellHeight },
         normal: receiver.normal,
         uAxis: receiver.u_axis ?? [1, 0, 0],
         vAxis: receiver.v_axis ?? [0, 1, 0],
@@ -1639,13 +1655,23 @@ export function createCandidateReceiver(
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
       scene, target, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
         vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
-      leakPreviewReceiverDistanceMm, transforms, [0,0,0], 'leak_point')
+      leakPreviewReceiverDistanceMm, transforms)
+    const outward = receiver.normal.map(value => -value) as Vec3
+    const distance = dot(subtract(receiver.center, target), outward)
+    const footprint = evidence.footprintCenter ?? evidence.receiverCenter
+    const delta = subtract(footprint, target)
+    const offset = subtract(delta, outward.map(value => value * dot(delta, outward)) as Vec3)
+    receiver.center = receiver.center.map((value, axis) => value + offset[axis]) as Vec3
+    receiver.position_offset_mm = offset
+    receiver.view_distance_mm = distance
+    receiver.view_distance_reference = 'leak_point'
     // Preserve coverage of the Preview grid footprint when converting from
     // its arbitrary observer U/V basis to the angle editor's canonical basis.
-    const width = Math.max(1, candidate.widthMm - leakPreviewReceiverOffsetMm * 2)
-    const height = Math.max(1, candidate.heightMm - leakPreviewReceiverOffsetMm * 2)
+    // Older projects have only the padded ROI dimensions: keep their full coverage.
+    const width = Math.max(1, evidence.footprintWidthMm ?? candidate.widthMm)
+    const height = Math.max(1, evidence.footprintHeightMm ?? candidate.heightMm)
     const extent = (axis: Vec3) => Math.abs(dot(candidate.uAxis, axis)) * width + Math.abs(dot(candidate.vAxis, axis)) * height
-    const widthMm = Math.max(1, extent(receiver.u_axis!)), heightMm = Math.max(1, extent(receiver.v_axis!))
+    const widthMm = Math.max(1, extent(receiver.u_axis!)) + 2, heightMm = Math.max(1, extent(receiver.v_axis!)) + 2
     const pixelSize = Math.max(widthMm, heightMm) / 40
     return { ...receiver, display_name: `Preview Receiver ${index}`, reference_mode: 'leak_preview_candidate',
       acceptance_angle_deg: 90, normal_flip: false,
@@ -1675,16 +1701,25 @@ export function createCandidateReceiver(
   ]
   const uBounds = axisBounds[uDimension] ?? [candidate.center[0] - candidate.widthMm / 2, candidate.center[0] + candidate.widthMm / 2]
   const vBounds = axisBounds[vDimension] ?? [candidate.center[1] - candidate.heightMm / 2, candidate.center[1] + candidate.heightMm / 2]
-  const widthMm = Math.max(1, uBounds[1] - uBounds[0] - leakPreviewReceiverOffsetMm * 2)
-  const heightMm = Math.max(1, vBounds[1] - vBounds[0] - leakPreviewReceiverOffsetMm * 2)
+  const footprint = scene ? candidate.detectedFootprint : undefined
+  const widthMm = footprint ? Math.max(1, footprint.widthMm) + 2 : Math.max(1, uBounds[1] - uBounds[0] - leakPreviewReceiverOffsetMm * 2)
+  const heightMm = footprint ? Math.max(1, footprint.heightMm) + 2 : Math.max(1, vBounds[1] - vBounds[0] - leakPreviewReceiverOffsetMm * 2)
   const pixelSize = Math.max(widthMm, heightMm) / 40
   const centeredOnRoi = [...candidate.center] as Vec3
   if (uDimension >= 0) centeredOnRoi[uDimension] = (uBounds[0] + uBounds[1]) / 2
   if (vDimension >= 0) centeredOnRoi[vDimension] = (vBounds[0] + vBounds[1]) / 2
+  if (footprint) centeredOnRoi.splice(0, 3, ...footprint.center)
+  let distance = leakPreviewReceiverDistanceMm
+  if (scene) {
+    const bounds = getLeakPreviewBounds(scene, transforms)
+    for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
+      distance = Math.max(distance, dot(subtract([x,y,z], centeredOnRoi), outwardNormal) + leakPreviewReceiverDistanceMm)
+    }
+  }
   const center = candidate.observerEvidence?.receiverCenter ?? addScaled(
     centeredOnRoi,
     outwardNormal,
-    leakPreviewReceiverDistanceMm,
+    distance,
   )
   return {
     ...createPreviewReceiver(
@@ -1699,7 +1734,7 @@ export function createCandidateReceiver(
     receiver_id: `preview_receiver_${String(index).padStart(3, '0')}`,
     display_name: `Preview Receiver ${index}`,
     reference_mode: 'leak_preview_candidate',
-    view_distance_mm: leakPreviewReceiverDistanceMm,
+    view_distance_mm: distance,
     base_center: candidate.observerEvidence ? addScaled(center, outwardNormal, -leakPreviewReceiverDistanceMm) : [...candidate.center],
     position_offset_mm: candidate.observerEvidence ? [0, 0, 0] : centeredOnRoi.map((value, axis) => value - candidate.center[axis]) as Vec3,
     base_u_axis: [...candidate.uAxis],

@@ -1,6 +1,13 @@
 import { expect, it } from 'vitest'
 import { previewSignature, samePreviewSignature } from './leak-preview-signature'
 
+it('keeps Preview evidence when preparing forward diagnostics but invalidates changed transport', () => {
+  const config = { max_depth: 8, epsilon_mm: .001, receiver_diagnostics: false, max_stored_paths: 5000 }
+  const saved = previewSignature({ precisionConfig: config })
+  expect(samePreviewSignature(saved, previewSignature({ precisionConfig: { ...config, receiver_diagnostics: true, max_stored_paths: 6000 } }))).toBe(true)
+  expect(samePreviewSignature(saved, previewSignature({ precisionConfig: { ...config, max_depth: 9 } }))).toBe(false)
+})
+
 it('accepts legacy signatures with reordered nested properties', () => {
   const old = JSON.stringify({ observer: { spacing: 2, samples: 4 }, sceneToken: 'same' })
   const restored = previewSignature({ sceneToken: 'same', observer: { samples: 4, spacing: 2 } })

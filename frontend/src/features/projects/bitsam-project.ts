@@ -635,9 +635,13 @@ function isSavedPreviewResult(value: unknown): value is SavedLeakPreviewResult {
       Number.isSafeInteger(angle.directCount) && Number.isSafeInteger(angle.reflectedCount) &&
       Number(angle.directCount) >= 0 && Number(angle.reflectedCount) >= 0))) return false
     const observer = candidate.observerEvidence
+    const footprint = candidate.detectedFootprint
+    if (footprint !== undefined && (!isRecord(footprint) || !isVec3(footprint.center) ||
+      !['widthMm','heightMm'].every(key => isFiniteNumber(footprint[key]) && Number(footprint[key]) > 0))) return false
     if (observer !== undefined && (!isRecord(observer) || !isOneOf(observer.axis, ['pos_x','neg_x','pos_y','neg_y','pos_z','neg_z']) ||
       !['horizontalDeg','verticalDeg','stepDeg','directCount','reflectedCount'].every((key) => isFiniteNumber(observer[key])) ||
-      !isVec3(observer.direction) || !isVec3(observer.receiverCenter) || (observer.footprintCenter !== undefined && !isVec3(observer.footprintCenter)))) return false
+      !isVec3(observer.direction) || !isVec3(observer.receiverCenter) || (observer.footprintCenter !== undefined && !isVec3(observer.footprintCenter)) ||
+      ['footprintWidthMm', 'footprintHeightMm'].some(key => observer[key] !== undefined && (!isFiniteNumber(observer[key]) || Number(observer[key]) <= 0)))) return false
     if ((candidate.apertureMethod !== undefined && !isString(candidate.apertureMethod)) ||
       (candidate.apertureVariationMm !== undefined && (!isFiniteNumber(candidate.apertureVariationMm) || candidate.apertureVariationMm < 0)) ||
       (candidate.apertureId !== undefined && !isString(candidate.apertureId)) ||

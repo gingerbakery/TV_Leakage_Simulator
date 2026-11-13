@@ -68,5 +68,6 @@ export function resolveObserverPoint(candidate: LeakPreviewCandidate | undefined
     peakReflectedLuminanceNit: cell.reflected_luminance_nit,
     observerEvidence: { ...candidate.observerEvidence, horizontalDeg: view.horizontal_deg, verticalDeg: view.vertical_deg,
       direction: view.direction, receiverCenter: footprint, footprintCenter: footprint,
+      footprintWidthMm: view.spacing_mm[0], footprintHeightMm: view.spacing_mm[1],
       directCount: cell.direct_count, reflectedCount: cell.reflected_count } }
 }

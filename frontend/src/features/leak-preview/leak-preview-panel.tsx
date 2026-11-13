@@ -529,6 +529,39 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     return { receiver, existed: false }
   }
 
+  const ensurePrecisionEmitters = () => {
+    if (!scene || sourceMode === 'emitters') return
+    if (!emitters.some((emitter) => emitter.enabled)) {
+      if (sourceMode === 'body') {
+        const generated = createLeakPreviewBodyEmitters(
+          scene,
+          sourceComponentIds,
+          transformRules,
+          Math.max(100_000, rayTraceConfig.ray_count),
+          false,
+        )
+        const usedIds = emitters.map((emitter) => emitter.emitter_id)
+        for (const plane of generated) {
+          const emitterId = nextSpecId('emitter', usedIds)
+          usedIds.push(emitterId)
+          actions.upsertEmitter({
+            ...plane,
+            emitter_id: emitterId,
+            power_mode: 'set_luminance',
+            luminance_nit: 500,
+            power_lumen: 1,
+          })
+        }
+      } else {
+        const emitterId = nextSpecId('emitter', emitters.map((emitter) => emitter.emitter_id))
+        actions.upsertEmitter({
+          ...createFaceEmitter(emitterId, sourceFaceIds),
+          ray_count: Math.max(100_000, rayTraceConfig.ray_count),
+        })
+      }
+    }
+  }
+
   const createViewReceiver = (candidate: LeakPreviewCandidate, diagnostics = false) => {
     if (!scene || !candidate.observerEvidence) return
     const index = (candidateIndices.get(candidate.id) ?? 0) + 1
@@ -537,6 +570,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
     }
     actions.setReceiverEnabled(receiver.receiver_id, true)
+    if (diagnostics) ensurePrecisionEmitters()
     if (diagnostics) actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: true })
     setMessage(diagnostics ? '순방향 진단 준비 완료 · Ray Tracing에서 실행' : '프리뷰 조건 적용 · 시야각 Receiver 1개 활성화')
     onOpenPrecision()
@@ -612,35 +646,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     })
     const { existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex)
     if (precision) {
-      if (!emitters.some((emitter) => emitter.enabled)) {
-        if (sourceMode === 'body') {
-          const generated = createLeakPreviewBodyEmitters(
-            scene,
-            sourceComponentIds,
-            transformRules,
-            Math.max(100_000, rayTraceConfig.ray_count),
-            false,
-          )
-          const usedIds = emitters.map((emitter) => emitter.emitter_id)
-          for (const plane of generated) {
-            const emitterId = nextSpecId('emitter', usedIds)
-            usedIds.push(emitterId)
-            actions.upsertEmitter({
-              ...plane,
-              emitter_id: emitterId,
-              power_mode: 'set_luminance',
-              luminance_nit: 500,
-              power_lumen: 1,
-            })
-          }
-        } else {
-          const emitterId = nextSpecId('emitter', emitters.map((emitter) => emitter.emitter_id))
-          actions.upsertEmitter({
-            ...createFaceEmitter(emitterId, sourceFaceIds),
-            ray_count: Math.max(100_000, rayTraceConfig.ray_count),
-          })
-        }
-      }
+      ensurePrecisionEmitters()
       setMessage('ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
       onOpenPrecision()
       return
@@ -735,7 +741,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <div className="grid grid-cols-2 gap-1.5">
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath} onClick={() => { if (selectedCandidate) leakPreviewStore.getState().requestCameraView(selectedCandidate) }}>검출 시야각 보기</Button>
             <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" onClick={() => leakPreviewStore.getState().requestCameraView(null)}>이전 보기</Button><HelpTooltip label="검출 시야각 보기 도움말">선택 Point에 저장된 검출 당시 방향으로 평행 투영 카메라를 맞춥니다. Point를 화면 중심으로 잡고 모델 외부에서 바라봅니다. 목록 선택만으로는 카메라가 움직이지 않습니다. 이전 보기는 전환 전 카메라 위치·방향·확대를 복원합니다. 카메라 거리는 화면 구도를 위한 값이며 사람의 실제 관찰 거리나 육안 밝기를 재현하지 않습니다.</HelpTooltip></div>
-            <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate) }}>시야각 Receiver 생성</Button><HelpTooltip label="시야각 Receiver 생성 도움말">선택 Point의 위치·관찰 방향·영역 크기를 자동 적용하며 수용각은 90°, 앞뒤 반전은 꺼짐으로 설정합니다. 기존 자동 Receiver를 재사용하면 수정했던 센서 설정도 다시 적용합니다. 중지 후 부분 결과에서도 생성할 수 있습니다. 개구부 미확정 Point도 생성 가능하지만 출구 확정을 뜻하지 않습니다. ROI 생성에는 개구부 정보가 필요합니다. 유한 면적의 수광량(lm)은 Preview의 한 방향 휘도(nit)와 다른 지표입니다.</HelpTooltip></div>
+            <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate) }}>시야각 Receiver 생성</Button><HelpTooltip label="시야각 Receiver 생성 도움말">선택 Point의 관찰 방향을 적용하고, 변환된 전체 CAD 경계 밖 3mm 지점까지 거리를 자동 계산합니다. 검출 셀 영역에 가장자리 1mm 여유를 더해 크기와 중심을 정합니다. 이전 저장 결과에 셀 크기가 없으면 기존 후보 영역을 사용합니다. Receiver 편집에서 Point 거리·가로·세로를 수정할 수 있습니다. 수용각은 90°, 앞뒤 반전은 꺼짐으로 설정합니다. 기존 자동 Receiver를 재사용하면 수정했던 센서 설정도 다시 적용합니다. 중지 후 부분 결과에서도 생성할 수 있습니다. 개구부 미확정 Point도 생성 가능하지만 출구 확정을 뜻하지 않습니다. ROI 생성에는 개구부 정보가 필요합니다. 유한 면적의 수광량(lm)은 Preview의 한 방향 휘도(nit)와 다른 지표입니다.</HelpTooltip></div>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) void validateCandidatePath(selectedCandidate) }}>{validatingCandidateId ? <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" /> : null}경로 검증</Button>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) try { setComparisonRequest(candidateValidationRequest(selectedCandidate)) } catch (error) { setMessage(`광량 비교 실패: ${String(error)}`) } }}>광량 비교</Button>
             <Button size="sm" disabled={!selectedCandidate || !selectedCandidate.apertureId || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, true) }}>정밀해석 준비</Button>

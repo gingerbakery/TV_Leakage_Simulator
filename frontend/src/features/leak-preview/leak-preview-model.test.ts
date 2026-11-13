@@ -8,6 +8,7 @@ import type { RayTraceResult, Vec3 } from '@/api'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 
+
 import {
   buildLeakPreviewRequest,
   groupObserverCandidates,
@@ -31,6 +32,23 @@ import {
   resolveLeakPreviewRoiFaces,
   resizeLeakPreviewBlockerOnFace,
 } from './leak-preview-model'
+
+it('sizes planar receivers from detected cells and clears transformed CAD without using the minimum ROI size', () => {
+  const scene = createSceneFixture(), result = createRayTraceResultFixture()
+  result.receivers = [{ ...createEscapeEnclosureReceivers(scene)[0], width_mm: 8, height_mm: 16 }]
+  result.receiver_grids = [{ receiver_id: result.receivers[0].receiver_id, resolution: [8, 8],
+    bin_area_mm2: 2, flux_lumen: Array.from({length:8}, (_,row) => Array.from({length:8}, (_,column) => row === 2 && column === 3 ? 1 : 0)), hit_count: 1 }]
+  result.stored_paths = []
+  const candidate = detectLeakPreviewCandidates(scene,result).candidates[0]
+  const transforms = [{ ruleId:'moved', componentId:1, targetType:'component' as const, selectionMethod:'click' as const,
+    faceIds:[], move:{x:100,y:0,z:0}, tilt:{x:0,y:0,z:30}, enabled:true }]
+  const receiver = createCandidateReceiver(candidate,1,scene,transforms)
+  expect(receiver.width_mm).toBeCloseTo(3)
+  expect(receiver.height_mm).toBeCloseTo(4)
+  expect(receiver.center[0]).toBeGreaterThanOrEqual(getLeakPreviewBounds(scene,transforms).maximum[0]+3-1e-8)
+  const wider = createCandidateReceiver({ ...candidate, detectedFootprint:{ ...candidate.detectedFootprint!, widthMm:150 } },2,scene,transforms)
+  expect(wider.width_mm).toBeCloseTo(152)
+})
 
 it('distinguishes threshold filtering, zero contribution and invalid path evidence', () => {
   const summary = { measure:'luminance_cd_m2', settings:{min_luminance_nit:.01}, excluded_count:0 } as ObserverProbeSummary
@@ -213,17 +231,34 @@ describe('whole-set leak preview', () => {
     const receiver = createCandidateReceiver(candidate, 1, scene)
     expect(receiver.view_angles).toEqual(view)
     expect(receiver.base_center).toEqual(target)
-    expect(receiver.center).toEqual(target.map((value, axis) => value + direction[axis]*3))
+    const dot = (a: Vec3, b: Vec3) => a.reduce((sum, value, axis) => sum + value*b[axis], 0)
+    const bounds = getLeakPreviewBounds(scene)
+    for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
+      expect(dot(receiver.center.map((value, axis) => value - [x,y,z][axis]) as Vec3, direction)).toBeGreaterThanOrEqual(3 - 1e-8)
+    }
     expect(receiver.view_distance_reference).toBe('leak_point')
     expect(receiver.normal).toEqual(direction.map((value) => -value))
-    expect(receiver.width_mm).toBeCloseTo(26)
-    expect(receiver.height_mm).toBeCloseTo(76)
+    expect(receiver.width_mm).toBeCloseTo(3)
+    expect(receiver.height_mm).toBeCloseTo(3)
+    const evidence = candidate.observerEvidence!
+    for (const u of [-.5,.5]) for (const v of [-.5,.5]) {
+      const corner = evidence.footprintCenter!.map((value, axis) => value + candidate.uAxis[axis]*u + candidate.vAxis[axis]*v - receiver.center[axis]) as Vec3
+      expect(Math.abs(dot(corner, receiver.u_axis!))).toBeLessThanOrEqual(receiver.width_mm/2)
+      expect(Math.abs(dot(corner, receiver.v_axis!))).toBeLessThanOrEqual(receiver.height_mm/2)
+    }
+    const wide = createCandidateReceiver({ ...candidate, observerEvidence: { ...evidence, footprintWidthMm: 80, footprintHeightMm: 30 } }, 2, scene)
+    expect(wide.width_mm).toBeCloseTo(32)
+    expect(wide.height_mm).toBeCloseTo(82)
     expect(receiver.acceptance_angle_deg).toBe(90)
-    expect(receiver.view_distance_mm).toBe(3)
+    expect(receiver.view_distance_mm).toBeGreaterThan(3)
     const [resolved] = expandReceiverView(receiver, scene)
     expect(resolved.center).toEqual(receiver.center)
     expect(resolved.u_axis).toEqual(receiver.u_axis)
     expect(resolved.v_axis).toEqual(receiver.v_axis)
+    const [edited] = expandReceiverView({ ...receiver, view_distance_mm: receiver.view_distance_mm! + 5, width_mm: 7, height_mm: 11 }, scene)
+    expect(edited.width_mm).toBe(7)
+    expect(edited.height_mm).toBe(11)
+    edited.center.forEach((value, axis) => expect(value).toBeCloseTo(receiver.center[axis] + direction[axis]*5))
     const request = buildRayTraceRequest({ scene, projectName: 'Single angle', emitters: result.emitters,
       receivers: [receiver], materialAssignments: [], transformRules: [], excludedComponentIds: [],
       deletedComponentIds: [], roiScopes: [], config: result.config })

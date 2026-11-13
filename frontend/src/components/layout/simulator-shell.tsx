@@ -401,7 +401,11 @@ export function SimulatorShell() {
   }, [activeCadCaseId, cadCases])
 
   useEffect(() => {
-    const active = cadCases.find((item) => item.caseId === activeCadCaseId)
+    // Preview persistence can update the case after this render. Never restore
+    // an older render snapshot over the live source selection/results.
+    const current = workspaceStore.getState()
+    if (current.activeCadCaseId !== activeCadCaseId) return
+    const active = current.cadCases.find((item) => item.caseId === activeCadCaseId)
     if (!active?.leakPreviewState) return
     if (previewSignature(snapshotLeakPreviewProjectState()) !== previewSignature(active.leakPreviewState)) {
       leakPreviewStore.getState().restoreProjectState(active.leakPreviewState, active.leakPreviewResult)
