@@ -930,6 +930,24 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             </button>
           ))}
         </div>
+        <LeakDisplayFilterControls
+          filter={displayFilter}
+          hasNit={observerSummary?.measure === 'luminance_cd_m2' || (
+            !previewResult && detectionMode === 'escape_directions' &&
+            observer.enabled && observer.measurement === 'radiance'
+          )}
+          defaultMax={previewResult?.config.max_depth ?? rayTraceConfig.max_depth}
+          shownPoints={previewPoints.length}
+          totalPoints={rawPoints.length}
+          shownCandidates={candidates.length}
+          totalCandidates={rawCandidates.length}
+          onChange={patch => {
+            setDisplayFilter(patch)
+            setCandidatePage(0)
+            setGroupFilter('all')
+            setExpandedGroups(new Set())
+          }}
+        />
         {isRunning && jobId ? (
           <Button
             className="w-full"
@@ -988,14 +1006,6 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <tbody>{angularSummary.bins.map((bin, index) => <tr key={bin.min_deg} onClick={event => { if (!(event.target as HTMLElement).closest('button')) setHighlight({kind:'escape',bin:index}) }} className={cn(highlight?.kind === 'escape' && highlight.bin === index && 'bg-orange-500/20')}><td className="py-1 text-left"><button type="button" className="w-full text-left" aria-pressed={highlight?.kind === 'escape' && highlight.bin === index} disabled={!previewPoints.some(point => point.angleBins || point.observerAngles)} onClick={() => setHighlight({ kind: 'escape', bin: index })}>{bin.min_deg}–{bin.max_deg}°</button></td><td>{bin.count.toLocaleString()}</td><td>{bin.flux_lumen.toExponential(3)}</td></tr>)}</tbody>
         </table>
       </section> : null}
-      {rawCandidates.length > 0 ? <LeakDisplayFilterControls filter={displayFilter} hasNit={observerSummary?.measure === 'luminance_cd_m2'}
-        defaultMax={previewResult?.config.max_depth ?? 20} shownPoints={previewPoints.length} totalPoints={rawPoints.length}
-        shownCandidates={candidates.length} totalCandidates={rawCandidates.length} onChange={patch => {
-          setDisplayFilter(patch)
-          setCandidatePage(0)
-          setGroupFilter('all')
-          setExpandedGroups(new Set())
-        }} /> : null}
       {candidates.length > 0 ? (
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold">

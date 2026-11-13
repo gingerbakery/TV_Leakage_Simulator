@@ -26,6 +26,34 @@ vi.mock('@/api', async () => {
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
 
+it('shows display filters before the first precision search and preserves their settings for later results', () => {
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  fireEvent.change(screen.getByRole('combobox', { name: 'Preview 검색 모드' }), { target: { value: 'full_detail' } })
+  expect(screen.getByRole('region', { name: 'Leak 표시 필터' })).toBeTruthy()
+  expect(screen.getByRole('spinbutton', { name: '표시 최소 nit' }).hasAttribute('disabled')).toBe(false)
+  fireEvent.click(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최대 반사 횟수' }), { target: { value: '2' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 nit' }), { target: { value: '0.1' } })
+  expect(leakPreviewStore.getState().displayFilter).toMatchObject({ maxReflections: 2, minNit: 0.1 })
+  expect(mocks.start).not.toHaveBeenCalled()
+})
+
+it('allows editing every display threshold without existing luminance data and enables a typed reflection limit', () => {
+  render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
+  act(() => leakPreviewStore.getState().setObserver({ measurement: 'paths' }))
+  for (const name of ['표시 최대 반사 횟수', '표시 최소 nit', '표시 최소 밝기 비율 (%)']) {
+    expect(screen.getByRole('spinbutton', { name }).hasAttribute('disabled')).toBe(false)
+  }
+  expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', false)
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최대 반사 횟수' }), { target: { value: '3' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 nit' }), { target: { value: '0.02' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 밝기 비율 (%)' }), { target: { value: '5' } })
+  expect(leakPreviewStore.getState().displayFilter).toEqual({ maxReflections: 3, minNit: 0.02, minBrightnessRatio: 0.05 })
+  expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', true)
+  expect(screen.getByRole('spinbutton', { name: '표시 최소 nit' })).toHaveProperty('value', '0.02')
+  expect(mocks.start).not.toHaveBeenCalled()
+})
+
 it('hides rows without renumbering or deleting raw candidates and keeps reset available when all are hidden', () => {
   const saved = createSavedLeakPreviewFixture(), base = saved.candidates[0]
   const candidates = [{...base,id:'deep',representativePath:undefined,maxReflectionCount:4},
@@ -41,8 +69,9 @@ it('hides rows without renumbering or deleting raw candidates and keeps reset av
   expect(screen.getByRole('article',{name:'Point2'})).toBeTruthy()
   expect(leakPreviewStore.getState().candidates).toHaveLength(2)
   expect(leakPreviewStore.getState().points).toHaveLength(2)
-  expect(screen.getByRole('spinbutton',{name:'표시 최소 nit'})).toHaveProperty('disabled',true)
+  expect(screen.getByRole('spinbutton',{name:'표시 최소 nit'})).toHaveProperty('disabled',false)
   act(() => leakPreviewStore.getState().setDisplayFilter({minNit:1}))
+  expect(screen.getByText('nit 데이터 없음 · 휘도 조건으로 표시할 표본 없음')).toBeTruthy()
   expect(screen.queryByRole('article')).toBeNull()
   fireEvent.click(screen.getByRole('button',{name:'초기화'}))
   expect(screen.getAllByRole('article')).toHaveLength(2)
