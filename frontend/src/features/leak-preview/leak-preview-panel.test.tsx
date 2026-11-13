@@ -16,6 +16,7 @@ import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { LeakPreviewPanel } from './leak-preview-panel'
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown, queryError: null as Error | null }))
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api')
   return { ...actual,
@@ -168,7 +169,7 @@ it('groups current candidates without removing points and can undo the grouping'
   expect(leakPreviewStore.getState().points).toHaveLength(2)
 })
 
-it('validates saved representative evidence without starting another Preview or ray-tracing run', async () => {
+it.each([true, false])('opens path validation details and handles a missing replay report (replay: %s)', async (hasReplay) => {
   workspaceStore.getState().actions.addCadCase({ path: 'witness.step', displayName: 'Witness' })
   workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('lamp', [0,0,1], [0,0,0]))
   const fixture = createSavedLeakPreviewFixture()
@@ -177,13 +178,29 @@ it('validates saved representative evidence without starting another Preview or 
   fixture.candidates[0].representativePath = [[0,0,0], [0,0,-100]]
   const validate = vi.spyOn(apiClient, 'validateObserverReceiver').mockResolvedValue({ simulation_run_started: false,
     geometry_cache_hit: true, runtime_sec: .01, receiver_checks: [{ receiver_id: 'witness', path_valid: true,
-      diagnosis: 'reference_path_valid', forward_hit_count: null }] })
+      diagnosis: 'reference_path_valid', forward_hit_count: null,
+      ...(hasReplay ? { forward_replay: { state: 'not_reached', reason: 'first_intersection_differs',
+        execution_backend: 'cpu' as const, included_in_flux: false as const, path_reproduced: false,
+        first_difference: { segment_index: 1, expected_point: [1,2,3], actual_point: null } } } : {}) }] })
   try {
     render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
     act(() => leakPreviewStore.getState().setDetection(fixture.result, fixture.points, fixture.candidates))
     fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
     fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
     await waitFor(() => expect(screen.getByText('경로 검증 통과 · 생성될 Receiver 도달')).toBeTruthy())
+    const dialog = await screen.findByRole('dialog', { name: '경로 검증 결과' })
+    expect(within(dialog).getByText('경로 조건 통과 · reference_path_valid')).toBeTruthy()
+    if (hasReplay) {
+      expect(within(dialog).getByRole('button', { name: '재생 JSON 저장' })).toBeTruthy()
+      expect(within(dialog).getByText(/첫 불일치 구간 2/)).toBeTruthy()
+      expect(within(dialog).getByText(/대표 경로 순방향 재생/).closest('details')?.open).toBe(true)
+    } else {
+      expect(within(dialog).getByRole('alert').textContent).toContain('순방향 재생 결과 없음')
+      expect(within(dialog).queryByRole('button', { name: '재생 JSON 저장' })).toBeNull()
+    }
+    fireEvent.click(within(dialog).getByRole('button', { name: '닫기' }))
+    fireEvent.click(screen.getByRole('button', { name: '검증 결과 보기' }))
+    expect(await screen.findByRole('dialog', { name: '경로 검증 결과' })).toBeTruthy()
     expect(validate).toHaveBeenCalledOnce()
     expect(validate.mock.calls[0][0].receivers[0].observer_reference_path).toEqual(fixture.candidates[0].representativePath)
     expect(mocks.start).not.toHaveBeenCalled()

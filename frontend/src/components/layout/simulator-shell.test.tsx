@@ -142,6 +142,8 @@ describe('SimulatorShell', () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         fireEvent.click(screen.getByRole('button', { name: '경로 검증' }))
         await waitFor(() => expect(validate).toHaveBeenCalledTimes(attempt + 1))
+        expect(await screen.findByRole('dialog', { name: '경로 검증 결과' })).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: '닫기' }))
         await waitFor(() => expect(screen.getByRole('button', { name: '광량 비교' }).hasAttribute('disabled')).toBe(false))
       }
       fireEvent.click(screen.getByRole('button', { name: '광량 비교' }))
