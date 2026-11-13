@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { SensorComparisonReport } from '@/api/client'
-import { comparisonValidationAdvice, pathValidationAdvice } from './validation-guidance'
+import { comparisonConclusion, comparisonValidationAdvice, pathValidationAdvice } from './validation-guidance'
 
 function report(patch:Partial<SensorComparisonReport>={}):SensorComparisonReport {
   return {sensor:{receiver_id:'sensor'},options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},
@@ -34,11 +34,29 @@ it('caps valid recommendations at actual per-run and total budgets and stops at 
   expect(comparisonValidationAdvice(capped,true).samples).toBeUndefined()
 })
 
-it('increases independent repeats for sparse batches, and avoids endless repetition at 16', () => {
+it('directs sparse batches to path diagnostics instead of automatically increasing repeats', () => {
   const value=report({reason:'sparse_independent_batches',forward_effective_samples:80})
-  expect(comparisonValidationAdvice(value,true).samples).toEqual({batches:16,forward_samples:16384,reverse_samples:1024})
+  expect(comparisonValidationAdvice(value,true).title).toBe('회차별 검출·경로 확인')
+  expect(comparisonValidationAdvice(value,true).samples).toBeUndefined()
   value.options.batches=16
   expect(comparisonValidationAdvice(value,true).samples).toBeUndefined()
+})
+
+it('gives a conclusion and diagnostic action for the reported single detection and zero reverse contribution', () => {
+  const value = report({ reason:'zero_samples_not_zero_light_proof', forward_hits:1, reverse_positive_samples:0,
+    forward_effective_samples:1, reverse_effective_samples:0 })
+  expect(comparisonConclusion(value,true)).toBe('미확정 · 양방향 검출 부족')
+  expect(comparisonValidationAdvice(value,true).title).toBe('대표 경로·순방향 진단 확인')
+  expect(comparisonValidationAdvice(value,true).samples).toBeUndefined()
+  expect(comparisonConclusion(value,false)).toBe('판정 불가 · 이전 조건의 결과')
+})
+
+it('withholds a passing conclusion for incomplete, invalid, or unproven comparison results', () => {
+  const value = report({ verdict:'match', reason:'difference_interval_inside_tolerance' })
+  expect(comparisonConclusion(value,true)).toBe('일치 · 허용 범위 내')
+  expect(comparisonConclusion({...value,gpu_execution_proven:false},true)).toBe('판정 불가 · 필수 실행 증거 누락')
+  expect(comparisonConclusion({...value,reason:'invalid_reference_path'},true)).toBe('판정 불가 · 대표 경로 불일치')
+  expect(comparisonConclusion({...value,reason:'incomplete_batches'},true)).toBe('미완료 · 독립 반복 미완료')
 })
 
 it('does not recommend more samples for stale conditions, missing execution proof, mismatch or missing diagnostics', () => {

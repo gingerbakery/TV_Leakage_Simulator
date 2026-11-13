@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -42,6 +42,8 @@ it('rejects a same-size result with a changed receiver pose',async()=>{
     progress:1,batch:8,phase:'finished',stop_requested:false,error:null,report:{sensor:{receiver_id:'sensor',width_mm:input.receivers[0].width_mm,height_mm:input.receivers[0].height_mm,acceptance_angle_deg:input.receivers[0].acceptance_angle_deg},
       options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},verdict:'inconclusive',reason:'insufficient_effective_samples',gpu_execution_proven:true,forward_hits:100,reverse_positive_samples:100,forward_effective_samples:16,reverse_effective_samples:100}})
   render(<SensorComparisonDialog request={input} onClose={()=>undefined}/>)
+  await waitFor(()=>expect(screen.getByText('판정 불가 · 이전 조건의 결과')).toBeTruthy())
+  fireEvent.click(screen.getByText('상세 결과'))
   await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('이전 작업 결과'))
   expect(screen.getByText('다음: 현재 조건으로 다시 비교')).toBeTruthy()
   expect(screen.queryByRole('button',{name:'권장 표본 적용'})).toBeNull()
@@ -72,13 +74,47 @@ it('labels a completed zero-sample result inconclusive and does not claim GPU ex
       verdict: 'inconclusive', reason: 'zero_samples_not_zero_light_proof', gpu_execution_proven: false,
       forward_flux_lumen: 0, reverse_flux_lumen: 0, forward_hits: 0, reverse_positive_samples: 0 } })
   render(<SensorComparisonDialog request={input} onClose={() => undefined} />)
-  await waitFor(() => expect(screen.getByText('미확정 · 0 검출 · 광량 0의 증거 아님')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('판정 불가 · 이전 조건의 결과')).toBeTruthy())
+  fireEvent.click(screen.getByText('상세 결과'))
   expect(screen.getByText('GPU 실행 미확인')).toBeTruthy()
   expect(screen.getByRole('alert').textContent).toContain('이전 작업 결과')
   expect(screen.getByText('순방향 미검출 진단 · 양방향 양수 기여 미확인 · 원인 미확정')).toBeTruthy()
   expect(screen.queryByText(/좁은 틈·작은 센서/)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '순방향 미검출 진단 도움말' }))
   expect(screen.getByText(/좁은 틈·작은 센서/)).toBeTruthy()
+})
+
+it('summarizes the single-detection case without recommending another sample increase', async () => {
+  const input = request()
+  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'rare',status:'completed',input_request:input,
+    progress:1,batch:8,phase:'finished',stop_requested:false,error:null,report:{
+      sensor:{receiver_id:'sensor'},options:{receiver_id:'sensor',batches:8,forward_samples:250000,reverse_samples:1024,tolerance_percent:5},
+      verdict:'inconclusive',reason:'zero_samples_not_zero_light_proof',gpu_execution_proven:true,
+      forward_hits:1,reverse_positive_samples:0,forward_effective_samples:1,reverse_effective_samples:0,
+      forward_flux_lumen:1.87e-24,reverse_flux_lumen:0}})
+  render(<SensorComparisonDialog request={input} onClose={()=>undefined}/>)
+  const summary = await screen.findByRole('region',{name:'광량 비교 결론'})
+  expect(within(summary).getByText('미확정 · 양방향 검출 부족')).toBeTruthy()
+  expect(within(summary).getByText('순방향 검출 1 · 역추적 양수 0')).toBeTruthy()
+  expect(within(summary).getByText('다음: 대표 경로·순방향 진단 확인')).toBeTruthy()
+  expect(screen.queryByRole('button',{name:'권장 표본 적용'})).toBeNull()
+  expect(within(summary).queryByRole('table')).toBeNull()
+  expect(screen.getByText('상세 결과').closest('details')?.open).toBe(false)
+  expect(screen.getByRole('button',{name:'검증 JSON 저장'})).toBeTruthy()
+  fireEvent.click(screen.getByText('상세 결과'))
+  expect(screen.getByRole('table')).toBeTruthy()
+})
+
+it.each(['failed','running','stopped'] as const)('does not show a passing conclusion for a %s job with a saved report', async status => {
+  const input=request()
+  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'state',status,input_request:input,
+    progress:.5,batch:4,phase:'forward',stop_requested:false,error:status==='failed'?'execution error':null,
+    report:{sensor:{receiver_id:'sensor'},options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},
+      verdict:'match',reason:'difference_interval_inside_tolerance',gpu_execution_proven:true}})
+  render(<SensorComparisonDialog request={input} onClose={()=>undefined}/>)
+  await screen.findByText(/50%/)
+  expect(screen.queryByText('일치 · 허용 범위 내')).toBeNull()
+  expect(screen.queryByText('다음: 정밀해석·종료 조건 확인')).toBeNull()
 })
 
 it('identifies BSDF host evaluation with CUDA intersections as mixed execution', async () => {

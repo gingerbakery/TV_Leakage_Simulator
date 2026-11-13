@@ -30,12 +30,10 @@ export function pathValidationAdvice(valid: boolean, reason: string): Validation
     '경로 검증을 통과한 뒤 동일 센서 광량 비교로 진행하세요. 표본 수를 늘리는 것만으로 경로 불일치를 해결할 수는 없습니다.']}
 }
 
-function nextSamples(options: SensorComparisonOptions, f: boolean, r: boolean, moreBatches=false): ValidationAdvice['samples'] {
-  const batches = moreBatches ? 16 : options.batches
+function nextSamples(options: SensorComparisonOptions, f: boolean, r: boolean): ValidationAdvice['samples'] {
+  const batches = options.batches
   const oldF=options.forward_samples, oldR=options.reverse_samples
   if (![4,8,16].includes(batches) || !Number.isSafeInteger(oldF) || !Number.isSafeInteger(oldR) || oldF<32 || oldR<32 || oldF>250000 || oldR>100000) return
-  if (moreBatches) return options.batches < 16 && batches*(oldF+oldR)<=4000000
-    ? {batches,forward_samples:oldF,reverse_samples:oldR} : undefined
   const df=f ? Math.min(250000,oldF*4)-oldF : 0, dr=r ? Math.min(100000,oldR*4)-oldR : 0
   const free=Math.floor(4000000/batches)-oldF-oldR
   if (df+dr<=0 || free<=0) return
@@ -68,18 +66,48 @@ export function comparisonValidationAdvice(report: SensorComparisonReport, sameS
   const rMissing=!finite(report.reverse_effective_samples)||!finite(report.reverse_positive_samples)
   if (fMissing||rMissing) return {title:'표본 진단 확인 후 재비교',steps:[
     '방향별 유효표본 또는 검출 수가 없어 증가시킬 쪽을 확정할 수 없습니다. 현재 버전으로 다시 비교하고 검증 JSON에서 누락된 진단을 확인하세요.']}
+  if (report.forward_hits! < 30) return {title:'대표 경로·순방향 진단 확인',steps:[
+    `순방향 검출 ${report.forward_hits}건으로 광량 비교를 판단하기에 부족합니다. 대표 경로 재생의 센서 도달·종료 사유를 확인하세요.`,
+    '순방향 상세 진단에서 센서 전 형상 충돌·면적 밖·조건 제외와 반사 한도 종료를 확인하세요. 전체 종료 수만으로 특정 경로의 실패 원인을 확정하지 않습니다.',
+  ]}
+  if (report.reverse_positive_samples! < 30) return {title:'역추적 광원 도달 조건 확인',steps:[
+    `역추적 양수 표본 ${report.reverse_positive_samples}건으로 광량 비교를 판단하기에 부족합니다. 센서에서 광원까지의 경로와 광원 방출·출력 조건을 확인하세요.`,
+  ]}
+  if (report.reason === 'sparse_independent_batches') return {title:'회차별 검출·경로 확인',steps:[
+    '양수 기여가 일부 회차에 집중되어 있습니다. 회차별 결과와 대표 경로 재생·순방향 상세 진단을 대조해 검출이 드문 구간을 확인하세요.',
+  ]}
   const fLow=report.forward_effective_samples!<30 || report.forward_hits!<30
   const rLow=report.reverse_effective_samples!<30 || report.reverse_positive_samples!<30
-  const sparse=report.reason==='sparse_independent_batches'
-  const samples=nextSamples(report.options, fLow||!rLow, rLow||!fLow, sparse)
+  const samples=nextSamples(report.options, fLow||!rLow, rLow||!fLow)
   if (!samples) return {title:'예산 상한 · 경로·표본 분포 점검',steps:[
     '권장 증가값을 회당 순방향 250,000·역추적 100,000 및 총 4,000,000 표본 안에서 더 설정할 수 없습니다. 무한 반복하거나 판정 기준을 완화하지 않습니다.',
     '회차별 양수 비중·유효표본·차이 구간과 경로 검증을 확인하고 검증 JSON을 저장하세요. 센서나 표본 추출을 바꿔 시험하면 별도 조건의 새 비교로 취급합니다.']}
-  const side=sparse ? '독립 반복' : fLow&&rLow ? 'F/R 표본' : fLow ? 'F 표본' : rLow ? 'R 표본' : 'F/R 표본'
+  const side=fLow&&rLow ? 'F/R 표본' : fLow ? 'F 표본' : rLow ? 'R 표본' : 'F/R 표본'
   return {title:`${side} 증가 후 재비교`,samples,steps:[
     `현재 F/R 유효표본은 ${report.forward_effective_samples!.toFixed(1)} / ${report.reverse_effective_samples!.toFixed(1)}입니다. 유효표본은 발사 수·Hit 수와 다릅니다. 30은 최소 판정 조건이며 통과나 충분한 정확도를 보장하지 않습니다.`,
-    `다음 설정: 독립 반복 ${samples.batches}회 · 회당 F ${samples.forward_samples.toLocaleString()} / R ${samples.reverse_samples.toLocaleString()}. ${sparse ? '양수 회차가 적으므로 독립 반복을 늘립니다.' : '부족한 방향의 표본을 우선 늘립니다.'}`,
+    `다음 설정: 독립 반복 ${samples.batches}회 · 회당 F ${samples.forward_samples.toLocaleString()} / R ${samples.reverse_samples.toLocaleString()}. 부족한 방향의 표본을 우선 늘립니다.`,
     '센서 위치·크기·시야각·수용각·ROI·재질·광원·허용 차이는 유지하세요. 설정 적용 후 비교 시작을 눌러 재실행합니다.',
     '다음 결과에서 유효표본 증가·회차별 양수 분포·추정 광량과 차이 구간의 안정성을 확인하세요. 증가시켜도 개선이 없으면 Ray 수만 계속 늘리지 말고 경로·센서 조건과 표본 추출을 점검하고 검증 JSON을 보존하세요. 0 검출은 빛샘 없음의 증거가 아닙니다.',
   ]}
+}
+
+/** A comparison verdict is meaningful only for the current, completed inputs. */
+export function comparisonConclusion(report: SensorComparisonReport, sameSensor: boolean): string {
+  if (!sameSensor) return '판정 불가 · 이전 조건의 결과'
+  if (report.reason === 'reference_replay_failed') return '실행 실패 · 대표 경로 재생 오류'
+  if (report.reason === 'invalid_reference_path') return '판정 불가 · 대표 경로 불일치'
+  if (report.reason === 'stopped' || report.reason === 'incomplete_batches') return '미완료 · 독립 반복 미완료'
+  if (report.gpu_execution_proven !== true || report.reason.includes('gpu_execution')) return '판정 불가 · 필수 실행 증거 누락'
+  if (report.verdict === 'match') return '일치 · 허용 범위 내'
+  if (report.verdict === 'mismatch') return '불일치 · 허용 범위 밖'
+  if (report.forward_hits === 0 && report.reverse_positive_samples === 0) return '미확정 · 양방향 검출 없음'
+  if (report.forward_hits! < 30 && report.reverse_positive_samples! < 30) return '미확정 · 양방향 검출 부족'
+  if (report.forward_hits === 0) return '미확정 · 순방향 검출 없음'
+  if (report.reverse_positive_samples === 0) return '미확정 · 역추적 양수 표본 없음'
+  if (report.forward_hits! < 30) return '미확정 · 순방향 검출 부족'
+  if (report.reverse_positive_samples! < 30) return '미확정 · 역추적 양수 표본 부족'
+  if (report.reason === 'insufficient_effective_samples') return '미확정 · 유효 표본 부족'
+  if (report.reason === 'sparse_independent_batches') return '미확정 · 검출이 일부 회차에 집중'
+  if (report.reason === 'uncertainty_too_large') return '미확정 · 광량 차이의 불확실성이 큼'
+  return '미확정 · 추가 확인 필요'
 }
