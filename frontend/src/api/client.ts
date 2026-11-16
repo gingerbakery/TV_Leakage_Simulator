@@ -47,6 +47,7 @@ export interface ForwardPathReplay {
   path_reproduced?: boolean; matched_surface_count?: number
   first_difference?: {segment_index:number;expected_point:number[];actual_point:number[]|null}|null
   actual_events?: unknown[]; diagnostics?: unknown
+  reference_attenuation?: unknown
 }
 export interface SensorComparisonJob {
   input_request?: RayTraceRequest; input_request_sha256?: string

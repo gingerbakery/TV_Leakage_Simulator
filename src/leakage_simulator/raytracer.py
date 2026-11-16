@@ -3195,7 +3195,8 @@ def run_direct_ray_trace(
                     intersection_stats.receiver_diagnostics.observe(
                         [current_origin], [current_direction], [current_power], receiver_frames, trace_input.config,
                         [surface_hit.t if surface_hit is not None else float("inf")],
-                        [selected], [receiver_distance if receiver_distance is not None else float("inf")])
+                        [selected], [receiver_distance if receiver_distance is not None else float("inf")],
+                        surface_faces=[surface_hit.face_index if surface_hit is not None else -1], mesh=trace_input.mesh)
 
                 if surface_hit is None:
                     if receiver_candidate is not None:
@@ -7972,7 +7973,8 @@ def _trace_multi_bounce_wavefront_soa_batch(
             intersection_stats.receiver_diagnostics.observe(
                 active.origins, active.directions, active.powers_lumen, receivers, config,
                 np.where(hit_batch.face_indices >= 0, hit_batch.t, np.inf),
-                receiver_batch.receiver_indices, receiver_batch.distances_mm)
+                receiver_batch.receiver_indices, receiver_batch.distances_mm,
+                surface_faces=hit_batch.face_indices, mesh=mesh)
         geometry_started = time.perf_counter()
         surface_geometry = hit_batch.materialize_surface_geometry(mesh, ray_batch)
         wavefront_summary["geometry_sec"] += (

@@ -1,5 +1,6 @@
 from dataclasses import replace
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -10,6 +11,59 @@ from leakage_simulator.types import RayTraceConfig, ReceiverSpec
 
 
 class ReceiverDiagnosticsTests(unittest.TestCase):
+    def test_power_scaling_preserves_hits_and_normalized_flux_without_energy_termination(self):
+        from leakage_simulator.types import OpticalProfile
+        scene = termination_scene(128, 1, threshold=0)
+        scene.config = replace(scene.config, receiver_diagnostics=True, termination_mode='russian_roulette')
+        scene.optical_profiles = [OpticalProfile(name, .6, scatter_model='lambertian') for name in ('mirror_a', 'mirror_b')]
+        baseline = run_direct_ray_trace(scene)
+        scene.emitters[0].power_lumen *= 1000
+        brighter = run_direct_ray_trace(scene)
+        self.assertEqual(baseline.receiver_hit_count, brighter.receiver_hit_count)
+        np.testing.assert_allclose(np.asarray(baseline.receiver_grids[0].flux_lumen)*1000,
+            brighter.receiver_grids[0].flux_lumen, rtol=1e-12, atol=0)
+        self.assertEqual(baseline.metrics['_receiver_diagnostics']['receivers'][0]['counts'],
+            brighter.metrics['_receiver_diagnostics']['receivers'][0]['counts'])
+
+    def test_reference_neighborhood_separates_scene_counts_and_retains_real_obstruction(self):
+        receiver = ReceiverSpec(receiver_id="r", center=(0, 0, 10), normal=(0, 0, -1),
+            width_mm=4, height_mm=4, observer_reference_path=[(0, 0, -10), (0, 0, 0), (0, 0, 10)])
+        frame = _build_receiver_frame(receiver)
+        diagnostic = ReceiverDiagnostics([frame])
+        mesh = SimpleNamespace(metadata=lambda face: dict(step_component_id=42, step_component_name="Cover"))
+        diagnostic.observe([(0, 0, .2), (0, 0, 5), (.1, 0, 0)], [(0, 0, 1), (0, 0, 1), (1, 0, 0)],
+            [1, 1, 1], [frame], RayTraceConfig(), [3, 2, np.inf], [-1]*3, [np.inf]*3,
+            surface_faces=[4, 5, -1], mesh=mesh)
+        row = diagnostic.rows['r']
+        local = row['reference_sampling']
+        self.assertEqual(row['counts']['occluded'], 2)
+        self.assertEqual(local['counts']['occluded'], 1)
+        self.assertEqual(local['counts']['parallel'], 1)
+        self.assertEqual(local['segments_started'], 2)
+        self.assertAlmostEqual(local['min_origin_distance_mm'], .1)
+        sample = local['examples']['occluded']
+        self.assertEqual(sample['obstruction_component_name'], 'Cover')
+        self.assertEqual(sample['obstruction_component_id'], 42)
+        self.assertEqual(sample['obstruction_point'], [0, 0, 3.2])
+        self.assertEqual(sample['direction'], [0, 0, 1])
+        self.assertNotIn('reference_sampling', ReceiverDiagnostics([_build_receiver_frame(
+            replace(receiver, observer_reference_path=None))]).rows['r'])
+
+    def test_reference_sampling_preserves_production_results_for_scalar_and_batch(self):
+        for dispatch in ('scalar', 'batch'):
+            scene = termination_scene(32, 1)
+            scene.receivers[0].observer_reference_path = [(0, 0, 0), (0, 0, 10), (10, 0, 10), (10, 0, 20)]
+            ordinary = run_direct_ray_trace(scene, intersection_dispatch=dispatch)
+            scene.config = replace(scene.config, receiver_diagnostics=True)
+            result = run_direct_ray_trace(scene, intersection_dispatch=dispatch)
+            row = result.metrics['_receiver_diagnostics']['receivers'][0]
+            local = row['reference_sampling']
+            self.assertEqual(local['segments_started'], 32)
+            self.assertEqual(local['counts']['accepted'], 32)
+            self.assertTrue(row['consistent'])
+            self.assertEqual(ordinary.receiver_hit_count, result.receiver_hit_count)
+            np.testing.assert_array_equal(ordinary.receiver_grids[0].flux_lumen, result.receiver_grids[0].flux_lumen)
+
     def test_exclusive_reasons_and_occlusion_before_acceptance(self):
         frame = _build_receiver_frame(ReceiverSpec(receiver_id="r", center=(0, 0, 10),
             normal=(0, 0, -1), width_mm=4, height_mm=4, acceptance_angle_deg=30))

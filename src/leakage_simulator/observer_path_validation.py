@@ -11,10 +11,10 @@ import numpy as np
 
 from .geometry import RayBatch, vec_sub, vec_dot, vec_norm, vec_mul
 from .observer_probe import _source_geometry, emission_supported
-from .reflection import ideal_specular_direction
+from .reflection import ideal_specular_direction, effective_surface_reflectance
 
 
-def validate_observer_paths(trace, summary, resolved=None):
+def validate_observer_paths(trace, summary, resolved=None, collect_attenuation=False):
     started = time.perf_counter()
     mesh = trace.mesh
     epsilon = max(trace.config.epsilon_mm, 1e-8)
@@ -61,6 +61,7 @@ def validate_observer_paths(trace, summary, resolved=None):
         queries, owners, lengths, endpoint_checks = [], [], [], []
         states = {}
         source_kinds = {}
+        reflection_steps = {}
         for i, cell in enumerate(chunk):
             path = cell.get("representative_path")
             if not path or len(path) < 2:
@@ -146,8 +147,20 @@ def validate_observer_paths(trace, summary, resolved=None):
                         normal = vec_mul(normal, -1.)
                     profile = resolved[face].profile
                     wi = vec_mul(incoming, -1.)
-                    continuous = brdf(profile, normal, wi, outgoing, trace.config.angle_dependent_reflectance) > 0
-                    delta_supported = vec_dot(ideal_specular_direction(incoming, normal), outgoing) >= 1-1e-12 and delta_weight(profile, normal, wi, trace.config.angle_dependent_reflectance) > 0
+                    directional_brdf = brdf(profile, normal, wi, outgoing, trace.config.angle_dependent_reflectance)
+                    directional_delta = delta_weight(profile, normal, wi, trace.config.angle_dependent_reflectance) if vec_dot(ideal_specular_direction(incoming, normal), outgoing) >= 1-1e-12 else 0.
+                    continuous = directional_brdf > 0
+                    delta_supported = directional_delta > 0
+                    if collect_attenuation:
+                        metadata = mesh.metadata(face)
+                        reflection_steps.setdefault(i, []).append(dict(
+                            reflection_index=j, point=list(path[j]), face_index=face,
+                            component_id=metadata.get("step_component_id", metadata.get("component_id")),
+                            component_name=metadata.get("step_component_name") or metadata.get("object_name"),
+                            profile_id=profile.profile_id, scatter_model=profile.scatter_model,
+                            effective_reflectance=effective_surface_reflectance(incoming, normal, profile, trace.config.angle_dependent_reflectance),
+                            directional_brdf_per_sr=directional_brdf, directional_delta_weight=directional_delta,
+                            direction_supported=continuous or delta_supported))
                     if not continuous and not delta_supported:
                         states[i] = "reflection_material_mismatch"
                 elif endpoint_checks[k] == "visible":
@@ -157,6 +170,8 @@ def validate_observer_paths(trace, summary, resolved=None):
                         states[i] = "visible_endpoint_off_surface"
         for i, reason in states.items():
             cell = chunk[i]
+            if collect_attenuation:
+                cell["reflection_steps"] = sorted(reflection_steps.get(i, []), key=lambda step: step["reflection_index"])
             if reason:
                 invalid += 1
                 reasons[reason] = reasons.get(reason, 0)+1

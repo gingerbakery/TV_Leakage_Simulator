@@ -1177,7 +1177,7 @@ class ApiRuntime:
             check["forward_hit_count"] = None
             check["forward_energy_cutoff_count"] = None
             receiver = next(f.receiver for f in frames if f.receiver.receiver_id == check['receiver_id'])
-            check['forward_replay'] = replay_forward_path(trace,receiver)
+            check['forward_replay'] = replay_forward_path(trace,receiver,resolved)
         return dict(receiver_checks=checks, simulation_run_started=False,
             validation_scope='representative_geometry_and_isolated_forward_replay',
             diagnostic_forward_replay_started=any(check['forward_replay']['state'] != 'unavailable' for check in checks),

@@ -18,3 +18,10 @@ it('shows reproduced arrival only when the production replay follows the represe
   render(<ForwardPathReplayResult report={{state:'receiver_reached',reason:'receiver_reached',included_in_flux:false,execution_backend:'cpu',path_reproduced:true}}/> )
   expect(screen.getByText(/동일 경로 도달/)).toBeTruthy()
 })
+it('shows actual roulette termination alongside a stochastic branch mismatch',()=>{
+  render(<ForwardPathReplayResult report={{state:'not_reached',reason:'different_sampled_branch',included_in_flux:false,execution_backend:'cpu',
+    diagnostics:{contract:'forward_receiver_segments_v1',complete:true,primary_ray_count:1,receivers:[],
+      escaped_segments:0,escaped_segment_flux_lumen:0,termination:{roulette_terminated_count:1}}}}/> )
+  expect(screen.getByText(/대표 경로 순방향 재생 · 확률적 반사 분기 변경/)).toBeTruthy()
+  expect(screen.getByText('재생 종료 사유 · 확률적 종료')).toBeTruthy()
+})

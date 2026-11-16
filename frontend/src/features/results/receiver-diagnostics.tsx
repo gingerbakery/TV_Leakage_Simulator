@@ -1,7 +1,32 @@
 import { CircleHelp } from 'lucide-react'
 import { Popover } from 'radix-ui'
 import { Button } from '@/components/ui/button'
-import { readReceiverDiagnostics, receiverDiagnosticLabels, type DiagnosticCategory } from './receiver-diagnostics-model'
+import { HelpTooltip } from '@/components/common/help-tooltip'
+import { readReceiverDiagnostics, readReferenceSampling, referenceSamplingConclusion, receiverDiagnosticLabels, type DiagnosticCategory } from './receiver-diagnostics-model'
+
+function ReferenceSamplingResult({ value }: { value: unknown }) {
+  const reference = readReferenceSampling(value)
+  if (!reference) return <div role="status">선택점 주변 기록 없음 · 선택점 원인 판정 불가</div>
+  return <div className="my-2 space-y-1 rounded border p-2">
+    <div className="flex items-center gap-1 font-semibold">선택점 주변 진단<HelpTooltip label="선택점 주변 진단 도움말">대표 경로의 마지막 반사점 또는 직광의 발광점을 중심으로 반경 1mm 안에서 실제 출발한 구간을 집계합니다. 반사·발사 위치의 근접성 검사이며 전체 대표 경로의 재현을 뜻하지 않습니다. 센서 전 형상 충돌의 전체 장면 집계와 구분해 확인하세요. 표본은 분류별로 선택점에 가장 가까운 출발 구간 하나를 저장합니다. 교차점과 부품은 실제 순방향 검사 기록입니다.</HelpTooltip></div>
+    <div role="status">{referenceSamplingConclusion(reference)}</div>
+    <div>반경 {reference.radius_mm} mm · 출발 {reference.segments_started.toLocaleString()}구간 · 가장 가까운 출발점 {reference.min_origin_distance_mm?.toFixed(3) ?? '—'} mm</div>
+    <details><summary className="cursor-pointer">선택점 주변 분류·표본</summary>
+      <div>기준점 ({reference.point.map(value => value.toFixed(4)).join(', ')}) mm</div>
+      {(Object.keys(receiverDiagnosticLabels) as DiagnosticCategory[]).filter(key => reference.counts[key] > 0).map(key => {
+        const sample = reference.examples[key]
+        return <div key={key} className="my-2 space-y-1">
+          <div>{receiverDiagnosticLabels[key]} · {reference.counts[key].toLocaleString()}구간</div>
+          {sample ? <>
+            <div>출발 ({sample.origin.map(value => value.toFixed(4)).join(', ')}) mm</div>
+            <div>진행 방향 ({sample.direction.map(value => value.toFixed(6)).join(', ')})</div>
+            {sample.obstruction_point ? <div>차폐 {sample.obstruction_component_name ?? (sample.obstruction_component_id !== null ? `부품 ${sample.obstruction_component_id}` : `면 ${sample.obstruction_face_index}`)} · ({sample.obstruction_point.map(value => value.toFixed(4)).join(', ')}) mm</div> : null}
+          </> : null}
+        </div>
+      })}
+    </details>
+  </div>
+}
 
 export function ReceiverDiagnostics({ value, requested = false }: { value: unknown; requested?: boolean }) {
   const report = readReceiverDiagnostics(value)
@@ -22,6 +47,8 @@ export function ReceiverDiagnostics({ value, requested = false }: { value: unkno
     {report.receivers.map(row => <details key={row.receiver_id} className="rounded border p-2">
       <summary className="cursor-pointer">{row.receiver_id} · 도달 {row.arrived_count.toLocaleString()} · 검출 {row.actual_receiver_hits.toLocaleString()} · {row.actual_receiver_flux_lumen.toExponential(3)} lm</summary>
       {!row.consistent ? <div role="alert">진단·검출 집계 불일치 · 원인 판정 보류</div> : <div role="status" className="my-2">{row.actual_receiver_hits > 0 ? '검출 있음' : row.arrived_count > 0 ? '센서 도달 후 조건 제외' : '센서 면적 도달 표본 없음'}</div>}
+      {row.consistent ? <ReferenceSamplingResult value={row.reference_sampling} /> : null}
+      <div className="font-semibold">전체 장면 구간</div>
       <table className="w-full tabular-nums"><thead><tr><th className="text-left">분류</th><th>구간 수</th><th>구간 광량 (lm)</th></tr></thead><tbody>
         {(Object.keys(receiverDiagnosticLabels) as DiagnosticCategory[]).map(key => <tr key={key}><th className="text-left font-normal">{receiverDiagnosticLabels[key]}</th><td className="text-right">{row.counts[key].toLocaleString()}</td><td className="text-right">{row.segment_flux_lumen[key].toExponential(3)}</td></tr>)}
       </tbody></table>

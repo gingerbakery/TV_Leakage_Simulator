@@ -55,7 +55,53 @@ def _source_at(trace, point, direction):
     return found
 
 
-def replay_forward_path(trace, receiver):
+def _reference_attenuation(trace, receiver, packet, resolved):
+    from .raytracer import _build_receiver_frame, _find_first_receiver_hit
+    from .types import ReceiverGrid
+    from .termination import emitter_termination_config
+    from .observer_path_validation import validate_observer_paths
+    if resolved is None:
+        from .bsdf_guard import bind_bsdf_profiles
+        from .optics import OpticalPropertyResolver
+        profiles, _ = bind_bsdf_profiles(trace.optical_profiles, trace.bsdf_assets, trace.config)
+        resolved = OpticalPropertyResolver(trace.mesh, profiles, trace.optical_assignments).resolve_all()
+    path = receiver.observer_reference_path
+    frame = _build_receiver_frame(receiver)
+    frame.roi_boxes = tuple((trace.analysis_roi or {}).get('detection_boxes', []))
+    target = _find_first_receiver_hit(path[-2], vec_norm(vec_sub(path[-1], path[-2])), packet, -1,
+        [frame], {receiver.receiver_id: ReceiverGrid.empty(receiver)}, trace.config)
+    audit = dict(contract='reference_reflectance_chain_v1', included_in_flux=False,
+        scope='reflectance_only_without_directional_sampling_or_roulette_weights',
+        state='unavailable', reason='receiver_position_direction_acceptance_or_roi_mismatch', steps=[])
+    if target is None:
+        return audit
+    cell = dict(representative_path=[*path[:-1], target.point])
+    validate_observer_paths(trace, dict(cells=[cell], measure='luminance_cd_m2'), resolved, collect_attenuation=True)
+    validation = cell['path_validation']
+    steps = cell.get('reflection_steps', [])
+    threshold = emitter_termination_config(trace.config, packet).min_energy
+    ratio, log_ratio, power = 1., 0., packet
+    first_below = None
+    for step in steps:
+        reflectance = step['effective_reflectance']
+        step['incoming_nominal_packet_lumen'] = power
+        ratio *= reflectance
+        power *= reflectance
+        log_ratio = log_ratio + math.log10(reflectance) if reflectance > 0 and log_ratio is not None else None
+        step.update(outgoing_nominal_packet_lumen=power, cumulative_reflectance=ratio,
+            cumulative_log10_ratio=log_ratio, below_min_energy=threshold > 0 and power < threshold)
+        if step['below_min_energy'] and first_below is None:
+            first_below = step['reflection_index']
+    complete = validation['status'] == 'valid' and len(steps) == len(path)-2
+    audit.update(state='complete' if complete else 'invalid', reason=validation.get('reason', 'reference_path_valid'),
+        steps=steps, expected_reflections=len(path)-2, nominal_packet_lumen=packet,
+        effective_min_energy_lumen=threshold, first_below_min_energy_reflection=first_below,
+        final_reflectance_ratio=ratio if complete else None, final_log10_ratio=log_ratio if complete else None,
+        largest_loss_reflection=min(steps, key=lambda step: step['effective_reflectance'])['reflection_index'] if steps else None)
+    return audit
+
+
+def replay_forward_path(trace, receiver, resolved=None):
     from .raytracer import run_direct_ray_trace, _build_receiver_frame, _find_first_receiver_hit
     from .types import ReceiverGrid
     path = receiver.observer_reference_path
@@ -76,6 +122,11 @@ def replay_forward_path(trace, receiver):
     if source is None:
         return dict(report,state='unavailable',reason='source_position_or_emission_mismatch')
     emitter, origin, source_face, packet = source
+    try:
+        report['reference_attenuation'] = _reference_attenuation(trace, receiver, packet, resolved)
+    except Exception as exc:
+        report['reference_attenuation'] = dict(contract='reference_reflectance_chain_v1', state='failed',
+            reason='attenuation_audit_failed', error=str(exc), included_in_flux=False, steps=[])
     config = replace(trace.config, compute_backend='cpu', intersection_backend='bvh',
                      store_ray_paths=True,max_stored_paths=1,receiver_diagnostics=True,auto_convergence=False)
     replay_seed = emitter.seed if emitter.seed is not None else config.seed

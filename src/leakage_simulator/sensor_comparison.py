@@ -204,7 +204,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
     if should_stop and should_stop():
         report.update(reason='stopped',runtime_sec=time.perf_counter()-started)
         return report
-    report['reference_replay'] = replay_forward_path(trace,receiver)
+    report['reference_replay'] = replay_forward_path(trace,receiver,resolved)
     if report['reference_replay']['state'] == 'failed':
         report.update(reason='reference_replay_failed',runtime_sec=time.perf_counter()-started)
         return report

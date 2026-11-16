@@ -26,9 +26,17 @@ class ReceiverDiagnostics:
             counts={key: 0 for key in CATEGORIES},
             segment_flux_lumen={key: 0.0 for key in CATEGORIES},
         ) for f in frames}
+        for frame in frames:
+            path = frame.receiver.observer_reference_path
+            if path and len(path) >= 2:
+                self.rows[frame.receiver.receiver_id]["reference_sampling"] = dict(
+                    contract="reference_origin_neighborhood_v1", point=list(path[-2]), radius_mm=1.0,
+                    segments_started=0, min_origin_distance_mm=None,
+                    counts={key: 0 for key in CATEGORIES}, examples={})
 
     def observe(self, origins, directions, powers, frames, config,
-                surface_distances, selected_indices, selected_distances):
+                surface_distances, selected_indices, selected_distances,
+                surface_faces=None, mesh=None):
         origins = np.asarray(origins, dtype=float)
         directions = np.asarray(directions, dtype=float)
         powers = np.asarray(powers, dtype=float)
@@ -39,12 +47,43 @@ class ReceiverDiagnostics:
             row = self.rows[frame.receiver.receiver_id]
             row["segments_tested"] += len(origins)
             pending = np.ones(len(origins), dtype=bool)
+            reference = row.get("reference_sampling")
+            if reference is not None:
+                distances = np.linalg.norm(origins - np.asarray(reference["point"]), axis=1)
+                nearest = float(np.min(distances)) if len(distances) else None
+                if nearest is not None:
+                    previous = reference["min_origin_distance_mm"]
+                    reference["min_origin_distance_mm"] = nearest if previous is None else min(previous, nearest)
+                nearby = distances <= reference["radius_mm"]
+                reference["segments_started"] += int(np.count_nonzero(nearby))
 
             def take(key, mask):
                 selected = pending & mask
                 row["counts"][key] += int(np.count_nonzero(selected))
                 row["segment_flux_lumen"][key] += float(np.sum(powers[selected]))
                 pending[selected] = False
+                if reference is None:
+                    return
+                local_indices = np.flatnonzero(selected & nearby)
+                reference["counts"][key] += len(local_indices)
+                if not len(local_indices):
+                    return
+                sample_index = int(local_indices[np.argmin(distances[local_indices])])
+                previous = reference["examples"].get(key)
+                if previous and previous["origin_distance_mm"] <= distances[sample_index]:
+                    return
+                face = int(surface_faces[sample_index]) if surface_faces is not None else -1
+                metadata = mesh.metadata(face) if mesh is not None and face >= 0 else {}
+                obstruction = None
+                if key == "occluded" and math.isfinite(float(surface_distances[sample_index])):
+                    obstruction = (origins[sample_index] + surface_distances[sample_index] * directions[sample_index]).tolist()
+                reference["examples"][key] = dict(
+                    origin=origins[sample_index].tolist(), direction=directions[sample_index].tolist(),
+                    origin_distance_mm=float(distances[sample_index]),
+                    obstruction_point=obstruction, obstruction_face_index=face if obstruction is not None else None,
+                    obstruction_component_id=metadata.get("step_component_id", metadata.get("component_id")) if obstruction is not None else None,
+                    obstruction_component_name=(metadata.get("step_component_name") or metadata.get("object_name")
+                        or metadata.get("preview_blocker_id")) if obstruction is not None else None)
 
             normal = np.asarray(frame.normal)
             denom = directions @ normal
