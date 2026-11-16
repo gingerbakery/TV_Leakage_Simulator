@@ -25,6 +25,15 @@ export function samePreviewSignature(a: string | null, b: string | null): boolea
     const normalize = (signature: string) => {
       const value = JSON.parse(signature)
       if (value?.precisionConfig) value.precisionConfig = previewPrecisionConfig(value.precisionConfig)
+      // Preview supplies its own total budget and only consumes emitter counts
+      // as allocation weights. A proportional forward budget change is equivalent.
+      if (Array.isArray(value?.existingEmitters) && value.existingEmitters.length > 0) {
+        const weights = value.existingEmitters.map((emitter: Record<string, unknown>) => Math.max(1, Number(emitter.ray_count)))
+        const total = weights.reduce((sum: number, weight: number) => sum + weight, 0)
+        if (!Number.isFinite(total)) return signature
+        value.existingEmitters = value.existingEmitters.map((emitter: Record<string, unknown>, index: number) =>
+          ({ ...emitter, ray_count: weights[index] / total }))
+      }
       return previewSignature(value)
     }
     return normalize(a) === normalize(b)

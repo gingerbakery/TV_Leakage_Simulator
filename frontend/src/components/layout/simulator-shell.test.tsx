@@ -18,6 +18,7 @@ import { createDefaultLeakPreviewProjectState, leakPreviewStore, snapshotLeakPre
 import { previewSignature } from '@/features/leak-preview/leak-preview-signature'
 import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { buildRayTraceRequest } from '@/features/raytracing'
+import { createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
 import { createCompletedRayTraceJobFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
@@ -95,12 +96,19 @@ afterEach(() => {
 })
 
 describe('SimulatorShell', () => {
-  it.each(['정밀해석 준비', '순방향 진단 준비'])('preserves Preview results and Body source selection through %s and return', async (action) => {
+  it.each([
+    ['정밀해석 준비', 'body'], ['순방향 진단 준비', 'body'],
+    ['정밀해석 준비', 'emitters'], ['순방향 진단 준비', 'emitters'],
+  ] as const)('preserves Preview through %s, forward budget edits and return with %s sources', async (action, sourceMode) => {
     const scene = createSceneFixture()
     apiHookState.scene = scene
     workspaceStore.getState().actions.addCadCase({ path: 'handoff.step', displayName: 'Handoff' })
     leakPreviewStore.getState().ensureScene(scene.metadata.scene_token)
     leakPreviewStore.getState().setSourceBody([1], 3)
+    if (sourceMode === 'emitters') {
+      workspaceStore.getState().actions.upsertEmitter(createDatumEmitter('source', [30,30,10], [30,30,-20]))
+      leakPreviewStore.getState().setSourceEmitters(['source'])
+    }
     leakPreviewStore.getState().setObserver({ search_mode: 'full_detail', enabled: true })
     const saved = createSavedLeakPreviewFixture()
     saved.candidates[0] = { ...saved.candidates[0], apertureId: 'test-opening',
@@ -114,6 +122,7 @@ describe('SimulatorShell', () => {
       sceneToken: scene.metadata.scene_token, sourceFaceIds: settings.sourceFaceIds, sourceMode: settings.sourceMode,
       sourceComponentIds: settings.sourceComponentIds, sourceBodyFaceCount: settings.sourceBodyFaceCount,
       sourceEmitterIds: settings.sourceEmitterIds, quality: settings.quality, detectionMode: settings.detectionMode,
+      existingEmitters: sourceMode === 'emitters' ? workspace.emitters.map(({ visible: _visible, ...emitter }) => emitter) : undefined,
       observer: settings.observer, precisionConfig: workspace.rayTraceConfig, directions: settings.directions,
       materialAssignments: workspace.materialAssignments, bsdfAssets: [], transformRules: workspace.transformRules,
       excludedComponentIds: workspace.excludedComponentIds, deletedComponentIds: workspace.deletedComponentIds,
@@ -126,11 +135,13 @@ describe('SimulatorShell', () => {
     fireEvent.click(screen.getByRole('button', { name: action }))
     await waitFor(() => expect(workspaceStore.getState().receivers.length).toBeGreaterThan(0))
     expect(leakPreviewStore.getState().result).toEqual(saved.result)
-    expect(leakPreviewStore.getState().sourceComponentIds).toEqual([1])
+    expect(leakPreviewStore.getState().sourceComponentIds).toEqual(settings.sourceComponentIds)
+    act(() => workspaceStore.getState().actions.setEmitterRayCount(250000))
     fireEvent.click(screen.getByRole('button', { name: 'Whole Set Lighting' }))
     expect(leakPreviewStore.getState().result).toEqual(saved.result)
     expect(leakPreviewStore.getState().candidates).toEqual(saved.candidates)
-    expect(leakPreviewStore.getState().sourceMode).toBe('body')
+    expect(leakPreviewStore.getState().sourceMode).toBe(sourceMode)
+    expect(leakPreviewStore.getState().selectedCandidateId).toBe(saved.candidates[0].id)
     expect(workspaceStore.getState().emitters.some(emitter => emitter.enabled)).toBe(true)
     expect(screen.getByRole('button', { name: '경로 검증' }).hasAttribute('disabled')).toBe(false)
     expect(screen.getByRole('button', { name: '광량 비교' }).hasAttribute('disabled')).toBe(false)
