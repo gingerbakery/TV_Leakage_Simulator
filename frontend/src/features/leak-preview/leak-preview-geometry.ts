@@ -96,6 +96,56 @@ function componentCorners(minimum: Vec3, maximum: Vec3): Vec3[] {
   ]
 }
 
+/** Place the complete receiver footprint beyond surfaces in its viewing prism. */
+export function receiverFootprintDistance(
+  scene: ScenePayload, origin: Vec3, outward: Vec3, u: Vec3, v: Vec3,
+  widthMm: number, heightMm: number, clearanceMm: number,
+  transforms: ComponentTransformRule[] = [],
+): number {
+  const transform = createLeakPreviewPointTransform(scene, transforms)
+  const project = (point: Vec3): Vec3 => {
+    const delta = point.map((value, axis) => value - origin[axis])
+    return [u, v, outward].map(axis => axis.reduce((sum, value, index) => sum + value * delta[index], 0)) as Vec3
+  }
+  const half = [widthMm / 2, heightMm / 2]
+  const represented = new Set(scene.mesh.face_component_ids)
+  const relevant = new Set<number>()
+  let support = 0
+  for (const component of scene.components) {
+    const corners = componentCorners(component.bbox_min, component.bbox_max)
+      .map(point => project(transform(component.component_id, point)))
+    if (half.some((limit, axis) => corners.every(point => point[axis] < -limit) || corners.every(point => point[axis] > limit))) continue
+    relevant.add(component.component_id)
+    // Missing/truncated display meshes retain conservative component bounds.
+    if (component.is_truncated || !represented.has(component.component_id)) {
+      support = Math.max(support, ...corners.map(point => point[2]))
+    }
+  }
+  for (const [faceIndex, face] of scene.mesh.faces.entries()) {
+    const componentId = scene.mesh.face_component_ids[faceIndex]
+    if (componentId != null && !relevant.has(componentId)) continue
+    let polygon = face.map(index => project(componentId == null
+      ? scene.mesh.vertices[index] : transform(componentId, scene.mesh.vertices[index])))
+    // Clip triangles to all four sides, covering receiver edges and interior.
+    for (const axis of [0, 1]) for (const sign of [-1, 1]) {
+      const clipped: Vec3[] = []
+      for (let index = 0; index < polygon.length; index++) {
+        const current = polygon[index], next = polygon[(index + 1) % polygon.length]
+        const currentGap = half[axis] - sign * current[axis]
+        const nextGap = half[axis] - sign * next[axis]
+        if (currentGap >= 0) clipped.push(current)
+        if ((currentGap >= 0) !== (nextGap >= 0)) {
+          const fraction = currentGap / (currentGap - nextGap)
+          clipped.push(current.map((value, dimension) => value + fraction * (next[dimension] - value)) as Vec3)
+        }
+      }
+      polygon = clipped
+    }
+    for (const point of polygon) support = Math.max(support, point[2])
+  }
+  return support + clearanceMm
+}
+
 /** Component metadata already carries full-model bounds. Using it avoids a
  * second traversal of every tessellated vertex on large STEP assemblies. */
 export function getLeakPreviewBounds(

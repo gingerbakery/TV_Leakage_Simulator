@@ -20,6 +20,7 @@ import type {
 import {
   createLeakPreviewPointTransform,
   getLeakPreviewBounds,
+  receiverFootprintDistance,
 } from './leak-preview-geometry'
 
 import type { BsdfAsset } from '@/features/materials/bsdf-asset'
@@ -1655,15 +1656,12 @@ export function createCandidateReceiver(
     const receiver = createViewAngleReceiver(`preview_receiver_${String(index).padStart(3, '0')}`,
       scene, target, { axis: evidence.axis, horizontal_deg: evidence.horizontalDeg,
         vertical_deg: evidence.verticalDeg, range_deg: 0, step_deg: evidence.stepDeg },
-      leakPreviewReceiverDistanceMm, transforms)
+      leakPreviewReceiverDistanceMm, transforms, [0,0,0], 'leak_point')
     const outward = receiver.normal.map(value => -value) as Vec3
-    const distance = dot(subtract(receiver.center, target), outward)
     const footprint = evidence.footprintCenter ?? evidence.receiverCenter
     const delta = subtract(footprint, target)
     const offset = subtract(delta, outward.map(value => value * dot(delta, outward)) as Vec3)
-    receiver.center = receiver.center.map((value, axis) => value + offset[axis]) as Vec3
     receiver.position_offset_mm = offset
-    receiver.view_distance_mm = distance
     receiver.view_distance_reference = 'leak_point'
     // Preserve coverage of the Preview grid footprint when converting from
     // its arbitrary observer U/V basis to the angle editor's canonical basis.
@@ -1672,6 +1670,10 @@ export function createCandidateReceiver(
     const height = Math.max(1, evidence.footprintHeightMm ?? candidate.heightMm)
     const extent = (axis: Vec3) => Math.abs(dot(candidate.uAxis, axis)) * width + Math.abs(dot(candidate.vAxis, axis)) * height
     const widthMm = Math.max(1, extent(receiver.u_axis!)) + 2, heightMm = Math.max(1, extent(receiver.v_axis!)) + 2
+    const distance = receiverFootprintDistance(scene, addScaled(target, offset, 1), outward,
+      receiver.u_axis!, receiver.v_axis!, widthMm, heightMm, leakPreviewReceiverDistanceMm, transforms)
+    receiver.center = target.map((value, axis) => value + outward[axis] * distance + offset[axis]) as Vec3
+    receiver.view_distance_mm = distance
     const pixelSize = Math.max(widthMm, heightMm) / 40
     return { ...receiver, display_name: `Preview Receiver ${index}`, reference_mode: 'leak_preview_candidate',
       acceptance_angle_deg: 90, normal_flip: false,
@@ -1711,10 +1713,8 @@ export function createCandidateReceiver(
   if (footprint) centeredOnRoi.splice(0, 3, ...footprint.center)
   let distance = leakPreviewReceiverDistanceMm
   if (scene) {
-    const bounds = getLeakPreviewBounds(scene, transforms)
-    for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
-      distance = Math.max(distance, dot(subtract([x,y,z], centeredOnRoi), outwardNormal) + leakPreviewReceiverDistanceMm)
-    }
+    distance = receiverFootprintDistance(scene, centeredOnRoi, outwardNormal, candidate.uAxis,
+      candidate.vAxis, widthMm, heightMm, leakPreviewReceiverDistanceMm, transforms)
   }
   const center = candidate.observerEvidence?.receiverCenter ?? addScaled(
     centeredOnRoi,

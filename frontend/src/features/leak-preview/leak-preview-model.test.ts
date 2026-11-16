@@ -45,7 +45,9 @@ it('sizes planar receivers from detected cells and clears transformed CAD withou
   const receiver = createCandidateReceiver(candidate,1,scene,transforms)
   expect(receiver.width_mm).toBeCloseTo(3)
   expect(receiver.height_mm).toBeCloseTo(4)
-  expect(receiver.center[0]).toBeGreaterThanOrEqual(getLeakPreviewBounds(scene,transforms).maximum[0]+3-1e-8)
+  // The rotated surface in this footprint ends at X=130.
+  expect(receiver.center[0]).toBeCloseTo(133)
+  expect(receiver.center[0]).toBeLessThan(getLeakPreviewBounds(scene,transforms).maximum[0])
   const wider = createCandidateReceiver({ ...candidate, detectedFootprint:{ ...candidate.detectedFootprint!, widthMm:150 } },2,scene,transforms)
   expect(wider.width_mm).toBeCloseTo(152)
 })
@@ -232,10 +234,8 @@ describe('whole-set leak preview', () => {
     expect(receiver.view_angles).toEqual(view)
     expect(receiver.base_center).toEqual(target)
     const dot = (a: Vec3, b: Vec3) => a.reduce((sum, value, axis) => sum + value*b[axis], 0)
-    const bounds = getLeakPreviewBounds(scene)
-    for (const x of [bounds.minimum[0], bounds.maximum[0]]) for (const y of [bounds.minimum[1], bounds.maximum[1]]) for (const z of [bounds.minimum[2], bounds.maximum[2]]) {
-      expect(dot(receiver.center.map((value, axis) => value - [x,y,z][axis]) as Vec3, direction)).toBeGreaterThanOrEqual(3 - 1e-8)
-    }
+    expect(receiver.view_distance_mm).toBeGreaterThanOrEqual(3)
+    expect(receiver.view_distance_mm).toBeLessThan(canonical.center.reduce((sum, value, axis) => sum + (value-target[axis])*direction[axis], 0))
     expect(receiver.view_distance_reference).toBe('leak_point')
     expect(receiver.normal).toEqual(direction.map((value) => -value))
     expect(receiver.width_mm).toBeCloseTo(3)
@@ -250,7 +250,6 @@ describe('whole-set leak preview', () => {
     expect(wide.width_mm).toBeCloseTo(32)
     expect(wide.height_mm).toBeCloseTo(82)
     expect(receiver.acceptance_angle_deg).toBe(90)
-    expect(receiver.view_distance_mm).toBeGreaterThan(3)
     const [resolved] = expandReceiverView(receiver, scene)
     expect(resolved.center).toEqual(receiver.center)
     expect(resolved.u_axis).toEqual(receiver.u_axis)
