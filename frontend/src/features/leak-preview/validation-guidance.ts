@@ -1,4 +1,5 @@
 import type { SensorComparisonOptions, SensorComparisonReport } from '@/api/client'
+import { selectedPointEvidence } from './comparison-evidence'
 
 export interface ValidationAdvice {
   title: string
@@ -66,6 +67,28 @@ export function comparisonValidationAdvice(report: SensorComparisonReport, sameS
   const rMissing=!finite(report.reverse_effective_samples)||!finite(report.reverse_positive_samples)
   if (fMissing||rMissing) return {title:'표본 진단 확인 후 재비교',steps:[
     '방향별 유효표본 또는 검출 수가 없어 증가시킬 쪽을 확정할 수 없습니다. 현재 버전으로 다시 비교하고 검증 JSON에서 누락된 진단을 확인하세요.']}
+  const point = selectedPointEvidence(report)
+  if (point.complete && point.counts.accepted === 0) {
+    const counts = point.counts
+    if (counts.back_face + counts.outside_acceptance + counts.outside_roi > 0) return {
+      title:'표시된 센서 제외 조건 확인', steps:[
+        `선택점 반경 ${point.radius}mm 주변에서 센서 도달 후 제외된 구간은 뒷면 ${counts.back_face}, 수용각 ${counts.outside_acceptance}, ROI ${counts.outside_roi}입니다. 해당 Receiver의 실제 제외 설정을 확인하세요.`,
+        '설정을 수정하면 측정 조건이 바뀌므로 같은 새 조건으로 다시 비교하세요.']}
+    if (counts.other_receiver_first > 0) return {title:'먼저 검출한 Receiver 확인',steps:[
+      `선택점 주변의 ${counts.other_receiver_first}구간을 다른 Receiver가 먼저 검출했습니다. 진단 대상 센서와 활성 Receiver 구성을 확인하세요.`]}
+    if (counts.occluded > 0) return {title:'주변 차폐 부품·좌표 확인',steps:[
+      `선택점 반경 ${point.radius}mm 주변에서 센서로 향한 ${counts.occluded}구간이 형상에 막혔습니다. 상세 결과의 선택점 주변 분류·표본에서 실제 충돌 부품과 좌표를 확인하세요. 전체 장면의 차폐 수는 사용하지 않습니다.`]}
+    if (point.started > 0) return {title:'실제 반사 방향과 센서 영역 확인',steps:[
+      `선택점 주변 출발 ${point.started}구간 중 센서 영역에 연결된 표본이 없습니다. 주변 분류·표본의 실제 진행 방향을 Receiver와 대조하세요. 저장된 대표 경로 화살표는 이 표본의 방향을 대신하지 않습니다.`]}
+  }
+  if (report.forward_hits! >= 30 && report.forward_effective_samples! < 30 && report.reverse_effective_samples! < 30) return {
+    title:'반사 적은 Point에서 기본 검출 확인',steps:[
+      `순방향 검출 ${report.forward_hits}건이지만 유효표본은 ${report.forward_effective_samples!.toFixed(1)}, 역추적 양수 ${report.reverse_positive_samples}건·유효표본 ${report.reverse_effective_samples!.toFixed(1)}로 양방향 모두 부족합니다. 검출 건수만으로 광량을 확정할 수 없습니다.`,
+      point.complete && point.started === 0
+        ? `전체 ${point.expected}회에서 선택점 반경 ${point.radius}mm 주변 출발이 0입니다. 현재 검출과 선택점 대표 경로의 연결이 확인되지 않았습니다.`
+        : '선택점 주변 기록의 완전성과 실제 경로 연결은 부족 항목 진단에서 별도로 확인하세요.',
+      '프리뷰 결과에서 직접광 또는 반사 1회 Point를 선택해 같은 광원·재질 조건으로 경로 검증과 광량 비교를 확인하세요. 기본 검출이 성립하면 원래 Point와 비교해 복잡한 경로의 표본·감쇠 문제를 좁힙니다. 광속과 허용 오차를 높여 통과시키지 않습니다.'],
+  }
   if (report.forward_hits! < 30) return {title:'대표 경로·순방향 진단 확인',steps:[
     `순방향 검출 ${report.forward_hits}건으로 광량 비교를 판단하기에 부족합니다. 대표 경로 재생의 센서 도달·종료 사유를 확인하세요.`,
     '순방향 상세 진단에서 센서 전 형상 충돌·면적 밖·조건 제외와 반사 한도 종료를 확인하세요. 전체 종료 수만으로 특정 경로의 실패 원인을 확정하지 않습니다.',
@@ -104,6 +127,7 @@ export function comparisonConclusion(report: SensorComparisonReport, sameSensor:
   if (report.forward_hits! < 30 && report.reverse_positive_samples! < 30) return '미확정 · 양방향 검출 부족'
   if (report.forward_hits === 0) return '미확정 · 순방향 검출 없음'
   if (report.reverse_positive_samples === 0) return '미확정 · 역추적 양수 표본 없음'
+  if (report.forward_effective_samples! < 30 && report.reverse_effective_samples! < 30) return '미확정 · 양방향 유효 표본 부족'
   if (report.forward_hits! < 30) return '미확정 · 순방향 검출 부족'
   if (report.reverse_positive_samples! < 30) return '미확정 · 역추적 양수 표본 부족'
   if (report.reason === 'insufficient_effective_samples') return '미확정 · 유효 표본 부족'

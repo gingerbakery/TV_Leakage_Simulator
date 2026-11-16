@@ -98,11 +98,31 @@ it('summarizes the single-detection case without recommending another sample inc
   expect(within(summary).getByText('순방향 검출 1 · 역추적 양수 0')).toBeTruthy()
   expect(within(summary).getByText('다음: 대표 경로·순방향 진단 확인')).toBeTruthy()
   expect(screen.queryByRole('button',{name:'권장 표본 적용'})).toBeNull()
-  expect(within(summary).queryByRole('table')).toBeNull()
+  expect(within(summary).getByRole('table',{name:'부족 항목 진단'})).toBeTruthy()
   expect(screen.getByText('상세 결과').closest('details')?.open).toBe(false)
   expect(screen.getByRole('button',{name:'검증 JSON 저장'})).toBeTruthy()
   fireEvent.click(screen.getByText('상세 결과'))
-  expect(screen.getByRole('table')).toBeTruthy()
+  expect(screen.getAllByRole('table').length).toBeGreaterThan(1)
+})
+
+it('shows both shortages at the top for 35 detections and one reverse contribution without opening details', async () => {
+  const input=request()
+  vi.spyOn(apiClient,'getSensorComparison').mockResolvedValue({job_id:'reported',status:'completed',input_request:input,
+    progress:1,batch:8,phase:'finished',stop_requested:false,error:null,report:{
+      sensor:{receiver_id:'sensor'},options:{receiver_id:'sensor',batches:8,forward_samples:16384,reverse_samples:1024,tolerance_percent:5},
+      verdict:'inconclusive',reason:'insufficient_effective_samples',gpu_execution_proven:true,
+      forward_hits:35,reverse_positive_samples:1,forward_effective_samples:1.0001,reverse_effective_samples:1}})
+  render(<SensorComparisonDialog request={input} onClose={()=>undefined}/>)
+  const summary=await screen.findByRole('region',{name:'광량 비교 결론'})
+  expect(within(summary).getByText('미확정 · 양방향 유효 표본 부족')).toBeTruthy()
+  expect(within(summary).getByText('검출 35 · 유효 1.0 / 30')).toBeTruthy()
+  expect(within(summary).getByText('양수 1 · 유효 1.0 / 30')).toBeTruthy()
+  expect(within(summary).getByText('유효표본 부족')).toBeTruthy()
+  expect(within(summary).getByText('양수·유효표본 부족')).toBeTruthy()
+  expect(within(summary).getByText('판정 보류')).toBeTruthy()
+  expect(within(summary).getByText('다음: 반사 적은 Point에서 기본 검출 확인')).toBeTruthy()
+  expect(screen.queryByRole('button',{name:'권장 표본 적용'})).toBeNull()
+  expect(screen.getByText('상세 결과').closest('details')?.open).toBe(false)
 })
 
 it.each(['failed','running','stopped'] as const)('does not show a passing conclusion for a %s job with a saved report', async status => {

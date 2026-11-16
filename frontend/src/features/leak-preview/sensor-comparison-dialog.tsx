@@ -12,6 +12,7 @@ import { ForwardDetectionDiagnostics } from './forward-detection-diagnostics'
 import { ReceiverDiagnostics } from '@/features/results/receiver-diagnostics'
 import { ForwardPathReplayResult } from './forward-path-replay-result'
 import { sameComparisonInput } from './comparison-input-identity'
+import { comparisonEvidence } from './comparison-evidence'
 
 const flux = (value?: number) => value === undefined ? '—' : value.toExponential(5)
 
@@ -49,12 +50,19 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     ? { ...report, reason: 'stopped' }
     : report
   const advice = displayedReport ? comparisonValidationAdvice(displayedReport, sameSensor) : null
+  const findings = displayedReport ? comparisonEvidence(displayedReport, sameSensor) : []
   return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}><DialogContent ref={content} tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); content.current?.focus() }} className="max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
     <DialogHeader><DialogTitle className="flex items-center gap-1">동일 센서 광량 비교<HelpTooltip label="광량 비교 도움말">같은 유한 면적·수용각·ROI의 광량(lm)을 독립 순방향·역추적으로 적분합니다. Preview의 한 방향 휘도(nit)를 직접 비교하지 않습니다. NVIDIA CUDA GPU로 계산하며 양방향 모두 실제 CUDA 실행 증거가 있어야 비교를 완료합니다. CPU 보조가 있으면 혼합 실행으로 표시합니다. 검증 복사본에서 결정적 에너지 컷오프를 제거하며 원래 설정은 보존합니다. 원래 종료 조건도 같은 검증 표본 예산으로 한 번 별도 계산합니다. 기존 100만 Ray 결과의 재현은 아닙니다. 차이의 근사 95% 구간 전체가 허용 범위 안일 때만 일치입니다. 0 Ray·표본 부족은 미확정이며 실물 정확도를 보장하지 않습니다. 창을 닫아도 실행은 계속되며, 다시 열면 마지막 작업이 표시됩니다.</HelpTooltip></DialogTitle></DialogHeader>
     {error || job?.status === 'failed' ? <div role="status" className="rounded border border-destructive p-3 text-sm font-semibold">{job?.status === 'failed' ? '실행 실패 · 오류 확인 후 재비교' : '판정 불가 · 요청 오류 확인'}</div> : null}
     {report && !active && !pending && !error && job?.status !== 'failed' ? <section aria-label="광량 비교 결론" className="space-y-2 rounded border p-3">
       <div role="status" className="text-sm font-semibold">{comparisonConclusion(displayedReport!, sameSensor)}</div>
       {sameSensor ? <div className="text-xs">순방향 검출 {report.forward_hits ?? '—'} · 역추적 양수 {report.reverse_positive_samples ?? '—'}</div> : null}
+      {findings.length ? <div className="space-y-1 text-xs">
+        <div className="flex items-center gap-1 font-semibold">부족 항목 진단<HelpTooltip label="부족 항목 진단 도움말">양수표본과 유효표본을 함께 확인합니다. 유효표본은 광량 기여의 편중을 반영하며 검출 건수와 다릅니다. 30은 기존 광량 비교의 최소 판정 기준이며 실물 정확도 기준은 아닙니다. 선택점 진단은 모든 회차에서 해당 센서의 완료·집계 일치·같은 기준점 기록이 있어야 종합합니다. 반경 안의 출발은 전체 대표 경로 재현을 뜻하지 않습니다. 누락·이전 조건·미완료 기록으로 차폐나 표본 부족의 물리적 원인을 확정하지 않습니다.</HelpTooltip></div>
+        <table aria-label="부족 항목 진단" className="w-full tabular-nums"><thead><tr><th className="text-left">항목</th><th className="text-left">확인값</th><th className="text-left">판정</th></tr></thead>
+          <tbody>{findings.map(finding => <tr key={finding.item}><th className="text-left font-normal">{finding.item}</th><td>{finding.value}</td><td>{finding.status}</td></tr>)}</tbody>
+        </table>
+      </div> : null}
       {advice ? <div className="flex flex-wrap items-center gap-2">
         <ValidationNextStep advice={advice} label="광량 비교 다음 단계" />
         {advice.samples ? <span className="tabular-nums">{advice.samples.batches}회 · F {advice.samples.forward_samples.toLocaleString()} / R {advice.samples.reverse_samples.toLocaleString()}</span> : null}
