@@ -8,6 +8,7 @@ import { PreviewRunStatus } from './preview-run-status'
 import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { planObserverSampling } from './observer-sampling'
 import { SensorComparisonDialog } from './sensor-comparison-dialog'
+import { installAiReviewExport } from './ai-review-export'
 import { ForwardPathReplayResult } from './forward-path-replay-result'
 import type { ForwardPathReplay } from '@/api/client'
 import { previewSignature, samePreviewSignature } from './leak-preview-signature'
@@ -717,6 +718,32 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const currentPathCheck = pathCheck && pathCheck.candidateId === selectedCandidate?.id &&
     samePreviewSignature(pathCheck.signature, previewInputSignature) && pathCheck.pathIdentity === JSON.stringify(selectedCandidate.representativePath)
     ? pathCheck : null
+
+  // Temporary developer console export; intentionally no end-user control.
+  useEffect(() => installAiReviewExport(() => {
+    const preview = leakPreviewStore.getState()
+    const workspace = workspaceStore.getState()
+    const activeCase = workspace.cadCases.find(item => item.caseId === workspace.activeCadCaseId)
+    let currentRequest: RayTraceRequest | null = null
+    let requestError: string | null = null
+    try {
+      if (!selectedCandidate) throw new Error('선택된 Leak Point 없음')
+      currentRequest = candidateValidationRequest(selectedCandidate)
+    } catch (error) { requestError = String(error) }
+    return {
+      caseId: workspace.activeCadCaseId, scene: scene ?? null,
+      preview: { result: preview.result, runSignature: preview.runSignature, currentSignature: previewInputSignature,
+        inputMatches: Boolean(preview.result && preview.runSignature && samePreviewSignature(preview.runSignature, previewInputSignature)),
+        selectedPoint: selectedCandidate ?? null,
+        settings: { observer: preview.observer, detectionMode: preview.detectionMode, sourceMode: preview.sourceMode,
+          sourceEmitterIds: preview.sourceEmitterIds, sourceFaceIds: preview.sourceFaceIds, sourceComponentIds: preview.sourceComponentIds,
+          quality: preview.quality, directions: preview.directions, blockers: preview.blockers, ignoreAreas: preview.ignoreAreas,
+          points: preview.points, candidates: preview.candidates, selectedObservation: preview.selectedObservation } },
+      currentRequest, requestError, pathValidation: currentPathCheck,
+      forward: { jobId: workspace.activeRayTraceJobId,
+        savedResult: workspace.restoredRayTraceResult ?? activeCase?.latestResult ?? null },
+    }
+  }, apiClient))
 
   if (!scene) {
     return (
