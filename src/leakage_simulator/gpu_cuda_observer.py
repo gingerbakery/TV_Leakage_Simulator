@@ -14,6 +14,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+from .reverse_diagnostics import stage_record
 
 from . import gpu_cuda_intersection as backend
 
@@ -402,6 +403,8 @@ def make_kernel(cuda, intersect, helpers=None):
         ray_key = (key+repeat*2246822519) & 0xffffffff
         throughput, value, best, direct_value = 1., 0., 0., 0.
         previous_delta, previous_pdf = True, 0.
+        source_seen = emission_positive = 0
+        stop_code = 0
         vertex_count = best_count = best_depth = depth_limited = queries = error = 0
         for depth in range(max_depth+1):
             t, face, status = intersect(ray, stack_width, origin[0], origin[1], origin[2],
@@ -448,7 +451,11 @@ def make_kernel(cuda, intersect, helpers=None):
                         cosine = abs(dot(normal, neg(direction)))
                         pdf = dot(delta, delta)/(lights[light, 2]*cosine*lights.shape[0]) if cosine > 1e-14 else 0.
                         weight = balance(previous_pdf, pdf)
-                    contribution = throughput*emission(lights, light, normal, neg(direction))*weight
+                    source_seen = 1
+                    radiance = emission(lights, light, normal, neg(direction))
+                    if radiance > 0:
+                        emission_positive = 1
+                    contribution = throughput*radiance*weight
                     value += contribution
                     if depth == 0:
                         direct_value += contribution
@@ -456,11 +463,14 @@ def make_kernel(cuda, intersect, helpers=None):
                         best, best_count, best_depth = contribution, vertex_count+2, depth
                         save_path(paths, vertices, ray, vertex_count, point, launch)
             if face < 0:
+                stop_code = 1
                 break
             if depth >= max_depth:
+                stop_code = 2
                 depth_limited = int(k_brdf > 0 and materials[face, 0] > 0 and materials[face, 4] > 0)
                 break
             if k_brdf <= 0 or materials[face, 4] == 0:
+                stop_code = 3
                 break
             point = add(origin, direction, t)
             normal = normals[face, 0], normals[face, 1], normals[face, 2]
@@ -503,7 +513,11 @@ def make_kernel(cuda, intersect, helpers=None):
                         if sf < 0 or (abs(st-(distance-epsilon)) <= 1e-9 and materials[sf, 7] == 0):
                             pdf = distance2/(lights[light, 2]*cl*lights.shape[0])
                             q = continuous_pdf(materials, face, normal, wo, wi, quadrature)
-                            contribution = throughput*f*ci*emission(lights, light, light_normal, neg(wi))/pdf*balance(pdf, q)
+                            source_seen = 1
+                            radiance = emission(lights, light, light_normal, neg(wi))
+                            if radiance > 0:
+                                emission_positive = 1
+                            contribution = throughput*f*ci*radiance/pdf*balance(pdf, q)
                             value += contribution
                             if contribution > 0 and (best_count == 0 or (best_depth > 0 and contribution > best)):
                                 for a in range(3):
@@ -556,10 +570,12 @@ def make_kernel(cuda, intersect, helpers=None):
                 previous_delta = False
             throughput *= weight
             if throughput <= 0:
+                stop_code = 4
                 break
             if depth >= 3:
                 survival = min(.95, max(.05, throughput))
                 if random(ray_key, lane_base+10) >= survival:
+                    stop_code = 5
                     break
                 throughput /= survival
             for a in range(3):
@@ -574,6 +590,10 @@ def make_kernel(cuda, intersect, helpers=None):
         output[ray, 5] = queries
         output[ray, 6] = error
         output[ray, 7] = direct_value*camera_weight
+        if output.shape[1] >= 11:
+            output[ray, 8] = source_seen
+            output[ray, 9] = emission_positive
+            output[ray, 10] = 6 if camera_weight == 0 else stop_code
     return kernel
 
 
@@ -615,7 +635,7 @@ def reference_chunk(trace, host, plan, center, view, start, count, *, compiled_h
     depth, c = trace.config.max_depth, trace.config
     vertices = np.zeros((count, depth+3, 3), dtype=np.float64)
     paths = np.zeros_like(vertices)
-    output = np.zeros((count, 8), dtype=np.float64)
+    output = np.zeros((count, 11), dtype=np.float64)
     dummy = np.empty(0)
     sensor_rays = sensor.rays(trace.config.seed, start, count) if sensor is not None else np.empty((0, 7), dtype=np.float64)
     for i in range(count):
@@ -744,7 +764,7 @@ class ResidentObserver:
             for i, row in enumerate(values):
                 length = int(row[3])
                 path = [tuple(p) for p in paths[i, :length]] if length else None
-                completed.append((start+i, float(row[0]), path, int(row[2]), path[-1] if path else None, float(row[1]), float(row[7])))
+                completed.append((start+i, float(row[0]), path, int(row[2]), path[-1] if path else None, float(row[1]), float(row[7]), stage_record(row[8], row[9], row[10])))
         return completed, SimpleNamespace(cpu_fallback=True, reason=self.failure_reason,
             logical_intersection_rows=int(values[:, 5].sum()), total_sec=time.perf_counter()-began), int(values[:, 4].sum())
 
@@ -756,7 +776,7 @@ class ResidentObserver:
             capacity = self.batch_size(8192)
             self.workspace = (capacity, self.cuda.device_array((capacity, depth+3, 3), dtype=np.float64),
                 self.cuda.device_array((capacity, depth+3, 3), dtype=np.float64),
-                self.cuda.device_array((capacity, 8), dtype=np.float64),
+                self.cuda.device_array((capacity, 11), dtype=np.float64),
                 self.cuda.device_array(capacity*self.scene.stack_width, dtype=np.float64),
                 self.cuda.device_array(capacity*self.scene.stack_width, dtype=np.int64))
         _, vertices, paths, output, entries, nodes = self.workspace
@@ -782,7 +802,10 @@ class ResidentObserver:
             or np.any(values[:, 2:7] != np.floor(values[:, 2:7])) or np.any(values[:, 2] < 0)
             or np.any(values[:, 2] > depth) or np.any(values[:, 3] < 0) or np.any(values[:, 3] > depth+3)
             or np.any(values[:, 4] < 0) or np.any(values[:, 4] > 1) or np.any(values[:, 5] < 0) or np.any(values[:,7] < 0)
-            or np.any(values[:,7] > values[:,0]+1e-9*np.maximum(1.,values[:,0]))):
+            or np.any(values[:,7] > values[:,0]+1e-9*np.maximum(1.,values[:,0]))
+            or np.any(values[:,8:11] != np.floor(values[:,8:11]))
+            or np.any(values[:,8:10] < 0) or np.any(values[:,8:10] > 1)
+            or np.any(values[:,10] < 0) or np.any(values[:,10] > 6)):
             raise RuntimeError("observer_resident_invalid_or_overflow_result")
         # Compact positive representative paths on the GPU, not the full
         # max-depth geometry tape for all zero-hit and shallow samples.
@@ -813,7 +836,7 @@ class ResidentObserver:
             n = min(count, 32)
             validation_started = time.perf_counter()
             reference, reference_paths = reference_chunk(self.trace, self.host, plan, center, view, start, n, sensor=self.sensor)
-            if not np.array_equal(values[:n, 2:7], reference[:, 2:7]) or not np.allclose(values[:n, [0,1,7]], reference[:, [0,1,7]], rtol=1e-9, atol=1e-10):
+            if not np.array_equal(values[:n, 2:7], reference[:, 2:7]) or not np.array_equal(values[:n, 8:11], reference[:, 8:11]) or not np.allclose(values[:n, [0,1,7]], reference[:, [0,1,7]], rtol=1e-9, atol=1e-10):
                 raise RuntimeError("observer_resident_first_chunk_parity_failed")
             for i in range(n):
                 length = int(values[i, 3])
@@ -827,7 +850,7 @@ class ResidentObserver:
             completed = []
             for i, row in enumerate(values):
                 path = paths_by_ray.get(i)
-                completed.append((start+i, float(row[0]), path, int(row[2]), path[-1] if path else None, float(row[1]), float(row[7])))
+                completed.append((start+i, float(row[0]), path, int(row[2]), path[-1] if path else None, float(row[1]), float(row[7]), stage_record(row[8], row[9], row[10])))
         execution = SimpleNamespace(logical_intersection_rows=int(values[:, 5].sum()),
             active_ray_count_by_depth=[count], total_sec=time.perf_counter()-began,
             kernel_sec=kernel_sec, jit_compile_sec=0., numba_version=self.capability.numba_version,

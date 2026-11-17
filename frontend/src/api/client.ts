@@ -29,7 +29,20 @@ export interface SensorComparisonBatch {
   forward_sec?: number; reverse_sec?: number;
   forward_execution: Record<string, unknown>; reverse_execution: Record<string, unknown>;
 }
+export interface ComparisonPathEvidence {
+  index: number
+  detected_paths: { recorded_count: number; actual_hit_count: number; complete: boolean; truncated: boolean;
+    samples: Array<{ ray_id: string; reflection_count?: number; selected_point_min_segment_distance_mm: number | null; selected_point_min_reflection_distance_mm: number | null; selected_point_radius_mm: number | null }> }
+  policy_pair?: { checked_count: number; records: Array<{ ray_id: string; state: string; reason: string }> }
+}
+export interface ReverseStageEvidence {
+  index: number
+  stages: { available: boolean; sample_count: number; missing_records?: number; counts?: Record<string, number> }
+}
 export interface SensorComparisonReport {
+  complete?: boolean
+  path_evidence?: ComparisonPathEvidence[]
+  reverse_diagnostics?: ReverseStageEvidence[]
   physical_input_sha256?: string
   forward_diagnostics?: Array<{ index: number; report: unknown }>
   reference_replay?: ForwardPathReplay
@@ -47,6 +60,8 @@ export interface ForwardPathReplay {
   path_reproduced?: boolean; matched_surface_count?: number
   first_difference?: {segment_index:number;expected_point:number[];actual_point:number[]|null}|null
   actual_events?: unknown[]; diagnostics?: unknown
+  last_leg?: { state: string; reason: string; receiver_distance_mm?: number | null; incident_angle_deg?: number;
+    obstruction_component_name?: string | null; obstruction_point?: number[] | null; receiver_plane_point?: number[] | null }
   reference_attenuation?: unknown
 }
 export interface SensorComparisonJob {

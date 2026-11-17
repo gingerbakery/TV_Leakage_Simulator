@@ -37,7 +37,7 @@ it('retains raw bidirectional batches, conditions, selected path and termination
   expect(parsed.identity.preview_input_matches_current).toBe(false)
   expect(parsed.scene.mesh).toEqual(snapshot.scene!.mesh)
   expect(parsed.standalone_forward.job.result.metrics.diagnostic).toBe('raw')
-  expect(payload.evidence_gaps.join(' ')).toContain('전체 검출 Ray 궤적을 저장하지 않음')
+  expect(payload.evidence_gaps.join(' ')).toContain('전체 궤적')
 })
 
 it.each(['receiver', 'scene', 'missing_snapshot'] as const)('does not certify comparison identity for %s', mode => {

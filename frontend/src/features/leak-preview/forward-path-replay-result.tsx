@@ -10,6 +10,7 @@ const reasons:Record<string,string>={receiver_reached:'센서 도달',energy_cut
   degenerate_segment:'경로 구간 길이 부족',replay_execution_failed:'재생 실행 오류',
   ambiguous_source:'중첩 광원 식별 불가',
   source_position_or_emission_mismatch:'광원 위치·방출 불일치'}
+const lastLegReasons: Record<string,string> = { accepted:'센서 조건 통과', parallel:'센서 평면과 평행', behind_origin:'센서 교점이 뒤쪽', outside_area:'센서 면적 밖', occluded:'센서 전 형상 충돌', back_face:'뒷면 입사', outside_acceptance:'수용각 제외', outside_roi:'ROI 제외', other_receiver_first:'다른 센서 선검출' }
 export function ForwardPathReplayResult({report, defaultOpen = false}:{report:ForwardPathReplay|undefined; defaultOpen?: boolean}) {
   if (!report) return null
   const diagnostic = readReceiverDiagnostics(report.diagnostics)
@@ -22,6 +23,10 @@ export function ForwardPathReplayResult({report, defaultOpen = false}:{report:Fo
     <summary className="cursor-pointer">대표 경로 순방향 재생 · {report.path_reproduced?'동일 경로 도달':reasons[report.reason]??report.reason}</summary>
     <div className="mt-2 flex items-center gap-1">CPU · {report.state==='unavailable'?'재생 미실행':report.state==='failed'?'재생 실패':'진단용 1 Ray'} · 본 광량 미포함<HelpTooltip label="순방향 경로 재생 도움말">저장된 광원 위치·첫 방향만 고정하고 실제 순방향 추적기로 계산합니다. 원래 발사 Ray 수에 따른 패킷 광량·컷오프를 유지합니다. 확률적 반사는 같은 방향을 강제하지 않으므로 분기 변경이 곧 오류는 아닙니다. CPU 재생이며 GPU 일치나 실물 정확도를 증명하지 않습니다. 이 Ray의 검출·광량은 본 해석과 비교 추정에 합산하지 않습니다. 구간 번호는 광원 출발을 1로 표시합니다.</HelpTooltip></div>
     <div>{report.state === 'receiver_reached' ? '센서 도달' : report.state === 'not_reached' ? '센서 미도달' : '센서 도달 미판정'} · 일치 반사점 {report.matched_surface_count??'—'}개</div>
+    {report.last_leg ? <div role="status" className="flex flex-wrap items-center gap-1">마지막 구간 · {report.last_leg.state === 'checked' ? lastLegReasons[report.last_leg.reason] ?? report.last_leg.reason : report.last_leg.state === 'failed' ? '검사 오류' : '검사 근거 없음'}
+      {report.last_leg.state === 'checked' && report.last_leg.receiver_distance_mm != null ? ` · 거리 ${report.last_leg.receiver_distance_mm.toFixed(3)} mm` : ''}
+      <HelpTooltip label="마지막 구간 검사 도움말">대표 경로의 마지막 진행 방향으로 선택점에서 Receiver까지 교점·형상 차폐·방향·수용각·ROI를 CPU에서 검사합니다. 실제 발사 표본이나 상류 경로 재현이 아니며 본 광량에 합산하지 않습니다. 통과해도 광원에서 선택점까지 도달할 확률이나 실물 검출을 보장하지 않습니다. 상세 교점·차폐 부품은 기존 재생 JSON에 포함됩니다.</HelpTooltip>
+    </div> : null}
     {terminationLabel ? <div role="status">재생 종료 사유 · {terminationLabel}</div> : null}
     {report.state !== 'unavailable' ? <ReferenceAttenuationResult value={report.reference_attenuation} /> : null}
     {report.state==='failed'?<div role="alert">{report.error??'재생 실행 실패 · 경로 재현 판정 불가'}</div>:null}

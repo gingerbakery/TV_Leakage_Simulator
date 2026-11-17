@@ -25,3 +25,12 @@ it('shows actual roulette termination alongside a stochastic branch mismatch',()
   expect(screen.getByText(/대표 경로 순방향 재생 · 확률적 반사 분기 변경/)).toBeTruthy()
   expect(screen.getByText('재생 종료 사유 · 확률적 종료')).toBeTruthy()
 })
+
+it('includes last-leg classification inside existing replay without another action button',()=>{
+  render(<ForwardPathReplayResult defaultOpen report={{state:'not_reached',reason:'different_sampled_branch',included_in_flux:false,execution_backend:'cpu',
+    last_leg:{state:'checked',reason:'outside_area',receiver_distance_mm:2.3456}}}/>)
+  expect(screen.getByText(/마지막 구간 · 센서 면적 밖/)).toBeTruthy()
+  expect(screen.getByText(/거리 2.346 mm/)).toBeTruthy()
+  expect(screen.getByRole('button',{name:'재생 JSON 저장'})).toBeTruthy()
+  expect(screen.queryByRole('button',{name:'마지막 구간 검사'})).toBeNull()
+})

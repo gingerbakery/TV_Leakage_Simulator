@@ -24,6 +24,15 @@ export const aiReviewGuide = {
     { path: 'payload.same_sensor_comparison.report.original_termination_probe', meaning: '원래 종료 조건으로 별도 수행한 진단. 비교 복사본과 표본 예산·설정·실행 증거를 확인하고 확률 변동을 고려한다.' },
     { path: 'payload.standalone_forward', meaning: '일반 순방향의 저장 결과 또는 작업 조회. 당시 요청 동일성이 unknown이므로 현재 비교와 같은 실행이라고 가정하지 않는다.' },
   ],
+  linked_evidence_rules: [
+    'path_evidence는 회차당 최대 16개 실제 검출 경로를 기록한다. recorded_count/actual_hit_count/truncated/complete를 확인하고 미기록 경로의 부재를 단정하지 말 것.',
+    'detected_paths.samples의 ray_id는 회차 index와 함께 식별한다. points·surface_faces·reflection_count·flux_lumen·선택점 최근접 구간/반사점 거리를 구분한다. 반경 근접은 전체 대표 경로 재현이 아니다.',
+    'policy_pair는 회차당 최대 2개·전체 최대 16개의 기록 광선을 CPU로 재검사한다. comparison_reproduced 및 state=verified일 때만 reason에 따라 그 광선의 원래 종료 조건 영향을 판정한다. 미재현·failed·incomplete는 인과 미확정이다. 이 진단 광량은 비교 추정에 합산하지 않는다.',
+    'reference_replay.last_leg는 대표 방향의 마지막 구간만 검사한다. accepted는 상류 도달 확률의 증명이 아니다. failed/unavailable을 차폐나 미검출로 해석하지 않는다.',
+    'reverse_diagnostics.stages는 완료 표본의 상호 배타적 분류다. available·missing_records·표본 수·positive와 본 결과의 일치를 확인한다. source_not_encountered는 직접 또는 가시 광원 연결 미확인이며 물리적으로 도달 불가능하다는 뜻이 아니다.',
+    '단계 counts의 source_emission_zero는 확인된 광원 연결에서 발광 기여 0, contribution_zero는 발광 양수지만 최종 기여 0, camera_roi는 센서 ROI 제외다. termination_counts는 별도 축이며 counts와 합산하지 않는다.',
+    '같은 seed만으로 동일 광선이라고 하지 않는다. primary_index/reflection_seed/출발점/첫 방향과 비교 경로 재현 결과를 함께 확인한다. 원래 조건 재검사의 패킷은 비교 표본 예산을 기준으로 하며 과거 다른 Ray 수 실행의 정확한 재현이 아니다.',
+  ],
   decision_rules: [
     { question: '정말 미검출인가?', rule: '완료되고 집계가 일치하는 해당 센서의 실제 hits를 사용한다. hits>0이면 검출은 존재한다. hits=0은 이 표본에서의 0건이며 물리적으로 빛이 없다는 증거는 아니다. 누락·null은 0이 아니다.' },
     { question: '검출은 있는데 왜 결론이 미확정인가?', rule: 'forward_hits, reverse_positive_samples, forward_effective_samples, reverse_effective_samples를 함께 인용한다. 건수가 많아도 극소수 기여에 집중되면 유효표본이 부족하다. 30은 기존 비교의 최소 통계 게이트이며 정확도 보장이 아니다. 큰 batch 간 편차도 확인한다.' },

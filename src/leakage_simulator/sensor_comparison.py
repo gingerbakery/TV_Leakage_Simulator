@@ -194,7 +194,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         physical_input_sha256=hashlib.sha256(json.dumps(snapshot, sort_keys=True, allow_nan=False).encode()).hexdigest(),
         geometry_sha256=geometry_digest.hexdigest(), execution_backend=backend, preflight=preflight_record, requested_project_backend=trace.config.compute_backend, gpu_execution_proven=False,
         witness=witness, options=options.__dict__, batches=[], complete=False, verdict="inconclusive",
-        forward_diagnostics=[],
+        forward_diagnostics=[], path_evidence=[], reverse_diagnostics=[],
         source_model_calibrated=False, comparison_unit="lumen", original_config_preserved=True,
         validation_overrides=dict(compute_backend=backend, min_energy=0., termination_mode="russian_roulette",
             primary_sampling_strategy="source", bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
@@ -213,7 +213,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         return report
     local_config = replace(trace.config, compute_backend=backend, intersection_backend="bvh", min_energy=0.,
         termination_mode="russian_roulette", primary_sampling_strategy="source", bounce_sampling_strategy="source",
-        auto_convergence=False, store_ray_paths=False)
+        auto_convergence=False, store_ray_paths=True, max_stored_paths=16)
     collector = SimpleNamespace(minimum=receiver.center, maximum=receiver.center, direction="neg_z", regions=[])
     for batch in range(options.batches):
         if should_stop and should_stop():
@@ -233,12 +233,23 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         forward_sec = time.perf_counter()-phase_started
         forward_performance = result.metrics.get("_performance_summary", {})
         report['forward_diagnostics'].append(dict(index=batch+1,report=result.metrics.get('_receiver_diagnostics')))
+        from .comparison_path_evidence import detected_paths, pair_detected_paths
+        capture = detected_paths(result, receiver.receiver_id)
+        report['path_evidence'].append(dict(index=batch+1, detected_paths=capture))
         if (should_stop and should_stop()) or forward_performance.get("stopped_early"):
             report.update(reason="stopped", runtime_sec=time.perf_counter()-started)
             return report
         if backend == "gpu_cuda" and not gpu_proven(forward_performance):
             report.update(reason="forward_gpu_execution_not_proven", runtime_sec=time.perf_counter()-started,
                 failed_execution=forward_performance)
+            return report
+        pair_budget = max(0, min(2, 16-sum(row.get('policy_pair', {}).get('checked_count', 0) for row in report['path_evidence'])))
+        if pair_budget and capture['samples']:
+            if progress:
+                progress(batch, "path_evidence", 0, len(capture['samples']))
+            report['path_evidence'][-1]['policy_pair'] = pair_detected_paths(trace, forward_input, capture, pair_budget, should_stop)
+        if should_stop and should_stop():
+            report.update(reason='stopped', runtime_sec=time.perf_counter()-started)
             return report
         reverse_input = replace(trace, config=replace(local_config, seed=rseed), observer_probe=dict(measurement="radiance",
             resolution=8, samples_per_cell=options.reverse_samples, search_mode="preview", min_luminance_nit=0., coverage="local",
@@ -253,6 +264,8 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
             report.update(reason="reverse_gpu_execution_not_proven", runtime_sec=time.perf_counter()-started,
                 failed_execution=reverse["performance"])
             return report
+        report['reverse_diagnostics'].append(dict(index=batch+1, stages=reverse.get('stage_diagnostics', {
+            'available': False, 'reason': 'stage_counters_unavailable_for_execution', 'sample_count': reverse['sample_count']})))
         grid = result.receiver_grids[0]
         report["batches"].append(dict(index=batch+1, forward_seed=fseed, reverse_seed=rseed,
             forward_flux_lumen=math.fsum(v for row in grid.flux_lumen for v in row),

@@ -1,5 +1,6 @@
 import type { SensorComparisonOptions, SensorComparisonReport } from '@/api/client'
 import { selectedPointEvidence } from './comparison-evidence'
+import { linkedEvidenceAdvice } from './linked-path-evidence'
 
 export interface ValidationAdvice {
   title: string
@@ -67,6 +68,8 @@ export function comparisonValidationAdvice(report: SensorComparisonReport, sameS
   const rMissing=!finite(report.reverse_effective_samples)||!finite(report.reverse_positive_samples)
   if (fMissing||rMissing) return {title:'표본 진단 확인 후 재비교',steps:[
     '방향별 유효표본 또는 검출 수가 없어 증가시킬 쪽을 확정할 수 없습니다. 현재 버전으로 다시 비교하고 검증 JSON에서 누락된 진단을 확인하세요.']}
+  const linkedAdvice = linkedEvidenceAdvice(report)
+  if (linkedAdvice) return linkedAdvice
   const point = selectedPointEvidence(report)
   if (point.complete && point.counts.accepted === 0) {
     const counts = point.counts

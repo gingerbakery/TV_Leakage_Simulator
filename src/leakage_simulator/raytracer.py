@@ -2157,6 +2157,7 @@ def run_direct_ray_trace(
     wavefront_reducer_commit: str = "auto",
     wavefront_residency: str = "auto",
     diagnostic_primary_ray: Optional[tuple] = None,
+    diagnostic_primary_index: int = 0,
     gpu_accumulator: str = "auto",
     gpu_workspace: str = "auto",
     pause_callback: Optional[Callable[[RayTraceResult], bool]] = None,
@@ -2704,6 +2705,8 @@ def run_direct_ray_trace(
             return True
         return not pause_with_snapshot()
 
+    if type(diagnostic_primary_index) is not int or diagnostic_primary_index < 0 or (diagnostic_primary_index and diagnostic_primary_ray is None):
+        raise ValueError("Diagnostic primary index requires an isolated nonnegative ray index")
     if diagnostic_primary_ray is not None:
         enabled = [e for e in trace_input.emitters if e.enabled]
         if (len(enabled) != 1 or enabled[0].ray_count != 1 or trace_input.config.compute_backend != "cpu"
@@ -2723,6 +2726,8 @@ def run_direct_ray_trace(
             else rng.randint(0, 2**31 - 1)
         )
         emitter_rng = random.Random(emitter_seed ^ 0x5DEECE66D)
+        if intersection_stats.receiver_diagnostics is not None:
+            intersection_stats.receiver_diagnostics.emitter_id = emitter.emitter_id
         face_batch_geometry = (
             build_face_emitter_batch_geometry(trace_input.mesh, emitter)
             if intersection_dispatch == "batch" and emitter.emitter_type == "face"
@@ -2978,7 +2983,7 @@ def run_direct_ray_trace(
                             ray_power_batch[start:end],
                             source_face_batch[start:end],
                             emitter_seed,
-                            emitter_ray_offset + start,
+                            emitter_ray_offset + start + diagnostic_primary_index,
                             receiver_frames,
                             receiver_grids,
                             emitter_config,
@@ -8351,6 +8356,8 @@ def _trace_multi_bounce_wavefront_soa_batch(
     tape_seal_started = time.perf_counter()
     tape = tape_builder.seal()
     tape_seal_elapsed = time.perf_counter() - tape_seal_started
+    if intersection_stats.receiver_diagnostics is not None:
+        intersection_stats.receiver_diagnostics.capture_tape(tape, receivers, emitter_seed, primary_start_index, planner_stats.rng_contract)
     counts = _commit_wavefront_event_tape(
         tape, mesh, config, receivers, receiver_grids, optical_summary,
         reflection_summary, contribution_summary, face_contribution_cache,

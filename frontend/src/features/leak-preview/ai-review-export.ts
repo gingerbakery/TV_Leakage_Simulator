@@ -104,7 +104,7 @@ export function buildAiReviewPayload(snapshot: ReviewSnapshot, comparison: Senso
   if (snapshot.requestError) gaps.push(`현재 검증 요청 구성 실패: ${snapshot.requestError}`)
   if (!includeGeometry || !snapshot.scene) gaps.push('CAD 표시 메쉬 미포함: 독립적인 형상 차폐 검토 불가')
   gaps.push('CAD 표시 메쉬는 서버 정밀 교차 형상의 동일성·완전성을 보장하지 않음; 재실행 가능한 프로젝트 파일이 아님')
-  gaps.push('광량 비교는 전체 검출 Ray 궤적을 저장하지 않음; 대표 경로·bounded 진단 표본만 존재')
+  gaps.push('광량 비교의 검출 경로 기록은 회차당 최대 16개이며 이전 결과에는 없음; 전체 궤적 또는 미기록 경로의 부재를 가정하지 말 것')
   gaps.push('일반 순방향 결과의 당시 요청 스냅샷은 미확보: 현재 요청으로 대신하지 말 것')
   return {
     contract: 'leak_ai_review_temporary_v1',

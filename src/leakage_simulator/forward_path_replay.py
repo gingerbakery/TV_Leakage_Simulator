@@ -101,6 +101,38 @@ def _reference_attenuation(trace, receiver, packet, resolved):
     return audit
 
 
+def inspect_receiver_last_leg(trace, receiver):
+    """Conditional local geometry test; never launches an estimator sample."""
+    from .raytracer import _build_receiver_frame
+    from .receiver_diagnostics import ReceiverDiagnostics
+    path = receiver.observer_reference_path
+    report = dict(contract='reference_last_leg_v1', execution_backend='cpu', included_in_flux=False,
+                  scope='reference_direction_only_not_upstream_probability', state='unavailable')
+    if not path or len(path) < 2 or math.dist(path[-2], path[-1]) <= trace.config.epsilon_mm:
+        return dict(report, reason='missing_or_degenerate_reference_segment')
+    direction = vec_norm(vec_sub(path[-1], path[-2]))
+    origin = vec_add(path[-2], vec_mul(direction, trace.config.epsilon_mm))
+    frame = _build_receiver_frame(receiver)
+    frame.roi_boxes = tuple((trace.analysis_roi or {}).get('detection_boxes', []))
+    denom = vec_dot(direction, frame.normal)
+    distance = vec_dot(vec_sub(receiver.center, origin), frame.normal)/denom if abs(denom) >= 1e-12 else None
+    hit = trace.mesh.intersect_ray(origin, direction, min_t=trace.config.epsilon_mm,
+                                   max_t=distance if distance and distance > trace.config.epsilon_mm else None, backend='bvh')
+    diagnostic = ReceiverDiagnostics([frame])
+    diagnostic.observe([origin], [direction], [1.], [frame], trace.config,
+        [hit.t if hit else math.inf], [-1], [math.inf], surface_faces=[hit.face_index if hit else -1], mesh=trace.mesh)
+    row = diagnostic.rows[receiver.receiver_id]
+    reason = next(key for key, count in row['counts'].items() if count)
+    metadata = trace.mesh.metadata(hit.face_index) if hit else {}
+    return dict(report, state='checked', reason=reason, selected_point=list(path[-2]), origin=list(origin),
+        direction=list(direction), origin_offset_mm=trace.config.epsilon_mm, receiver_distance_mm=distance,
+        receiver_plane_point=list(vec_add(origin, vec_mul(direction, distance))) if distance is not None else None,
+        incident_angle_deg=math.degrees(math.acos(max(-1., min(1., -denom)))),
+        obstruction_point=list(hit.point) if hit and reason == 'occluded' else None,
+        obstruction_face_index=hit.face_index if hit and reason == 'occluded' else None,
+        obstruction_component_name=(metadata.get('step_component_name') or metadata.get('object_name')) if hit and reason == 'occluded' else None)
+
+
 def replay_forward_path(trace, receiver, resolved=None):
     from .raytracer import run_direct_ray_trace, _build_receiver_frame, _find_first_receiver_hit
     from .types import ReceiverGrid
@@ -108,6 +140,10 @@ def replay_forward_path(trace, receiver, resolved=None):
     report = dict(contract='isolated_forward_path_replay_v1', receiver_id=receiver.receiver_id,
                   execution_backend='cpu', included_in_flux=False, injected_hits=0,
                   launch_fixed=True, reflection_directions_fixed=False)
+    try:
+        report['last_leg'] = inspect_receiver_last_leg(trace, receiver)
+    except Exception as exc:
+        report['last_leg'] = dict(state='failed', reason='last_leg_execution_failed', error=str(exc), included_in_flux=False)
     if not path or len(path) < 2:
         return dict(report,state='unavailable',reason='missing_representative_path')
     if any(math.dist(a,b)<=trace.config.epsilon_mm for a,b in zip(path[1:],path[2:])):

@@ -1,4 +1,5 @@
 import type { SensorComparisonReport } from '@/api/client'
+import { linkedPathEvidence } from './linked-path-evidence'
 import { readReceiverDiagnostics, readReferenceSampling, type DiagnosticCategory } from '@/features/results/receiver-diagnostics-model'
 
 export interface EvidenceFinding {
@@ -61,6 +62,12 @@ export function comparisonEvidence(report: SensorComparisonReport, sameInput: bo
   })
   const findings = [sampleFinding('순방향','검출',report.forward_hits,report.forward_effective_samples),
     sampleFinding('역추적','양수',report.reverse_positive_samples,report.reverse_effective_samples)]
+  const linked = linkedPathEvidence(report)
+  if (report.path_evidence) findings.push({item:'실제 검출 경로', value:linked.valid ? `기록 ${linked.recorded}/${linked.hits} · 근접 구간 ${linked.pointChecked === linked.recorded ? linked.nearSegment : '미확인'} · 반사점 ${linked.near}` : '기록 불완전',
+    status:linked.valid ? linked.recorded < linked.hits ? '일부 경로 기록' : '검출 경로 기록 완료' : '판정 보류'})
+  if (linked.valid && linked.checked) findings.push({item:'동일 광선 종료 비교',value:`재검사 ${linked.checked} · 원래 조건 종료 ${linked.stopped} · 검출 유지 ${linked.retained}`,
+    status:linked.stopped ? '해당 광선 영향 확인' : linked.retained === linked.checked ? '검출 유지 확인' : '일부 재현 미확인'})
+  if (report.reverse_diagnostics) findings.push({item:'역추적 단계',value:linked.reverseValid ? `연결 미확인 ${linked.reverse.source_not_encountered} · 발광 0 ${linked.reverse.source_emission_zero} · 기여 0 ${linked.reverse.contribution_zero} · ROI ${linked.reverse.camera_roi}` : '기록 불완전',status:linked.reverseValid ? '단계 집계 완료' : '판정 보류'})
   const point = selectedPointEvidence(report)
   if (!point.complete) {
     findings.push({item:'선택점 경로',value:`주변 기록 ${point.checked}/${point.expected}회`,status:'판정 보류'})

@@ -352,6 +352,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     committed = committed_depth_limited = pause_count = 0
     sensor_sum = sensor_square_sum = 0.
     sensor_positive = 0
+    from .reverse_diagnostics import empty_stages, record_stages, stage_record
+    sensor_stages = empty_stages()
     positive_before_threshold = 0
     peak_before_threshold = 0.
     stopped = display_truncated = False
@@ -436,9 +438,11 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             else:
                 launch, direction, camera_weight = sensor.launch(index, rng)
                 if camera_weight == 0:
-                    return index, 0., None, 0, launch, 0.
+                    return index, 0., None, 0, launch, 0., 0., stage_record(False, False, 6)
             origin = launch
             throughput, value, direct_value = 1., 0., 0.
+            source_seen = emission_positive = False
+            stop_code = 0
             previous_delta = True
             previous_pdf = 0.
             vertices = []
@@ -446,8 +450,10 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             best = 0.
             max_depth = 0
 
-            def record(contribution, point, depth):
-                nonlocal value, direct_value, representative, best, max_depth
+            def record(contribution, point, depth, radiance):
+                nonlocal value, direct_value, representative, best, max_depth, source_seen, emission_positive
+                source_seen = True
+                emission_positive = emission_positive or radiance > 0
                 if not math.isfinite(contribution) or contribution < 0:
                     raise ValueError("Observer radiance has non-finite/negative contribution")
                 value += contribution
@@ -486,15 +492,17 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         key = (id(source), round(t, 10))
                         if key not in virtual_seen:
                             virtual_seen.add(key)
-                            record(throughput*emission_radiance(source, point, normal, vec_mul(direction, -1))
-                                *source_hit_weight(source, point, normal), point, depth)
+                            radiance = emission_radiance(source, point, normal, vec_mul(direction, -1))
+                            record(throughput*radiance*source_hit_weight(source, point, normal), point, depth, radiance)
                 if hit is None:
+                    stop_code = 1
                     break
                 for source in faces.get(hit.face_index, []):
                     source_normal = mesh.normal(hit.face_index)
-                    record(throughput*emission_radiance(source, hit.point, source_normal, vec_mul(direction, -1))
-                        *source_hit_weight(source, hit.point, source_normal), hit.point, depth)
+                    radiance = emission_radiance(source, hit.point, source_normal, vec_mul(direction, -1))
+                    record(throughput*radiance*source_hit_weight(source, hit.point, source_normal), hit.point, depth, radiance)
                 if depth >= config.max_depth:
+                    stop_code = 2
                     profile = resolved[hit.face_index].profile
                     if config.k_brdf > 0 and (profile.bsdf_asset_id or
                         (profile.reflectance > 0 and profile.scatter_model != "none")):
@@ -502,6 +510,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                     break
                 profile = resolved[hit.face_index].profile
                 if profile.scatter_model == "none" and not profile.bsdf_asset_id or config.k_brdf <= 0:
+                    stop_code = 3
                     break
                 normal = hit.normal if vec_dot(direction, hit.normal) < 0 else vec_mul(hit.normal, -1)
                 wo = vec_mul(direction, -1)
@@ -527,24 +536,26 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                                 q = continuation_pdf(profile, normal, wo, wi, config.angle_dependent_reflectance)
                                 contribution = throughput*f*max(0., vec_dot(normal, wi))*le/pdf*balance(pdf, q)
                                 vertices.append(hit.point)
-                                record(contribution, point, depth+1)
+                                record(contribution, point, depth+1, le)
                                 vertices.pop()
                 # Proposal has both continuous and delta support. Measured
                 # tables are evaluated light->camera, never transposed.
                 new_direction, weight, previous_delta, previous_pdf = continuation(rng, profile, normal, wo, config.angle_dependent_reflectance)
                 throughput *= weight
                 if throughput <= 0:
+                    stop_code = 4
                     break
                 if depth >= 3:
                     survival = min(.95, max(.05, throughput))
                     if rng.random() >= survival:
+                        stop_code = 5
                         break
                     throughput /= survival
                 vertices.append(hit.point)
                 # No deterministic energy cutoff. Roulette survivors retain
                 # the reciprocal probability weight; finite depth is explicit.
                 origin, direction = vec_add(hit.point, vec_mul(new_direction, epsilon)), new_direction
-            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight
+            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight, stage_record(source_seen, emission_positive, stop_code)
 
         pending = None
 
@@ -629,6 +640,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                     [probe(i) for i in range(start, min(plan["grid_samples"], start+effective_batch_size))],
                     stats, dispatch, should_stop, pause_current if pause_callback is not None else None)
             if sensor is not None:
+                record_stages(sensor_stages, completed)
                 values = [item[1] for item in completed if item is not None]
                 sensor_sum += math.fsum(values)
                 sensor_square_sum += math.fsum(value*value for value in values)
@@ -702,6 +714,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     if sensor is not None:
         return dict(contract="finite_receiver_reverse_flux_v1", flux_lumen=sensor_sum/committed if committed else None,
             sample_second_moment=sensor_square_sum/committed if committed else None, sample_count=committed,
+            stage_diagnostics=sensor_stages,
             positive_samples=sensor_positive, planned_count=planned, complete=not stopped and committed == planned,
             runtime_sec=time.perf_counter()-started, compute_backend=requested, performance=result([], [], stopped)["performance"])
     return result(cells, views, stopped)

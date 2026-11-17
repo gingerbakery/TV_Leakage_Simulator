@@ -18,11 +18,15 @@ CATEGORIES = (
 
 class ReceiverDiagnostics:
     def __init__(self, frames):
+        self.emitter_id = None
+        self.path_limit = 16
         self.escaped_segments = 0
         self.escaped_segment_flux_lumen = 0.0
         self.rows = {f.receiver.receiver_id: dict(
             receiver_id=f.receiver.receiver_id, segments_tested=0,
             receiver_settings=f.receiver.to_dict(),
+            detected_paths=dict(contract="bounded_detected_paths_v1", limit=self.path_limit, samples=[],
+                scope="actual_detected_rays_not_reference_replay", truncated=False),
             counts={key: 0 for key in CATEGORIES},
             segment_flux_lumen={key: 0.0 for key in CATEGORIES},
         ) for f in frames}
@@ -33,6 +37,46 @@ class ReceiverDiagnostics:
                     contract="reference_origin_neighborhood_v1", point=list(path[-2]), radius_mm=1.0,
                     segments_started=0, min_origin_distance_mm=None,
                     counts={key: 0 for key in CATEGORIES}, examples={})
+
+    def capture_tape(self, tape, frames, emitter_seed, primary_start_index, rng_contract):
+        """Read actual detected paths from an already executed bounded event tape."""
+        from .wavefront_event_tape import PATH_PAYLOAD_FULL, TERMINAL_RECEIVER
+        if tape.path_payload != PATH_PAYLOAD_FULL:
+            return
+        for slot in np.flatnonzero(tape.terminal_kind_codes == TERMINAL_RECEIVER):
+            frame = frames[int(tape.terminal_receiver_indices[slot])]
+            row = self.rows[frame.receiver.receiver_id]
+            capture = row['detected_paths']
+            if len(capture['samples']) >= self.path_limit:
+                continue
+            start, end = tape.primary_event_bounds(int(slot))
+            points = [tape.initial_origins[slot].tolist(), *tape.points[start:end].tolist(), tape.terminal_points[slot].tolist()]
+            reference = row.get('reference_sampling')
+            nearest = None
+            nearest_vertex = None
+            if reference:
+                point = np.asarray(reference['point'])
+                vertices = np.asarray(points)
+                delta = vertices[1:] - vertices[:-1]
+                denom = np.sum(delta*delta, axis=1)
+                fraction = np.clip(np.divide(np.sum((point-vertices[:-1])*delta, axis=1), denom,
+                    out=np.zeros(len(delta)), where=denom > 0), 0., 1.)
+                nearest = float(np.min(np.linalg.norm(vertices[:-1]+fraction[:, None]*delta-point, axis=1)))
+                nearest_vertex = float(np.min(np.linalg.norm(vertices[1:-1]-point, axis=1))) if end > start else None
+            capture['samples'].append(dict(
+                ray_id=f'{self.emitter_id}:{emitter_seed}:{primary_start_index+int(slot)}',
+                emitter_id=self.emitter_id, emitter_seed=int(emitter_seed), primary_index=primary_start_index+int(slot),
+                reflection_seed=str(int(tape.reflection_seeds[slot])), rng_contract=rng_contract,
+                launch_origin=points[0], launch_direction=tape.initial_directions[slot].tolist(),
+                source_face=int(tape.initial_source_faces[slot]), initial_packet_lumen=float(tape.initial_power_lumen[slot]),
+                points=points, reflection_count=end-start, flux_lumen=float(tape.terminal_received_power_lumen[slot]),
+                surface_faces=tape.face_indices[start:end].tolist(),
+                incoming_packet_lumen=tape.incoming_power_lumen[start:end].tolist(),
+                outgoing_packet_lumen=tape.emitted_power_lumen[start:end].tolist(),
+                surface_status_flags=tape.status_flags[start:end].tolist(),
+                selected_point_min_segment_distance_mm=nearest,
+                selected_point_min_reflection_distance_mm=nearest_vertex,
+                selected_point_radius_mm=reference['radius_mm'] if reference else None))
 
     def observe(self, origins, directions, powers, frames, config,
                 surface_distances, selected_indices, selected_distances,
@@ -113,6 +157,11 @@ class ReceiverDiagnostics:
         rows = copy.deepcopy(list(self.rows.values()))
         for row in rows:
             grid = grids[row["receiver_id"]]
+            capture = row['detected_paths']
+            capture['recorded_count'] = len(capture['samples'])
+            capture['actual_hit_count'] = grid.hit_count
+            capture['truncated'] = grid.hit_count > len(capture['samples'])
+            capture['complete'] = not stopped and not capture['truncated']
             row["actual_receiver_hits"] = grid.hit_count
             row["actual_receiver_flux_lumen"] = sum(sum(line) for line in grid.flux_lumen)
             row["consistent"] = (row["counts"]["accepted"] == grid.hit_count and math.isclose(
