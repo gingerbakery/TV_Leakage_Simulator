@@ -13,6 +13,14 @@ export interface ReviewSnapshot {
   forward: { jobId: string | null; savedResult: RayTraceResult | null }
 }
 
+/** CAD Binary arrays are lazy Proxy facades: structuredClone rejects them.
+ * Materialize using the same JSON representation that the export will write.
+ * This also detaches values before the asynchronous result lookups start.
+ */
+export function captureAiReviewSnapshot(snapshot: ReviewSnapshot): ReviewSnapshot {
+  return JSON.parse(JSON.stringify(snapshot)) as ReviewSnapshot
+}
+
 export function buildAiReviewPayload(snapshot: ReviewSnapshot, comparison: SensorComparisonJob | null, forwardJob: unknown, errors: string[], includeGeometry: boolean) {
   const sameScene = Boolean(comparison?.scene_token && comparison.scene_token === snapshot.scene?.metadata.scene_token)
   const comparisonMatches = Boolean(sameScene && snapshot.currentRequest && sameComparisonInput(comparison?.input_request, snapshot.currentRequest))
@@ -68,7 +76,7 @@ export function installAiReviewExport(snapshot: () => ReviewSnapshot, api: {
   const host = window as Window & { exportLeakAiReview?: (options?: { includeGeometry?: boolean }) => Promise<{ filename: string; bytes: number; gaps: string[] }> }
   const command = async (options: { includeGeometry?: boolean } = {}) => {
     // Freeze UI inputs before any asynchronous API reads; never clone store actions.
-    const frozen = structuredClone(snapshot())
+    const frozen = captureAiReviewSnapshot(snapshot())
     const results = await Promise.allSettled([api.getSensorComparison(), frozen.forward.jobId ? api.getRayTraceJob(frozen.forward.jobId) : Promise.resolve(null)])
     const errors = results.flatMap((result, index) => result.status === 'rejected' ? [`${index === 0 ? '광량 비교' : '순방향 작업'} 조회 실패: ${String(result.reason)}`] : [])
     const comparison = results[0].status === 'fulfilled' ? results[0].value : null

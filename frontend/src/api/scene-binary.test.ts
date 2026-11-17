@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { decodeSceneBinary } from './scene-binary'
+import { captureAiReviewSnapshot } from '@/features/leak-preview/ai-review-export'
 
 function createBinaryFixture(): ArrayBuffer {
   const arrays = [
@@ -66,6 +67,25 @@ function createBinaryFixture(): ArrayBuffer {
 }
 
 describe('decodeSceneBinary', () => {
+  it('exports real lazy CAD arrays as detached JSON data without structuredClone', () => {
+    const scene = decodeSceneBinary(createBinaryFixture())
+    expect(() => structuredClone(scene)).toThrow()
+    const frozen = captureAiReviewSnapshot({ caseId: 'case', scene,
+      preview: { result: null, runSignature: null, currentSignature: '', selectedPoint: null, settings: {}, inputMatches: false },
+      currentRequest: null, requestError: null, pathValidation: { valid: true }, forward: { jobId: null, savedResult: null } })
+    expect(frozen.scene!.mesh.vertices).toEqual([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    expect(frozen.scene!.mesh.faces).toEqual([[0, 1, 2]])
+    expect(frozen.scene!.components[0].face_indices).toEqual([0])
+    expect(frozen.scene!.mesh.face_source_ids).toEqual([99])
+    expect(frozen.scene!.mesh.face_normals).toEqual([[0, 0, 1]])
+    expect(frozen.scene!.mesh.face_centroids).toEqual([[1 / 3, 1 / 3, 0]])
+    expect(frozen.scene!.mesh.face_material_ids).toEqual(['PC'])
+    expect(frozen.scene!.mesh.feature_edge_segments?.[0].component_id).toBe(3)
+    expect(() => structuredClone(frozen)).not.toThrow()
+    frozen.scene!.mesh.vertices[0][0] = 99
+    expect(scene.mesh.vertices[0]).toEqual([0, 0, 0])
+  })
+
   it('keeps CAD names, colors, faces and authored face ids', () => {
     const scene = decodeSceneBinary(createBinaryFixture())
     expect(scene.components[0].component_name).toBe('Panel')
