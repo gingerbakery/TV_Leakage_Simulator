@@ -188,7 +188,7 @@ class BsdfTransportTests(unittest.TestCase):
         asset=synthetic_asset();profile={'bsdf_asset_id':asset['id']}
         validate_bsdf_profiles([profile],[asset],{'compute_backend':'gpu_cuda'})
         with self.assertRaises(ValueError):
-            validate_bsdf_profiles([profile],[asset],{'bounce_sampling_strategy':'receiver_mis'})
+            validate_bsdf_profiles([profile],[asset],{'primary_sampling_strategy':'receiver_mis'})
         asset['transport']['model']='shift_with_stretch'
         with self.assertRaisesRegex(ValueError,'isotropic_no_shift'):compile_asset(asset)
 

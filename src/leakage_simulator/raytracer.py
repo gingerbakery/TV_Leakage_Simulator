@@ -1321,7 +1321,7 @@ class _BounceSamplingStats:
         )
         return {
             "bounce_sampling_contract": (
-                "receiver_directed_lambertian_bounce_mis_v1"
+                "receiver_directed_bsdf_lambertian_bounce_mis_v2"
             ),
             "requested_bounce_sampling_strategy": self.requested_strategy,
             "bounce_sampling_strategy": effective_strategy,
@@ -2212,6 +2212,8 @@ def run_direct_ray_trace(
         or wavefront_rng == "per_primary_seeded_v1"
     ))
     if bsdf_legacy_reference:
+        if trace_input.config.bounce_sampling_strategy == "receiver_mis":
+            raise ValueError("BSDF receiver MIS requires the batch counter-RNG pipeline")
         # Explicit scalar diagnostics retain the independent CPU reference;
         # native analytic-only planners must never silently replace the table.
         if trace_input.config.compute_backend == "gpu_cuda" or intersection_provider == "gpu_cuda" or wavefront_residency == "gpu_resident":
@@ -2377,6 +2379,9 @@ def run_direct_ray_trace(
         wavefront_residency = "host_roundtrip"
         wavefront_pipeline = "soa_event_tape"
         wavefront_rng = "counter_rng_v2"
+    if bsdf_models and trace_input.config.bounce_sampling_strategy == "receiver_mis":
+        # CUDA intersections remain available; measured MIS transport runs on CPU.
+        wavefront_residency = "host_roundtrip"
     monte_carlo_contract = (
         "cpu_gpu_deterministic_batch_v1"
         if (

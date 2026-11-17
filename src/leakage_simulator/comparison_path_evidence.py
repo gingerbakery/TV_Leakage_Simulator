@@ -20,7 +20,9 @@ def pair_detected_paths(trace, comparison_input, capture, budget, should_stop=No
         if should_stop and should_stop():
             break
         record = dict(ray_id=sample['ray_id'], included_in_flux=False, execution_backend='cpu',
-                      state='unavailable', causal_scope='this_recorded_ray_only')
+                      state='unavailable', causal_scope='this_recorded_ray_only',
+                      sampling_strategy=comparison_input.config.bounce_sampling_strategy,
+                      original_scope='original_termination_with_comparison_sampling')
         reports.append(record)
         emitter = next((e for e in comparison_input.emitters if e.emitter_id == sample['emitter_id']), None)
         if emitter is None or sample['rng_contract'] != 'counter_rng_v2':
@@ -30,7 +32,9 @@ def pair_detected_paths(trace, comparison_input, capture, budget, should_stop=No
             isolated = replace(comparison_input, emitters=[replace(emitter, ray_count=1, seed=sample['emitter_seed'])],
                 config=replace(config, compute_backend='cpu', intersection_backend='bvh', receiver_diagnostics=True,
                     store_ray_paths=True, max_stored_paths=1, auto_convergence=False,
-                    primary_sampling_strategy='source', bounce_sampling_strategy='source'))
+                    primary_sampling_strategy='source',
+                    bounce_sampling_strategy=comparison_input.config.bounce_sampling_strategy,
+                    bounce_receiver_importance_fraction=comparison_input.config.bounce_receiver_importance_fraction))
             return run_direct_ray_trace(isolated, should_stop=should_stop,
                 diagnostic_primary_ray=(sample['launch_origin'], sample['launch_direction'], sample['source_face'], sample['initial_packet_lumen']),
                 diagnostic_primary_index=sample['primary_index'])

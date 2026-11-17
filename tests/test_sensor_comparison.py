@@ -48,6 +48,11 @@ class SensorComparisonTests(TestCase):
         self.assertIn('diagnostics',report['original_termination_probe'])
         self.assertEqual(report['reference_replay']['reason'],'missing_representative_path')
         self.assertFalse(trace.config.receiver_diagnostics)
+        self.assertEqual(trace.config.bounce_sampling_strategy, 'source')
+        self.assertEqual(report['validation_overrides']['bounce_sampling_strategy'], 'receiver_mis')
+        self.assertEqual(report['validation_overrides']['bounce_receiver_importance_fraction'], .5)
+        self.assertEqual(report['validation_overrides']['reverse_bounce_sampling_strategy'], 'source')
+        self.assertEqual(report['original_termination_probe']['bounce_sampling_strategy'], 'receiver_mis')
     def test_same_roi_masks_half_sensor_without_changing_area_or_sample_denominator(self):
         trace = replace(scene(), analysis_roi=dict(detection_boxes=[(-10, 0, -10, 10, -8, -4)]))
         report = run_sensor_comparison(trace, ComparisonOptions("common", batches=4, forward_samples=65536, reverse_samples=2048))

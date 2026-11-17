@@ -217,8 +217,6 @@ class CounterWavefrontPlanInput:
             self.bsdf_indices if self.bsdf_indices is not None else np.full(row_count, -1),
             scatter, SCATTER_BSDF,
         )
-        if np.any(bsdf_indices >= 0) and self.receiver_importance_fraction > 0:
-            raise ValueError("BSDF receiver MIS is not supported")
         object.__setattr__(self, "bsdf_indices", bsdf_indices)
         depth = _non_negative_int(self.depth, "depth")
         max_depth = _non_negative_int(self.max_depth, "max_depth")
@@ -575,7 +573,7 @@ def counter_uniform(rng_key: int, depth: int, lane: int) -> float:
     return float(mixed >> 11) * _TWO_POW_NEG_53
 
 
-_bsdf_reference_reflectance, _bsdf_reference_sample = make_bsdf_functions(lambda f: f, counter_uniform)
+_bsdf_reference_reflectance, _bsdf_reference_sample, _bsdf_reference_pdf = make_bsdf_functions(lambda f: f, counter_uniform, include_pdf=True)
 
 
 def plan_counter_reference(
@@ -757,6 +755,18 @@ def _plan_reference_row(
         )
         direction, lobe = (sx, sy, sz), LOBE_BSDF
         draws[row_index] = min(255, int(draws[row_index]) + draw_count)
+        if batch.receiver_importance_fraction > 0.0:
+            importance_eligible[row_index] = True
+            direction, weight, directed = _receiver_mis_reference(
+                batch, row_index, key, surface_normal, direction)
+            importance_directed[row_index] = directed
+            importance_weights[row_index] = weight
+            draws[row_index] = min(255, int(draws[row_index]) + (4 if directed else 1))
+            if weight <= 0.0:
+                importance_zero_weight[row_index] = True
+                statuses[row_index] = status | STATUS_DISABLED
+                return
+            emitted_power *= weight
     elif scatter == SCATTER_SPECULAR:
         direction = specular
         lobe = LOBE_SPECULAR
@@ -766,7 +776,7 @@ def _plan_reference_row(
         lobe = LOBE_LAMBERTIAN
         if batch.receiver_importance_fraction > 0.0:
             importance_eligible[row_index] = True
-            direction, weight, directed = _lambertian_receiver_mis_reference(
+            direction, weight, directed = _receiver_mis_reference(
                 batch,
                 row_index,
                 key,
@@ -819,7 +829,7 @@ def _plan_reference_row(
     statuses[row_index] = status | STATUS_EMITTED
 
 
-def _lambertian_receiver_mis_reference(
+def _receiver_mis_reference(
     batch: CounterWavefrontPlanInput,
     row_index: int,
     key: int,
@@ -864,6 +874,10 @@ def _lambertian_receiver_mis_reference(
         0.0,
         sum(direction[axis] * surface_normal[axis] for axis in range(3)),
     ) / math.pi
+    material = int(batch.bsdf_indices[row_index])
+    if material >= 0:
+        incoming = _normalize(*batch.incoming_directions[row_index])
+        source_pdf = _bsdf_reference_pdf(material, *incoming, *surface_normal, *direction, *batch.bsdf.arrays())
     receiver_pdf = _receiver_direction_pdf_reference(batch, point, direction)
     mixture_pdf = (1.0 - fraction) * source_pdf + fraction * receiver_pdf
     weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
@@ -894,12 +908,10 @@ def _receiver_direction_pdf_reference(
             for axis in range(3)
         )
         distance = numerator / denominator
-        acceptance_cosine = -denominator
+        acceptance_cosine = abs(denominator)
         if (
             distance <= batch.epsilon_mm
             or acceptance_cosine <= 0.0
-            or acceptance_cosine
-            < float(batch.receiver_minimum_cosines[receiver_index])
         ):
             continue
         point = tuple(
@@ -1168,11 +1180,10 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                 + (receiver_centers[receiver_index, 2] - origin_z) * normal_z
             )
             distance = numerator / denominator
-            acceptance_cosine = -denominator
+            acceptance_cosine = abs(denominator)
             if (
                 distance <= epsilon_mm
                 or acceptance_cosine <= 0.0
-                or acceptance_cosine < receiver_minimum_cosines[receiver_index]
             ):
                 continue
             point_x = origin_x + direction_x * distance
@@ -1208,7 +1219,7 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         return density
 
     @numba.njit(inline="always", fastmath=False)
-    def lambertian_receiver_mis(
+    def receiver_mis(
         key: np.uint64,
         depth: int,
         origin_x: float,
@@ -1220,6 +1231,8 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         source_x: float,
         source_y: float,
         source_z: float,
+        material, incoming_x, incoming_y, incoming_z,
+        bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
         fraction: float,
         epsilon_mm: float,
         receiver_centers: FloatArray,
@@ -1276,6 +1289,10 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         if source_pdf < 0.0:
             source_pdf = 0.0
         source_pdf /= math.pi
+        if material >= 0:
+            source_pdf = bsdf_pdf(material, incoming_x, incoming_y, incoming_z,
+                normal_x, normal_y, normal_z, direction_x, direction_y, direction_z,
+                bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt)
         proposal_pdf = receiver_pdf(
             origin_x,
             origin_y,
@@ -1296,8 +1313,8 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
         return direction_x, direction_y, direction_z, weight, directed
 
-    bsdf_reflectance, bsdf_sample = make_bsdf_functions(
-        numba.njit(inline="always", fastmath=False), uniform,
+    bsdf_reflectance, bsdf_sample, bsdf_pdf = make_bsdf_functions(
+        numba.njit(inline="always", fastmath=False), uniform, include_pdf=True,
     )
 
     @numba.njit(nogil=True, fastmath=False, inline="always")
@@ -1428,6 +1445,46 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                 )
                 rng_draw_counts[row_index] = min(255, int(rng_draw_counts[row_index])+draw_count)
                 lobe = LOBE_BSDF
+                if receiver_importance_fraction > 0.0:
+                    importance_eligible_mask[row_index] = True
+                    (
+                        direction_x,
+                        direction_y,
+                        direction_z,
+                        importance_weight,
+                        importance_directed,
+                    ) = receiver_mis(
+                        key,
+                        depth,
+                        surface_points[row_index, 0],
+                        surface_points[row_index, 1],
+                        surface_points[row_index, 2],
+                        normal_x,
+                        normal_y,
+                        normal_z,
+                        direction_x,
+                        direction_y,
+                        direction_z,
+                        material, incoming_x, incoming_y, incoming_z,
+                        bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
+                        receiver_importance_fraction,
+                        epsilon_mm,
+                        receiver_centers,
+                        receiver_normals,
+                        receiver_u_axes,
+                        receiver_v_axes,
+                        receiver_half_widths,
+                        receiver_half_heights,
+                        receiver_minimum_cosines,
+                    )
+                    importance_directed_mask[row_index] = importance_directed
+                    importance_weights[row_index] = importance_weight
+                    rng_draw_counts[row_index] = min(255, int(rng_draw_counts[row_index]) + (4 if importance_directed else 1))
+                    if importance_weight <= 0.0:
+                        importance_zero_weight_mask[row_index] = True
+                        status_flags[row_index] = status | STATUS_DISABLED
+                        continue
+                    emitted_power *= importance_weight
             elif scatter == SCATTER_LAMBERTIAN:
                 direction_x, direction_y, direction_z = lambertian(
                     key,
@@ -1446,7 +1503,7 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                         direction_z,
                         importance_weight,
                         importance_directed,
-                    ) = lambertian_receiver_mis(
+                    ) = receiver_mis(
                         key,
                         depth,
                         surface_points[row_index, 0],
@@ -1458,6 +1515,8 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                         direction_x,
                         direction_y,
                         direction_z,
+                        material, incoming_x, incoming_y, incoming_z,
+                        bsdf_materials, bsdf_waves, bsdf_tables, bsdf_cells, bsdf_rt,
                         receiver_importance_fraction,
                         epsilon_mm,
                         receiver_centers,

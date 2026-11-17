@@ -12,7 +12,7 @@ import numpy as np
 
 from .bsdf_transport import _bracket
 
-PACKED_CONTRACT = "bsdf_packed_no_shift_fp64_v1"
+PACKED_CONTRACT = "bsdf_packed_no_shift_pdf_fp64_v2"
 
 
 def _readonly(values, columns, dtype=np.float64):
@@ -27,7 +27,7 @@ class PackedBsdf:
     materials: np.ndarray
     # Wave: weight, first table, table count, first RT row, RT row count.
     waves: np.ndarray
-    # Table: incidence degrees, first cell, cell count.
+    # Table: incidence degrees, first cell, cell count, projected normalization.
     tables: np.ndarray
     # Cell: cumulative probability, theta0/1, phi0/1, four BRDF corners, maximum.
     cells: np.ndarray
@@ -37,7 +37,7 @@ class PackedBsdf:
     @classmethod
     def empty(cls):
         return cls(_readonly([], 2, np.int64), _readonly([], 5),
-                   _readonly([], 3), _readonly([], 10), _readonly([], 2))
+                   _readonly([], 4), _readonly([], 10), _readonly([], 2))
 
     def arrays(self):
         return self.materials, self.waves, self.tables, self.cells, self.rt
@@ -79,12 +79,12 @@ def pack_bsdf_profiles(profiles):
                         table.values[1:, :-1].ravel(), table.values[1:, 1:].ravel(),
                         table.cell_max.ravel(),
                     ))
-                    tables.append((angle, cell_count, len(block)))
+                    tables.append((angle, cell_count, len(block), table.normalization))
                     cell_blocks.append(block)
                     cell_count += len(block)
         ids.append(lookup[key])
     packed = PackedBsdf(_readonly(materials, 2, np.int64), _readonly(waves, 5),
-                        _readonly(tables, 3),
+                        _readonly(tables, 4),
                         _readonly(np.concatenate(cell_blocks) if cell_blocks else [], 10),
                         _readonly(rt, 2))
     face_ids = np.array(ids, dtype=np.int64)
@@ -104,7 +104,7 @@ def validate_bsdf_indices(packed, indices, scatter, bsdf_code):
     return ids
 
 
-def make_bsdf_functions(jit, uniform):
+def make_bsdf_functions(jit, uniform, *, include_pdf=False):
     """Compile identical arithmetic for Python, Numba CPU or CUDA device code.
 
     Caller supplies its established semantic counter RNG and compiler. No
@@ -214,4 +214,69 @@ def make_bsdf_functions(jit, uniform):
         return (x*xx+y*yx+z*nx, x*xy+y*yy+z*ny, x*xz+y*yz+z*nz,
                 2+3*attempt)
 
+    @jit
+    def table_pdf(table, theta, phi, tables, cells):
+        start, count = int(tables[table, 1]), int(tables[table, 2])
+        # Cells are ordered by theta, then phi. Find the theta strip first.
+        lo, hi = start, start + count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if cells[mid, 2] < theta:
+                lo = mid + 1
+            else:
+                hi = mid
+        first = lo
+        if first >= start + count or theta < cells[first, 1]:
+            return 0.0
+        upper_theta = cells[first, 2]
+        lo, hi = first, start + count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if cells[mid, 2] == upper_theta and cells[mid, 4] < phi:
+                lo = mid + 1
+            else:
+                hi = mid
+        cell = lo
+        if cell >= start + count or cells[cell, 2] != upper_theta or phi < cells[cell, 3]:
+            return 0.0
+        u = (theta-cells[cell, 1])/(cells[cell, 2]-cells[cell, 1])
+        v = (phi-cells[cell, 3])/(cells[cell, 4]-cells[cell, 3])
+        value = ((1-u)*((1-v)*cells[cell, 5]+v*cells[cell, 6])
+                 + u*((1-v)*cells[cell, 7]+v*cells[cell, 8]))
+        return max(0.0, value) * math.cos(theta) / tables[table, 3]
+
+    @jit
+    def direction_pdf(material, dx, dy, dz, nx, ny, nz, ox, oy, oz,
+                      materials, waves, tables, cells, rt):
+        outgoing_cosine = ox*nx + oy*ny + oz*nz
+        if outgoing_cosine <= 0.0:
+            return 0.0
+        cosine = min(1.0, max(0.0, -(dx*nx+dy*ny+dz*nz)))
+        angle = math.acos(cosine) * (180.0/math.pi)
+        # Exactly the same incident frame as sample(), including normal incidence.
+        yx, yy, yz = -dx-cosine*nx, -dy-cosine*ny, -dz-cosine*nz
+        length2 = yx*yx+yy*yy+yz*yz
+        if length2 < 1e-24:
+            hx, hy = (1.0, 0.0) if abs(nx) < .9 else (0.0, 1.0)
+            projection = hx*nx+hy*ny
+            yx, yy, yz = hx-projection*nx, hy-projection*ny, -projection*nz
+            length2 = yx*yx+yy*yy+yz*yz
+        inv = 1.0/math.sqrt(length2)
+        yx, yy, yz = yx*inv, yy*inv, yz*inv
+        xx, xy, xz = yy*nz-yz*ny, yz*nx-yx*nz, yx*ny-yy*nx
+        inv = 1.0/math.sqrt(xx*xx+xy*xy+xz*xz)
+        xx, xy, xz = xx*inv, xy*inv, xz*inv
+        yx, yy, yz = ny*xz-nz*xy, nz*xx-nx*xz, nx*xy-ny*xx
+        theta = math.acos(min(1.0, outgoing_cosine))
+        phi = math.atan2(ox*yx+oy*yy+oz*yz, ox*xx+oy*xy+oz*xz) % (2*math.pi)
+        total = 0.0
+        start, count = materials[material, 0], materials[material, 1]
+        for wi in range(start, start+count):
+            lo, hi, t = bracket(tables, int(waves[wi, 1]), int(waves[wi, 2]), angle)
+            total += waves[wi, 0] * ((1-t)*table_pdf(lo, theta, phi, tables, cells)
+                                           + t*table_pdf(hi, theta, phi, tables, cells))
+        return total
+
+    if include_pdf:
+        return reflectance, sample, direction_pdf
     return reflectance, sample

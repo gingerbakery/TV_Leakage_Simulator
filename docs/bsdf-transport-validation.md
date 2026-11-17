@@ -17,14 +17,38 @@
 | 입사각 | 표 사이 보간. 측정각 범위 밖은 가장 가까운 끝값 |
 | 파장 | 자산별 선택 파장에서 보간. 광선별 분광 추적이나 스펙트럼 적분은 아님 |
 | 면 방향 | 입사측 법선으로 정렬하고 양쪽에 동일한 표 적용 |
-| 실행 | CPU 및 NVIDIA CUDA GPU, primary/bounce 모두 source sampling |
+| 실행 | CPU 및 NVIDIA CUDA GPU, primary는 source, bounce는 source 또는 receiver MIS |
 | 보존 | 원본 파일, 연결, 모델, 파장을 .bitsam에 포함 |
 
 단일 네이티브 .bsdf, Cartesian/CCBSDF, 비공기 매질, 이방성, LT Back 데이터,
 Shift Invariant/Shift with Stretch, 별도 이상적 정반사 스파이크는 아직 지원하지 않는다.
 부분 각도 표는 보관만 가능하다. 미지원 조건, 누락 파일, 변경된 원본 해시,
 계산 파장 범위 초과는 오류로 중단하며 기존 Mixed/Gaussian으로 바꾸어 계산하지 않는다.
-BSDF가 연결된 해석의 receiver MIS 및 간이 Preview 계산은 현재 차단한다.
+BSDF primary receiver MIS 및 간이 Preview 계산은 현재 차단한다.
+BSDF bounce receiver MIS는 batch counter-RNG 경로에서 지원한다. BSDF 표의
+AOI·파장별 정규화 분포와 유한 센서 면적 방향을 혼합하고, 선택한 방향에
+`p_bsdf / ((1-alpha)*p_bsdf + alpha*p_receiver)`를 적용한다. RT 반사율은
+한 번만 적용하며, 표에 없는 방향의 기여는 0이다. 센서 면적 proposal의
+확률밀도에는 면적→입체각 Jacobian과 센서 선택 확률을 모두 포함한다.
+차폐·뒷면·수용각·ROI는 실제 교차/검출 단계에서 판정한다.
+
+기존 동일 센서 광량 비교는 bounce 혼합 비율 0.5를 사용한다. 원래 종료 조건
+진단과 검출 광선 재검사도 같은 혼합 추출을 유지하므로, 종료 조건만 비교하며
+과거 source-only 실행을 재현하지 않는다. JSON의 `validation_overrides`,
+`original_termination_probe`, `policy_pair.records[].original_scope`에 이를 남긴다.
+역추적의 표본 추출 방식은 유지한다. 새 메뉴나 버튼은 추가하지 않는다.
+
+CPU 검증은 `tests/test_bsdf_receiver_mis.py`에서 균일/로브 BSDF 독립 적분,
+AOI·파장 혼합, 회전 좌표계, 확률밀도 정규화, Numba/참조 일치, 표의 지원
+방향 밖 기여 0, 센서 proposal 중첩, 차폐, 검출 광선 재현을 검사한다.
+균일 표의 시험에서는 평균 광량 오차 2% 이내, 로브 표는 2.5% 이내를
+요구한다. 분산 감소 및 유효표본 증가는 합성 장면의 기준이며 사용자 CAD의
+수렴 또는 실물 일치를 보장하지 않는다. 같은 Leak Point와 기존 표본 예산으로
+광량 비교를 재실행하고, 유효표본·단일 광선 기여 편중·차이 구간을 확인한다.
+
+이 모드의 BSDF 반사 계산은 CPU에서 수행하며 CUDA 교차는 유지할 수 있다.
+CUDA resident BSDF MIS는 미지원으로 명시적으로 차단한다. 실제 GPU 실행 여부는
+기존 생산 preflight 및 실행 카운트로 판정하며, CPU 시험을 GPU 검증으로 간주하지 않는다.
 GPU 지원 범위와 실제 CUDA 검증은 [GPU 검증 문서](bsdf-gpu-validation.md)에 정리했다.
 
 이는 일반적인 실측 BSDF 파일 전체에 대한 LT 호환 선언이 아니다.

@@ -197,7 +197,8 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         forward_diagnostics=[], path_evidence=[], reverse_diagnostics=[],
         source_model_calibrated=False, comparison_unit="lumen", original_config_preserved=True,
         validation_overrides=dict(compute_backend=backend, min_energy=0., termination_mode="russian_roulette",
-            primary_sampling_strategy="source", bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
+            primary_sampling_strategy="source", bounce_sampling_strategy="receiver_mis", bounce_receiver_importance_fraction=0.5,
+            reverse_bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
         limitations=["finite_sampling", "batch_t_approximation", "reflection_only", "not_real_TV_validation"])
     report["code_sha256"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path(__file__).parent.glob("*.py")}
     from .forward_path_replay import replay_forward_path
@@ -212,7 +213,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         report.update(reason="invalid_reference_path", runtime_sec=time.perf_counter()-started)
         return report
     local_config = replace(trace.config, compute_backend=backend, intersection_backend="bvh", min_energy=0.,
-        termination_mode="russian_roulette", primary_sampling_strategy="source", bounce_sampling_strategy="source",
+        termination_mode="russian_roulette", primary_sampling_strategy="source", bounce_sampling_strategy="receiver_mis", bounce_receiver_importance_fraction=0.5,
         auto_convergence=False, store_ray_paths=True, max_stored_paths=16)
     collector = SimpleNamespace(minimum=receiver.center, maximum=receiver.center, direction="neg_z", regions=[])
     for batch in range(options.batches):
@@ -251,7 +252,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         if should_stop and should_stop():
             report.update(reason='stopped', runtime_sec=time.perf_counter()-started)
             return report
-        reverse_input = replace(trace, config=replace(local_config, seed=rseed), observer_probe=dict(measurement="radiance",
+        reverse_input = replace(trace, config=replace(local_config, seed=rseed, bounce_sampling_strategy="source"), observer_probe=dict(measurement="radiance",
             resolution=8, samples_per_cell=options.reverse_samples, search_mode="preview", min_luminance_nit=0., coverage="local",
             horizontal_deg=0., vertical_deg=0., range_deg=0., step_deg=1.))
         phase_started = time.perf_counter()
@@ -279,7 +280,7 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
                 progress(batch, "original_policy", 0, options.forward_samples)
             original = run_direct_ray_trace(replace(forward_input, config=replace(trace.config,
                 compute_backend=backend, intersection_backend="bvh", seed=fseed, auto_convergence=False,
-                store_ray_paths=False, receiver_diagnostics=True, primary_sampling_strategy="source", bounce_sampling_strategy="source")),
+                store_ray_paths=False, receiver_diagnostics=True, primary_sampling_strategy="source", bounce_sampling_strategy="receiver_mis", bounce_receiver_importance_fraction=0.5)),
                 should_stop=should_stop)
             if should_stop and should_stop():
                 report.update(reason="stopped", runtime_sec=time.perf_counter()-started)
@@ -287,6 +288,8 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
             og = original.receiver_grids[0]
             report["original_termination_probe"] = dict(forward_flux_lumen=math.fsum(v for row in og.flux_lumen for v in row),
                 forward_hits=og.hit_count, min_energy=trace.config.min_energy, termination_mode=trace.config.termination_mode,
+                bounce_sampling_strategy=local_config.bounce_sampling_strategy,
+                bounce_receiver_importance_fraction=local_config.bounce_receiver_importance_fraction,
                 seed=fseed, sample_count=original.total_rays, included_in_equivalence=False,
                 termination=original.metrics.get("_termination_summary", {}))
             report['original_termination_probe']['diagnostics'] = original.metrics.get('_receiver_diagnostics')

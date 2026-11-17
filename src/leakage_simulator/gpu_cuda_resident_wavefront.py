@@ -1100,11 +1100,10 @@ def _make_kernel(*, _intersector_factory=None) -> Callable[..., None]:
                 + (receiver_centers[receiver_index, 2] - origin_z) * normal_z
             )
             distance = numerator / denominator
-            acceptance_cosine = -denominator
+            acceptance_cosine = abs(denominator)
             if (
                 distance <= epsilon_mm
                 or acceptance_cosine <= 0.0
-                or acceptance_cosine < receiver_minimum_cosines[receiver_index]
             ):
                 continue
             point_x = origin_x + direction_x * distance
@@ -3051,6 +3050,8 @@ def trace_resident_wavefront_gpu_cuda(
         raise TypeError("context must be a GpuResidentWavefrontContext")
     if not isinstance(batch, GpuResidentWavefrontBatch):
         raise TypeError("batch must be a GpuResidentWavefrontBatch")
+    if batch.bounce_receiver_mis_enabled and np.any(context.bsdf_indices >= 0):
+        raise GpuResidentWavefrontUnavailable("bsdf_receiver_mis_requires_host_transport")
     capability = cuda_backend.probe_gpu_cuda()
     if not capability.available:
         raise GpuResidentWavefrontUnavailable(

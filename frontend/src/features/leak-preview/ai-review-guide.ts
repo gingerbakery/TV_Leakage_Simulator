@@ -25,6 +25,7 @@ export const aiReviewGuide = {
     { path: 'payload.standalone_forward', meaning: '일반 순방향의 저장 결과 또는 작업 조회. 당시 요청 동일성이 unknown이므로 현재 비교와 같은 실행이라고 가정하지 않는다.' },
   ],
   linked_evidence_rules: [
+    '광량 비교의 validation_overrides에서 실제 sampling 조건을 확인한다. receiver_mis는 BSDF·Lambertian 방향 분포와 센서 면적 방향을 혼합하고 source_pdf/mixture_pdf로 기여를 보정한다. 더 많은 검출이 광량 증폭을 뜻하지 않는다. 원래 종료 조건 진단도 같은 혼합 추출을 유지하므로 과거 source-only 실행의 재현으로 해석하지 않는다.',
     'path_evidence는 회차당 최대 16개 실제 검출 경로를 기록한다. recorded_count/actual_hit_count/truncated/complete를 확인하고 미기록 경로의 부재를 단정하지 말 것.',
     'detected_paths.samples의 ray_id는 회차 index와 함께 식별한다. points·surface_faces·reflection_count·flux_lumen·선택점 최근접 구간/반사점 거리를 구분한다. 반경 근접은 전체 대표 경로 재현이 아니다.',
     'policy_pair는 회차당 최대 2개·전체 최대 16개의 기록 광선을 CPU로 재검사한다. comparison_reproduced 및 state=verified일 때만 reason에 따라 그 광선의 원래 종료 조건 영향을 판정한다. 미재현·failed·incomplete는 인과 미확정이다. 이 진단 광량은 비교 추정에 합산하지 않는다.',

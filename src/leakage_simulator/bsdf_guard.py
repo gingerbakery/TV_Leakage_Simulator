@@ -21,9 +21,8 @@ def validate_bsdf_profiles(profiles, assets=(), config=None):
         references.add(asset_id)
     if not references:
         return {}
-    for key in ("primary_sampling_strategy", "bounce_sampling_strategy"):
-        if _get(config, key, "source") != "source":
-            raise ValueError("BSDF 표 계산은 현재 source sampling만 지원합니다 (receiver MIS 미지원).")
+    if _get(config, "primary_sampling_strategy", "source") != "source":
+        raise ValueError("BSDF primary rays require source sampling.")
     if not isinstance(assets, (list, tuple)) or len(assets) > 64:
         raise ValueError("BSDF assets must be a list with at most 64 entries")
     by_id = {}
