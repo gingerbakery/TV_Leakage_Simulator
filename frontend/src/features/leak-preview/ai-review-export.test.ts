@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
+import { createHash, webcrypto } from 'node:crypto'
 import type { SensorComparisonJob } from '@/api/client'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { buildRayTraceRequest, createDatumEmitter, createDatumReceiver } from '@/features/raytracing/ray-tracing-model'
 import { workspaceStore } from '@/stores'
-import { buildAiReviewPayload, installAiReviewExport, type ReviewSnapshot } from './ai-review-export'
+import { buildAiReviewPayload, captureAiReviewSnapshot, createAiReviewBlob, jsonChunks, installAiReviewExport, type ReviewSnapshot } from './ai-review-export'
 
 function fixture() {
   const scene = createSceneFixture()
@@ -23,7 +24,7 @@ function fixture() {
   return { snapshot, comparison }
 }
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 it('retains raw bidirectional batches, conditions, selected path and termination evidence together', () => {
   const { snapshot, comparison } = fixture()
@@ -82,4 +83,144 @@ it('freezes inputs before fetching, downloads one local file and cleans up the c
   expect(api.getRayTraceJob).toHaveBeenCalledWith('forward')
   cleanup()
   expect(host.exportLeakAiReview).toBeUndefined()
+})
+
+
+it('omits lazy geometry before reading or copying it', () => {
+  const { snapshot } = fixture()
+  Object.defineProperty(snapshot.scene!, 'mesh', { enumerable: true, get() { throw new Error('must not read mesh') } })
+  const frozen = captureAiReviewSnapshot(snapshot, false)
+  expect(frozen.scene).not.toHaveProperty('mesh')
+  expect(frozen.scene!.metadata).toEqual(snapshot.scene!.metadata)
+  snapshot.currentRequest!.receivers[0].center[0] = 999
+  expect(frozen.currentRequest!.receivers[0].center[0]).not.toBe(999)
+})
+
+it('serializes bounded chunks without stringifying whole objects, preserving JSON and Unicode', () => {
+  const value = { text: '한글😀'.repeat(100), rows: Array.from({ length: 1000 }, (_, i) => [i, i / 3]), missing: undefined, nonfinite: Infinity }
+  const expected = JSON.stringify(value)
+  const original = JSON.stringify
+  vi.spyOn(JSON, 'stringify').mockImplementation(((item: unknown) => {
+    if (item !== null && typeof item === 'object') throw new RangeError('simulated whole-object string limit')
+    return original(item)
+  }) as typeof JSON.stringify)
+  const parts = jsonChunks(value, 31)
+  expect(parts.length).toBeGreaterThan(100)
+  expect(parts.every(part => part.length <= 31)).toBe(true)
+  expect(parts.join('')).toBe(expected)
+  const encoded = parts.map(part => new TextEncoder().encode(part))
+  expect(encoded.map(part => new TextDecoder().decode(part)).join('')).toBe(expected)
+})
+
+
+async function readBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(blob)
+  })
+}
+
+function downloadHarness() {
+  const createUrl = vi.fn((_blob: Blob) => 'blob:review')
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createUrl })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+  return { createUrl, host: window as unknown as Window & { exportLeakAiReview: () => Promise<{ gaps: string[] }> } }
+}
+
+it('writes a parseable downloaded document whose checksum independently verifies', async () => {
+  const { snapshot, comparison } = fixture()
+  const { host, createUrl } = downloadHarness()
+  vi.stubGlobal('crypto', webcrypto)
+  const cleanup = installAiReviewExport(() => snapshot, {
+    getSensorComparison: async () => comparison,
+    getRayTraceJob: async () => ({ status: 'completed', result: { flux: 3.412e-7, label: '한글😀' } }),
+  })
+  try {
+    await host.exportLeakAiReview()
+    const downloaded = JSON.parse(await readBlob(createUrl.mock.calls[0][0] as unknown as Blob))
+    expect(downloaded.payload_sha256).toBe(createHash('sha256').update(JSON.stringify(downloaded.payload)).digest('hex'))
+    expect(downloaded.payload.same_sensor_comparison).toEqual(comparison)
+    expect(downloaded.payload.path_validation).toEqual(snapshot.pathValidation)
+    expect(downloaded.payload.standalone_forward.job.result.label).toBe('한글😀')
+    expect(downloaded.payload.scene).not.toHaveProperty('mesh')
+  } finally { cleanup() }
+})
+
+it.each(['unavailable', 'rejected', 'large'] as const)('still preserves evidence when checksum is %s', async mode => {
+  const { snapshot, comparison } = fixture()
+  const digest = vi.fn().mockRejectedValue(new Error('blocked'))
+  vi.stubGlobal('crypto', mode === 'unavailable' ? {} : { subtle: { digest } })
+  const payload = buildAiReviewPayload(snapshot, comparison, null, [], false)
+  const downloaded = JSON.parse(await readBlob(await createAiReviewBlob(payload, mode === 'large' ? 1 : undefined)))
+  expect(downloaded.payload_sha256).toBeNull()
+  expect(downloaded.hash_basis).toContain('not computed')
+  expect(downloaded.payload.same_sensor_comparison).toEqual(comparison)
+  expect(downloaded.payload.evidence_gaps.join(' ')).toContain('SHA-256 미계산')
+  if (mode === 'large') expect(digest).not.toHaveBeenCalled()
+})
+
+it('exports available records after lookup timeout, rejects concurrent exports across hook replacement, then unlocks', async () => {
+  vi.useFakeTimers()
+  const { snapshot } = fixture()
+  const { host, createUrl } = downloadHarness()
+  vi.stubGlobal('crypto', {})
+  const api = { getSensorComparison: vi.fn(() => new Promise<null>(() => {})), getRayTraceJob: vi.fn(async () => ({ status: 'completed' })) }
+  const cleanup = installAiReviewExport(() => snapshot, api)
+  const pending = host.exportLeakAiReview()
+  const replacementCleanup = installAiReviewExport(() => snapshot, api)
+  try {
+    await expect(host.exportLeakAiReview()).rejects.toThrow('이미 진행 중')
+    await vi.advanceTimersByTimeAsync(30000)
+    const result = await pending
+    expect(result.gaps.join(' ')).toContain('결과 조회 30초 초과')
+    expect(createUrl).toHaveBeenCalledTimes(1)
+    expect(snapshot.pathValidation).toEqual({ valid: true, reason: 'reference_path_valid' })
+    api.getSensorComparison.mockImplementation(async () => null)
+    await host.exportLeakAiReview()
+    expect(createUrl).toHaveBeenCalledTimes(2)
+  } finally { cleanup(); replacementCleanup() }
+})
+
+it('records synchronous API failures without losing the other lookup', async () => {
+  const { snapshot } = fixture()
+  const { host } = downloadHarness()
+  vi.stubGlobal('crypto', {})
+  const getForward = vi.fn(async () => ({ status: 'completed' }))
+  const cleanup = installAiReviewExport(() => snapshot, {
+    getSensorComparison() { throw new Error('sync failure') }, getRayTraceJob: getForward,
+  })
+  try {
+    const result = await host.exportLeakAiReview()
+    expect(result.gaps.join(' ')).toContain('sync failure')
+    expect(getForward).toHaveBeenCalledOnce()
+  } finally { cleanup() }
+})
+
+it('does not duplicate shared records and reports cycles before a stack overflow', () => {
+  const { snapshot } = fixture()
+  const shared = { rows: [1, 2, 3] }
+  snapshot.preview.settings = { first: shared, second: shared }
+  const copied = captureAiReviewSnapshot(snapshot, false).preview.settings as { first: unknown; second: unknown }
+  expect(copied.first).toBe(copied.second)
+  expect(copied.first).not.toBe(shared)
+  snapshot.preview.settings = snapshot
+  expect(() => captureAiReviewSnapshot(snapshot, false)).toThrow('순환 참조')
+})
+
+it('releases the export lock and removes the link after download creation fails', async () => {
+  const { snapshot } = fixture()
+  const { host } = downloadHarness()
+  vi.stubGlobal('crypto', {})
+  const cleanup = installAiReviewExport(() => snapshot, { getSensorComparison: async () => null, getRayTraceJob: async () => null })
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementationOnce(() => { throw new Error('download blocked') })
+  try {
+    await expect(host.exportLeakAiReview()).rejects.toThrow('download blocked')
+    expect(document.querySelector('a[download]')).toBeNull()
+    click.mockImplementation(() => undefined)
+    await host.exportLeakAiReview()
+    expect(click).toHaveBeenCalledTimes(2)
+  } finally { cleanup() }
 })

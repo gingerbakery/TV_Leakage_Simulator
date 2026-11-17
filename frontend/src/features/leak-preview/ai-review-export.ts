@@ -13,12 +13,82 @@ export interface ReviewSnapshot {
   forward: { jobId: string | null; savedResult: RayTraceResult | null }
 }
 
-/** CAD Binary arrays are lazy Proxy facades: structuredClone rejects them.
- * Materialize using the same JSON representation that the export will write.
- * This also detaches values before the asynchronous result lookups start.
- */
-export function captureAiReviewSnapshot(snapshot: ReviewSnapshot): ReviewSnapshot {
-  return JSON.parse(JSON.stringify(snapshot)) as ReviewSnapshot
+/** Copy JSON data without creating a single string for the entire CAD scene. */
+function copyJsonValue(value: unknown, copies = new WeakMap<object, unknown>(), active = new WeakSet<object>()): unknown {
+  if (value === null || typeof value !== 'object') return value
+  if (active.has(value)) throw new TypeError('AI 검토 자료에 순환 참조가 있어 저장할 수 없습니다. 기존 결과는 유지됩니다.')
+  if (copies.has(value)) return copies.get(value)
+  active.add(value)
+  const copied: unknown[] | Record<string, unknown> = Array.isArray(value) ? [] : {}
+  copies.set(value, copied)
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) (copied as unknown[]).push(copyJsonValue(value[i], copies, active) ?? null)
+  } else {
+    for (const key of Object.keys(value)) {
+      const item = (value as Record<string, unknown>)[key]
+      if (item !== undefined) Object.defineProperty(copied, key, {
+        value: copyJsonValue(item, copies, active), enumerable: true, writable: true, configurable: true,
+      })
+    }
+  }
+  active.delete(value)
+  return copied
+}
+
+export function captureAiReviewSnapshot(snapshot: ReviewSnapshot, includeGeometry = true): ReviewSnapshot {
+  // Remove geometry BEFORE copying; a large lazy CAD mesh must never be materialized in diagnostic mode.
+  const scene = snapshot.scene
+  const input = includeGeometry || !scene ? snapshot : { ...snapshot, scene: {
+    metadata: scene.metadata, units: scene.units, coordinate_system: scene.coordinate_system,
+  } }
+  return copyJsonValue(input) as ReviewSnapshot
+}
+
+/** Compact JSON in bounded chunks, preserving JSON.stringify property order and number encoding. */
+export function jsonChunks(value: unknown, chunkSize = 65536): string[] {
+  if (!Number.isInteger(chunkSize) || chunkSize < 2) throw new RangeError('chunkSize must be at least 2')
+  const chunks: string[] = []
+  let buffer = ''
+  const active = new Set<object>()
+  function append(token: string) {
+    for (let start = 0; start < token.length;) {
+      const count = Math.min(chunkSize - buffer.length, token.length - start)
+      buffer += token.slice(start, start + count)
+      start += count
+      if (buffer.length === chunkSize) {
+        // Blob encodes each string separately; never split a UTF-16 surrogate pair.
+        const last = buffer.charCodeAt(buffer.length - 1)
+        const carry = last >= 0xd800 && last <= 0xdbff ? buffer.slice(-1) : ''
+        chunks.push(carry ? buffer.slice(0, -1) : buffer)
+        buffer = carry
+      }
+    }
+  }
+  function visit(item: unknown) {
+    if (item === null || typeof item !== 'object') { append(JSON.stringify(item) ?? 'null'); return }
+    if (active.has(item)) throw new TypeError('Circular AI review data')
+    active.add(item)
+    if (Array.isArray(item)) {
+      append('[')
+      for (let i = 0; i < item.length; i++) { if (i) append(','); visit(item[i]) }
+      append(']')
+    } else {
+      append('{')
+      let first = true
+      for (const key of Object.keys(item)) {
+        const entry = (item as Record<string, unknown>)[key]
+        if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue
+        if (!first) append(',')
+        first = false
+        append(JSON.stringify(key)); append(':'); visit(entry)
+      }
+      append('}')
+    }
+    active.delete(item)
+  }
+  visit(value)
+  if (buffer) chunks.push(buffer)
+  return chunks
 }
 
 export function buildAiReviewPayload(snapshot: ReviewSnapshot, comparison: SensorComparisonJob | null, forwardJob: unknown, errors: string[], includeGeometry: boolean) {
@@ -68,6 +138,34 @@ export function buildAiReviewPayload(snapshot: ReviewSnapshot, comparison: Senso
   }
 }
 
+/** A checksum failure must not prevent preserving the diagnostic evidence. */
+export async function createAiReviewBlob(payload: ReturnType<typeof buildAiReviewPayload>, hashLimit = 32 * 1024 * 1024): Promise<Blob> {
+  let parts = jsonChunks(payload)
+  let sha256: string | null = null
+  let hashBasis = 'UTF-8 JSON.stringify(payload), property order preserved'
+  try {
+    if (parts.reduce((sum, part) => sum + part.length, 0) > hashLimit) {
+      throw new Error('payload exceeds checksum memory limit')
+    }
+    if (!globalThis.crypto?.subtle) throw new Error('Web Crypto unavailable')
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(parts.join('')))
+    sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  } catch (error) {
+    hashBasis = `not computed: ${String(error)}`
+    payload.evidence_gaps.push(`전체 payload SHA-256 미계산; payload_sha256=null: ${String(error)}`)
+    parts = jsonChunks(payload)
+  }
+  return new Blob(['{"payload_sha256":', JSON.stringify(sha256), ',"hash_basis":', JSON.stringify(hashBasis), ',"payload":', ...parts, '}'], { type: 'application/json' })
+}
+
+const activeExports = new WeakSet<Window>()
+function readWithDeadline<T>(read: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('결과 조회 30초 초과; 서버 작업은 중단하지 않음')), 30000)
+    Promise.resolve().then(read).then(resolve, reject).finally(() => clearTimeout(timer))
+  })
+}
+
 /** Production builds keep this console-only hook for temporary on-site diagnostics. */
 export function installAiReviewExport(snapshot: () => ReviewSnapshot, api: {
   getSensorComparison(): Promise<SensorComparisonJob | null>
@@ -75,23 +173,25 @@ export function installAiReviewExport(snapshot: () => ReviewSnapshot, api: {
 }) {
   const host = window as Window & { exportLeakAiReview?: (options?: { includeGeometry?: boolean }) => Promise<{ filename: string; bytes: number; gaps: string[] }> }
   const command = async (options: { includeGeometry?: boolean } = {}) => {
-    // Freeze UI inputs before any asynchronous API reads; never clone store actions.
-    const frozen = captureAiReviewSnapshot(snapshot())
-    const results = await Promise.allSettled([api.getSensorComparison(), frozen.forward.jobId ? api.getRayTraceJob(frozen.forward.jobId) : Promise.resolve(null)])
-    const errors = results.flatMap((result, index) => result.status === 'rejected' ? [`${index === 0 ? '광량 비교' : '순방향 작업'} 조회 실패: ${String(result.reason)}`] : [])
-    const comparison = results[0].status === 'fulfilled' ? results[0].value : null
-    const forward = results[1].status === 'fulfilled' ? results[1].value : null
-    const payload = buildAiReviewPayload(frozen, comparison, forward, errors, options.includeGeometry !== false)
-    const serialized = JSON.stringify(payload)
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized))
-    const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-    const blob = new Blob([JSON.stringify({ payload_sha256: sha256, hash_basis: 'UTF-8 JSON.stringify(payload), property order preserved', payload }, null, 2)], { type: 'application/json' })
-    const filename = `leak-ai-review-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    try { link.href = url; link.download = filename; document.body.appendChild(link); link.click() }
-    finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
-    return { filename, bytes: blob.size, gaps: payload.evidence_gaps }
+    if (activeExports.has(host)) throw new Error('AI 검토 파일 저장이 이미 진행 중입니다. 완료 후 다시 실행하세요.')
+    activeExports.add(host)
+    try {
+      // Freeze UI inputs before any asynchronous API reads; never clone store actions.
+      const includeGeometry = options.includeGeometry === true
+      const frozen = captureAiReviewSnapshot(snapshot(), includeGeometry)
+      const results = await Promise.allSettled([readWithDeadline(() => api.getSensorComparison()), frozen.forward.jobId ? readWithDeadline(() => api.getRayTraceJob(frozen.forward.jobId!)) : Promise.resolve(null)])
+      const errors = results.flatMap((result, index) => result.status === 'rejected' ? [`${index === 0 ? '광량 비교' : '순방향 작업'} 조회 실패: ${String(result.reason)}`] : [])
+      const comparison = results[0].status === 'fulfilled' ? results[0].value : null
+      const forward = results[1].status === 'fulfilled' ? results[1].value : null
+      const payload = buildAiReviewPayload(frozen, comparison, forward, errors, includeGeometry)
+      const blob = await createAiReviewBlob(payload)
+      const filename = `leak-ai-review-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      try { link.href = url; link.download = filename; document.body.appendChild(link); link.click() }
+      finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
+      return { filename, bytes: blob.size, gaps: payload.evidence_gaps }
+    } finally { activeExports.delete(host) }
   }
   host.exportLeakAiReview = command
   return () => { if (host.exportLeakAiReview === command) delete host.exportLeakAiReview }
