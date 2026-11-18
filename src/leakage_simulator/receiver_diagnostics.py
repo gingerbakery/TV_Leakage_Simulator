@@ -39,7 +39,7 @@ class ReceiverDiagnostics:
                     counts={key: 0 for key in CATEGORIES}, examples={})
 
     def capture_tape(self, tape, frames, emitter_seed, primary_start_index, rng_contract,
-                     config, profiles, geometry, fraction, bsdf, bsdf_face_ids):
+                     config, profiles, geometry, fraction, bsdf, bsdf_face_ids, sampling_records):
         """Read actual detected paths from an already executed bounded event tape."""
         from .wavefront_event_tape import PATH_PAYLOAD_FULL, TERMINAL_RECEIVER
         if tape.path_payload != PATH_PAYLOAD_FULL:
@@ -76,7 +76,7 @@ class ReceiverDiagnostics:
                 points=points, reflection_count=end-start, flux_lumen=flux,
                 receiver_incoming_packet_lumen=float(tape.terminal_incoming_power_lumen[slot]),
                 reflections=_reflection_evidence(tape, int(slot), start, end, points, config,
-                    profiles, geometry, fraction, bsdf, bsdf_face_ids),
+                    profiles, geometry, fraction, bsdf, bsdf_face_ids, sampling_records),
                 surface_faces=tape.face_indices[start:end].tolist(),
                 incoming_packet_lumen=tape.incoming_power_lumen[start:end].tolist(),
                 outgoing_packet_lumen=tape.emitted_power_lumen[start:end].tolist(),
@@ -192,7 +192,7 @@ class ReceiverDiagnostics:
 
 
 def _reflection_evidence(tape, slot, start, end, points, config, profiles,
-                         geometry, fraction, bsdf, bsdf_face_ids):
+                         geometry, fraction, bsdf, bsdf_face_ids, sampling_records):
     from types import SimpleNamespace
     from .native_cpu_counter_wavefront import _bsdf_reference_pdf, _receiver_direction_pdf_reference
     from .wavefront_event_tape import STATUS_ROULETTE_SURVIVED
@@ -234,6 +234,20 @@ def _reflection_evidence(tape, slot, start, end, points, config, profiles,
         before_sampling = config.min_energy if survived else reflected
         weight = after / before_sampling if before_sampling > 0 else None
         reconstructed = base_pdf / mixture_pdf if mixture_pdf else None
+        actual_base = actual_mixture = actual_weight = None
+        records = sampling_records.get(local)
+        if records is not None:
+            slots, pdfs, weights = records
+            position = int(np.searchsorted(slots, slot))
+            if position < len(slots) and slots[position] == slot:
+                actual_base, actual_mixture = map(float, pdfs[position])
+                actual_weight = float(weights[position])
+        matches_reconstruction = None
+        if actual_base is not None and base_pdf is not None:
+            matches_reconstruction = (
+                math.isclose(actual_base, base_pdf, rel_tol=1e-7, abs_tol=1e-12)
+                and math.isclose(actual_mixture, mixture_pdf, rel_tol=1e-7, abs_tol=1e-12)
+            )
         rows.append(dict(face_index=face, scatter_model=profile.scatter_model,
             normal=normal.tolist(), incoming_direction=incoming.tolist(),
             outgoing_direction=outgoing.tolist() if outgoing is not None else None,
@@ -246,6 +260,19 @@ def _reflection_evidence(tape, slot, start, end, points, config, profiles,
             reconstructed_sampling_weight=reconstructed, pdf_matches_packet_weight=(
                 math.isclose(weight, reconstructed, rel_tol=1e-7, abs_tol=1e-12)
                 if weight is not None and reconstructed is not None else None),
+            pdf_record_status=("reconstructed" if base_pdf is not None else
+                "not_applicable_delta" if profile.scatter_model == "specular" and not profile.bsdf_asset_id else
+                "missing_path_direction" if outgoing is None else
+                "missing_bsdf_table" if profile.bsdf_asset_id else "unsupported_scatter_model"),
+            sampling_pdf_capture_status=("captured" if actual_base is not None else
+                "not_applied" if fraction == 0 else
+                "missing_sampling_record" if base_pdf is not None else "not_applicable"),
+            sampled_base_direction_pdf_sr_inverse=actual_base,
+            sampled_mixed_direction_pdf_sr_inverse=actual_mixture,
+            sampled_mis_weight=actual_weight,
+            sampled_pdfs_match_reconstruction=matches_reconstruction,
+            sampled_weight_matches_packet=(math.isclose(actual_weight, weight, rel_tol=1e-7, abs_tol=1e-12)
+                if actual_weight is not None and weight is not None else None),
             pdf_evidence="reconstructed_from_path" if base_pdf is not None else (
                 "delta" if profile.scatter_model == "specular" and not profile.bsdf_asset_id else "unavailable")))
         if outgoing is not None:

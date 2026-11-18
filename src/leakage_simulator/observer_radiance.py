@@ -443,6 +443,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             throughput, value, direct_value = 1., 0., 0.
             source_seen = emission_positive = False
             connections = [0, 0, 0, 0, 0]
+            rejection_details = []
             stop_code = 0
             previous_delta = True
             previous_pdf = 0.
@@ -529,12 +530,22 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         cosine_light = abs(vec_dot(source_normal, vec_mul(wi, -1)))
                         if f <= 0 or cosine_light <= 1e-14:
                             connections[1] += 1
+                            rejection_details.append(dict(depth=depth, outcome="direction_rejected",
+                                reason=("brdf_and_source_grazing" if f <= 0 and cosine_light <= 1e-14 else
+                                        "brdf_nonpositive" if f <= 0 else "source_grazing"),
+                                reflection_point_mm=hit.point, reflection_face_index=hit.face_index,
+                                source_point_mm=point, source_index=source_index))
                         else:
                             # Include endpoint CAD so a Block covering the
                             # source is not skipped as an emitter self-hit.
                             block = yield vec_add(hit.point, vec_mul(wi, epsilon)), wi, epsilon, distance-epsilon+1e-9
                             if not source_connection_visible(mesh, block, distance, epsilon):
                                 connections[2] += 1
+                                rejection_details.append(dict(depth=depth, outcome="occluded",
+                                    reason="source_connection_blocked", reflection_point_mm=hit.point,
+                                    reflection_face_index=hit.face_index, source_point_mm=point,
+                                    source_index=source_index, blocker_face_index=block.face_index,
+                                    blocker_point_mm=block.point, blocker_metadata=mesh.metadata(block.face_index)))
                             else:
                                 pdf = distance2/(sources[source_index][3]*cosine_light*len(sources))
                                 le = emission_radiance(sources[source_index], point, source_normal, vec_mul(wi, -1))
@@ -563,7 +574,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 # No deterministic energy cutoff. Roulette survivors retain
                 # the reciprocal probability weight; finite depth is explicit.
                 origin, direction = vec_add(hit.point, vec_mul(new_direction, epsilon)), new_direction
-            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight, stage_record(source_seen, emission_positive, stop_code, connections)
+            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight, stage_record(source_seen, emission_positive, stop_code, connections, rejection_details)
 
         pending = None
 

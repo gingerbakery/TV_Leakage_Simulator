@@ -65,6 +65,16 @@ def test_measured_mis_native_matches_reference_and_source_is_unchanged():
     assert ref.importance_eligible_mask.all()
     assert 20 < ref.importance_directed_mask.sum() < 76
     assert ref.importance_weights.max() <= 2.
+    assert native.sampling_pdfs is None
+    capture = replace(scene, capture_sampling_pdfs=True)
+    captured_native = plan_counter_native_cpu(capture).result
+    captured_reference = plan_counter_reference(capture)
+    np.testing.assert_array_equal(captured_native.emitted_power_lumen, native.emitted_power_lumen)
+    np.testing.assert_array_equal(captured_native.emitted_directions, native.emitted_directions)
+    np.testing.assert_allclose(captured_native.sampling_pdfs, captured_reference.sampling_pdfs, rtol=2e-12, atol=1e-14)
+    base, mixture = captured_native.sampling_pdfs.T
+    np.testing.assert_allclose(np.divide(base, mixture, out=np.zeros_like(base), where=mixture > 0),
+                               captured_native.importance_weights, rtol=2e-12, atol=1e-14)
     zero = replace(scene, receiver_importance_fraction=0.)
     plain = replace(zero, receiver_centers=None, receiver_normals=None, receiver_u_axes=None,
         receiver_v_axes=None, receiver_half_widths=None, receiver_half_heights=None,

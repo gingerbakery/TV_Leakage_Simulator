@@ -4416,6 +4416,7 @@ def _plan_counter_wavefront_rows(
     planner_stats: _WavefrontPlannerStats,
     receiver_importance_geometry: Optional[ReceiverImportanceGeometry],
     bounce_sampling_enabled: bool,
+    capture_sampling_pdfs: bool = False,
 ) -> Tuple[CounterWavefrontPlanResult, np.ndarray]:
     """Plan all hit rows under the row-addressable stochastic contract.
 
@@ -4564,6 +4565,7 @@ def _plan_counter_wavefront_rows(
                 else 0.0
             ),
             epsilon_mm=config.epsilon_mm,
+            capture_sampling_pdfs=capture_sampling_pdfs,
             angle_dependent_reflectance=(
                 config.angle_dependent_reflectance
             ),
@@ -7839,9 +7841,9 @@ def _trace_multi_bounce_wavefront_soa_batch(
     path_payload_requested = (
         config.store_ray_paths and config.max_stored_paths > 0
     )
-    path_payload_enabled = path_payload_requested and _stored_path_payload_required(
-        stored_paths,
-        config.max_stored_paths,
+    path_payload_enabled = path_payload_requested and (
+        config.receiver_diagnostics
+        or _stored_path_payload_required(stored_paths, config.max_stored_paths)
     )
     wavefront_summary["event_tape_path_payload_requested"] = (
         TAPE_PATH_PAYLOAD_FULL
@@ -7857,6 +7859,11 @@ def _trace_multi_bounce_wavefront_soa_batch(
         if path_payload_enabled
         else None
     )
+    sampling_records = {}
+    capture_sampling_pdfs = bool(
+        path_payload_enabled and config.receiver_diagnostics and bounce_sampling_enabled
+    )
+
     def trace_subranges(batch_size):
         totals = [0, 0, 0]
         for batch_start in range(0, ray_count, batch_size):
@@ -8018,7 +8025,16 @@ def _trace_multi_bounce_wavefront_soa_batch(
                 planner_stats,
                 receiver_importance_geometry,
                 bounce_sampling_enabled,
+                capture_sampling_pdfs=capture_sampling_pdfs,
             )
+            if native_plan.sampling_pdfs is not None:
+                eligible = native_plan.importance_eligible_mask
+                slots = active.primary_slots[counter_rows[eligible]]
+                if len(slots):
+                    sampling_records[depth] = (
+                        slots, native_plan.sampling_pdfs[eligible],
+                        native_plan.importance_weights[eligible],
+                    )
             if bounce_sampling_enabled:
                 bounce_sampling_stats.record_plan(native_plan)
         else:
@@ -8366,7 +8382,7 @@ def _trace_multi_bounce_wavefront_soa_batch(
             tape, receivers, emitter_seed, primary_start_index, planner_stats.rng_contract,
             config, resolved_optical_by_face, receiver_importance_geometry,
             config.bounce_receiver_importance_fraction if bounce_sampling_enabled else 0.0,
-            planner_stats.bsdf_packed, planner_stats.bsdf_face_ids)
+            planner_stats.bsdf_packed, planner_stats.bsdf_face_ids, sampling_records)
     counts = _commit_wavefront_event_tape(
         tape, mesh, config, receivers, receiver_grids, optical_summary,
         reflection_summary, contribution_summary, face_contribution_cache,

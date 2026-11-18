@@ -149,6 +149,7 @@ class CounterWavefrontPlanInput:
     angle_dependent_reflectance: bool = True
     bsdf: PackedBsdf = field(default_factory=PackedBsdf.empty)
     bsdf_indices: Optional[np.ndarray] = None
+    capture_sampling_pdfs: bool = False
 
     def __post_init__(self) -> None:
         directions = _owned_readonly_vectors(
@@ -392,8 +393,14 @@ class CounterWavefrontPlanResult:
     importance_zero_weight_mask: BoolArray | ArrayLike
     importance_unsupported_mask: BoolArray | ArrayLike
     importance_weights: FloatArray | ArrayLike
+    sampling_pdfs: FloatArray | None = None
 
     def __post_init__(self) -> None:
+        if self.sampling_pdfs is not None:
+            pdfs = _owned_readonly_output(self.sampling_pdfs, np.float64)
+            if pdfs.shape != (len(self.importance_weights), 2) or not np.all(np.isfinite(pdfs) & (pdfs >= 0)):
+                raise ValueError("sampling_pdfs must contain two finite non-negative values per row")
+            object.__setattr__(self, "sampling_pdfs", pdfs)
         supported = _owned_readonly_output(self.supported_mask, np.bool_)
         reflected = _owned_readonly_output(
             self.reflected_power_lumen,
@@ -588,7 +595,7 @@ def plan_counter_reference(
 
     if not isinstance(batch, CounterWavefrontPlanInput):
         raise TypeError("batch must be a CounterWavefrontPlanInput")
-    arrays = _allocate_outputs(len(batch))
+    arrays = _allocate_outputs(len(batch), batch.capture_sampling_pdfs)
     for row_index in range(len(batch)):
         _plan_reference_row(batch, row_index, arrays)
     return _result_from_arrays(arrays)
@@ -607,7 +614,7 @@ def plan_counter_native_cpu(
             capability.reason_code or "numba_unavailable"
         )
     kernel, jit_compile_sec = _ensure_kernel()
-    arrays = _allocate_outputs(len(batch))
+    arrays = _allocate_outputs(len(batch), batch.capture_sampling_pdfs)
     started = time.perf_counter()
     def execute_range(start: int, end: int) -> None:
         kernel(
@@ -682,6 +689,7 @@ def _plan_reference_row(
         BoolArray,
         BoolArray,
         FloatArray,
+        FloatArray,
     ],
 ) -> None:
     (
@@ -697,6 +705,7 @@ def _plan_reference_row(
         importance_zero_weight,
         importance_unsupported,
         importance_weights,
+        sampling_pdfs,
     ) = arrays
     supported[row_index] = True
     incoming = tuple(float(value) for value in batch.incoming_directions[row_index])
@@ -757,10 +766,12 @@ def _plan_reference_row(
         draws[row_index] = min(255, int(draws[row_index]) + draw_count)
         if batch.receiver_importance_fraction > 0.0:
             importance_eligible[row_index] = True
-            direction, weight, directed = _receiver_mis_reference(
+            direction, weight, directed, source_pdf, mixture_pdf = _receiver_mis_reference(
                 batch, row_index, key, surface_normal, direction)
             importance_directed[row_index] = directed
             importance_weights[row_index] = weight
+            if len(sampling_pdfs):
+                sampling_pdfs[row_index] = (source_pdf, mixture_pdf)
             draws[row_index] = min(255, int(draws[row_index]) + (4 if directed else 1))
             if weight <= 0.0:
                 importance_zero_weight[row_index] = True
@@ -776,7 +787,7 @@ def _plan_reference_row(
         lobe = LOBE_LAMBERTIAN
         if batch.receiver_importance_fraction > 0.0:
             importance_eligible[row_index] = True
-            direction, weight, directed = _receiver_mis_reference(
+            direction, weight, directed, source_pdf, mixture_pdf = _receiver_mis_reference(
                 batch,
                 row_index,
                 key,
@@ -785,6 +796,8 @@ def _plan_reference_row(
             )
             importance_directed[row_index] = directed
             importance_weights[row_index] = weight
+            if len(sampling_pdfs):
+                sampling_pdfs[row_index] = (source_pdf, mixture_pdf)
             draws[row_index] += 4 if directed else 1
             if weight <= 0.0:
                 importance_zero_weight[row_index] = True
@@ -835,7 +848,7 @@ def _receiver_mis_reference(
     key: int,
     surface_normal: tuple[float, float, float],
     source_direction: tuple[float, float, float],
-) -> tuple[tuple[float, float, float], float, bool]:
+) -> tuple[tuple[float, float, float], float, bool, float, float]:
     fraction = batch.receiver_importance_fraction
     direction = source_direction
     directed = counter_uniform(key, batch.depth, LANE_BOUNCE_MIS_SELECT) < fraction
@@ -883,7 +896,7 @@ def _receiver_mis_reference(
     weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
     if not math.isfinite(weight) or weight < 0.0:
         raise ValueError("bounce MIS produced an invalid weight")
-    return direction, weight, directed
+    return direction, weight, directed, source_pdf, mixture_pdf
 
 
 def _receiver_direction_pdf_reference(
@@ -1311,14 +1324,14 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         )
         mixture_pdf = (1.0 - fraction) * source_pdf + fraction * proposal_pdf
         weight = source_pdf / mixture_pdf if mixture_pdf > 0.0 else 0.0
-        return direction_x, direction_y, direction_z, weight, directed
+        return direction_x, direction_y, direction_z, weight, directed, source_pdf, mixture_pdf
 
     bsdf_reflectance, bsdf_sample, bsdf_pdf = make_bsdf_functions(
         numba.njit(inline="always", fastmath=False), uniform, include_pdf=True,
     )
 
     @numba.njit(nogil=True, fastmath=False, inline="always")
-    def packed_kernel(inputs, settings, receivers, outputs):
+    def packed_kernel(inputs, settings, receivers, outputs, sampling_pdfs=None):
         (
             incoming_directions, surface_normals, incoming_power_lumen,
             profile_reflectance, profile_roughness, scatter_models,
@@ -1453,6 +1466,8 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                         direction_z,
                         importance_weight,
                         importance_directed,
+                        source_pdf,
+                        mixture_pdf,
                     ) = receiver_mis(
                         key,
                         depth,
@@ -1479,6 +1494,9 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                     )
                     importance_directed_mask[row_index] = importance_directed
                     importance_weights[row_index] = importance_weight
+                    if sampling_pdfs is not None and len(sampling_pdfs):
+                        sampling_pdfs[row_index, 0] = source_pdf
+                        sampling_pdfs[row_index, 1] = mixture_pdf
                     rng_draw_counts[row_index] = min(255, int(rng_draw_counts[row_index]) + (4 if importance_directed else 1))
                     if importance_weight <= 0.0:
                         importance_zero_weight_mask[row_index] = True
@@ -1503,6 +1521,8 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                         direction_z,
                         importance_weight,
                         importance_directed,
+                        source_pdf,
+                        mixture_pdf,
                     ) = receiver_mis(
                         key,
                         depth,
@@ -1529,6 +1549,9 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                     )
                     importance_directed_mask[row_index] = importance_directed
                     importance_weights[row_index] = importance_weight
+                    if sampling_pdfs is not None and len(sampling_pdfs):
+                        sampling_pdfs[row_index, 0] = source_pdf
+                        sampling_pdfs[row_index, 1] = mixture_pdf
                     rng_draw_counts[row_index] += 4 if importance_directed else 1
                     if importance_weight <= 0.0:
                         importance_zero_weight_mask[row_index] = True
@@ -1628,6 +1651,7 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
         importance_zero_weight_mask: BoolArray,
         importance_unsupported_mask: BoolArray,
         importance_weights: FloatArray,
+        sampling_pdfs: FloatArray,
     ) -> None:
         packed_kernel(
             (
@@ -1652,6 +1676,7 @@ def _make_kernel(*, packed: bool = False) -> Callable[..., None]:
                 importance_zero_weight_mask, importance_unsupported_mask,
                 importance_weights,
             ),
+            sampling_pdfs,
         )
 
     return packed_kernel if packed else plan_kernel
@@ -1765,7 +1790,7 @@ def _validate_result(
 
 
 def _allocate_outputs(
-    row_count: int,
+    row_count: int, capture_sampling_pdfs: bool = False,
 ) -> tuple[
     BoolArray,
     FloatArray,
@@ -1778,6 +1803,7 @@ def _allocate_outputs(
     BoolArray,
     BoolArray,
     BoolArray,
+    FloatArray,
     FloatArray,
 ]:
     return (
@@ -1793,6 +1819,7 @@ def _allocate_outputs(
         np.zeros(row_count, dtype=np.bool_),
         np.zeros(row_count, dtype=np.bool_),
         np.ones(row_count, dtype=np.float64),
+        np.zeros((row_count if capture_sampling_pdfs else 0, 2), dtype=np.float64),
     )
 
 
@@ -1810,6 +1837,7 @@ def _result_from_arrays(
         BoolArray,
         BoolArray,
         FloatArray,
+        FloatArray,
     ],
 ) -> CounterWavefrontPlanResult:
     return CounterWavefrontPlanResult(
@@ -1825,6 +1853,7 @@ def _result_from_arrays(
         importance_zero_weight_mask=arrays[9],
         importance_unsupported_mask=arrays[10],
         importance_weights=arrays[11],
+        sampling_pdfs=arrays[12] if len(arrays[12]) else None,
     )
 
 

@@ -129,16 +129,22 @@ class LinkedPathEvidenceTests(TestCase):
         self.assertEqual(mis["sample_count"], 8192)
         self.assertEqual([row["seed"] for row in source["batches"]], [row["seed"] for row in mis["batches"]])
         self.assertGreater(mis["hits"], 16)
+        captured_bounces = 0
         for batch in report["path_evidence"]:
             paths = batch["detected_paths"]
             self.assertEqual(paths["max_single_ray_flux_lumen"], max((p["flux_lumen"] for p in paths["samples"]), default=0.0))
             for path in paths["samples"]:
                 for bounce in path["reflections"]:
+                    captured_bounces += 1
+                    self.assertEqual(bounce["sampling_pdf_capture_status"], "captured", bounce)
+                    self.assertTrue(bounce["sampled_pdfs_match_reconstruction"], bounce)
+                    self.assertTrue(bounce["sampled_weight_matches_packet"], bounce)
                     self.assertTrue(bounce["pdf_matches_packet_weight"], bounce)
                     self.assertAlmostEqual(bounce["effective_reflectance"], .9)
                     self.assertAlmostEqual(bounce["outgoing_packet_lumen"],
                         bounce["incoming_packet_lumen"] * bounce["effective_reflectance"]
                         * bounce["applied_sampling_weight"] / bounce["roulette_survival_probability"])
+        self.assertGreater(captured_bounces, 0)
 
     def test_reverse_connection_counters_partition_attempts(self):
         summary = empty_stages()
