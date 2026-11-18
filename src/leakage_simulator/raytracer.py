@@ -8362,7 +8362,11 @@ def _trace_multi_bounce_wavefront_soa_batch(
     tape = tape_builder.seal()
     tape_seal_elapsed = time.perf_counter() - tape_seal_started
     if intersection_stats.receiver_diagnostics is not None:
-        intersection_stats.receiver_diagnostics.capture_tape(tape, receivers, emitter_seed, primary_start_index, planner_stats.rng_contract)
+        intersection_stats.receiver_diagnostics.capture_tape(
+            tape, receivers, emitter_seed, primary_start_index, planner_stats.rng_contract,
+            config, resolved_optical_by_face, receiver_importance_geometry,
+            config.bounce_receiver_importance_fraction if bounce_sampling_enabled else 0.0,
+            planner_stats.bsdf_packed, planner_stats.bsdf_face_ids)
     counts = _commit_wavefront_event_tape(
         tape, mesh, config, receivers, receiver_grids, optical_summary,
         reflection_summary, contribution_summary, face_contribution_cache,

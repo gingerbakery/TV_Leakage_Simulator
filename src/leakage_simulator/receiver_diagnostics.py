@@ -26,7 +26,7 @@ class ReceiverDiagnostics:
             receiver_id=f.receiver.receiver_id, segments_tested=0,
             receiver_settings=f.receiver.to_dict(),
             detected_paths=dict(contract="bounded_detected_paths_v1", limit=self.path_limit, samples=[],
-                scope="actual_detected_rays_not_reference_replay", truncated=False),
+                scope="actual_detected_rays_not_reference_replay", truncated=False, tape_hit_count=0),
             counts={key: 0 for key in CATEGORIES},
             segment_flux_lumen={key: 0.0 for key in CATEGORIES},
         ) for f in frames}
@@ -38,7 +38,8 @@ class ReceiverDiagnostics:
                     segments_started=0, min_origin_distance_mm=None,
                     counts={key: 0 for key in CATEGORIES}, examples={})
 
-    def capture_tape(self, tape, frames, emitter_seed, primary_start_index, rng_contract):
+    def capture_tape(self, tape, frames, emitter_seed, primary_start_index, rng_contract,
+                     config, profiles, geometry, fraction, bsdf, bsdf_face_ids):
         """Read actual detected paths from an already executed bounded event tape."""
         from .wavefront_event_tape import PATH_PAYLOAD_FULL, TERMINAL_RECEIVER
         if tape.path_payload != PATH_PAYLOAD_FULL:
@@ -47,7 +48,10 @@ class ReceiverDiagnostics:
             frame = frames[int(tape.terminal_receiver_indices[slot])]
             row = self.rows[frame.receiver.receiver_id]
             capture = row['detected_paths']
-            if len(capture['samples']) >= self.path_limit:
+            capture["tape_hit_count"] += 1
+            flux = float(tape.terminal_received_power_lumen[slot])
+            samples = capture['samples']
+            if len(samples) >= self.path_limit and flux <= samples[-1]['flux_lumen']:
                 continue
             start, end = tape.primary_event_bounds(int(slot))
             points = [tape.initial_origins[slot].tolist(), *tape.points[start:end].tolist(), tape.terminal_points[slot].tolist()]
@@ -59,9 +63,9 @@ class ReceiverDiagnostics:
                 vertices = np.asarray(points)
                 delta = vertices[1:] - vertices[:-1]
                 denom = np.sum(delta*delta, axis=1)
-                fraction = np.clip(np.divide(np.sum((point-vertices[:-1])*delta, axis=1), denom,
+                segment_fraction = np.clip(np.divide(np.sum((point-vertices[:-1])*delta, axis=1), denom,
                     out=np.zeros(len(delta)), where=denom > 0), 0., 1.)
-                nearest = float(np.min(np.linalg.norm(vertices[:-1]+fraction[:, None]*delta-point, axis=1)))
+                nearest = float(np.min(np.linalg.norm(vertices[:-1]+segment_fraction[:, None]*delta-point, axis=1)))
                 nearest_vertex = float(np.min(np.linalg.norm(vertices[1:-1]-point, axis=1))) if end > start else None
             capture['samples'].append(dict(
                 ray_id=f'{self.emitter_id}:{emitter_seed}:{primary_start_index+int(slot)}',
@@ -69,7 +73,10 @@ class ReceiverDiagnostics:
                 reflection_seed=str(int(tape.reflection_seeds[slot])), rng_contract=rng_contract,
                 launch_origin=points[0], launch_direction=tape.initial_directions[slot].tolist(),
                 source_face=int(tape.initial_source_faces[slot]), initial_packet_lumen=float(tape.initial_power_lumen[slot]),
-                points=points, reflection_count=end-start, flux_lumen=float(tape.terminal_received_power_lumen[slot]),
+                points=points, reflection_count=end-start, flux_lumen=flux,
+                receiver_incoming_packet_lumen=float(tape.terminal_incoming_power_lumen[slot]),
+                reflections=_reflection_evidence(tape, int(slot), start, end, points, config,
+                    profiles, geometry, fraction, bsdf, bsdf_face_ids),
                 surface_faces=tape.face_indices[start:end].tolist(),
                 incoming_packet_lumen=tape.incoming_power_lumen[start:end].tolist(),
                 outgoing_packet_lumen=tape.emitted_power_lumen[start:end].tolist(),
@@ -77,6 +84,8 @@ class ReceiverDiagnostics:
                 selected_point_min_segment_distance_mm=nearest,
                 selected_point_min_reflection_distance_mm=nearest_vertex,
                 selected_point_radius_mm=reference['radius_mm'] if reference else None))
+            samples.sort(key=lambda sample: sample['flux_lumen'], reverse=True)
+            del samples[self.path_limit:]
 
     def observe(self, origins, directions, powers, frames, config,
                 surface_distances, selected_indices, selected_distances,
@@ -159,6 +168,9 @@ class ReceiverDiagnostics:
             grid = grids[row["receiver_id"]]
             capture = row['detected_paths']
             capture['recorded_count'] = len(capture['samples'])
+            capture['max_single_ray_flux_lumen'] = None
+            if not stopped and capture['tape_hit_count'] == grid.hit_count:
+                capture['max_single_ray_flux_lumen'] = capture['samples'][0]['flux_lumen'] if grid.hit_count else 0.0
             capture['actual_hit_count'] = grid.hit_count
             capture['truncated'] = grid.hit_count > len(capture['samples'])
             capture['complete'] = not stopped and not capture['truncated']
@@ -177,3 +189,65 @@ class ReceiverDiagnostics:
                     escaped_segments=self.escaped_segments,
                     escaped_segment_flux_lumen=self.escaped_segment_flux_lumen,
                     injected_hits=0)
+
+
+def _reflection_evidence(tape, slot, start, end, points, config, profiles,
+                         geometry, fraction, bsdf, bsdf_face_ids):
+    from types import SimpleNamespace
+    from .native_cpu_counter_wavefront import _bsdf_reference_pdf, _receiver_direction_pdf_reference
+    from .wavefront_event_tape import STATUS_ROULETTE_SURVIVED
+
+    proposal = None
+    if fraction > 0:
+        proposal = SimpleNamespace(receiver_centers=geometry.centers, receiver_normals=geometry.normals,
+            receiver_u_axes=geometry.u_axes, receiver_v_axes=geometry.v_axes,
+            receiver_half_widths=geometry.half_widths, receiver_half_heights=geometry.half_heights,
+            epsilon_mm=config.epsilon_mm)
+    vertices = np.asarray(points)
+    incoming = tape.initial_directions[slot]
+    rows = []
+    for local, event in enumerate(range(start, end)):
+        face = int(tape.face_indices[event])
+        profile = profiles[face].profile
+        normal = tape.normals[event]
+        if np.dot(incoming, normal) > 0:
+            normal = -normal
+        outgoing = vertices[local+2] - vertices[local+1]
+        length = np.linalg.norm(outgoing)
+        outgoing = outgoing / length if length > 0 else None
+        base_pdf = receiver_pdf = mixture_pdf = None
+        applied_fraction = 0.0
+        material = int(bsdf_face_ids[face]) if bsdf_face_ids is not None else -1
+        if outgoing is not None and material >= 0 and bsdf is not None:
+            base_pdf = float(_bsdf_reference_pdf(material, *incoming, *normal, *outgoing, *bsdf.arrays()))
+        elif outgoing is not None and profile.scatter_model == "lambertian" and not profile.bsdf_asset_id:
+            base_pdf = max(0.0, float(np.dot(normal, outgoing))) / math.pi
+        if base_pdf is not None:
+            applied_fraction = fraction
+            if proposal is not None:
+                receiver_pdf = _receiver_direction_pdf_reference(proposal, tuple(vertices[local+1]), tuple(outgoing))
+            mixture_pdf = (1-fraction)*base_pdf + fraction*(receiver_pdf or 0.0)
+        before = float(tape.incoming_power_lumen[event])
+        reflected = float(tape.reflected_power_lumen[event])
+        after = float(tape.emitted_power_lumen[event])
+        survived = bool(tape.status_flags[event] & STATUS_ROULETTE_SURVIVED)
+        before_sampling = config.min_energy if survived else reflected
+        weight = after / before_sampling if before_sampling > 0 else None
+        reconstructed = base_pdf / mixture_pdf if mixture_pdf else None
+        rows.append(dict(face_index=face, scatter_model=profile.scatter_model,
+            normal=normal.tolist(), incoming_direction=incoming.tolist(),
+            outgoing_direction=outgoing.tolist() if outgoing is not None else None,
+            effective_reflectance=reflected / before if before > 0 else None,
+            incoming_packet_lumen=before, reflected_packet_lumen=reflected,
+            roulette_survival_probability=reflected / config.min_energy if survived else 1.0,
+            outgoing_packet_lumen=after, applied_sampling_weight=weight,
+            base_direction_pdf_sr_inverse=base_pdf, receiver_direction_pdf_sr_inverse=receiver_pdf,
+            mixed_direction_pdf_sr_inverse=mixture_pdf, receiver_mixture_fraction=applied_fraction,
+            reconstructed_sampling_weight=reconstructed, pdf_matches_packet_weight=(
+                math.isclose(weight, reconstructed, rel_tol=1e-7, abs_tol=1e-12)
+                if weight is not None and reconstructed is not None else None),
+            pdf_evidence="reconstructed_from_path" if base_pdf is not None else (
+                "delta" if profile.scatter_model == "specular" and not profile.bsdf_asset_id else "unavailable")))
+        if outgoing is not None:
+            incoming = outgoing
+    return rows

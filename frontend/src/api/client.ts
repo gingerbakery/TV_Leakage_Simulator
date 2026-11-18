@@ -39,8 +39,26 @@ export interface ReverseStageEvidence {
   index: number
   stages: { available: boolean; sample_count: number; missing_records?: number; counts?: Record<string, number> }
 }
+export interface ForwardSamplingBatch {
+  index: number
+  hits: number
+  flux_lumen: number
+  effective_samples: number
+  max_single_ray_share: number | null
+  execution: Record<string, unknown>
+}
+export interface ForwardSamplingSummary {
+  batches: ForwardSamplingBatch[]
+  sample_count?: number
+  hits?: number
+  mean_flux_lumen?: number
+  batch_stddev_lumen?: number
+  effective_samples?: number
+  max_single_ray_share?: number | null
+}
 export interface SensorComparisonReport {
   complete?: boolean
+  forward_sampling?: Record<"source" | "receiver_mis", ForwardSamplingSummary>
   path_evidence?: ComparisonPathEvidence[]
   reverse_diagnostics?: ReverseStageEvidence[]
   physical_input_sha256?: string

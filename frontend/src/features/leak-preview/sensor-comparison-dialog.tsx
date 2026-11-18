@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { NumberInput } from '@/components/ui/number-input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { SensorComparisonJob } from '@/api/client'
-import { SensorBatchDiagnostics } from './sensor-batch-diagnostics'
+import { ForwardSamplingDiagnostics, SensorBatchDiagnostics } from './sensor-batch-diagnostics'
 import { comparisonConclusion, comparisonValidationAdvice } from './validation-guidance'
 import { ValidationNextStep } from './validation-next-step'
 import { ForwardDetectionDiagnostics } from './forward-detection-diagnostics'
@@ -43,7 +43,10 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     return () => { disposed = true; clearTimeout(timer) }
   }, [pending])
   const report = job?.report
-  const executions = report?.batches?.flatMap(row => [row.forward_execution, row.reverse_execution]) ?? []
+  const executions = [
+    ...(report?.batches?.flatMap(row => [row.forward_execution, row.reverse_execution]) ?? []),
+    ...(report?.forward_sampling?.source.batches.map(row => row.execution) ?? []),
+  ]
   const count = (key: string) => executions.reduce((sum, row) => sum + (typeof row[key] === 'number' ? row[key] as number : 0), 0)
   const sameSensor = Boolean(report && sameComparisonInput(job?.input_request,request))
   const displayedReport = job?.status === 'stopped' && report
@@ -88,7 +91,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
     }}>비교 시작</Button><Button variant="outline" disabled={!active || job?.stop_requested} onClick={async () => {
       try { if (job) setJob(await apiClient.stopSensorComparison(job.job_id)) } catch (e) { setError(String(e)) }
     }}>{job?.stop_requested ? '중지 요청됨' : '중지'}</Button></div>
-    {job ? <div role="status" className="text-xs">{({ queued: '대기', running: '계산 중', completed: '완료', stopped: '중지', failed: '실패' })[job.status]} · {Math.round(job.progress * 100)}% · {job.batch}/{report?.options.batches ?? batches}회 · {({ preparing: '형상 준비', forward: '순방향', reverse: '역추적', original_policy: '기존 종료 조건', path_evidence: '검출 경로 재검사', finished: '종료' } as Record<string, string>)[job.phase] ?? job.phase}</div> : null}
+    {job ? <div role="status" className="text-xs">{({ queued: '대기', running: '계산 중', completed: '완료', stopped: '중지', failed: '실패' })[job.status]} · {Math.round(job.progress * 100)}% · {job.batch}/{report?.options.batches ?? batches}회 · {({ preparing: '형상 준비', forward: '순방향 receiver_mis', forward_source: '순방향 source', reverse: '역추적', original_policy: '기존 종료 조건', path_evidence: '검출 경로 재검사', finished: '종료' } as Record<string, string>)[job.phase] ?? job.phase}</div> : null}
     {error || job?.error ? <div role="alert" className="text-xs text-destructive">{error || job?.error}</div> : null}
     {(error || job?.status === 'failed') && !report ? <ValidationNextStep label="광량 비교 실행 오류 다음 단계" advice={{title:'실행 오류 확인 후 재비교',steps:[
       '오류 문구와 서버 로그의 발생 위치를 확인하세요. 실행이 실패했으므로 광량 일치·불일치·빛샘 없음은 판정할 수 없습니다.',
@@ -117,6 +120,7 @@ export function SensorComparisonDialog({ request, onClose }: { request: RayTrace
             <tr><th className="text-left">순방향 검출 / 역추적 양수</th><td>{report.forward_hits ?? '—'} / {report.reverse_positive_samples ?? '—'}</td></tr>
             <tr><th className="text-left">유효 표본 F / R</th><td>{report.forward_effective_samples?.toFixed(1) ?? '—'} / {report.reverse_effective_samples?.toFixed(1) ?? '—'}</td></tr>
           </tbody></table>
+          {report.complete && report.forward_sampling ? <ForwardSamplingDiagnostics sampling={report.forward_sampling} /> : null}
           {report.batches?.length ? <SensorBatchDiagnostics rows={report.batches} /> : null}
           {report.original_termination_probe ? <div>기존 종료 조건 · {flux(report.original_termination_probe.forward_flux_lumen)} lm · {report.original_termination_probe.forward_hits} hits</div> : null}
         </div>

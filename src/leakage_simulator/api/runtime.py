@@ -1111,7 +1111,10 @@ class ApiRuntime:
                 return job["stop_requested"]
         def progress(batch, phase, done, total):
             with self._state_lock:
-                job.update(batch=batch+1, phase=phase, progress=max(job["progress"], min(.99, (batch*2+(phase == "reverse")+done/max(1,total))/(options.batches*2))))
+                phase_index = {"forward": 0, "forward_source": 1, "reverse": 2}.get(phase)
+                fraction = job["progress"] if phase_index is None else (
+                    batch*3+phase_index+done/max(1, total))/(options.batches*3)
+                job.update(batch=batch+1, phase=phase, progress=max(job["progress"], min(.99, fraction)))
         def worker():
             try:
                 with self._state_lock:

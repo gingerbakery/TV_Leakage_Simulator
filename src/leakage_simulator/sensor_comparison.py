@@ -46,7 +46,7 @@ class ComparisonOptions:
             raise ValueError("독립 반복 수는 4/8/16 중 선택하세요.")
         if not 32 <= self.forward_samples <= 250000 or not 32 <= self.reverse_samples <= 100000:
             raise ValueError("반복당 순방향 32..250000, 역추적 32..100000 표본이 필요합니다.")
-        if self.batches*(self.forward_samples+self.reverse_samples) > 4000000:
+        if self.batches*(2*self.forward_samples+self.reverse_samples) > 4000000:
             raise ValueError("검증 예산은 총 4,000,000 표본 이하여야 합니다.")
         if not math.isfinite(self.tolerance_percent) or not .1 <= self.tolerance_percent <= 25:
             raise ValueError("허용 차이는 0.1..25% 범위여야 합니다.")
@@ -137,6 +137,34 @@ def summarize_batches(rows, options):
         uncertainty_method="conservative_independent_batch_t95_diagnostic", formal_coverage_guaranteed=False)
 
 
+def forward_sampling_row(index, seed, result, capture, elapsed):
+    grid = result.receiver_grids[0]
+    flux = math.fsum(v for row in grid.flux_lumen for v in row)
+    squares = grid.flux_squared_lumen2
+    maximum = capture.get("max_single_ray_flux_lumen")
+    receiver_diagnostics = result.metrics.get("_receiver_diagnostics", {}).get("receivers", [])
+    reference_sampling = receiver_diagnostics[0].get("reference_sampling") if receiver_diagnostics else None
+    return dict(index=index, seed=seed, sample_count=result.total_rays, hits=grid.hit_count,
+        flux_lumen=flux, flux_square_sum=squares,
+        effective_samples=flux*flux/squares if squares > 0 else 0.0,
+        max_single_ray_flux_lumen=maximum, max_single_ray_share=maximum/flux if maximum is not None and flux > 0 else None,
+        reference_sampling=reference_sampling, elapsed_sec=elapsed, execution=result.metrics.get("_performance_summary", {}))
+
+
+def summarize_forward_sampling(rows):
+    fluxes = [row["flux_lumen"] for row in rows]
+    flux = math.fsum(fluxes)
+    squares = math.fsum(row["flux_square_sum"] for row in rows)
+    maxima = [row["max_single_ray_flux_lumen"] for row in rows]
+    mean = flux/len(rows)
+    deviation = float(np.std(fluxes, ddof=1))
+    return dict(sample_count=sum(row["sample_count"] for row in rows), hits=sum(row["hits"] for row in rows),
+        mean_flux_lumen=mean, batch_stddev_lumen=deviation, batch_cv=deviation/mean if mean > 0 else None,
+        effective_samples=flux*flux/squares if squares > 0 else 0.0,
+        max_single_ray_share=max(maxima)/flux if flux > 0 and all(value is not None for value in maxima) else None,
+        batches=rows)
+
+
 def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, backend="gpu_cuda"):
     from .raytracer import run_direct_ray_trace, _build_receiver_frame
     from .observer_path_validation import validate_receiver_evidence
@@ -195,10 +223,11 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
         geometry_sha256=geometry_digest.hexdigest(), execution_backend=backend, preflight=preflight_record, requested_project_backend=trace.config.compute_backend, gpu_execution_proven=False,
         witness=witness, options=options.__dict__, batches=[], complete=False, verdict="inconclusive",
         forward_diagnostics=[], path_evidence=[], reverse_diagnostics=[],
+        forward_sampling=dict(source=dict(batches=[]), receiver_mis=dict(batches=[])),
         source_model_calibrated=False, comparison_unit="lumen", original_config_preserved=True,
         validation_overrides=dict(compute_backend=backend, min_energy=0., termination_mode="russian_roulette",
             primary_sampling_strategy="source", bounce_sampling_strategy="receiver_mis", bounce_receiver_importance_fraction=0.5,
-            reverse_bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
+            forward_baseline_bounce_sampling_strategy="source", reverse_bounce_sampling_strategy="source", single_receiver=True, receiver_diagnostics=True),
         limitations=["finite_sampling", "batch_t_approximation", "reflection_only", "not_real_TV_validation"])
     report["code_sha256"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path(__file__).parent.glob("*.py")}
     from .forward_path_replay import replay_forward_path
@@ -244,6 +273,25 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
             report.update(reason="forward_gpu_execution_not_proven", runtime_sec=time.perf_counter()-started,
                 failed_execution=forward_performance)
             return report
+        report["forward_sampling"]["receiver_mis"]["batches"].append(
+            forward_sampling_row(batch+1, fseed, result, capture, forward_sec))
+        baseline_input = replace(forward_input, config=replace(forward_input.config, bounce_sampling_strategy="source"))
+        phase_started = time.perf_counter()
+        if progress:
+            progress(batch, "forward_source", 0, options.forward_samples)
+        baseline = run_direct_ray_trace(baseline_input, should_stop=should_stop,
+            progress_callback=(lambda n, total: progress(batch, "forward_source", n, total)) if progress else None)
+        baseline_capture = detected_paths(baseline, receiver.receiver_id)
+        baseline_row = forward_sampling_row(batch+1, fseed, baseline, baseline_capture, time.perf_counter()-phase_started)
+        if (should_stop and should_stop()) or baseline_row["execution"].get("stopped_early"):
+            report.update(reason="stopped", runtime_sec=time.perf_counter()-started)
+            return report
+        if backend == "gpu_cuda" and not gpu_proven(baseline_row["execution"]):
+            report.update(reason="forward_source_gpu_execution_not_proven", runtime_sec=time.perf_counter()-started,
+                failed_execution=baseline_row["execution"])
+            return report
+        baseline_row["detected_paths"] = baseline_capture
+        report["forward_sampling"]["source"]["batches"].append(baseline_row)
         pair_budget = max(0, min(2, 16-sum(row.get('policy_pair', {}).get('checked_count', 0) for row in report['path_evidence'])))
         if pair_budget and capture['samples']:
             if progress:
@@ -295,9 +343,20 @@ def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, ba
             report['original_termination_probe']['diagnostics'] = original.metrics.get('_receiver_diagnostics')
             report["original_termination_probe"]["execution"] = original.metrics.get("_performance_summary", {})
             report["original_termination_probe"]["gpu_execution_proven"] = gpu_proven(report["original_termination_probe"]["execution"])
+    for strategy, sampling in report["forward_sampling"].items():
+        report["forward_sampling"][strategy] = summarize_forward_sampling(sampling["batches"])
+    differences = [mis["flux_lumen"] - source["flux_lumen"] for mis, source in zip(
+        report["forward_sampling"]["receiver_mis"]["batches"], report["forward_sampling"]["source"]["batches"])]
+    mean_difference = float(np.mean(differences))
+    half_width = _T95[options.batches] * float(np.std(differences, ddof=1)) / math.sqrt(options.batches)
+    report["forward_sampling_pair"] = dict(shared_seeds=True, mean_mis_minus_source_lumen=mean_difference,
+        paired_batch_t95_diagnostic_lumen=[mean_difference-half_width, mean_difference+half_width],
+        formal_coverage_guaranteed=False)
     report.update(summarize_batches(report["batches"], options), complete=True, runtime_sec=time.perf_counter()-started,
         gpu_execution_proven=backend == "gpu_cuda")
-    report["compute_execution_state"] = "gpu_mixed" if backend == "gpu_cuda" and any(row[key].get("compute_execution_state") == "gpu_mixed" for row in report["batches"] for key in ("forward_execution", "reverse_execution")) else "gpu_active" if backend == "gpu_cuda" else "cpu"
+    report["compute_execution_state"] = "gpu_mixed" if backend == "gpu_cuda" and any(execution.get("compute_execution_state") == "gpu_mixed" for execution in (
+        [row[key] for row in report["batches"] for key in ("forward_execution", "reverse_execution")]
+        + [row["execution"] for row in report["forward_sampling"]["source"]["batches"]])) else "gpu_active" if backend == "gpu_cuda" else "cpu"
     return report
 
 

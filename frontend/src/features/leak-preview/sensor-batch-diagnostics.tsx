@@ -1,4 +1,4 @@
-import type { SensorComparisonBatch } from '@/api/client'
+import type { ForwardSamplingSummary, SensorComparisonBatch } from '@/api/client'
 import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { HelpTooltip } from '@/components/common/help-tooltip'
 
@@ -41,6 +41,44 @@ export function SensorBatchDiagnostics({ rows }: { rows: SensorComparisonBatch[]
           <td className="px-1">{row.forward_hits ?? '—'} / {row.reverse_positive_samples ?? '—'}</td>
           <td className="px-1">{effectiveSamples(row, false)} / {effectiveSamples(row, true)}</td>
         </tr>)}</tbody>
+      </table>
+    </div>
+  </CollapsibleSection>
+}
+
+
+export function ForwardSamplingDiagnostics({ sampling }: {
+  sampling: Record<'source' | 'receiver_mis', ForwardSamplingSummary>
+}) {
+  const percent = (value?: number | null) => value == null ? '—' : `${(100 * value).toFixed(5)}%`
+  return <CollapsibleSection title="순방향 추출 비교" defaultOpen={false}>
+    <div className="flex items-center gap-1 text-xs">동일 시드 · 동일 표본
+      <HelpTooltip label="순방향 추출 비교 도움말">표준편차는 독립 회차 광량으로 계산합니다. 최대 기여율은 전체 또는 해당 회차 광량에서 한 광선이 차지하는 비중입니다. 큰 기여율은 광량 추정의 표본 집중도를 보여줍니다.</HelpTooltip>
+    </div>
+    <div className="overflow-x-auto">
+      <table aria-label="순방향 추출 비교" className="w-full whitespace-nowrap text-xs tabular-nums">
+        <thead><tr>{['추출', '표본', '검출', '유효 표본', '최대 기여율', '평균 (lm)', '표준편차 (lm)'].map(label =>
+          <th key={label} scope="col" className="px-1 text-left">{label}</th>)}</tr></thead>
+        <tbody>{Object.entries(sampling).map(([strategy, row]) => <tr key={strategy}>
+          <th scope="row" className="px-1 text-left">{strategy}</th>
+          <td>{row.sample_count ?? '—'}</td><td>{row.hits ?? '—'}</td><td>{row.effective_samples?.toFixed(2) ?? '—'}</td>
+          <td>{percent(row.max_single_ray_share)}</td><td>{flux(row.mean_flux_lumen)}</td><td>{flux(row.batch_stddev_lumen)}</td>
+        </tr>)}</tbody>
+      </table>
+      <table aria-label="회차별 순방향 추출 비교" className="w-full whitespace-nowrap text-xs tabular-nums">
+        <thead><tr>{['회', '추출', '검출', '유효 표본', '최대 기여율', '광량 (lm)'].map(label =>
+          <th key={label} scope="col" className="px-1 text-left">{label}</th>)}</tr></thead>
+        <tbody>{sampling.source.batches.flatMap((source, index) => {
+          const mis = sampling.receiver_mis.batches[index]
+          return ([['source', source], ['receiver_mis', mis]] as const).map(([strategy, row]) => {
+            if (row == null) return null
+            return <tr key={`${strategy}-${row.index}`}>
+              <th scope="row" className="px-1 text-left">{row.index}</th><td>{strategy}</td>
+              <td>{row.hits}</td><td>{row.effective_samples.toFixed(2)}</td>
+              <td>{percent(row.max_single_ray_share)}</td><td>{flux(row.flux_lumen)}</td>
+            </tr>
+          })
+        })}</tbody>
       </table>
     </div>
   </CollapsibleSection>

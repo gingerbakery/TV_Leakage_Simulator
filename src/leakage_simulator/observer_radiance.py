@@ -438,10 +438,11 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             else:
                 launch, direction, camera_weight = sensor.launch(index, rng)
                 if camera_weight == 0:
-                    return index, 0., None, 0, launch, 0., 0., stage_record(False, False, 6)
+                    return index, 0., None, 0, launch, 0., 0., stage_record(False, False, 6, (0, 0, 0, 0, 0))
             origin = launch
             throughput, value, direct_value = 1., 0., 0.
             source_seen = emission_positive = False
+            connections = [0, 0, 0, 0, 0]
             stop_code = 0
             previous_delta = True
             previous_pdf = 0.
@@ -519,18 +520,25 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                     emitter, point, source_normal, face = _sample_source(sources, source_index, rng)
                     delta = vec_sub(point, hit.point)
                     distance2 = vec_dot(delta, delta)
-                    if distance2 > (4*epsilon)**2:
+                    if distance2 <= (4*epsilon)**2:
+                        connections[0] += 1
+                    else:
                         distance = math.sqrt(distance2)
                         wi = vec_mul(delta, 1/distance)
                         f = brdf(profile, normal, wi, wo, config.angle_dependent_reflectance)
                         cosine_light = abs(vec_dot(source_normal, vec_mul(wi, -1)))
-                        if f > 0 and cosine_light > 1e-14:
+                        if f <= 0 or cosine_light <= 1e-14:
+                            connections[1] += 1
+                        else:
                             # Include endpoint CAD so a Block covering the
                             # source is not skipped as an emitter self-hit.
                             block = yield vec_add(hit.point, vec_mul(wi, epsilon)), wi, epsilon, distance-epsilon+1e-9
-                            if source_connection_visible(mesh, block, distance, epsilon):
+                            if not source_connection_visible(mesh, block, distance, epsilon):
+                                connections[2] += 1
+                            else:
                                 pdf = distance2/(sources[source_index][3]*cosine_light*len(sources))
                                 le = emission_radiance(sources[source_index], point, source_normal, vec_mul(wi, -1))
+                                connections[4 if le > 0 else 3] += 1
                                 # All lengths in the solid-angle ratio are mm;
                                 # mm²/mm² cancels. Le itself uses physical m².
                                 q = continuation_pdf(profile, normal, wo, wi, config.angle_dependent_reflectance)
@@ -555,7 +563,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 # No deterministic energy cutoff. Roulette survivors retain
                 # the reciprocal probability weight; finite depth is explicit.
                 origin, direction = vec_add(hit.point, vec_mul(new_direction, epsilon)), new_direction
-            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight, stage_record(source_seen, emission_positive, stop_code)
+            return index, value*camera_weight, representative, max_depth, launch, best*camera_weight, direct_value*camera_weight, stage_record(source_seen, emission_positive, stop_code, connections)
 
         pending = None
 

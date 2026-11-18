@@ -119,6 +119,42 @@ class LinkedPathEvidenceTests(TestCase):
             self.assertEqual(stage['counts']['positive'],32)
         self.assertFalse(trace.config.receiver_diagnostics)
 
+    def test_forward_sampling_records_packet_factors_and_paired_budget(self):
+        trace = scene("lambertian", mirror=True)
+        trace.optical_profiles[0].scatter_model = "lambertian"
+        report = run_sensor_comparison(trace, ComparisonOptions("common", batches=4, forward_samples=2048, reverse_samples=32))
+        source = report["forward_sampling"]["source"]
+        mis = report["forward_sampling"]["receiver_mis"]
+        self.assertEqual(source["sample_count"], 8192)
+        self.assertEqual(mis["sample_count"], 8192)
+        self.assertEqual([row["seed"] for row in source["batches"]], [row["seed"] for row in mis["batches"]])
+        self.assertGreater(mis["hits"], 16)
+        for batch in report["path_evidence"]:
+            paths = batch["detected_paths"]
+            self.assertEqual(paths["max_single_ray_flux_lumen"], max((p["flux_lumen"] for p in paths["samples"]), default=0.0))
+            for path in paths["samples"]:
+                for bounce in path["reflections"]:
+                    self.assertTrue(bounce["pdf_matches_packet_weight"], bounce)
+                    self.assertAlmostEqual(bounce["effective_reflectance"], .9)
+                    self.assertAlmostEqual(bounce["outgoing_packet_lumen"],
+                        bounce["incoming_packet_lumen"] * bounce["effective_reflectance"]
+                        * bounce["applied_sampling_weight"] / bounce["roulette_survival_probability"])
+
+    def test_reverse_connection_counters_partition_attempts(self):
+        summary = empty_stages()
+        record_stages(summary, [
+            (0, 0., None, 0, None, 0., 0., stage_record(False, False, 1, (0, 0, 0, 0, 0))),
+            (1, 0., None, 0, None, 0., 0., stage_record(False, False, 1, (1, 2, 3, 0, 0))),
+            (2, 0., None, 0, None, 0., 0., stage_record(True, False, 1, (0, 0, 0, 1, 0))),
+        ])
+        missing = summary["source_not_encountered_connections"]
+        self.assertEqual(missing["no_attempt_samples"], 1)
+        self.assertEqual(missing["attempted_samples"], 1)
+        self.assertEqual(missing["attempts"], 6)
+        self.assertEqual(missing["occluded"], 3)
+        self.assertEqual(missing["direction_rejected"], 2)
+        self.assertEqual(summary["source_connections"]["visible_emission_zero"], 1)
+
     def test_reverse_missing_records_and_zero_have_distinct_meanings(self):
         summary = empty_stages()
         items = [(0, 0.,None,0,None,0.,0.,stage_record(False,False,1)),
@@ -146,7 +182,8 @@ class LinkedPathEvidenceTests(TestCase):
             resolved = OpticalPropertyResolver(trace.mesh,trace.optical_profiles,[]).resolve_all()
             sensor = FiniteSensor(_build_receiver_frame(trace.receivers[0]),32)
             values,_ = reference_chunk(trace,pack_scene(trace.mesh,_source_geometry(trace.mesh,trace.emitters),resolved),sensor.plans()[0],trace.receivers[0].center,0,0,32,sensor=sensor)
-            self.assertEqual(values.shape,(32,11))
+            self.assertEqual(values.shape,(32,16))
+            self.assertTrue(np.all(values[:,11:] == 0))
             self.assertTrue(np.all(values[:,8] == (0 if blocked else 1)))
             self.assertTrue(np.all(values[:,9] == (0 if blocked else 1)))
             self.assertTrue(np.all(values[:,0] == 0) if blocked else np.all(values[:,0] > 0))
