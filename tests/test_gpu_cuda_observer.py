@@ -80,8 +80,13 @@ class ResidentObserverEquationsTests(TestCase):
             def __init__(self, *args, **kwargs):
                 pass
             def run(self, *args):
-                return [], SimpleNamespace(cpu_fallback=True), 0
-        with self.assertRaisesRegex(ObserverGpuUnsupported, "optical_preflight_failed:direct"):
+                return [], SimpleNamespace(
+                    cpu_fallback=True, reason="observer_resident_first_chunk_parity_failed"
+                ), 0
+        with self.assertRaisesRegex(
+            ObserverGpuUnsupported,
+            "optical_preflight_failed:direct: observer_resident_first_chunk_parity_failed",
+        ):
             verify_resident_optics(Fallback)
 
     def test_face_emitter_is_not_lost_in_resident_transport(self):

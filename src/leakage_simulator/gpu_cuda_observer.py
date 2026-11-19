@@ -700,7 +700,10 @@ def verify_resident_optics(session_type):
         plan = sampling_plan(trace.observer_probe, (-10., -10., -10.), (10., 10., 10.), "neg_z", 0)[0]
         completed, execution, _ = probe.run(plan, (0., 0., 0.), 0, 0, 32)
         if getattr(execution, "cpu_fallback", False) or not probe.validated:
-            raise ObserverGpuUnsupported(f"observer_resident_optical_preflight_failed:{mode}")
+            reason = getattr(execution, "reason", None)
+            if not reason:
+                reason = "cpu_fallback" if getattr(execution, "cpu_fallback", False) else "gpu_result_not_validated"
+            raise ObserverGpuUnsupported(f"observer_resident_optical_preflight_failed:{mode}: {reason}")
         analytic = {"direct": 100., "coplanar": 100., "blocked": 0., "coplanar_blocked": 0., "coplanar_blocker": 0., "specular": 90.}.get(mode)
         values = np.array([item[1] for item in completed])
         if (analytic is not None and not np.allclose(values, analytic, rtol=1e-9, atol=1e-10)) or (reflected and not np.any(values > 0)):
