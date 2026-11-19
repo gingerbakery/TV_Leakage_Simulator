@@ -51,6 +51,8 @@ export interface BatchRayTraceCaseState {
   status: BatchRayTraceCaseStatus
   progress: number
   phaseDetail: string
+  processedRays?: number
+  totalRays?: number
   jobId: string | null
   runId: string | null
   error: string | null
@@ -91,6 +93,8 @@ export interface BatchRayTracingControllerOptions {
   pollIntervalMs?: number
   onStateChange?(state: BatchRayTraceState): void
   getAuxiliaryBlockers?(snapshot: CadCaseRayTraceSnapshot): AuxiliaryBlockers
+  /** Scene already loaded for the first input's CAD source. */
+  initialScene?: ScenePayload
   /** Execution-owned detached inputs may share immutable libraries (e.g. an
    * angle sweep). The owner also validates freshness and stores results, so
    * the general Case store does not clone the library/result for every view. */
@@ -373,6 +377,7 @@ export function createBatchRayTracingController(
     autoConvergence: boolean,
   ): Promise<RayTraceResult> => {
     ensureNotAborted(signal)
+    updateCase(snapshot.caseId, { phaseDetail: '서버 해석 요청 응답 대기 중' })
     // Do not abort the start request after dispatch: the server may already
     // have created a job while the response carrying its job_id is in flight.
     // We must receive that id and explicitly stop/confirm the worker instead.
@@ -396,6 +401,8 @@ export function createBatchRayTracingController(
         maximumMultiplier,
       ),
       phaseDetail: job.phase_detail ?? job.phase,
+      processedRays: job.processed_rays,
+      totalRays: job.total_rays,
       geometryCacheHit: job.geometry_cache_hit ?? null,
       segmentIndex,
       rayMultiplier,
@@ -416,6 +423,8 @@ export function createBatchRayTracingController(
             maximumMultiplier,
           ),
           phaseDetail: job.phase_detail ?? job.phase,
+          processedRays: job.processed_rays,
+          totalRays: job.total_rays,
           geometryCacheHit: job.geometry_cache_hit ?? null,
         })
       }
@@ -447,6 +456,9 @@ export function createBatchRayTracingController(
     signal: AbortSignal,
   ): Promise<BatchRayTraceState> => {
     const sceneCache = new Map<string, ScenePayload>()
+    if (options.initialScene && snapshots[0]) {
+      sceneCache.set(batchSourceKey(snapshots[0]), options.initialScene)
+    }
     const rememberScene = (key: string, scene: ScenePayload) => {
       sceneCache.delete(key)
       sceneCache.set(key, scene)
@@ -566,6 +578,12 @@ export function createBatchRayTracingController(
         while (true) {
           ensureNotAborted(signal)
           const runSegment = async () => {
+            updateCase(snapshot.caseId, {
+              status: 'preparing',
+              phaseDetail: '해석 요청 준비 중',
+              processedRays: undefined,
+              totalRays: undefined,
+            })
             const request = requestForSegment(
               snapshot,
               scene!,
@@ -594,6 +612,10 @@ export function createBatchRayTracingController(
             if (!cacheExpired || signal.aborted) throw error
             const [primaryPath, ...accessoryPaths] =
               cadCaseRayTraceSourcePaths(snapshot)
+            updateCase(snapshot.caseId, {
+              status: 'loading_scene',
+              phaseDetail: 'CAD Scene 캐시 복구 중',
+            })
             scene = await client.getScene(
               primaryPath,
               { signal },

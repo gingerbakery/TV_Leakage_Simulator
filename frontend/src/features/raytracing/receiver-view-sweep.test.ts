@@ -33,10 +33,13 @@ it('runs each angle independently using a shared scene while leaving the user Ca
   const client={getScene:vi.fn(async()=>scene),getGpuCudaStatus:vi.fn(),startRayTrace,getRayTraceJob:vi.fn(),stopRayTrace:vi.fn()}
   let reports: ReceiverViewReport[]=[]
   const controller=createReceiverViewSweepController({store,client,onStateChange:(_state,next)=>{reports=next}})
-  const state=await controller.run('receiver_001',scene)
+  const uuid = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+    throw new Error('randomUUID is unavailable over LAN HTTP')
+  })
+  const state = await controller.run('receiver_001', scene).finally(() => uuid.mockRestore())
   expect(state.status).toBe('completed')
   expect(startRayTrace).toHaveBeenCalledTimes(9)
-  expect(client.getScene).toHaveBeenCalledOnce()
+  expect(client.getScene).not.toHaveBeenCalled()
   const requests=startRayTrace.mock.calls.map(([request])=>request)
   expect(new Set(requests.map((request)=>JSON.stringify(request.receivers[0].normal))).size).toBe(9)
   expect(requests.every((request)=>request.receivers.length===1 && !('view_angles' in request.receivers[0]))).toBe(true)
@@ -83,7 +86,7 @@ it('shares one detached BSDF library across the reported 99-angle setup without 
   reports.forEach((report, index) => expect(report.result).toBe(results[index]))
   expect(store.getState().cadCases).toEqual(before)
   expect(store.getState().bsdfAssets![0]).toBe(originalAsset)
-  expect(client.getScene).toHaveBeenCalledOnce()
+  expect(client.getScene).not.toHaveBeenCalled()
 })
 
 it('does not start while another analysis owns the global lock', async () => {

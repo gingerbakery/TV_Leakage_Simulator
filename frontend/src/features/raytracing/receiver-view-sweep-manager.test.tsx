@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { workspaceStore } from '@/stores'
 import { createSceneFixture } from '@/test/scene-fixture'
@@ -10,8 +10,39 @@ import { createViewAngleReceiver, defaultReceiverView } from './receiver-view'
 const mocks=vi.hoisted(()=>({getScene:vi.fn(),getGpuCudaStatus:vi.fn(),startRayTrace:vi.fn(),getRayTraceJob:vi.fn(),stopRayTrace:vi.fn()}))
 vi.mock('@/api',async(importOriginal)=>({...await importOriginal<typeof import('@/api')>(),apiClient:mocks}))
 import { useReceiverViewSweepManager } from './receiver-view-sweep-manager'
+import { ReceiverViewSweepDialog } from './receiver-view-sweep-dialog'
 
-afterEach(()=>{cleanup();workspaceStore.getState().actions.resetWorkspace();vi.clearAllMocks()})
+afterEach(()=>{cleanup();vi.useRealTimers();workspaceStore.getState().actions.resetWorkspace();vi.clearAllMocks()})
+
+it('shows the active phase and processed rays when overall progress would round to zero', () => {
+  vi.useFakeTimers()
+  const startedAt = Date.now()
+  const current = {
+    caseId: 'active', name: '14° / 9°', status: 'running' as const, progress: 0.00001,
+    phaseDetail: 'Ray 계산 진행 중', processedRays: 10, totalRays: 1_000_000,
+    jobId: 'job', runId: null, error: null, geometryCacheHit: null, segmentIndex: 0, rayMultiplier: 1,
+  }
+  const manager: React.ComponentProps<typeof ReceiverViewSweepDialog>['manager'] = {
+    open: true, setOpen: vi.fn(), reportOpen: false, setReportOpen: vi.fn(),
+    reports: [], error: '', stopping: false, scene: undefined, isRunning: true,
+    run: vi.fn(), cancel: vi.fn(),
+    state: { batchId: 'sweep', status: 'running', currentCaseId: current.caseId,
+      progress: current.progress / 2, startedAt, completedAt: null,
+      cases: [current, { ...current, caseId: 'next', name: '14° / 10°', status: 'pending' }] },
+  }
+  const { rerender } = render(<ReceiverViewSweepDialog manager={manager} />)
+  expect(screen.getByRole('status').textContent).toContain('<0.01%')
+  expect(screen.getByRole('status').textContent).toContain('14° / 9° · Ray 계산 진행 중')
+  expect(screen.getByRole('status').textContent).toContain(`10 / ${(1_000_000).toLocaleString()} Ray`)
+  expect(screen.getByText('대기')).toBeTruthy()
+  act(() => vi.advanceTimersByTime(2_000))
+  expect(screen.getByRole('timer').textContent).toBe('00:00:02')
+  rerender(<ReceiverViewSweepDialog manager={{ ...manager, isRunning: false,
+    state: { ...manager.state!, status: 'completed', completedAt: startedAt + 3_000 },
+  }} />)
+  act(() => vi.advanceTimersByTime(5_000))
+  expect(screen.getByRole('timer').textContent).toBe('00:00:03')
+})
 
 it('keeps the queue alive when the progress window closes and stops it explicitly on cancel',async()=>{
   const scene=createSceneFixture(), actions=workspaceStore.getState().actions

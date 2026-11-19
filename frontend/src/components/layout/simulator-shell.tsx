@@ -1,5 +1,6 @@
 import { useReceiverViewSweepManager } from '@/features/raytracing/receiver-view-sweep-manager'
 import { ReceiverViewSweepDialog } from '@/features/raytracing/receiver-view-sweep-dialog'
+import { formatReceiverViewSweepProgress } from '@/features/raytracing/receiver-view-sweep'
 import {
   useEffect,
   useMemo,
@@ -1267,7 +1268,7 @@ export function SimulatorShell() {
           </Badge>
         </div>
         <div className="flex items-center gap-2">
-          {receiverViewSweep.state ? <Button size="sm" variant="outline" onClick={() => receiverViewSweep.setOpen(true)}>{receiverViewSweep.isRunning ? `시야각 ${Math.round((receiverViewSweep.state.progress ?? 0)*100)}%` : '시야각 결과'}</Button> : null}
+          {receiverViewSweep.state ? <Button size="sm" variant="outline" onClick={() => receiverViewSweep.setOpen(true)}>{receiverViewSweep.isRunning ? `시야각 ${formatReceiverViewSweepProgress(receiverViewSweep.state.progress)}` : '시야각 결과'}</Button> : null}
           <input
             ref={projectFileInputRef}
             type="file"

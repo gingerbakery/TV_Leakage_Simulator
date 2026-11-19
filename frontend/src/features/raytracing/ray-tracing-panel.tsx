@@ -1047,6 +1047,37 @@ function EmitterDialog({
   )
 }
 
+function ReceiverCenterCoordinates({ center }: { center: Vec3 }) {
+  const coordinateInput = useRef<HTMLTextAreaElement>(null)
+  const [copyFeedback, setCopyFeedback] = useState<{ value: string; message: string } | null>(null)
+  const value = center.join(', ')
+  const copy = async () => {
+    let message = '복사됨'
+    try {
+      await navigator.clipboard.writeText(value)
+    } catch {
+      coordinateInput.current?.focus()
+      coordinateInput.current?.select()
+      try {
+        if (!document.execCommand?.('copy')) message = 'Ctrl+C로 복사'
+      } catch {
+        message = 'Ctrl+C로 복사'
+      }
+    }
+    setCopyFeedback({ value, message })
+  }
+
+  return <div className="min-w-0 space-y-0.5 text-xs">
+    <div className="flex flex-wrap items-center gap-1">
+      <span>중심 X/Y/Z (mm)</span>
+      <HelpTooltip label="Receiver 중심 좌표 도움말">도면 원점 (0, 0, 0) 기준의 실제 수광면 중심입니다. 거리와 오프셋이 반영된 X, Y, Z를 쉼표로 구분해 복사합니다.</HelpTooltip>
+      <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => void copy()}>좌표 복사</Button>
+      {copyFeedback?.value === value ? <span role="status">{copyFeedback.message}</span> : null}
+    </div>
+    <textarea ref={coordinateInput} aria-label="Receiver 중심 X/Y/Z (mm)" className="block w-full min-w-0 field-sizing-content resize-none bg-transparent font-mono" rows={1} value={value} readOnly />
+  </div>
+}
+
 function ReceiverDialog({
   open,
   mode,
@@ -1440,6 +1471,9 @@ function ReceiverDialog({
             onChange={(event) => setDisplayName(event.currentTarget.value)}
           />
         </label>
+        {initialReceiver?.reference_mode === 'leak_preview_candidate' ? (
+          <ReceiverCenterCoordinates center={previewReceiver?.center ?? initialReceiver.center} />
+        ) : null}
         {mode === 'datum_plane' ? <>
         <ViewerFacePickControl
           armed={datumFacePickArmed}
@@ -2619,6 +2653,7 @@ export function RayTracingPanel({
                     {' · '}
                     {receiver.width_mm} × {receiver.height_mm} mm
                   </div>
+                  {receiver.reference_mode === 'leak_preview_candidate' ? <ReceiverCenterCoordinates center={receiver.center} /> : null}
                 </div>
                 <Button
                   variant="ghost"

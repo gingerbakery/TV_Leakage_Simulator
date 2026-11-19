@@ -19,10 +19,15 @@ it('edits the distance from a fixed Leak Point through zero while retaining angl
     reference_mode:'leak_preview_candidate', display_name:'Near point', width_mm:26, height_mm:38,
     observer_reference_path:[point,[30,30,-20]] as [number,number,number][] }
   act(() => workspaceStore.getState().actions.upsertReceiver(original))
+  const coordinates = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Receiver 중심 X/Y/Z (mm)' })
+  expect(coordinates.value).toBe(original.center.join(', '))
+  fireEvent.click(screen.getByRole('button', { name: '좌표 복사' }))
+  expect(coordinates.selectionEnd).toBe(coordinates.value.length)
   fireEvent.click(screen.getByRole('button',{name:'Edit Near point'}))
   expect(screen.getByRole('combobox',{name:'Receiver 거리 기준'})).toHaveProperty('value','leak_point')
   change('Receiver Leak Point 거리',0)
   expect(workspaceStore.getState().placementPreviewReceiver?.center).toEqual(point)
+  expect(screen.getByRole('dialog').querySelector('[aria-label="Receiver 중심 X/Y/Z (mm)"]')).toHaveProperty('value', '30, 30, 10')
   expect(screen.getByText('0 mm · 검출면과 겹침')).toBeTruthy()
   change('Receiver Leak Point 거리',1)
   fireEvent.click(screen.getByRole('button',{name:'Save Receiver'}))

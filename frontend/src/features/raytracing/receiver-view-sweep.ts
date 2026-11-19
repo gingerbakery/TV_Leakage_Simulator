@@ -16,6 +16,13 @@ export interface ReceiverViewSweepOptions {
   onStateChange?(state: BatchRayTraceState, reports: ReceiverViewReport[]): void
 }
 
+let nextSweepId = 0
+
+export function formatReceiverViewSweepProgress(progress: number) {
+  if (progress > 0 && progress < 0.0001) return '<0.01%'
+  return `${(progress * 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
+}
+
 /** Isolated virtual Cases reuse the existing serialized, cancellable Batch runner. */
 export function createReceiverViewSweepController(options: ReceiverViewSweepOptions) {
   let controller: ReturnType<typeof createBatchRayTracingController> | null = null
@@ -33,7 +40,7 @@ export function createReceiverViewSweepController(options: ReceiverViewSweepOpti
       if (!template?.view_angles || enabled.length !== 1) throw new Error('각도별 해석에는 시야각 Receiver 하나만 활성화하세요.')
       const views = expandReceiverView(template, scene, source.workspaceState.transformRules)
       const staged = createWorkspaceStore()
-      const sweepId = crypto.randomUUID()
+      const sweepId = ++nextSweepId
       // `source` is already detached from the user's Case. Share its read-only
       // BSDF/optical/source inputs across views instead of cloning them N times.
       const snapshots: CadCaseRayTraceSnapshot[] = views.map((receiver: ReceiverSpec, index) => ({
@@ -49,6 +56,7 @@ export function createReceiverViewSweepController(options: ReceiverViewSweepOpti
       const validateSource = () => options.store.getState().actions.validateCadCaseRayTraceSetup(source.caseId, source.setupHash)
       controller = createBatchRayTracingController({
         store: staged, pollIntervalMs: options.pollIntervalMs,
+        initialScene: scene,
         caseSource: {
           snapshot: (ids) => { const wanted = new Set(ids); return snapshots.filter((snapshot) => wanted.has(snapshot.caseId)) },
           validate: validateSource,
