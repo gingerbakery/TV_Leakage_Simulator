@@ -2431,8 +2431,8 @@ def run_direct_ray_trace(
             raise ValueError("경로 유도는 활성 Receiver 한 개에서 사용할 수 있습니다.")
         if trace_input.config.termination_mode == "threshold" and trace_input.config.min_energy > 0:
             raise ValueError("경로 유도에는 Minimum energy 0 또는 Russian Roulette 종료 방식이 필요합니다.")
-        if trace_input.bsdf_assets:
-            raise ValueError("BSDF 표를 사용하는 해석에는 경로 유도가 지원되지 않습니다.")
+        # Preview guidance reweights the emitter direction only. The normal
+        # transport pipeline still evaluates any BSDF at the actual surface hit.
         primary_strategy = "preview_path_mis"
         primary_fraction = guided_frames[0].receiver.path_guidance_percent / 100
     primary_sampling_stats = _PrimarySamplingStats(

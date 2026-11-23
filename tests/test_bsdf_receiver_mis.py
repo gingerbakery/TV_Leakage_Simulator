@@ -207,3 +207,28 @@ def test_production_bsdf_mis_respects_occlusion_and_replays_detected_paths():
             pair = pair_detected_paths(scene, scene, capture, 1)
             assert pair['records'][0]['state'] == 'verified', pair
             assert pair['records'][0]['reason'] == 'original_also_detected'
+
+
+def test_preview_guidance_uses_bsdf_reflectance_on_actual_surface_hits():
+    scene = _build_reflected_case(8192, 123, "source")
+    receiver = replace(scene.receivers[0],
+        observer_reference_path=[(0., 0., 0.), (0., 0., 10.), (0., 0., -10.)],
+        path_guidance_percent=50)
+    scene = replace(scene, receivers=[receiver],
+        emitters=[replace(scene.emitters[0], direction_distribution="lambertian")],
+        config=replace(scene.config, min_energy=0.))
+
+    fluxes = []
+    for reflectance in (.3, .6):
+        asset = synthetic_asset(reflectance=reflectance)
+        reflector = replace(scene.optical_profiles[0], reflectance=0., bsdf_asset_id=asset["id"])
+        result = run_direct_ray_trace(replace(scene, bsdf_assets=[asset],
+            optical_profiles=[reflector, scene.optical_profiles[1]]))
+        performance = result.metrics["_performance_summary"]
+        assert performance["primary_sampling_strategy"] == "preview_path_mis"
+        assert 3800 < performance["primary_sampling_receiver_directed_ray_count"] < 4400
+        assert result.receiver_hit_count > 0
+        fluxes.append(result.metrics["observer"]["total_flux_lumen"])
+
+    assert fluxes[0] > 0
+    assert math.isclose(fluxes[1], 2 * fluxes[0], rel_tol=1e-12)
