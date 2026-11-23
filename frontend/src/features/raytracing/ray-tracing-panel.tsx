@@ -1120,6 +1120,7 @@ function ReceiverDialog({
   const [capturedFrame, setCapturedFrame] =
     useState<ViewerCameraFrame | null>(null)
   const [normalFlip, setNormalFlip] = useState(false)
+  const [pathGuidancePercent, setPathGuidancePercent] = useState<number | null>(null)
   const [datumFaceAssigned, setDatumFaceAssigned] = useState(false)
   const [receiverSourceFaceIds, setReceiverSourceFaceIds] =
     useState<number[]>([])
@@ -1173,6 +1174,7 @@ function ReceiverDialog({
     setPositionOffset(initialReceiver?.position_offset_mm ?? [0, 0, 0])
     setTilt(initialReceiver?.tilt_xyz_deg ?? [0, 0, 0])
     setNormalFlip(initialReceiver?.normal_flip ?? (mode !== 'view_angle'))
+    setPathGuidancePercent(initialReceiver?.path_guidance_percent ?? null)
     setDatumFaceAssigned(Boolean(initialReceiver))
     const initialSourceFaceIds = initialReceiver?.source_face_indices ?? []
     setReceiverSourceFaceIds(initialSourceFaceIds)
@@ -1383,6 +1385,7 @@ function ReceiverDialog({
     onApply({
       ...initialReceiver,
       ...receiver,
+      path_guidance_percent: pathGuidancePercent,
       ...(initialReceiver?.reference_mode === 'leak_preview_candidate' && mode === 'view_angle'
         ? { reference_mode: 'leak_preview_candidate' } : {}),
       source_face_indices:
@@ -1474,6 +1477,16 @@ function ReceiverDialog({
         {initialReceiver?.reference_mode === 'leak_preview_candidate' ? (
           <ReceiverCenterCoordinates center={previewReceiver?.center ?? initialReceiver.center} />
         ) : null}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label className="flex items-center gap-1">
+            <input type="checkbox" checked={pathGuidancePercent !== null} onChange={event => setPathGuidancePercent(event.currentTarget.checked ? 50 : null)} />
+            경로 유도
+          </label>
+          <HelpTooltip label="Receiver 경로 유도 도움말">저장 경로가 있으면 재사용합니다. 경로가 없으면 해석 시작 시 짧은 역추적으로 찾으며, 경로를 찾지 못하면 기본 발사로 진행합니다. 발사 확률 차이는 광량 가중치로 보정합니다. 활성 Receiver 한 개와 Minimum energy 0 또는 Russian Roulette가 필요합니다.</HelpTooltip>
+          {pathGuidancePercent !== null ? (
+            <NumberField label="유도 비중 (%)" value={pathGuidancePercent} min={1} max={95} step={1} decimals={0} onChange={value => setPathGuidancePercent(Math.max(1, Math.min(95, value)))} />
+          ) : null}
+        </div>
         {mode === 'datum_plane' ? <>
         <ViewerFacePickControl
           armed={datumFacePickArmed}

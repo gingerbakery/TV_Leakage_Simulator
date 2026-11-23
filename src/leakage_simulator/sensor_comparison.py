@@ -98,6 +98,34 @@ class FiniteSensor:
         return rays
 
 
+def discover_receiver_guidance_path(trace, frame, resolved, should_stop):
+    """Search a bounded set of reverse rays for a launch proposal only."""
+    emitters = [
+        emitter for emitter in trace.emitters
+        if emitter.enabled and emitter.direction_distribution in {"lambertian", "isotropic"}
+        and emitter.emission_direction != "both"
+        and not (emitter.aim is not None and emitter.aim.enabled)
+    ]
+    if not emitters:
+        return None, "unsupported_emitters", 0
+    # Search the forward-facing hemisphere; the forward Receiver still applies
+    # its configured acceptance, including settings wider than a hemisphere.
+    sensor_frame = replace(frame, receiver=replace(
+        frame.receiver, acceptance_angle_deg=min(90., frame.receiver.acceptance_angle_deg)))
+    budget = 256
+    local = replace(trace, emitters=emitters,
+        config=replace(trace.config, compute_backend="cpu", max_depth=min(4, trace.config.max_depth)),
+        observer_probe=dict(samples_per_cell=budget, min_luminance_nit=0.))
+    center = frame.receiver.center
+    collector = SimpleNamespace(minimum=center, maximum=center, direction="neg_z", regions=[])
+    result = trace_observer_radiance(local, collector, resolved, should_stop,
+        sensor=FiniteSensor(sensor_frame, budget), capture_sensor_path=True, batch_size=32)
+    if not result["complete"]:
+        return None, "stopped", result["sample_count"]
+    path = result["representative_path"]
+    return path, "reverse_path_found" if path else "reverse_path_not_found", result["sample_count"]
+
+
 def summarize_batches(rows, options):
     """Batch-t equivalence diagnostic; overlap is never a passing criterion."""
     if len(rows) != options.batches:

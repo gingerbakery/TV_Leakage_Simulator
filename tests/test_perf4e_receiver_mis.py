@@ -39,11 +39,34 @@ def test_preview_path_guidance_uses_saved_ratio_and_keeps_receiver_geometry():
     result = run_direct_ray_trace(trace)
     performance = result.metrics["_performance_summary"]
     assert performance["primary_sampling_strategy"] == "preview_path_mis"
+    assert performance["path_guidance_status"] == "saved_path"
+    assert performance["path_guidance_reverse_samples"] == 0
     assert performance["receiver_importance_fraction"] == .25
     assert 900 < performance["primary_sampling_receiver_directed_ray_count"] < 1150
     assert result.receiver_hit_count > 900
     assert result.receivers[0] == receiver
     assert abs(result.metrics["observer"]["total_flux_lumen"] - 16 / (np.pi * 100**2)) < 1e-4
+
+
+def test_manual_receiver_discovers_path_and_falls_back_when_facing_away():
+    trace = _build_case(512, 101, "source")
+    receiver = replace(trace.receivers[0], center=(0, 0, 1), path_guidance_percent=50)
+    trace = replace(trace, receivers=[receiver], config=replace(trace.config, min_energy=0))
+
+    guided = run_direct_ray_trace(trace)
+    performance = guided.metrics["_performance_summary"]
+    assert performance["path_guidance_status"] == "reverse_path_found"
+    assert performance["path_guidance_reverse_samples"] == 256
+    assert performance["primary_sampling_receiver_directed_ray_count"] > 0
+    assert guided.total_rays == 512
+    assert guided.receivers[0].observer_reference_path is None
+
+    away = replace(receiver, normal=(0, 0, 1))
+    result = run_direct_ray_trace(replace(trace, receivers=[away]))
+    performance = result.metrics["_performance_summary"]
+    assert performance["path_guidance_status"] == "reverse_path_not_found"
+    assert performance["primary_sampling_strategy"] == "source"
+    assert result.total_rays == 512
 
 
 def _source_mesh() -> tuple[TriangleMesh, list[int]]:

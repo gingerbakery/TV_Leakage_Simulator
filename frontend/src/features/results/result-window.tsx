@@ -2658,6 +2658,8 @@ export function RayTraceResultWindow({
   }
   const contribution = result.contribution_summary
   const performance = metricGroup(result, '_performance_summary')
+  const guidanceStatus = performance.path_guidance_status
+  const guidanceSamples = numeric(performance.path_guidance_reverse_samples)
   const reflection = metricGroup(result, '_reflection_summary')
   const termination = metricGroup(result, '_termination_summary')
   const optical = metricGroup(result, '_optical_summary')
@@ -3208,6 +3210,19 @@ export function RayTraceResultWindow({
           ) : null}
           {tab === 'summary' ? (
             <div className="space-y-3">
+              {typeof guidanceStatus === 'string' && guidanceStatus !== 'disabled' ? (
+                <div role="status" className="flex items-center gap-1 text-xs">
+                  {guidanceStatus === 'saved_path' ? '경로 유도 · 저장 경로'
+                    : guidanceStatus === 'reverse_path_found' ? '경로 유도 · 역추적 경로 발견'
+                    : guidanceStatus === 'stopped' ? '경로 유도 · 역추적 중지'
+                    : guidanceStatus === 'unsupported_emitters' ? '경로 유도 · 지원 광원 없음 · 기본 발사'
+                    : '경로 유도 · 역추적 경로 미발견 · 기본 발사'}
+                  {guidanceSamples > 0 ? ` · ${guidanceSamples.toLocaleString()} 표본 · ${formatMetric(performance.path_guidance_reverse_sec)} s` : ''}
+                  {guidanceStatus === 'saved_path' || guidanceStatus === 'reverse_path_found'
+                    ? ` · 유도 발사 ${numeric(performance.primary_sampling_receiver_directed_ray_count).toLocaleString()}개` : ''}
+                  <HelpTooltip label="경로 유도 결과 도움말">역추적은 발사 가이드를 찾는 데 사용합니다. Receiver 광량은 순방향 검출에서 집계합니다.</HelpTooltip>
+                </div>
+              ) : null}
               {Array.isArray(performance.bsdf_transport) && performance.bsdf_transport.length > 0 ? (
                 <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs">
                   BSDF 표 계산: 등방성 · No Shift. 실제 연산 장치는 Compute 항목을 확인하세요. RT 반사율과 산란 표를 사용했습니다. LT 비교 검증은 아직 완료되지 않았습니다.

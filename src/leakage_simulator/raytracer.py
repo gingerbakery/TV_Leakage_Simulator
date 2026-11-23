@@ -2424,8 +2424,25 @@ def run_direct_ray_trace(
         frame for frame in receiver_frames
         if frame.receiver.path_guidance_percent is not None
     ] if diagnostic_primary_ray is None and trace_input.escape_collection is None else []
+    optical_resolver = OpticalPropertyResolver(
+        trace_input.mesh,
+        trace_input.optical_profiles,
+        trace_input.optical_assignments,
+    )
+    optical_started = time.perf_counter()
+    optical_table_mode = os.environ.get('LEAKAGE_OPTICAL_TABLES', 'auto')
+    resolved_optical_by_face = (
+        optical_resolver.resolve_all()
+        if optical_table_mode != 'off' and (len(trace_input.mesh.faces) >= 256 or optical_table_mode == 'on')
+        else [optical_resolver.resolve(face_index) for face_index in range(len(trace_input.mesh.faces))]
+    )
+    optical_resolution_sec = time.perf_counter() - optical_started
     primary_strategy = trace_input.config.primary_sampling_strategy
     primary_fraction = trace_input.config.receiver_importance_fraction
+    guidance_status = "disabled"
+    guidance_samples = 0
+    guidance_runtime_sec = 0.
+    guidance_path = None
     if guided_frames:
         if len(guided_frames) != 1 or len(receiver_frames) != 1:
             raise ValueError("경로 유도는 활성 Receiver 한 개에서 사용할 수 있습니다.")
@@ -2433,8 +2450,20 @@ def run_direct_ray_trace(
             raise ValueError("경로 유도에는 Minimum energy 0 또는 Russian Roulette 종료 방식이 필요합니다.")
         # Preview guidance reweights the emitter direction only. The normal
         # transport pipeline still evaluates any BSDF at the actual surface hit.
-        primary_strategy = "preview_path_mis"
-        primary_fraction = guided_frames[0].receiver.path_guidance_percent / 100
+        frame = guided_frames[0]
+        guidance_path = frame.receiver.observer_reference_path
+        guidance_status = "saved_path"
+        if guidance_path is None:
+            from .sensor_comparison import discover_receiver_guidance_path
+            guidance_started = time.perf_counter()
+            guidance_path, guidance_status, guidance_samples = discover_receiver_guidance_path(
+                trace_input, frame, resolved_optical_by_face, should_stop)
+            guidance_runtime_sec = time.perf_counter() - guidance_started
+        if guidance_path:
+            primary_strategy = "preview_path_mis"
+            primary_fraction = frame.receiver.path_guidance_percent / 100
+        else:
+            primary_strategy = "source"
     primary_sampling_stats = _PrimarySamplingStats(
         requested_strategy=primary_strategy,
         receiver_fraction=primary_fraction,
@@ -2454,9 +2483,9 @@ def run_direct_ray_trace(
         else None
     )
     primary_importance_geometry = receiver_importance_geometry
-    if guided_frames:
+    if guidance_path:
         frame = guided_frames[0]
-        path = frame.receiver.observer_reference_path
+        path = guidance_path
         if len(path) > 2:
             toward_source = vec_sub(path[0], path[1])
             if vec_dot(toward_source, toward_source) <= trace_input.config.epsilon_mm**2:
@@ -2495,19 +2524,6 @@ def run_direct_ray_trace(
     receiver_hit_count = 0
     surface_hit_count = 0
     terminated_ray_count = 0
-    optical_resolver = OpticalPropertyResolver(
-        trace_input.mesh,
-        trace_input.optical_profiles,
-        trace_input.optical_assignments,
-    )
-    optical_started = time.perf_counter()
-    optical_table_mode = os.environ.get('LEAKAGE_OPTICAL_TABLES', 'auto')
-    resolved_optical_by_face = (
-        optical_resolver.resolve_all()
-        if optical_table_mode != 'off' and (len(trace_input.mesh.faces) >= 256 or optical_table_mode == 'on')
-        else [optical_resolver.resolve(face_index) for face_index in range(len(trace_input.mesh.faces))]
-    )
-    optical_resolution_sec = time.perf_counter() - optical_started
     optical_summary = {
         "surface_hit_count": 0,
         "unassigned_surface_hit_count": 0,
@@ -3821,6 +3837,9 @@ def run_direct_ray_trace(
         **wavefront_planner_stats.to_summary(),
         **wavefront_reducer_stats.to_summary(),
         **primary_sampling_stats.to_summary(),
+        "path_guidance_status": guidance_status,
+        "path_guidance_reverse_samples": guidance_samples,
+        "path_guidance_reverse_sec": guidance_runtime_sec,
         **bounce_sampling_stats.to_summary(),
         "requested_gpu_workspace": gpu_workspace,
         **gpu_resident_stats.to_summary(),

@@ -294,7 +294,8 @@ def unstarted_summary(spec, plans, requested):
 
 
 def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
-                            *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None, sensor=None):
+                            *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None, sensor=None,
+                            capture_sensor_path=False):
     from .observer_probe import (_source_geometry, _sample_source, _triangle_intersection, source_connection_visible,
                                  sampling_plan, _execute_probes, FULL_DETAIL_CELL_LIMIT)
     from .raytracer import _IntersectionDispatchStats
@@ -352,6 +353,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     committed = committed_depth_limited = pause_count = 0
     sensor_sum = sensor_square_sum = 0.
     sensor_positive = 0
+    sensor_path = None
+    sensor_path_strength = 0.
     from .reverse_diagnostics import empty_stages, record_stages, stage_record
     sensor_stages = empty_stages()
     positive_before_threshold = 0
@@ -664,6 +667,11 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                 sensor_sum += math.fsum(values)
                 sensor_square_sum += math.fsum(value*value for value in values)
                 sensor_positive += sum(value > 0 for value in values)
+                if capture_sensor_path:
+                    for item in completed:
+                        if item is not None and item[2] is not None and item[5] > sensor_path_strength:
+                            sensor_path = item[2]
+                            sensor_path_strength = item[5]
                 committed += len(values)
                 committed_depth_limited = depth_limited
                 if progress_callback:
@@ -734,6 +742,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
         return dict(contract="finite_receiver_reverse_flux_v1", flux_lumen=sensor_sum/committed if committed else None,
             sample_second_moment=sensor_square_sum/committed if committed else None, sample_count=committed,
             stage_diagnostics=sensor_stages,
+            **({"representative_path": sensor_path} if capture_sensor_path else {}),
             positive_samples=sensor_positive, planned_count=planned, complete=not stopped and committed == planned,
             runtime_sec=time.perf_counter()-started, compute_backend=requested, performance=result([], [], stopped)["performance"])
     return result(cells, views, stopped)

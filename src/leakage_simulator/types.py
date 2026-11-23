@@ -508,8 +508,8 @@ class ReceiverSpec:
             self.observer_reference_path = [vec3_from(p, "observer_reference_path") for p in self.observer_reference_path]
         if self.path_guidance_percent is not None:
             self.path_guidance_percent = require_non_negative(self.path_guidance_percent, "path_guidance_percent")
-            if not 1 <= self.path_guidance_percent <= 95 or not self.observer_reference_path:
-                raise ValueError("Path guidance requires a reference path and 1–95% guided sampling.")
+            if not 1 <= self.path_guidance_percent <= 95:
+                raise ValueError("Path guidance requires 1–95% guided sampling.")
         if self.base_center is not None:
             self.base_center = vec3_from(self.base_center, "base_center")
         if self.base_u_axis is not None:
