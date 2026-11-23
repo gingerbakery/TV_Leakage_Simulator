@@ -30,6 +30,38 @@ afterEach(() => {
 })
 
 describe('Step 11 result UI', () => {
+  it('scales Receiver flux and nit locally for a completed relative roulette run', () => {
+    const result = createRayTraceResultFixture()
+    result.config.min_energy_basis = 'initial_ray_fraction'
+    result.config.termination_mode = 'russian_roulette'
+    result.metrics._termination_summary = { source_power_lumen: 1, stopped_early: false }
+    result.metrics.receiver_001 = {
+      ...(result.metrics.receiver_001 as Record<string, unknown>),
+      total_flux_lumen: 0.125,
+      peak_nit_est: 7.25,
+      cone_peak_nit_est: 12.5,
+    }
+    render(<RayTraceResultWindow open result={result} onOpenChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+    const input = screen.getByRole('spinbutton', { name: '적용 광원 총광속 (lm)' })
+    fireEvent.change(input, { target: { value: '10' } })
+    expect(screen.getByText('1.250 lm')).toBeTruthy()
+    expect(screen.getByText('72.500')).toBeTruthy()
+    expect(screen.getByText('125.000')).toBeTruthy()
+    expect(result.receiver_grids[0].flux_lumen[0][0]).toBe(0.001)
+    fireEvent.click(screen.getByRole('button', { name: '초기화' }))
+    expect(screen.getByText('0.125 lm')).toBeTruthy()
+  })
+
+  it('disables source flux override for absolute roulette', () => {
+    const result = createRayTraceResultFixture()
+    result.config.termination_mode = 'russian_roulette'
+    result.metrics._termination_summary = { source_power_lumen: 1, stopped_early: false }
+    render(<RayTraceResultWindow open result={result} onOpenChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Receiver' }))
+    const input = screen.getByRole('spinbutton', { name: '적용 광원 총광속 (lm)' }) as HTMLInputElement
+    expect(input.disabled).toBe(true)
+  })
   it('keeps termination diagnostics collapsed and distinguishes loss from receiver error', () => {
     const result = createRayTraceResultFixture()
     result.config.min_energy_basis = 'initial_ray_fraction'

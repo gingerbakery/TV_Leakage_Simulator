@@ -1040,6 +1040,7 @@ function ReceiverHeatmap({
   onCustomScaleMaxNitChange,
   kAbs,
   kBrdf,
+  fluxScale,
   storedPaths,
   maxStoredPaths,
   runId,
@@ -1058,6 +1059,7 @@ function ReceiverHeatmap({
   onCustomScaleMaxNitChange: (value: number) => void
   kAbs: number
   kBrdf: number
+  fluxScale: number
   storedPaths: RayHit[][]
   maxStoredPaths: number
   runId: string
@@ -1331,7 +1333,7 @@ function ReceiverHeatmap({
     let matchingStoredFlux = 0
     for (const { path, pathIndex } of matchingPaths) {
       const receiverHit = [...path].reverse().find((event) => event.event_type === 'receiver')
-      const pathFlux = numeric(receiverHit?.receiver_flux_lumen ?? receiverHit?.incoming_energy_lumen)
+      const pathFlux = numeric(receiverHit?.receiver_flux_lumen ?? receiverHit?.incoming_energy_lumen) * fluxScale
       matchingStoredFlux += pathFlux
       const componentIds = path
         .filter((event) => event.event_type === 'surface' && event.component_id !== null)
@@ -1412,7 +1414,7 @@ function ReceiverHeatmap({
             flux: numeric(
               receiverHit?.receiver_flux_lumen ??
                 receiverHit?.incoming_energy_lumen,
-            ),
+            ) * fluxScale,
             pathIndex,
             sequence,
           }
@@ -1420,7 +1422,7 @@ function ReceiverHeatmap({
         .sort((left, right) => right.flux - left.flux)
         .slice(0, 100),
     }
-  }, [columns, componentNames, faceSourceIds, grid, receiver, region, rows, storedPaths])
+  }, [columns, componentNames, faceSourceIds, fluxScale, grid, receiver, region, rows, storedPaths])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -2468,6 +2470,7 @@ export function RayTraceResultWindow({
     useState<ReceiverCompareScope>('all')
   const [reportCaseId, setReportCaseId] = useState<string | null>(null)
   const [errorTargetPercent, setErrorTargetPercent] = useState(5)
+  const [sourceFluxOverride, setSourceFluxOverride] = useState<{ runId: string; value: string } | null>(null)
   const [luminanceScaleMode, setLuminanceScaleMode] =
     useState<LuminanceScaleMode>('auto')
   const [customScaleMinNit, setCustomScaleMinNit] = useState(0)
@@ -2605,6 +2608,31 @@ export function RayTraceResultWindow({
     reportCaseId === activeCaseId && !activeCaseHasCurrentReport
       ? liveResult
       : selectedAnalysisResult ?? liveResult
+  const termination = result ? metricGroup(result, '_termination_summary') : {}
+  const tracedSourceFlux = numeric(termination.source_power_lumen)
+  const fluxUnavailable = !result || !Number.isFinite(tracedSourceFlux) || tracedSourceFlux <= 0
+    ? '기준 광속 기록 없음'
+    : termination.stopped_early !== false
+      ? '완료된 해석 필요'
+      : result.config.min_energy === 0 ||
+          (result.config.termination_mode === 'russian_roulette' && result.config.min_energy_basis === 'initial_ray_fraction')
+        ? null
+        : 'Minimum energy 0 또는 초기 Ray 대비 비율 + Russian Roulette 필요'
+  const fluxInput = sourceFluxOverride?.runId === result?.run_id ? sourceFluxOverride?.value ?? '' : ''
+  const requestedFluxScale = fluxInput === '' ? 1 : Number(fluxInput) / tracedSourceFlux
+  const invalidFlux = fluxInput !== '' && (requestedFluxScale <= 0 ||
+    !Number.isFinite(requestedFluxScale ** 2) || requestedFluxScale ** 2 === 0)
+  const fluxScale = fluxUnavailable || invalidFlux ? 1 : requestedFluxScale
+  const receiverDisplayGrids = useMemo(() => {
+    if (!result || fluxScale === 1) return result?.receiver_grids ?? []
+    const squareScale = fluxScale ** 2
+    return result.receiver_grids.map(grid => ({
+      ...grid,
+      flux_lumen: grid.flux_lumen.map(row => row.map(value => value * fluxScale)),
+      flux_squared_lumen2: grid.flux_squared_lumen2 === undefined ? undefined : grid.flux_squared_lumen2 * squareScale,
+      flux_squared_lumen2_grid: grid.flux_squared_lumen2_grid?.map(row => row.map(value => value * squareScale)),
+    }))
+  }, [result, fluxScale])
   useEffect(() => {
     if (result?.config.convergence_target_percent) {
       setErrorTargetPercent(result.config.convergence_target_percent)
@@ -2661,7 +2689,6 @@ export function RayTraceResultWindow({
   const guidanceStatus = performance.path_guidance_status
   const guidanceSamples = numeric(performance.path_guidance_reverse_samples)
   const reflection = metricGroup(result, '_reflection_summary')
-  const termination = metricGroup(result, '_termination_summary')
   const optical = metricGroup(result, '_optical_summary')
   const convergenceHistory = Array.isArray(result.metrics._convergence_history)
     ? result.metrics._convergence_history as Record<string, unknown>[]
@@ -3539,12 +3566,26 @@ export function RayTraceResultWindow({
                   </div>
                 </details>
               ) : null}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1">
+                  적용 광원 총광속
+                  <input aria-label="적용 광원 총광속 (lm)" className="h-7 w-28 rounded border border-border bg-background px-1.5 font-mono"
+                    type="number" min={0} step="any" value={fluxInput} disabled={Boolean(fluxUnavailable)}
+                    placeholder={tracedSourceFlux > 0 ? String(tracedSourceFlux) : '—'}
+                    aria-invalid={invalidFlux}
+                    onChange={event => setSourceFluxOverride({ runId: result.run_id, value: event.currentTarget.value })} /> lm
+                </label>
+                <HelpTooltip label="광원 총광속 사후 적용 도움말">입력한 총광속을 추적 당시 광원 총광속으로 나눈 배율을 이 Receiver 탭의 광량과 추정 휘도에 적용합니다. 여러 광원의 출력 비율은 유지합니다. 저장·내보내기·Case 비교에는 추적 원본을 사용합니다.</HelpTooltip>
+                {tracedSourceFlux > 0 ? <span>기준 {formatMetric(tracedSourceFlux)} lm</span> : null}
+                {fluxInput ? <Button size="sm" variant="ghost" onClick={() => setSourceFluxOverride(null)}>초기화</Button> : null}
+                {fluxUnavailable || invalidFlux ? <span role="status">{fluxUnavailable ?? '유효한 양수 광속을 입력하세요.'}</span> : null}
+              </div>
               {orderedResultReceivers.map((receiver) => {
                 const values = objectValue(
                   result.metrics,
                   receiver.receiver_id,
                 )
-                const grid = result.receiver_grids.find(
+                const grid = receiverDisplayGrids.find(
                   (candidate) =>
                     candidate.receiver_id === receiver.receiver_id,
                 )
@@ -3552,16 +3593,16 @@ export function RayTraceResultWindow({
                   result,
                   receiver.receiver_id,
                 )
-                const currentPeakNit = numeric(values.peak_nit_est)
+                const currentPeakNit = numeric(values.peak_nit_est) * fluxScale
                 const coneMultiplier = receiverConeLuminanceMultiplier(
                   receiver.acceptance_angle_deg,
                 )
                 const conePeakNit = typeof values.cone_peak_nit_est === 'number'
-                  ? numeric(values.cone_peak_nit_est)
+                  ? numeric(values.cone_peak_nit_est) * fluxScale
                   : currentPeakNit * coneMultiplier
                 const coneMeanNit = typeof values.cone_mean_nit_est === 'number'
-                  ? numeric(values.cone_mean_nit_est)
-                  : numeric(values.mean_nit_est) * coneMultiplier
+                  ? numeric(values.cone_mean_nit_est) * fluxScale
+                  : numeric(values.mean_nit_est) * fluxScale * coneMultiplier
                 const coneSolidAngle = typeof values.cone_projected_solid_angle_sr === 'number'
                   ? numeric(values.cone_projected_solid_angle_sr)
                   : Math.PI / coneMultiplier
@@ -3692,7 +3733,7 @@ export function RayTraceResultWindow({
                       <Stat
                         className="order-4 col-span-2"
                         label="Existing Peak Nit"
-                        value={formatMetric(values.peak_nit_est)}
+                        value={formatMetric(currentPeakNit)}
                         detail={peakPosition
                           ? `X ${formatReceiverCoordinate(peakPosition.xMm)} mm · Y ${formatReceiverCoordinate(peakPosition.yMm)} mm`
                           : 'X — · Y —'}
@@ -3701,14 +3742,14 @@ export function RayTraceResultWindow({
                       <Stat
                         className="order-5 col-span-2"
                         label="Existing Mean Nit"
-                        value={formatMetric(values.mean_nit_est)}
+                        value={formatMetric(numeric(values.mean_nit_est) * fluxScale)}
                         help="이 Receiver 전체 Heatmap 셀의 평균 추정 휘도입니다. 밝은 영역뿐 아니라 빛이 없는 셀도 포함합니다."
                       />
                       <Stat
                         className="order-6 col-span-2"
                         label="Flux"
                         value={`${formatMetric(
-                          values.total_flux_lumen,
+                          numeric(values.total_flux_lumen) * fluxScale,
                         )} lm`}
                         help="이 Receiver에 도달한 전체 광량입니다. 밝기 세기와 영역을 종합한 에너지 값이며 Peak nit와 의미가 다릅니다."
                       />
@@ -3806,6 +3847,7 @@ export function RayTraceResultWindow({
                           onCustomScaleMaxNitChange={setCustomScaleMaxNit}
                           kAbs={result.config.k_abs}
                           kBrdf={result.config.k_brdf}
+                          fluxScale={fluxScale}
                           storedPaths={result.stored_paths}
                           maxStoredPaths={result.config.max_stored_paths}
                           runId={result.run_id}
