@@ -2652,6 +2652,7 @@ export function RayTracingPanel({
                       : 'Datum Plane'}
                     {' · '}
                     {receiver.width_mm} × {receiver.height_mm} mm
+                    {receiver.path_guidance_percent != null && ` · 경로 유도 ${receiver.path_guidance_percent}%`}
                   </div>
                   {receiver.reference_mode === 'leak_preview_candidate' ? <ReceiverCenterCoordinates center={receiver.center} /> : null}
                 </div>

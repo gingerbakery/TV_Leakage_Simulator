@@ -489,6 +489,9 @@ function isReceiverSpec(value: unknown): value is ReceiverSpec {
     value.receiver_type === 'rectangle' &&
     (value.view_angles === undefined || isReceiverViewAngles(value.view_angles)) &&
     (value.observer_reference_path == null || (Array.isArray(value.observer_reference_path) && value.observer_reference_path.length >= 2 && value.observer_reference_path.length <= 4098 && value.observer_reference_path.every(isVec3))) &&
+    (value.path_guidance_percent == null || (isFiniteNumber(value.path_guidance_percent) &&
+      value.path_guidance_percent >= 1 && value.path_guidance_percent <= 95 &&
+      Array.isArray(value.observer_reference_path))) &&
     isString(value.display_name) &&
     isOneOf(value.placement_mode, [
       'datum_plane',

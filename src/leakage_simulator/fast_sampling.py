@@ -34,6 +34,7 @@ class ReceiverImportanceGeometry:
     half_widths: np.ndarray
     half_heights: np.ndarray
     minimum_cosines: np.ndarray
+    full_rectangle: bool = False
 
     def __post_init__(self) -> None:
         centers = np.ascontiguousarray(self.centers, dtype=np.float64)
@@ -602,7 +603,15 @@ def sample_receiver_mis_directions(
         raise ValueError("emitter_normals must match origins")
     count = len(origins)
     directions = _sample_direction_rows(generator, emitter, normals)
-    directed_mask = generator.random(count) < receiver_fraction
+    fractions = receiver_fraction
+    if receivers.full_rectangle:
+        # The guide uses one area proposal. A coplanar origin cannot
+        # sample a solid angle from that rectangle.
+        plane_distance = (receivers.centers[0] - origins) @ receivers.normals[0]
+        fractions = np.where(
+            np.abs(plane_distance) <= max(1e-12, float(epsilon_mm)), 0.0, receiver_fraction
+        )
+    directed_mask = generator.random(count) < fractions
     directed_rows = np.flatnonzero(directed_mask)
     if len(directed_rows):
         receiver_slots = generator.integers(
@@ -639,8 +648,8 @@ def sample_receiver_mis_directions(
         epsilon_mm,
     )
     mixture_pdf = (
-        (1.0 - receiver_fraction) * source_pdf
-        + receiver_fraction * receiver_pdf
+        (1.0 - fractions) * source_pdf
+        + fractions * receiver_pdf
     )
     weights = np.zeros(count, dtype=np.float64)
     valid_pdf = mixture_pdf > 0.0
@@ -685,7 +694,7 @@ def receiver_direction_pdf(
     for receiver_index in range(receivers.receiver_count):
         normal = receivers.normals[receiver_index]
         denominator = directions @ normal
-        acceptance_cosine = -denominator
+        acceptance_cosine = np.abs(denominator) if receivers.full_rectangle else -denominator
         numerator = (receivers.centers[receiver_index] - origins) @ normal
         valid_denominator = np.abs(denominator) >= 1e-12
         distances = np.full(ray_count, float("inf"), dtype=np.float64)
@@ -697,7 +706,7 @@ def receiver_direction_pdf(
             & (distances > float(epsilon_mm))
             & (
                 acceptance_cosine
-                >= receivers.minimum_cosines[receiver_index]
+                >= (0.0 if receivers.full_rectangle else receivers.minimum_cosines[receiver_index])
             )
             & (acceptance_cosine > 0.0)
         )

@@ -127,6 +127,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const [pathCheckOpen, setPathCheckOpen] = useState(false)
   const pathCheckContent = useRef<HTMLDivElement>(null)
   const [comparisonRequest, setComparisonRequest] = useState<RayTraceRequest | null>(null)
+  const [pathGuidance, setPathGuidance] = useState(false)
+  const [pathGuidancePercent, setPathGuidancePercent] = useState(50)
   const candidateListId = useId()
   const candidateRows = useRef(new Map<string, HTMLElement>())
   const queryClient = useQueryClient()
@@ -511,8 +513,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const angleHighlightedCandidates = useMemo(() => new Set(previewPoints.filter(point =>
     highlight && isLeakPreviewPointHighlighted(point, highlight, null)).map(point => point.candidateId)), [previewPoints, highlight])
 
-  const ensureCandidateReceiver = (candidate: LeakPreviewCandidate, candidateIndex: number) => {
+  const ensureCandidateReceiver = (candidate: LeakPreviewCandidate, candidateIndex: number, precision = false) => {
     const generated = createCandidateReceiver(candidate, candidateIndex, scene, transformRules)
+    if (precision && pathGuidance && candidate.observerEvidence && generated.observer_reference_path) {
+      generated.path_guidance_percent = pathGuidancePercent
+    }
     const existing = receivers.find((receiver) => receiver.reference_mode === 'leak_preview_candidate' &&
       (generated.view_angles ? receiver.view_angles?.axis === generated.view_angles.axis &&
         receiver.view_angles.horizontal_deg === generated.view_angles.horizontal_deg &&
@@ -569,7 +574,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const createViewReceiver = (candidate: LeakPreviewCandidate, diagnostics = false) => {
     if (!scene || !candidate.observerEvidence) return
     const index = (candidateIndices.get(candidate.id) ?? 0) + 1
-    const { receiver } = ensureCandidateReceiver(candidate, index)
+    const { receiver } = ensureCandidateReceiver(candidate, index, true)
     for (const other of receivers) {
       if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
     }
@@ -651,8 +656,14 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       } : undefined,
       point: { x: candidate.center[0], y: candidate.center[1], z: candidate.center[2] },
     })
-    const { existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex)
+    const { receiver, existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex, precision)
     if (precision) {
+      if (receiver.path_guidance_percent != null) {
+        for (const other of receivers) {
+          if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
+        }
+        actions.setReceiverEnabled(receiver.receiver_id, true)
+      }
       ensurePrecisionEmitters()
       setMessage('ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
       onOpenPrecision()
@@ -791,6 +802,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) void validateCandidatePath(selectedCandidate) }}>{validatingCandidateId ? <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" /> : null}경로 검증</Button>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) try { setComparisonRequest(candidateValidationRequest(selectedCandidate)) } catch (error) { setMessage(`광량 비교 실패: ${String(error)}`) } }}>광량 비교</Button>
             <Button size="sm" disabled={!selectedCandidate || !selectedCandidate.apertureId || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, true) }}>정밀해석 준비</Button>
+            {selectedCandidate?.observerEvidence && selectedCandidate.representativePath && <div className="col-span-2 flex items-center gap-2 text-xs">
+              <label className="flex items-center gap-1"><input type="checkbox" checked={pathGuidance} disabled={isRunning} onChange={event => setPathGuidance(event.currentTarget.checked)} />경로 유도</label>
+              <HelpTooltip label="경로 유도 도움말">선택한 경로의 첫 반사점 주변을 일부 발사에 사용하고 추출 확률로 광량을 보정합니다. 직광 경로는 Receiver 면적을 사용합니다. 나머지 광선은 기본 배광으로 발사합니다. 한쪽 면 Lambertian·Isotropic 배치 광원을 지원합니다. Minimum energy는 0으로 설정하거나 Russian Roulette 종료 방식을 사용하세요.</HelpTooltip>
+              <NumberInput aria-label="경로 유도 비중 (%)" className="h-7 w-16 rounded border px-1" min={1} max={95} step={1} value={pathGuidancePercent} disabled={!pathGuidance || isRunning} onValueChange={value => setPathGuidancePercent(Math.min(95, Math.max(1, value)))} />%
+            </div>}
             <div className="col-span-2 flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate, true) }}>순방향 진단 준비</Button><HelpTooltip label="순방향 진단 준비 도움말">선택 Point의 Receiver를 자동 설정하고 순방향 원인 진단을 켠 뒤 Ray Tracing으로 이동합니다. 실행하면 실제 구간의 센서 도달·조건 제외·종료를 기록합니다. 대표 경로 재생이나 검출 강제 추가가 아니며, 진단 실행은 일반 실행보다 느릴 수 있습니다.</HelpTooltip></div>
             <Button className="col-span-2" size="sm" variant="outline" disabled={!selectedCandidate || !selectedCandidate.apertureId || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, false) }}>ROI·Receiver 생성</Button>
           </div>
@@ -988,6 +1004,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             !previewResult && detectionMode === 'escape_directions' &&
             observer.enabled && observer.measurement === 'radiance'
           )}
+          peakNit={rawCandidates.reduce((peak, candidate) => Math.max(peak, candidate.peakLuminanceNit ?? 0), 0)}
           defaultMax={previewResult?.config.max_depth ?? rayTraceConfig.max_depth}
           shownPoints={previewPoints.length}
           totalPoints={rawPoints.length}

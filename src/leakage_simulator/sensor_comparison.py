@@ -166,6 +166,12 @@ def summarize_forward_sampling(rows):
 
 
 def run_sensor_comparison(trace, options, should_stop=None, progress=None, *, backend="gpu_cuda"):
+    # The reference comparison owns its sampling strategies independently of
+    # any preview launch preference saved on a Receiver.
+    if any(receiver.path_guidance_percent is not None for receiver in trace.receivers):
+        trace = replace(trace, receivers=[
+            replace(receiver, path_guidance_percent=None) for receiver in trace.receivers
+        ])
     from .raytracer import run_direct_ray_trace, _build_receiver_frame
     from .observer_path_validation import validate_receiver_evidence
     from .types import ReceiverGrid

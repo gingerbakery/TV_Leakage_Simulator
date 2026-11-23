@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import statistics
 import sys
 import unittest
@@ -25,6 +26,24 @@ from leakage_simulator.types import (
     RayTraceConfig,
     ReceiverSpec,
 )
+
+
+def test_preview_path_guidance_uses_saved_ratio_and_keeps_receiver_geometry():
+    trace = _build_case(4096, 101, "source")
+    receiver = replace(
+        trace.receivers[0],
+        observer_reference_path=[(0, 0, 0), (0, 0, 100)],
+        path_guidance_percent=25,
+    )
+    trace = replace(trace, receivers=[receiver], config=replace(trace.config, min_energy=0))
+    result = run_direct_ray_trace(trace)
+    performance = result.metrics["_performance_summary"]
+    assert performance["primary_sampling_strategy"] == "preview_path_mis"
+    assert performance["receiver_importance_fraction"] == .25
+    assert 900 < performance["primary_sampling_receiver_directed_ray_count"] < 1150
+    assert result.receiver_hit_count > 900
+    assert result.receivers[0] == receiver
+    assert abs(result.metrics["observer"]["total_flux_lumen"] - 16 / (np.pi * 100**2)) < 1e-4
 
 
 def _source_mesh() -> tuple[TriangleMesh, list[int]]:

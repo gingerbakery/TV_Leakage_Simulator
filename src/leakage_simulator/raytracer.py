@@ -1183,7 +1183,7 @@ class _PrimarySamplingStats:
         effective_strategy = "source"
         if self.applied_emitter_count:
             effective_strategy = (
-                "receiver_mis"
+                self.requested_strategy
                 if self.fallback_emitter_count == 0
                 else "mixed"
             )
@@ -2420,9 +2420,24 @@ def run_direct_ray_trace(
     if trace_input.config.receiver_diagnostics:
         from .receiver_diagnostics import ReceiverDiagnostics
         intersection_stats.receiver_diagnostics = ReceiverDiagnostics(receiver_frames)
+    guided_frames = [
+        frame for frame in receiver_frames
+        if frame.receiver.path_guidance_percent is not None
+    ] if diagnostic_primary_ray is None and trace_input.escape_collection is None else []
+    primary_strategy = trace_input.config.primary_sampling_strategy
+    primary_fraction = trace_input.config.receiver_importance_fraction
+    if guided_frames:
+        if len(guided_frames) != 1 or len(receiver_frames) != 1:
+            raise ValueError("경로 유도는 활성 Receiver 한 개에서 사용할 수 있습니다.")
+        if trace_input.config.termination_mode == "threshold" and trace_input.config.min_energy > 0:
+            raise ValueError("경로 유도에는 Minimum energy 0 또는 Russian Roulette 종료 방식이 필요합니다.")
+        if trace_input.bsdf_assets:
+            raise ValueError("BSDF 표를 사용하는 해석에는 경로 유도가 지원되지 않습니다.")
+        primary_strategy = "preview_path_mis"
+        primary_fraction = guided_frames[0].receiver.path_guidance_percent / 100
     primary_sampling_stats = _PrimarySamplingStats(
-        requested_strategy=trace_input.config.primary_sampling_strategy,
-        receiver_fraction=trace_input.config.receiver_importance_fraction,
+        requested_strategy=primary_strategy,
+        receiver_fraction=primary_fraction,
     )
     bounce_sampling_stats = _BounceSamplingStats(
         requested_strategy=trace_input.config.bounce_sampling_strategy,
@@ -2438,6 +2453,29 @@ def run_direct_ray_trace(
         )
         else None
     )
+    primary_importance_geometry = receiver_importance_geometry
+    if guided_frames:
+        frame = guided_frames[0]
+        path = frame.receiver.observer_reference_path
+        if len(path) > 2:
+            toward_source = vec_sub(path[0], path[1])
+            if vec_dot(toward_source, toward_source) <= trace_input.config.epsilon_mm**2:
+                raise ValueError("경로 유도에 사용할 첫 반사 구간의 길이가 너무 짧습니다.")
+            normal = vec_norm(toward_source)
+            u, v, _ = _orthonormal_basis(normal)
+            path_length = math.fsum(
+                math.sqrt(vec_dot(delta, delta))
+                for delta in (vec_sub(end, start) for start, end in zip(path, path[1:]))
+            )
+            footprint_scale = math.sqrt(vec_dot(toward_source, toward_source)) / path_length
+            target = ReceiverSpec(
+                "preview_launch_target", center=path[1], normal=normal,
+                u_axis=u, v_axis=v,
+                width_mm=1.0 + frame.receiver.width_mm * footprint_scale,
+                height_mm=1.0 + frame.receiver.height_mm * footprint_scale,
+            )
+            frame = _build_receiver_frame(target)
+        primary_importance_geometry = _build_receiver_importance_geometry([frame], full_rectangle=True)
     receiver_grids = {
         receiver.receiver_id: ReceiverGrid.empty(receiver)
         for receiver in trace_input.receivers
@@ -2774,19 +2812,19 @@ def run_direct_ray_trace(
         if diagnostic_primary_ray is not None:
             use_batch_dispatch = True
         receiver_mis_enabled = bool(
-            trace_input.config.primary_sampling_strategy == "receiver_mis"
+            primary_strategy != "source"
             and not (emitter.aim is not None and emitter.aim.enabled)
-            and receiver_importance_geometry is not None
+            and primary_importance_geometry is not None
             and use_batch_dispatch
             and emitter.direction_distribution in {"lambertian", "isotropic"}
             and emitter.emission_direction != "both"
         )
-        if trace_input.config.primary_sampling_strategy == "receiver_mis":
+        if primary_strategy != "source":
             if receiver_mis_enabled:
                 primary_sampling_stats.applied_emitter_count += 1
             elif emitter.aim is not None and emitter.aim.enabled:
                 primary_sampling_stats.record_fallback(f"aim_{emitter.aim.mode}_overrides_receiver_mis")
-            elif receiver_importance_geometry is None:
+            elif primary_importance_geometry is None:
                 primary_sampling_stats.record_fallback("no_enabled_receivers")
             elif emitter.direction_distribution not in {"lambertian", "isotropic"}:
                 primary_sampling_stats.record_fallback(
@@ -2811,14 +2849,14 @@ def run_direct_ray_trace(
                     np.ones(1, dtype=np.float64), 0)])
             elif use_face_batch_sampling and receiver_mis_enabled:
                 assert face_batch_geometry is not None
-                assert receiver_importance_geometry is not None
+                assert primary_importance_geometry is not None
                 ray_batches = iter_face_emitter_receiver_mis_batches(
                     emitter,
                     face_batch_geometry,
-                    receiver_importance_geometry,
+                    primary_importance_geometry,
                     trace_input.config.epsilon_mm,
                     emitter_seed,
-                    trace_input.config.receiver_importance_fraction,
+                    primary_fraction,
                 )
             elif use_face_batch_sampling:
                 assert face_batch_geometry is not None
@@ -2838,7 +2876,7 @@ def run_direct_ray_trace(
                     )
                 )
             elif receiver_mis_enabled:
-                assert receiver_importance_geometry is not None
+                assert primary_importance_geometry is not None
                 ray_batches = (
                     (
                         origins,
@@ -2849,10 +2887,10 @@ def run_direct_ray_trace(
                     )
                     for origins, directions, weights, directed_count in iter_virtual_plane_receiver_mis_batches(
                         emitter,
-                        receiver_importance_geometry,
+                        primary_importance_geometry,
                         trace_input.config.epsilon_mm,
                         emitter_seed,
-                        trace_input.config.receiver_importance_fraction,
+                        primary_fraction,
                     )
                 )
             else:
@@ -9736,6 +9774,8 @@ def _build_receiver_frame(receiver: ReceiverSpec) -> ReceiverFrame:
 
 def _build_receiver_importance_geometry(
     receiver_frames: List[ReceiverFrame],
+    *,
+    full_rectangle: bool = False,
 ) -> Optional[ReceiverImportanceGeometry]:
     if not receiver_frames:
         return None
@@ -9768,6 +9808,7 @@ def _build_receiver_importance_geometry(
             [frame.minimum_acceptance_cosine for frame in receiver_frames],
             dtype=np.float64,
         ),
+        full_rectangle=full_rectangle,
     )
 
 

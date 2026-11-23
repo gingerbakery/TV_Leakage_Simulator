@@ -115,6 +115,7 @@ export interface ReceiverSpec {
   view_distance_reference?: 'set_bounds' | 'leak_point'
   /** Diagnostic evidence only; never adds hits or flux to the simulation. */
   observer_reference_path?: Vec3[] | null
+  path_guidance_percent?: number | null
   base_center: Vec3 | null
   base_u_axis: Vec3 | null
   base_v_axis: Vec3 | null

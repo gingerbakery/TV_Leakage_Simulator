@@ -39,19 +39,18 @@ it('shows display filters before the first precision search and preserves their 
   expect(mocks.start).not.toHaveBeenCalled()
 })
 
-it('allows editing every display threshold without existing luminance data and enables a typed reflection limit', () => {
+it('keeps the relative filter editable in path mode and enables a typed reflection limit', () => {
   render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
   act(() => leakPreviewStore.getState().setObserver({ measurement: 'paths' }))
-  for (const name of ['표시 최대 반사 횟수', '표시 최소 nit', '표시 최소 밝기 비율 (%)']) {
+  for (const name of ['표시 최대 반사 횟수', '표시 최소 밝기 비율 (%)']) {
     expect(screen.getByRole('spinbutton', { name }).hasAttribute('disabled')).toBe(false)
   }
   expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', false)
   fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최대 반사 횟수' }), { target: { value: '3' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 nit' }), { target: { value: '0.02' } })
   fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 밝기 비율 (%)' }), { target: { value: '5' } })
-  expect(leakPreviewStore.getState().displayFilter).toEqual({ maxReflections: 3, minNit: 0.02, minBrightnessRatio: 0.05 })
+  expect(leakPreviewStore.getState().displayFilter).toEqual({ maxReflections: 3, minNit: 0, minBrightnessRatio: 0.05 })
   expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', true)
-  expect(screen.getByRole('spinbutton', { name: '표시 최소 nit' })).toHaveProperty('value', '0.02')
+  expect(screen.getByRole('spinbutton', { name: '표시 최소 nit' })).toHaveProperty('disabled', true)
   expect(mocks.start).not.toHaveBeenCalled()
 })
 
@@ -70,10 +69,10 @@ it('hides rows without renumbering or deleting raw candidates and keeps reset av
   expect(screen.getByRole('article',{name:'Point2'})).toBeTruthy()
   expect(leakPreviewStore.getState().candidates).toHaveLength(2)
   expect(leakPreviewStore.getState().points).toHaveLength(2)
-  expect(screen.getByRole('spinbutton',{name:'표시 최소 nit'})).toHaveProperty('disabled',false)
+  expect(screen.getByRole('spinbutton',{name:'표시 최소 nit'})).toHaveProperty('disabled',true)
   act(() => leakPreviewStore.getState().setDisplayFilter({minNit:1}))
-  expect(screen.getByText('nit 데이터 없음 · 휘도 조건으로 표시할 표본 없음')).toBeTruthy()
-  expect(screen.queryByRole('article')).toBeNull()
+  expect(screen.getByText('nit 데이터 없음')).toBeTruthy()
+  expect(screen.getAllByRole('article')).toHaveLength(1)
   fireEvent.click(screen.getByRole('button',{name:'초기화'}))
   expect(screen.getAllByRole('article')).toHaveLength(2)
 })
@@ -544,6 +543,13 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   expect(workspaceStore.getState().receivers.filter((item) => item.enabled).map((item) => item.receiver_id)).toEqual([receiver.receiver_id])
   expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === receiver.receiver_id)).toEqual(receiver)
   expect(workspaceStore.getState().receivers.find((item) => item.receiver_id === competing.receiver_id)).toEqual({ ...competing, enabled: false })
+  fireEvent.click(screen.getByRole('checkbox', { name: '경로 유도' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: '경로 유도 비중 (%)' }), { target: { value: '25' } })
+  fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
+  expect(workspaceStore.getState().receivers.find(item => item.receiver_id === receiver.receiver_id)?.path_guidance_percent).toBe(25)
+  fireEvent.click(screen.getByRole('checkbox', { name: '경로 유도' }))
+  fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
+  expect(workspaceStore.getState().receivers.find(item => item.receiver_id === receiver.receiver_id)?.path_guidance_percent).toBeUndefined()
   if (!confirmedOpening) {
     expect(screen.getByRole('button', { name: 'ROI·Receiver 생성' }).hasAttribute('disabled')).toBe(true)
     expect(workspaceStore.getState().roiScopes).toHaveLength(0)

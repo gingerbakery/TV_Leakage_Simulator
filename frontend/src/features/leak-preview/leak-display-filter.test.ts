@@ -54,10 +54,22 @@ it('keeps a surviving faint direct observation as representative instead of pres
   expect(summary.cells[1].luminance_nit).toBe(100)
 })
 
-it('never substitutes path counts for nit, and hides missing evidence only when a criterion needs it', () => {
+it('uses relative path support without applying a nit threshold to path results', () => {
   const {candidates,points,summary} = fixture()
   summary.measure = 'path_support_counts'
   expect(filterLeakDisplay(points,candidates,summary,{maxReflections:0,minNit:0,minBrightnessRatio:0}).points).toHaveLength(2)
-  expect(filterLeakDisplay(points,candidates,summary,{maxReflections:null,minNit:1,minBrightnessRatio:0}).points).toEqual([])
-  expect(filterLeakDisplay(points,candidates,null,{maxReflections:null,minNit:0,minBrightnessRatio:.1}).points).toEqual([])
+  expect(filterLeakDisplay(points,candidates,summary,{maxReflections:null,minNit:1,minBrightnessRatio:0}).points).toHaveLength(3)
+  summary.cells[0].direct_count = 10
+  expect(filterLeakDisplay(points,candidates,summary,{maxReflections:null,minNit:1,minBrightnessRatio:.2}).points.map(point => point.position)).toEqual([[0,0,0]])
+  expect(filterLeakDisplay(points,candidates,null,{maxReflections:null,minNit:0,minBrightnessRatio:.1}).points.map(point => point.position)).toEqual([[0,0,0],[1,0,0]])
+})
+
+it('preserves the strongest saved candidate at 1% when observation links are missing', () => {
+  const {candidates,points,summary} = fixture()
+  candidates[0].relativeStrength = 1
+  candidates[1].relativeStrength = .005
+  const unlinkedPoints = points.map(point => ({ ...point, observerAngles: undefined }))
+  const filtered = filterLeakDisplay(unlinkedPoints,candidates,summary,{maxReflections:null,minNit:0,minBrightnessRatio:.01})
+  expect(filtered.candidates.map(candidate => candidate.id)).toEqual(['a'])
+  expect(filtered.points).toEqual([])
 })
