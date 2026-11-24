@@ -70,6 +70,9 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
 interface LeakPreviewState {
   displayFilter: LeakDisplayFilter
   setDisplayFilter(patch: Partial<LeakDisplayFilter>): void
+  selectedPointView: { horizontal: number; vertical: number } | null
+  pointViewMode: 'all' | 'current' | 'selected'
+  setPointViewMode(mode: 'all' | 'current' | 'selected'): void
   cameraViewRequest: { candidate: LeakPreviewCandidate | null; sceneToken: string | null } | null
   requestCameraView(candidate: LeakPreviewCandidate | null): void
   sceneToken: string | null
@@ -214,6 +217,9 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     }))
     persistDetection()
   },
+  selectedPointView: null,
+  pointViewMode: 'all',
+  setPointViewMode: pointViewMode => set({ pointViewMode }),
   cameraViewRequest: null,
   requestCameraView: (candidate) => set({ cameraViewRequest: { candidate: candidate ? structuredClone(candidate) : null, sceneToken: get().sceneToken } }),
   points: [],
@@ -350,7 +356,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   setVisualizationVisible: (visualizationVisible) => setAndPersist({ visualizationVisible }),
   setIgnoreAreasVisible: (ignoreAreasVisible) => setAndPersist({ ignoreAreasVisible }),
   setBlockersVisible: (blockersVisible) => setAndPersist({ blockersVisible }),
-  setHighlight: (highlight) => setDetectionAndPersist({ highlight, selectedCandidateId: null, selectedObservation: null, selectedGroupCandidateIds: [], candidateRevealRequest: null, visualizationVisible: true }),
+  setHighlight: (highlight) => setDetectionAndPersist({ highlight, ...(highlight?.kind === 'observer' ? { selectedPointView: highlight } : {}), selectedCandidateId: null, selectedObservation: null, selectedGroupCandidateIds: [], candidateRevealRequest: null, visualizationVisible: true }),
   selectCandidateGroup: (candidateIds) => setDetectionAndPersist(state => {
     const valid = new Set(state.candidates.map(candidate => candidate.id))
     return { selectedGroupCandidateIds: [...new Set(candidateIds)].filter(id => valid.has(id)),
@@ -506,6 +512,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     ignoreAreasVisible: true,
     blockersVisible: true,
     highlight: null,
+    selectedPointView: null,
+    pointViewMode: 'all',
     selectedCandidateId: null,
     selectedObservation: null,
     selectedGroupCandidateIds: [],

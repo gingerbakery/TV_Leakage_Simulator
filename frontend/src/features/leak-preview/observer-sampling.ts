@@ -16,7 +16,8 @@ export function planObserverSampling(observer: LeakPreviewObserverSettings, sour
   let views = 0
   let error: string | null = null
   let anglePairs: Array<[number, number]> = []
-  const valid = [radius, step, horizontal, vertical].every(Number.isFinite) && radius >= 0 && radius <= 10 && observer.step_deg >= .1 && observer.step_deg <= 90 && Math.abs(horizontal) <= 89.9 && Math.abs(vertical) <= 89.9
+  const angleLimit = observer.fixed_window ? 90 : 89.9
+  const valid = [radius, step, horizontal, vertical].every(Number.isFinite) && radius >= 0 && radius <= 10 && observer.step_deg >= .1 && observer.step_deg <= 90 && Math.abs(horizontal) <= angleLimit && Math.abs(vertical) <= angleLimit
   if (valid) {
     const offsets = new Set([0, -radius, radius])
     for (let i = -Math.floor(radius / step); i <= Math.floor(radius / step); i++) offsets.add(i * step)
@@ -45,6 +46,12 @@ export function planObserverSampling(observer: LeakPreviewObserverSettings, sour
     const spacing = observer.spacing_mm ?? 2
     let plannedCount = 0
     if (!Number.isFinite(spacing) || spacing < .1 || spacing > 100) error = '검사 간격은 0.1~100 mm로 지정하세요.'
+    else if (observer.fixed_window && !error) {
+      const cells = observer.fixed_window.size_mm.map(size => Math.ceil(size / spacing))
+      if (!radiance || views !== 1 || cells.some(count => !Number.isInteger(count) || count < 1 || count > 64)) {
+        error = '비교 격자는 단일 시야각에서 축당 1~64셀로 지정하세요.'
+      } else plannedCount = cells[0] * cells[1] * repeats
+    }
     else if (!projection) error = '전체 정밀 검색의 모델 범위가 필요합니다.'
     else if (!error) {
       const size = projection.maximum.map((value, i) => Math.max(.001, value - projection.minimum[i]))

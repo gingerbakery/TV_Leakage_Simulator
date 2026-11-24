@@ -67,6 +67,24 @@ class ObserverRadianceTests(TestCase):
                 self.assertEqual(blocked['direct_count'],0)
                 self.assertEqual(blocked['cells'],[])
 
+    def test_fixed_window_uses_common_world_grid_and_keeps_zero_cells(self):
+        mesh = TriangleMesh()
+        plate(mesh, 9, 30)
+        lamp = source((4, 0, -5), 40, 100.)
+        window = {"center_mm": [4, 0, 0], "size_mm": [4, 2]}
+        options = dict(spacing=2., threshold=101., spec_extra={"fixed_window": window})
+        before = render(mesh, lamp, [black()], **options)
+        expanded = render(mesh, lamp, [black()], bounds=((-30,-20,-15),(40,20,20)), **options)
+        self.assertEqual(before["views"][0]["grid_resolution"], [2, 1])
+        self.assertEqual(before["planned_count"], expanded["planned_count"])
+        self.assertEqual(before["cells"], [])
+        for actual, other in zip(before["comparison_grid_nit"], expanded["comparison_grid_nit"], strict=True):
+            self.assertAlmostEqual(actual, 100., delta=1e-9)
+            self.assertAlmostEqual(other, actual, delta=1e-9)
+        plate(mesh, -7, 30)
+        blocked = render(mesh, lamp, [black()], **options)
+        self.assertEqual(blocked["comparison_grid_nit"], [0., 0.])
+
     def test_fixed_offset_slit_missed_by_eight_samples_is_found_by_sixteen(self):
         # Adversarial fixed-seed coverage fixture, not a detection-rate claim.
         # The slit is offset from all eight primary samples but intersects one
@@ -225,6 +243,29 @@ class ObserverRadianceTests(TestCase):
             # Edge pixels are partially occupied; interior pixels preserve L*R^2.
             self.assertLessEqual(cell["luminance_nit"],81.+1e-10)
         self.assertAlmostEqual(max(c["luminance_nit"] for c in result["cells"]),81.,delta=1e-10)
+
+    def test_comparison_window_traces_to_source_outside_its_footprint(self):
+        mesh = TriangleMesh()
+        d = math.sqrt(.5)
+        for center, u in (((0, 0, 0), (d, 0, d)), ((5, 0, 0), (d, 0, -d))):
+            quad(mesh, [tuple(center[i] + u[i]*su*2 + (sv*8 if i == 1 else 0) for i in range(3))
+                        for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))], "mirror")
+        lamp = source((5, 0, -5), 4, reverse=True)
+        mirror = OpticalProfile(profile_id="mirror", reflectance=.9, scatter_model="specular")
+        bounds = ((-10, -10, -10), (10, 10, 10))
+        options = dict(depth=2, spacing=.5, bounds=bounds, spec_extra={
+            "fixed_window": {"center_mm": [0, 0, -3], "size_mm": [.5, .5]},
+        })
+        plate(mesh, -2, 2, (0, 0, .5))
+        before = render(mesh, lamp, [black(), mirror], **options)
+        self.assertEqual(before["views"][0]["grid_resolution"], [1, 1])
+        self.assertAlmostEqual(before["comparison_grid_nit"][0], 81., delta=1e-9)
+        self.assertEqual(before["cells"][0]["min_depth"], 2)
+
+        plate(mesh, -2.5, 2)
+        after = render(mesh, lamp, [black(), mirror], **options)
+        self.assertEqual(after["comparison_grid_nit"], [0.])
+        self.assertEqual(before["views"][0]["sample_spacing_mm"], after["views"][0]["sample_spacing_mm"])
 
     def test_public_engine_reports_radiance_without_changing_forward_flux(self):
         from test_observer_full_detail import FullDetailObserverTests

@@ -83,6 +83,7 @@ export interface LeakPreviewObserverSettings {
   coverage?: 'local' | 'hemisphere'
   search_mode?: 'preview' | 'full_detail'
   spacing_mm?: number
+  fixed_window?: { center_mm: Vec3; size_mm: [number, number] }
   sampling?: ObserverSamplingMode
   enabled: boolean
   horizontal_deg: number
@@ -701,7 +702,8 @@ export function buildLeakPreviewRequest({
         settings.min_luminance_nit ??= .01
         if (!Number.isFinite(settings.min_luminance_nit) || settings.min_luminance_nit < 0) throw new Error('최소 관찰 휘도는 0 이상의 유한한 nit 값이어야 합니다.')
       }
-      for (const [key, lo, hi] of [['horizontal_deg', -89.9, 89.9], ['vertical_deg', -89.9, 89.9], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, fullDetail && observer.measurement === 'radiance' ? 64 : 16]] as const) {
+      const angleLimit = settings.fixed_window ? 90 : 89.9
+      for (const [key, lo, hi] of [['horizontal_deg', -angleLimit, angleLimit], ['vertical_deg', -angleLimit, angleLimit], ['range_deg', 0, 10], ['step_deg', .1, 90], ['resolution', 8, 256], ['samples_per_cell', 1, fullDetail && observer.measurement === 'radiance' ? 64 : 16]] as const) {
         const value = settings[key]
         if (!Number.isFinite(value) || value < lo || value > hi || (['resolution', 'samples_per_cell'].includes(key) && !Number.isInteger(value))) throw new Error('역추적 시야각·탐색 설정을 확인하세요.')
       }

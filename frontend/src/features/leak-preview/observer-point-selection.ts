@@ -1,3 +1,4 @@
+import { leakPathPattern, similarLeakPathPatterns } from './leak-path-pattern'
 import type { Vec3 } from '@/api'
 import { leakPreviewRoiMinimumSizeMm, verifiedLeakPreviewSurfacePoints, type LeakPreviewCandidate, type LeakPreviewPoint, type ObserverProbeSummary } from './leak-preview-model'
 
@@ -70,4 +71,46 @@ export function resolveObserverPoint(candidate: LeakPreviewCandidate | undefined
       direction: view.direction, receiverCenter: footprint, footprintCenter: footprint,
       footprintWidthMm: view.spacing_mm[0], footprintHeightMm: view.spacing_mm[1],
       directCount: cell.direct_count, reflectedCount: cell.reflected_count } }
+}
+
+/** Collapse visual markers while retaining the original observation for picking. */
+export function groupObserverMarkers(
+  points: LeakPreviewPoint[], index: ObserverObservationIndex, tolerance: number,
+  selectedId: string | null = null, selection: ObserverPointSelection | null = null,
+  preferredAngle?: [number, number],
+): LeakPreviewPoint[] {
+  const selectedKey = selection && key(selection.position, selection.angles)
+  const entries = points.map(point => {
+    const identity = point.observerAngles && key(point.position, point.observerAngles)
+    const cell = point.candidateId && identity ? index.get(point.candidateId)?.get(identity)?.cell : undefined
+    return { point, selected: Boolean(selectedKey && point.candidateId === selectedId && identity === selectedKey),
+      angleMatch: Boolean(preferredAngle && point.observerAngles?.[0] === preferredAngle[0] && point.observerAngles[1] === preferredAngle[1]),
+      path: cell?.representative_path, strength: cell?.luminance_nit ?? point.relativeStrength }
+  }).sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.angleMatch) - Number(a.angleMatch) || b.strength - a.strength)
+  const markers: LeakPreviewPoint[] = []
+  const buckets = new Map<string, Array<{ pattern: ReturnType<typeof leakPathPattern>; apertureId?: string }>>()
+  for (const { point, path } of entries) {
+    const pattern = leakPathPattern(path, tolerance)
+    if (!pattern || !point.candidateId) {
+      markers.push(point)
+      continue
+    }
+    const [x, y, z] = point.position.map(value => Math.floor(value / tolerance))
+    let grouped = false
+    for (let dx = -1; dx <= 1 && !grouped; dx++) {
+      for (let dy = -1; dy <= 1 && !grouped; dy++) {
+        for (let dz = -1; dz <= 1 && !grouped; dz++) {
+          grouped = (buckets.get(`${point.candidateId}:${x+dx}:${y+dy}:${z+dz}`) ?? []).some(anchor =>
+            anchor.apertureId === point.apertureId && similarLeakPathPatterns(anchor.pattern, pattern, tolerance))
+        }
+      }
+    }
+    if (grouped) continue
+    markers.push(point)
+    const bucket = `${point.candidateId}:${x}:${y}:${z}`
+    const anchors = buckets.get(bucket)
+    if (anchors) anchors.push({ pattern, apertureId: point.apertureId })
+    else buckets.set(bucket, [{ pattern, apertureId: point.apertureId }])
+  }
+  return markers
 }

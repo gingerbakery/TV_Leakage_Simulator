@@ -7,7 +7,7 @@ import { leakPreviewDisplayStyle } from './leak-preview-display-style'
 import { filterLeakDisplay } from '@/features/leak-preview/leak-display-filter'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewPoint } from './leak-preview-picking'
-import { createObserverObservationIndex, resolveObserverPoint } from '@/features/leak-preview/observer-point-selection'
+import { groupObserverMarkers, createObserverObservationIndex, resolveObserverPoint } from '@/features/leak-preview/observer-point-selection'
 import { FullViewPipFrame } from './full-view-pip-frame'
 import { fullViewPipRect, type FullViewPipSize } from './full-view-pip-layout'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
@@ -2035,12 +2035,23 @@ export function ThreeViewerCanvas({
   const leakDisplayFilter = useLeakPreviewStore(state => state.displayFilter)
   const leakDisplay = useMemo(() => filterLeakDisplay(leakPreviewPoints, rawLeakCandidates, leakObserverSummary, leakDisplayFilter),
     [leakPreviewPoints, rawLeakCandidates, leakObserverSummary, leakDisplayFilter])
-  const visibleLeakPreviewPoints = useMemo(
-    () => leakPreviewPointsInRoi(verifiedLeakPreviewSurfacePoints(
-      leakDisplay.points, leakObserverSummary,
-    ), roiScopes),
-    [leakDisplay.points, leakObserverSummary, roiScopes],
-  )
+  const pointViewMode = useLeakPreviewStore(state => state.pointViewMode)
+  const leakHighlight = useLeakPreviewStore(state => state.highlight)
+  const selectedPointView = useLeakPreviewStore(state => state.selectedPointView)
+  const [currentLeakViewIndex, setCurrentLeakViewIndex] = useState(-1)
+  const viewTracker = useRef({ mode: pointViewMode, summary: leakObserverSummary, index: -1 })
+  const viewIndex = viewTracker.current.summary === leakObserverSummary ? currentLeakViewIndex : -1
+  viewTracker.current.mode = pointViewMode
+  viewTracker.current.summary = leakObserverSummary
+  const currentLeakView = leakObserverSummary?.views[viewIndex]
+  const fixedLeakView = pointViewMode === 'current' ? (currentLeakView ? [currentLeakView.horizontal_deg, currentLeakView.vertical_deg] : null)
+    : selectedPointView ? [selectedPointView.horizontal, selectedPointView.vertical] : null
+  const filteredLeakPreviewPoints = useMemo(() => {
+    const points = leakPreviewPointsInRoi(verifiedLeakPreviewSurfacePoints(leakDisplay.points, leakObserverSummary), roiScopes)
+    if (pointViewMode === 'all') return points
+    return points.filter(point => point.observerAngles && fixedLeakView &&
+      point.observerAngles[0] === fixedLeakView[0] && point.observerAngles[1] === fixedLeakView[1])
+  }, [leakDisplay.points, leakObserverSummary, roiScopes, pointViewMode, fixedLeakView?.[0], fixedLeakView?.[1]])
   const leakPreviewCandidates = leakDisplay.candidates
   const leakPreviewSourceMode = useLeakPreviewStore((state) => state.sourceMode)
   const leakPreviewSourceComponentIds = useLeakPreviewStore(
@@ -2049,13 +2060,19 @@ export function ThreeViewerCanvas({
   const leakPreviewVisualizationVisible = useLeakPreviewStore(
     (state) => state.visualizationVisible,
   )
-  const leakHighlight = useLeakPreviewStore((state) => state.highlight)
   const selectedLeakCandidateId = useLeakPreviewStore(
     (state) => state.selectedCandidateId,
   )
   const selectedLeakGroupIds = useLeakPreviewStore(state => state.selectedGroupCandidateIds)
   const selectedObservation = useLeakPreviewStore(state => state.selectedObservation)
   const observationIndex = useMemo(() => createObserverObservationIndex(leakDisplay.points, leakObserverSummary), [leakDisplay.points, leakObserverSummary])
+  const markerGroupingDistance = useMemo(() =>
+    Math.max(3, Math.min(15, Math.max(...getLeakPreviewBounds(scene, transformRules).size, 1) * .01)),
+  [scene, transformRules])
+  const visibleLeakPreviewPoints = useMemo(() => groupObserverMarkers(
+    filteredLeakPreviewPoints, observationIndex, markerGroupingDistance, selectedLeakCandidateId, selectedObservation,
+    leakHighlight?.kind === 'observer' ? [leakHighlight.horizontal, leakHighlight.vertical] : undefined,
+  ), [filteredLeakPreviewPoints, observationIndex, markerGroupingDistance, selectedLeakCandidateId, selectedObservation, leakHighlight])
   const selectedLeakObservation = useMemo(() => resolveObserverPoint(
     leakPreviewCandidates.find(candidate => candidate.id === selectedLeakCandidateId), selectedObservation,
     leakPreviewPoints, leakObserverSummary, observationIndex), [leakPreviewCandidates, selectedLeakCandidateId, selectedObservation, leakPreviewPoints, leakObserverSummary, observationIndex])
@@ -2500,6 +2517,22 @@ export function ThreeViewerCanvas({
         .subVectors(camera.position, controls.target)
         .normalize()
         .multiplyScalar(3)
+      const tracker = viewTracker.current
+      if (tracker.mode === 'current') {
+        const summary = tracker.summary
+        const minimumDot = Math.cos(Math.min(90, Math.max(.1, (summary?.settings.step_deg ?? 1) * .75)) * Math.PI / 180)
+        let bestDot = minimumDot
+        let index = -1
+        summary?.views.forEach((view, candidateIndex) => {
+          const [x, y, z] = view.direction
+          const dot = (x * cameraDirection.x + y * cameraDirection.y + z * cameraDirection.z) / 3
+          if (dot >= bestDot) { bestDot = dot; index = candidateIndex }
+        })
+        if (tracker.index !== index) {
+          tracker.index = index
+          setCurrentLeakViewIndex(index)
+        }
+      }
       orientationCamera.position.copy(cameraDirection)
       orientationCamera.up.copy(camera.up).normalize()
       orientationCamera.lookAt(0, 0, 0)
@@ -4101,7 +4134,9 @@ export function ThreeViewerCanvas({
     }
 
     const selected = selectedLeakObservation
-    if (selected?.representativePath) {
+    if (selected?.representativePath && (pointViewMode === 'all' || visibleLeakPreviewPoints.some(point =>
+      point.candidateId === selected.id && point.observerAngles?.[0] === selected.observerEvidence?.horizontalDeg &&
+      point.observerAngles?.[1] === selected.observerEvidence?.verticalDeg))) {
       const addArrow = (start: number[], end: number[], color: number, name: string) => {
         const origin = new Vector3(...start)
         const delta = new Vector3(...end).sub(origin)
@@ -4167,7 +4202,7 @@ export function ThreeViewerCanvas({
       outline.renderOrder = 225
       runtime.leakPreviewRoot.add(outline)
     }
-  }, [selectedLeakObservation, leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, selectedLeakGroupIds, transformRules])
+  }, [pointViewMode, selectedLeakObservation, leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, selectedLeakGroupIds, transformRules])
 
   useEffect(() => {
     const runtime = runtimeRef.current

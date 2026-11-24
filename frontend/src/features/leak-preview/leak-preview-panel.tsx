@@ -7,6 +7,7 @@ import { ValidationNextStep } from './validation-next-step'
 import { PreviewRunStatus } from './preview-run-status'
 import { CollapsibleSection } from '@/components/common/collapsible-section'
 import { planObserverSampling } from './observer-sampling'
+import { ObserverCaseComparison } from './observer-case-comparison'
 import { SensorComparisonDialog } from './sensor-comparison-dialog'
 import { installAiReviewExport } from './ai-review-export'
 import { ForwardPathReplayResult } from './forward-path-replay-result'
@@ -57,7 +58,7 @@ import {
   type LeakPreviewDirection,
   type LeakPreviewQuality,
 } from './leak-preview-model'
-import { leakPreviewStore, useLeakPreviewStore } from './leak-preview-store'
+import { leakPreviewStore, snapshotLeakPreviewProjectState, useLeakPreviewStore } from './leak-preview-store'
 
 interface LeakPreviewPanelProps {
   scene?: ScenePayload
@@ -114,6 +115,11 @@ const previewDirectionOptions: Array<{ id: LeakPreviewDirection; label: string; 
 ]
 
 export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelProps) {
+  const [caseComparison, setCaseComparison] = useState(false)
+  const comparisonCaseCount = useWorkspaceStore(state => state.cadCases.length)
+  const pointViewMode = useLeakPreviewStore(state => state.pointViewMode)
+  const setPointViewMode = useLeakPreviewStore(state => state.setPointViewMode)
+  const [forwardDiagnostics, setForwardDiagnostics] = useState(false)
   const [candidatesCollapsed,setCandidatesCollapsed] = useState(false)
   const [candidatePage, setCandidatePage] = useState(0)
   const [listGrouping, setListGrouping] = useState<PointListGrouping>('none')
@@ -571,7 +577,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     }
   }
 
-  const createViewReceiver = (candidate: LeakPreviewCandidate, diagnostics = false) => {
+  const createViewReceiver = (candidate: LeakPreviewCandidate, diagnostics?: boolean) => {
     if (!scene || !candidate.observerEvidence) return
     const index = (candidateIndices.get(candidate.id) ?? 0) + 1
     const { receiver } = ensureCandidateReceiver(candidate, index, true)
@@ -579,8 +585,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
     }
     actions.setReceiverEnabled(receiver.receiver_id, true)
-    if (diagnostics) ensurePrecisionEmitters()
-    if (diagnostics) actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: true })
+    if (diagnostics !== undefined) {
+      ensurePrecisionEmitters()
+      actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: diagnostics })
+    }
     setMessage(diagnostics ? '순방향 진단 준비 완료 · Ray Tracing에서 실행' : '프리뷰 조건 적용 · 시야각 Receiver 1개 활성화')
     onOpenPrecision()
   }
@@ -644,7 +652,19 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       return
     }
     const candidateIndex = (candidateIndices.get(candidate.id) ?? 0) + 1
-    actions.addRoiScope({
+    const view = candidate.observerEvidence
+    const existingRoi = workspaceStore.getState().roiScopes.find(scope =>
+      scope.source === 'box' && scope.scopeId.startsWith('Preview ROI ') &&
+      scope.clipBox && scope.clipBox.plane === clipBox.plane &&
+      scope.clipBox.xMin === clipBox.xMin && scope.clipBox.xMax === clipBox.xMax &&
+      scope.clipBox.yMin === clipBox.yMin && scope.clipBox.yMax === clipBox.yMax &&
+      scope.clipBox.zMin === clipBox.zMin && scope.clipBox.zMax === clipBox.zMax &&
+      scope.observerView?.horizontalDeg === view?.horizontalDeg &&
+      scope.observerView?.verticalDeg === view?.verticalDeg &&
+      scope.observerView?.direction.every((value, axis) => value === view?.direction[axis]) !== false &&
+      JSON.stringify(scope.components) === JSON.stringify(components))
+    if (existingRoi && !existingRoi.active) actions.setRoiScopeActive(existingRoi.id, true)
+    if (!existingRoi) actions.addRoiScope({
       label: `Preview ROI ${String(candidateIndex).padStart(2, '0')}`,
       source: 'box',
       view: 'coordinate',
@@ -658,19 +678,20 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     })
     const { receiver, existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex, precision)
     if (precision) {
-      if (receiver.path_guidance_percent != null) {
+      if (candidate.observerEvidence || receiver.path_guidance_percent != null) {
         for (const other of receivers) {
           if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
         }
         actions.setReceiverEnabled(receiver.receiver_id, true)
       }
       ensurePrecisionEmitters()
+      actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: forwardDiagnostics })
       setMessage('ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
       onOpenPrecision()
       return
     }
-    setMessage(receiverAlreadyExists
-      ? '선택한 후보를 ROI List에 추가했습니다. 기존 Receiver를 유지합니다.'
+    setMessage(existingRoi ? '선택한 ROI와 Receiver를 적용했습니다.' : receiverAlreadyExists
+      ? '선택한 후보의 ROI를 추가하고 Receiver를 갱신했습니다.'
       : '선택한 후보의 ROI와 Receiver를 생성했습니다.')
   }
 
@@ -796,22 +817,29 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           {selectedObservation ? <div role="status" className="text-xs">개별 관찰 표본 · {selectedCandidate?.representativePath?.length === 2 ? '직광' : '반사 경로'}</div> : null}
           {currentPathCheck ? <Button size="sm" variant="outline" onClick={() => setPathCheckOpen(true)}>검증 결과 보기</Button> : null}
           <div className="grid grid-cols-2 gap-1.5">
-            <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath} onClick={() => { if (selectedCandidate) leakPreviewStore.getState().requestCameraView(selectedCandidate) }}>검출 시야각 보기</Button>
-            <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" onClick={() => leakPreviewStore.getState().requestCameraView(null)}>이전 보기</Button><HelpTooltip label="검출 시야각 보기 도움말">선택 Point에 저장된 검출 당시 방향으로 평행 투영 카메라를 맞춥니다. Point를 화면 중심으로 잡고 모델 외부에서 바라봅니다. 목록 선택만으로는 카메라가 움직이지 않습니다. 이전 보기는 전환 전 카메라 위치·방향·확대를 복원합니다. 카메라 거리는 화면 구도를 위한 값이며 사람의 실제 관찰 거리나 육안 밝기를 재현하지 않습니다.</HelpTooltip></div>
-            <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate) }}>시야각 Receiver 생성</Button><HelpTooltip label="시야각 Receiver 생성 도움말">선택 Point의 관찰 방향을 적용하고, Receiver 면적을 관찰 방향으로 투영해 겹치는 CAD 메시의 마지막 표면에서 3mm 여유를 두도록 거리를 자동 계산합니다. 불완전한 메시 부품은 부품 경계를 사용합니다. 검출 셀 영역에 가장자리 1mm 여유를 더해 크기와 중심을 정합니다. 이전 저장 결과에 셀 크기가 없으면 기존 후보 영역을 사용합니다. Receiver 편집에서 Point 거리·가로·세로를 수정할 수 있습니다. 수용각은 90°, 앞뒤 반전은 꺼짐으로 설정합니다. 기존 자동 Receiver를 재사용하면 수정했던 센서 설정도 다시 적용합니다. 중지 후 부분 결과에서도 생성할 수 있습니다. 개구부 미확정 Point도 생성 가능하지만 출구 확정을 뜻하지 않습니다. ROI 생성에는 개구부 정보가 필요합니다. 유한 면적의 수광량(lm)은 Preview의 한 방향 휘도(nit)와 다른 지표입니다.</HelpTooltip></div>
+            <div className="flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate) }}>시야각 Receiver 생성</Button><HelpTooltip label="시야각 Receiver 생성 도움말">선택 Point의 관찰 방향을 적용하고, Receiver 면적을 관찰 방향으로 투영해 겹치는 CAD 메시의 마지막 표면에서 3mm 여유를 두도록 거리를 자동 계산합니다. 불완전한 메시 부품은 부품 경계를 사용합니다. 검출 셀 영역에 가장자리 1mm 여유를 더해 크기와 중심을 정합니다. 이전 저장 결과에 셀 크기가 없으면 기존 후보 영역을 사용합니다. Receiver 편집에서 Point 거리·가로·세로를 수정할 수 있습니다. 수용각은 90°, 앞뒤 반전은 꺼짐으로 설정합니다. 같은 위치와 각도의 자동 Receiver가 있으면 검출 표본의 기본 설정으로 다시 생성합니다. 중지 후 부분 결과에서도 생성할 수 있습니다. 개구부 미확정 Point도 생성 가능하지만 출구 확정을 뜻하지 않습니다. ROI 생성에는 개구부 정보가 필요합니다. 유한 면적의 수광량(lm)은 Preview의 한 방향 휘도(nit)와 다른 지표입니다.</HelpTooltip></div>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) void validateCandidatePath(selectedCandidate) }}>{validatingCandidateId ? <LoaderCircle aria-hidden className="animate-spin motion-reduce:animate-none" /> : null}경로 검증</Button>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) try { setComparisonRequest(candidateValidationRequest(selectedCandidate)) } catch (error) { setMessage(`광량 비교 실패: ${String(error)}`) } }}>광량 비교</Button>
-            <Button size="sm" disabled={!selectedCandidate || !selectedCandidate.apertureId || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, true) }}>정밀해석 준비</Button>
+            <Button size="sm" disabled={!selectedCandidate || (!selectedCandidate.apertureId && !(selectedCandidate.observerEvidence && selectedCandidate.representativePath)) || isRunning || validatingCandidateId !== null} onClick={() => {
+              if (!selectedCandidate) return
+              if (selectedCandidate.apertureId) createRoi(selectedCandidate, true)
+              else createViewReceiver(selectedCandidate, forwardDiagnostics)
+            }}>정밀해석 준비</Button>
+            <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || comparisonCaseCount < 2 || isRunning || !samePreviewSignature(runSignature, previewInputSignature)} onClick={() => setCaseComparison(true)}>Case 비교</Button>
             {selectedCandidate?.observerEvidence && selectedCandidate.representativePath && <div className="col-span-2 flex items-center gap-2 text-xs">
               <label className="flex items-center gap-1"><input type="checkbox" checked={pathGuidance} disabled={isRunning} onChange={event => setPathGuidance(event.currentTarget.checked)} />경로 유도</label>
               <HelpTooltip label="경로 유도 도움말">선택한 경로의 첫 반사점 주변을 일부 발사에 사용하고 추출 확률로 광량을 보정합니다. 직광 경로는 Receiver 면적을 사용합니다. 나머지 광선은 기본 배광으로 발사합니다. 한쪽 면 Lambertian·Isotropic 배치 광원을 지원합니다. Minimum energy는 0으로 설정하거나 Russian Roulette 종료 방식을 사용하세요.</HelpTooltip>
               <NumberInput aria-label="경로 유도 비중 (%)" className="h-7 w-16 rounded border px-1" min={1} max={95} step={1} value={pathGuidancePercent} disabled={!pathGuidance || isRunning} onValueChange={value => setPathGuidancePercent(Math.min(95, Math.max(1, value)))} />%
             </div>}
-            <div className="col-span-2 flex items-center gap-1"><Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createViewReceiver(selectedCandidate, true) }}>순방향 진단 준비</Button><HelpTooltip label="순방향 진단 준비 도움말">선택 Point의 Receiver를 자동 설정하고 순방향 원인 진단을 켠 뒤 Ray Tracing으로 이동합니다. 실행하면 실제 구간의 센서 도달·조건 제외·종료를 기록합니다. 대표 경로 재생이나 검출 강제 추가가 아니며, 진단 실행은 일반 실행보다 느릴 수 있습니다.</HelpTooltip></div>
+            <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={forwardDiagnostics} disabled={isRunning} onChange={event => setForwardDiagnostics(event.currentTarget.checked)} />순방향 진단
+              <HelpTooltip label="순방향 진단 도움말">정밀해석 실행 시 수광면 도달, 조건 제외와 종료를 기록합니다.</HelpTooltip></label>
             <Button className="col-span-2" size="sm" variant="outline" disabled={!selectedCandidate || !selectedCandidate.apertureId || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, false) }}>ROI·Receiver 생성</Button>
           </div>
         </div>
       </div>
+      {caseComparison && scene && selectedCandidate?.observerEvidence && <ObserverCaseComparison
+        candidate={{ ...selectedCandidate, observerEvidence: selectedCandidate.observerEvidence }}
+        scene={scene} source={snapshotLeakPreviewProjectState()} onClose={() => setCaseComparison(false)} />}
       {comparisonRequest ? <SensorComparisonDialog key={`${scene?.metadata.scene_token}:${activeCadCaseId}`} request={comparisonRequest} onClose={() => setComparisonRequest(null)} /> : null}
       <CollapsibleSection title="광원 설정">
         <div className="flex items-center gap-1 text-sm font-semibold">Preview Light Source
@@ -1064,6 +1092,22 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         {observerSummary.display_truncated ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">표시 한도 초과 · 밝은 셀 우선 표시</div> : null}
         {observerSummary.views.some((view) => (view.display_stride ?? 1) > 1) ? <div role="status" className="text-xs">검출점 묶음 표시 · 검사 간격 유지<HelpTooltip label="검출점 묶음 표시 도움말">메모리를 제한하기 위해 가까운 표시 셀을 묶었습니다. 지정 간격으로 전체 검사를 수행하며 검출 경로 수는 유지합니다. 표시 위치는 묶인 표본의 평균이고 개별 틈이 한 후보로 합쳐질 수 있습니다.</HelpTooltip></div> : null}
         {observerSummary.measure === 'luminance_cd_m2' ? <label className="flex items-center justify-end gap-1 text-xs">정렬<select aria-label="시야각 결과 정렬" className="h-7 rounded border border-border bg-background px-1" value={observerSort} onChange={(event) => setObserverSort(event.currentTarget.value as 'brightness' | 'angle')}><option value="brightness">휘도 높은 순</option><option value="angle">각도순</option></select></label> : null}
+        <div className="flex items-center gap-2 text-xs">
+          <label className="flex items-center gap-1">Leak Point 표시
+            <select className="h-7 rounded border bg-background px-1" value={pointViewMode} onChange={event => {
+              const mode = event.currentTarget.value as typeof pointViewMode
+              if (mode === 'selected' && observerViews.length && !observerViews.some(({ view }) => {
+                const fixed = leakPreviewStore.getState().selectedPointView
+                return fixed?.horizontal === view.horizontal_deg && fixed.vertical === view.vertical_deg
+              })) {
+                const { view } = observerViews[0]
+                setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })
+              }
+              setPointViewMode(mode)
+            }}><option value="all">전체</option><option value="current">현재 시야</option><option value="selected">선택 각도</option></select>
+          </label>
+          <HelpTooltip label="Leak Point 표시 도움말">가까운 영역에서 비슷한 경로를 따라온 표본은 대표 Point 한 개로 표시합니다. 전체는 검사 각도의 대표 Point를 함께 표시합니다. 현재 시야는 카메라에 가장 가까운 검사 각도를 사용하며 검사 간격 밖이면 점을 표시하지 않습니다. 선택 각도는 아래 결과 목록에서 고정합니다.</HelpTooltip>
+        </div>
         <CollapsibleSection title="시야각 결과 목록" count={observerViews.length} defaultOpen={observerViews.length <= 8}><div className="max-h-48 overflow-auto"><table aria-label="시야각 역추적 결과" className="w-full text-right text-xs"><thead><tr><th>좌우 / 상하 (°)</th><th>직광</th><th>반사광</th>{observerSummary.measure === 'luminance_cd_m2' ? <th>최고 (nit)</th> : null}</tr></thead><tbody>{observerViews.map(({view,index}) => <tr key={index} onClick={event => { if (!(event.target as HTMLElement).closest('button')) setHighlight({kind:'observer',horizontal:view.horizontal_deg,vertical:view.vertical_deg}) }} className={cn(highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg && 'bg-orange-500/20')}><td><button type="button" className="w-full py-1 text-right" aria-pressed={highlight?.kind === 'observer' && highlight.horizontal === view.horizontal_deg && highlight.vertical === view.vertical_deg} onClick={() => setHighlight({ kind: 'observer', horizontal: view.horizontal_deg, vertical: view.vertical_deg })}>{view.horizontal_deg} / {view.vertical_deg}</button></td><td>{view.direct_count}</td><td>{view.reflected_count}</td>{observerSummary.measure === 'luminance_cd_m2' ? <td>{view.peak_luminance_nit?.toExponential(2)}</td> : null}</tr>)}</tbody></table></div></CollapsibleSection>
         {observerSummary.direct_count + observerSummary.reflected_count === 0 ? <div role="status" className="text-xs text-amber-700 dark:text-amber-400">{observerNoDetectionMessage(observerSummary)}</div> : null}
       </section> : null}

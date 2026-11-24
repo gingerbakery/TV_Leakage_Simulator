@@ -1,3 +1,4 @@
+import { createObserverObservationIndex, groupObserverMarkers } from './observer-point-selection'
 import { describe, expect, it } from 'vitest'
 
 import { createEmitterAim } from '@/features/raytracing/emitter-aim'
@@ -1070,4 +1071,28 @@ it('accepts automatic exit estimates with measured variation but never shell cer
   expect(verifiedLeakPreviewSurfacePoints(detection.points,summary)).toHaveLength(1)
   summary.cells[0].aperture!.uncertainty_mm = NaN
   expect(observerProbeSummary(result)).toBeNull()
+})
+
+it('groups nearby observer markers with similar routes and retains the original observation', () => {
+  const points = [
+    { position: [0, 0, 0], observerAngles: [0, 0], relativeStrength: .5 },
+    { position: [.3, 0, 0], observerAngles: [1, 0], relativeStrength: 1 },
+    { position: [.5, 0, 0], observerAngles: [0, 0], relativeStrength: .8 },
+    { position: [15, 0, 0], observerAngles: [0, 0], relativeStrength: .7 },
+  ].map(point => ({ ...point, position: point.position as Vec3,
+    observerAngles: point.observerAngles as [number, number], candidateId: 'opening', apertureId: 'same-aperture' }))
+  const summary = {
+    views: [{ horizontal_deg: 0, vertical_deg: 0 }, { horizontal_deg: 1, vertical_deg: 0 }],
+    cells: points.map((point, index) => ({
+      view_index: index === 1 ? 1 : 0,
+      representative_path: [[0, 0, -15], [index === 2 ? 20 : 0, 4, -5], point.position, [0, 0, 10]],
+      path_validation: { status: 'valid', endpoint_kind: 'cad_surface' },
+      luminance_nit: point.relativeStrength,
+    })),
+  } as ObserverProbeSummary
+  const index = createObserverObservationIndex(points, summary)
+  expect(groupObserverMarkers(points, index, 3)).toEqual([points[1], points[2], points[3]])
+  expect(groupObserverMarkers(points, index, 3, 'opening', { position: points[0].position, angles: points[0].observerAngles }))
+    .toEqual([points[0], points[2], points[3]])
+  expect(index.get('opening')?.size).toBe(4)
 })

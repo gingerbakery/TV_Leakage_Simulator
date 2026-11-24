@@ -97,9 +97,9 @@ afterEach(() => {
 
 describe('SimulatorShell', () => {
   it.each([
-    ['정밀해석 준비', 'body'], ['순방향 진단 준비', 'body'],
-    ['정밀해석 준비', 'emitters'], ['순방향 진단 준비', 'emitters'],
-  ] as const)('preserves Preview through %s, forward budget edits and return with %s sources', async (action, sourceMode) => {
+    [false, 'body'], [true, 'body'],
+    [false, 'emitters'], [true, 'emitters'],
+  ] as const)('preserves Preview with diagnostics %s, forward budget edits and return with %s sources', async (diagnostics, sourceMode) => {
     const scene = createSceneFixture()
     apiHookState.scene = scene
     workspaceStore.getState().actions.addCadCase({ path: 'handoff.step', displayName: 'Handoff' })
@@ -132,8 +132,10 @@ describe('SimulatorShell', () => {
     renderShell()
     fireEvent.click(screen.getByRole('button', { name: 'Whole Set Lighting' }))
     expect(leakPreviewStore.getState().result).toEqual(saved.result)
-    fireEvent.click(screen.getByRole('button', { name: action }))
+    if (diagnostics) fireEvent.click(screen.getByRole('checkbox', { name: '순방향 진단' }))
+    fireEvent.click(screen.getByRole('button', { name: '정밀해석 준비' }))
     await waitFor(() => expect(workspaceStore.getState().receivers.length).toBeGreaterThan(0))
+    expect(workspaceStore.getState().rayTraceConfig.receiver_diagnostics).toBe(diagnostics)
     expect(leakPreviewStore.getState().result).toEqual(saved.result)
     expect(leakPreviewStore.getState().sourceComponentIds).toEqual(settings.sourceComponentIds)
     act(() => workspaceStore.getState().actions.setEmitterRayCount(250000))

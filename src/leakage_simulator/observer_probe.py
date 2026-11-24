@@ -31,7 +31,8 @@ def source_connection_visible(mesh, hit, distance, epsilon):
 def validate_settings(spec):
     if not isinstance(spec, dict):
         raise ValueError("Observer settings must be an object")
-    for key, lo, hi in (("horizontal_deg", -89.9, 89.9), ("vertical_deg", -89.9, 89.9),
+    max_angle = 90. if spec.get("fixed_window") is not None else 89.9
+    for key, lo, hi in (("horizontal_deg", -max_angle, max_angle), ("vertical_deg", -max_angle, max_angle),
                         ("range_deg", 0, 10), ("step_deg", .1, 90),
                         ("resolution", 8, 256), ("samples_per_cell", 1, 64 if spec.get("search_mode") == "full_detail" and spec.get("measurement") == "radiance" else 16)):
         value = spec.get(key)
@@ -64,6 +65,8 @@ def validate_settings(spec):
 
 def angles(spec):
     radius, step = spec["range_deg"], spec["step_deg"]
+    if spec.get("fixed_window") is not None and radius == 0 and spec.get("coverage", "local") == "local":
+        return [(spec["horizontal_deg"], spec["vertical_deg"])]
     # Unconditional midpoint coverage includes cells whose coarse probes were
     # all zero. Never infer angular support from hits alone.
     refine = spec.get("refine_angles", False)
@@ -113,11 +116,28 @@ def sampling_plan(spec, minimum, maximum, axis, source_count, epsilon=1e-8):
         width, height = max(pu)-min(pu), max(pv)-min(pv)
         columns = max(1, math.ceil(width/spec["spacing_mm"])) if full else int(spec["resolution"])
         rows = max(1, math.ceil(height/spec["spacing_mm"])) if full else int(spec["resolution"])
+        fixed = spec.get("fixed_window")
+        window_center = center
+        if fixed is not None:
+            if not full or spec.get("measurement") != "radiance" or len(views) != 1:
+                raise ValueError("A fixed observation window requires single-view full-detail radiance")
+            try:
+                window_center = tuple(float(value) for value in fixed["center_mm"])
+                width, height = (float(value) for value in fixed["size_mm"])
+            except (ValueError, TypeError, KeyError) as error:
+                raise ValueError("Invalid fixed observation window") from error
+            if len(window_center) != 3 or not all(math.isfinite(value) for value in (*window_center, width, height)) or min(width, height) <= 0:
+                raise ValueError("Invalid fixed observation window")
+            columns, rows = (max(1, math.ceil(size/spec["spacing_mm"])) for size in (width, height))
+            if columns > 64 or rows > 64:
+                raise ValueError("Fixed observation window is limited to 64 cells per axis")
+            pu, pv = [-width/2], [-height/2]
         grid = columns*rows*int(spec["samples_per_cell"])
         targeted = max(grid, source_count) if source_count else 0
         plans.append(dict(horizontal=horizontal, vertical=vertical, outward=outward, u=u, v=v,
             width=width, height=height, min_u=min(pu), min_v=min(pv), columns=columns, rows=rows,
-            distance=max(vec_dot(vec_sub(p, center), outward) for p in corners)+max(1., epsilon*10),
+            distance=max(vec_dot(vec_sub(p, window_center), outward) for p in corners)+max(1., epsilon*10),
+            center=window_center,
             grid_samples=grid, targeted_samples=targeted))
     total = sum(plan["grid_samples"]+plan["targeted_samples"] for plan in plans)
     limit = FULL_DETAIL_SAMPLE_LIMIT if full else 500_000

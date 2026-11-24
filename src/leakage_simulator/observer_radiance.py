@@ -347,6 +347,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     print(f"[OBSERVER] sources={len(sources)} cad_source_faces={len(faces)} virtual_triangles={len(virtual)} "
           f"planned_samples={planned} max_depth={config.max_depth} transport={'resident' if resident is not None else 'host'}", flush=True)
     center = tuple((collector.minimum[i]+collector.maximum[i])/2 for i in range(3))
+    if spec.get("fixed_window"):
+        center = plans[0]["center"]
     samples = int(spec["samples_per_cell"])
     threshold = spec.get("min_luminance_nit", 0.)
     attempted = depth_limited = excluded = filtered = 0
@@ -361,6 +363,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     peak_before_threshold = 0.
     stopped = display_truncated = False
     cells, views = [], []
+    comparison_grid = [0.] * (plans[0]["columns"] * plans[0]["rows"]) if spec.get("fixed_window") is not None else None
     cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(plans)))
     if progress_callback:
         progress_callback(0, planned)
@@ -403,6 +406,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             peak_luminance_before_threshold_nit=peak_before_threshold,
             photometric_diagnostics_scope="finalized_cells_after_allowed_regions",
             stopped=is_stopped, complete=not is_stopped, runtime_sec=time.perf_counter()-started, views=out_views, cells=out_cells,
+            **({"comparison_grid_nit": comparison_grid} if comparison_grid is not None else {}),
             display_truncated=display_truncated, calibration_state="uncalibrated", observation_state="estimated" if out_cells else "not_observed",
             limitations=["parallel_camera", "finite_sampling", "reflection_only", "uncalibrated_source_material_threshold"]
                 + (["depth_truncated"] if committed_depth_limited else []) + (["partial_result"] if is_stopped else []))
@@ -598,6 +602,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
         def finish(cell):
             nonlocal filtered, display_truncated, positive_before_threshold, peak_before_threshold
             if cell and cell["sample_count"]:
+                if comparison_grid is not None:
+                    comparison_grid[cell["row"] * plans[0]["columns"] + cell["column"]] = cell["sum"]/cell["sample_count"]
                 positive_before_threshold += cell["direct_count"]+cell["reflected_count"]
                 peak_before_threshold = max(peak_before_threshold, cell["sum"]/cell["sample_count"])
             formatted = format_cell(cell)

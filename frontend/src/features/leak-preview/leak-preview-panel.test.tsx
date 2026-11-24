@@ -14,6 +14,7 @@ import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewResult } from './leak-preview-store'
 import { createSavedLeakPreviewFixture } from '@/test/leak-preview-fixture'
 import { LeakPreviewPanel } from './leak-preview-panel'
+import { ObserverCaseComparison } from './observer-case-comparison'
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), job: undefined as unknown, queryError: null as Error | null }))
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
@@ -508,11 +509,7 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   expect(result.metrics._escape_direction_summary).toMatchObject({selected_count:0})
   fireEvent.click(screen.getByRole('article', { name: 'Point1' }))
   expect(leakPreviewStore.getState().cameraViewRequest?.candidate ?? null).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: '검출 시야각 보기' }))
-  expect(leakPreviewStore.getState().cameraViewRequest?.candidate?.observerEvidence?.horizontalDeg).toBe(80)
-  expect(leakPreviewStore.getState().cameraViewRequest?.candidate?.observerEvidence?.verticalDeg).toBe(20)
-  fireEvent.click(screen.getByRole('button', { name: '이전 보기' }))
-  expect(leakPreviewStore.getState().cameraViewRequest?.candidate).toBeNull()
+  expect(screen.queryByRole('button', { name: '검출 시야각 보기' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '시야각 Receiver 생성' }))
   expect(onOpenPrecision).toHaveBeenCalledOnce()
   expect(workspaceStore.getState().roiScopes).toEqual([])
@@ -558,7 +555,9 @@ it.each([true, false])('creates a view-angle receiver preserving the snapshot (c
   fireEvent.click(screen.getByRole('button', { name: 'ROI·Receiver 생성' }))
   expect(workspaceStore.getState().roiScopes).toHaveLength(1)
   expect(workspaceStore.getState().receivers).toHaveLength(2)
-  fireEvent.click(screen.getByRole('button', { name: '순방향 진단 준비' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '순방향 진단' }))
+  fireEvent.click(screen.getByRole('button', { name: '정밀해석 준비' }))
+  expect(workspaceStore.getState().roiScopes).toHaveLength(1)
   expect(workspaceStore.getState().rayTraceConfig.receiver_diagnostics).toBe(true)
   expect(workspaceStore.getState().receivers.filter(item=>item.enabled)).toHaveLength(1)
   expect(mocks.start).not.toHaveBeenCalled()
@@ -892,4 +891,46 @@ it('labels automatically estimated exits and depth variation without requiring f
   act(() => leakPreviewStore.getState().setDetection(result,[],[candidate]))
   expect(screen.getByText('출구 추정 · 깊이 변동 0.03 mm')).toBeTruthy()
   expect(screen.getByText('자동 출구 추정 · 최외곽 확정 아님')).toBeTruthy()
+})
+
+it('runs two Cases on the same fixed observer grid and displays the measured difference', async () => {
+  const actions = workspaceStore.getState().actions
+  actions.addCadCase({ path: 'before.step', displayName: 'Before' })
+  const before = workspaceStore.getState().activeCadCaseId!
+  actions.upsertEmitter(createDatumEmitter('before-light', [0, 0, 1], [0, 0, 0]))
+  actions.addCadCase({ path: 'after.step', displayName: 'After' })
+  actions.upsertEmitter(createDatumEmitter('after-light', [0, 0, 1], [0, 0, 0]))
+  actions.setActiveCadCase(before)
+  const scene = createSceneFixture()
+  const afterScene = { ...scene, metadata: { ...scene.metadata, scene_token: 'after-token' } }
+  const getScene = vi.spyOn(apiClient, 'getScene').mockResolvedValue(afterScene)
+  const start = vi.spyOn(apiClient, 'startRayTrace').mockResolvedValueOnce({ job_id: 'before-job' } as Awaited<ReturnType<typeof apiClient.startRayTrace>>)
+    .mockResolvedValueOnce({ job_id: 'after-job' } as Awaited<ReturnType<typeof apiClient.startRayTrace>>)
+  const getJob = vi.spyOn(apiClient, 'getRayTraceJob').mockImplementation(async id => {
+    const result = createRayTraceResultFixture()
+    result.metrics._observer_probe_summary = { complete: true, comparison_grid_nit: Array(4).fill(id === 'before-job' ? .48 : .12) }
+    return { status: 'completed', phase: 'completed', result } as Awaited<ReturnType<typeof apiClient.getRayTraceJob>>
+  })
+  try {
+    const candidate = {
+      center: [0, 0, 0], widthMm: 2, heightMm: 2,
+      observerEvidence: { axis: 'neg_z', horizontalDeg: 30, verticalDeg: 0, footprintCenter: [1, 2, 3] },
+    } as React.ComponentProps<typeof ObserverCaseComparison>['candidate']
+    const source = { ...snapshotLeakPreviewProjectState(), sourceMode: 'emitters' as const, sourceEmitterIds: ['before-light'] }
+    render(<AppProviders><ObserverCaseComparison candidate={candidate} scene={scene} source={source} onClose={() => undefined} /></AppProviders>)
+    fireEvent.change(screen.getByRole('spinbutton', { name: '격자 간격 (mm)' }), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '비교 실행' }))
+    await screen.findByText('최고 셀 (nit)')
+    expect(getScene).toHaveBeenCalledWith('after.step', expect.objectContaining({ signal: expect.any(AbortSignal) }), [])
+    expect(start).toHaveBeenCalledTimes(2)
+    const [beforeRequest, afterRequest] = start.mock.calls.map(([request]) => request)
+    expect(beforeRequest.observer_probe).toEqual(afterRequest.observer_probe)
+    expect(beforeRequest.observer_probe?.fixed_window).toEqual({ center_mm: [1, 2, 3], size_mm: [4, 4] })
+    expect(screen.getAllByText('-75.0%')).toHaveLength(2)
+    expect(workspaceStore.getState().activeCadCaseId).toBe(before)
+  } finally {
+    getScene.mockRestore()
+    start.mockRestore()
+    getJob.mockRestore()
+  }
 })
