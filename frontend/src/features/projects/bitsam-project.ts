@@ -333,7 +333,8 @@ function isLeakPreviewProjectState(
     const filter = value.displayFilter
     if (!isRecord(filter) || !(filter.maxReflections === null || isSafeId(filter.maxReflections)) ||
       !isFiniteNumber(filter.minNit) || filter.minNit < 0 || !isFiniteNumber(filter.minBrightnessRatio) ||
-      filter.minBrightnessRatio < 0 || filter.minBrightnessRatio > 1) return false
+      filter.minBrightnessRatio < 0 || filter.minBrightnessRatio > 1 ||
+      (filter.topPercent !== undefined && (!isSafeId(filter.topPercent) || filter.topPercent < 1 || filter.topPercent > 100))) return false
   }
   const isIgnoreArea = (item: unknown): item is LeakPreviewIgnoreArea =>
     isRecord(item) &&

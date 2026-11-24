@@ -33,7 +33,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { NumberInput } from '@/components/ui/number-input'
 import { createFaceEmitter, nextSpecId, rayObjectDisplayName } from '@/features/raytracing'
-import { buildRayTraceRequest } from '@/features/raytracing/ray-tracing-model'
+import { buildRayTraceRequest, LOCAL_FORWARD_EMITTER_ID, LOCAL_FORWARD_RECEIVER_ID } from '@/features/raytracing/ray-tracing-model'
+import { localForwardEmitter, localForwardRoi } from './local-forward-emitter'
 import { buildPrecisionPreviewConstraints } from '@/features/raytracing/precision-preview-constraints'
 import {
   groupRoiFacesByComponent,
@@ -292,7 +293,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const isPreparing = job?.status === 'running' && job.phase === 'preparing'
   const isFinalizing = job?.status === 'running' &&
     (job.phase === 'aggregating' || job.phase === 'serializing')
-  const availableEmitters = emitters.filter((emitter) => emitter.enabled)
+  const availableEmitters = emitters.filter((emitter) => emitter.enabled && emitter.emitter_id !== LOCAL_FORWARD_EMITTER_ID)
   const selectedEmitters = availableEmitters.filter((emitter) => sourceEmitterIds.includes(emitter.emitter_id))
   const hasPreviewSource = sourceMode === 'emitters'
     ? selectedEmitters.length > 0 && selectedEmitters.length === sourceEmitterIds.length
@@ -524,7 +525,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     if (precision && pathGuidance && candidate.observerEvidence && generated.observer_reference_path) {
       generated.path_guidance_percent = pathGuidancePercent
     }
-    const existing = receivers.find((receiver) => receiver.reference_mode === 'leak_preview_candidate' &&
+    const existing = receivers.find((receiver) => receiver.receiver_id !== LOCAL_FORWARD_RECEIVER_ID && receiver.reference_mode === 'leak_preview_candidate' &&
       (generated.view_angles ? receiver.view_angles?.axis === generated.view_angles.axis &&
         receiver.view_angles.horizontal_deg === generated.view_angles.horizontal_deg &&
         receiver.view_angles.vertical_deg === generated.view_angles.vertical_deg : !receiver.view_angles) &&
@@ -546,7 +547,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
   const ensurePrecisionEmitters = () => {
     if (!scene || sourceMode === 'emitters') return
-    if (!emitters.some((emitter) => emitter.enabled)) {
+    if (!availableEmitters.length) {
       if (sourceMode === 'body') {
         const generated = createLeakPreviewBodyEmitters(
           scene,
@@ -585,6 +586,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       if (other.receiver_id !== receiver.receiver_id && other.enabled) actions.setReceiverEnabled(other.receiver_id, false)
     }
     actions.setReceiverEnabled(receiver.receiver_id, true)
+    if (emitters.some(emitter => emitter.emitter_id === LOCAL_FORWARD_EMITTER_ID && emitter.enabled)) {
+      actions.setEmitterEnabled(LOCAL_FORWARD_EMITTER_ID, false)
+    }
     if (diagnostics !== undefined) {
       ensurePrecisionEmitters()
       actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: diagnostics })
@@ -597,7 +601,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     if (!scene) throw new Error('CAD를 먼저 불러오세요.')
     const receiver = createCandidateReceiver(candidate, 1, scene, transformRules)
     const workspace = workspaceStore.getState()
-    return buildRayTraceRequest({ scene, projectName: 'Preview 센서 검증', emitters: workspace.emitters,
+    return buildRayTraceRequest({ scene, projectName: 'Preview 센서 검증', emitters: workspace.emitters.filter(emitter => emitter.emitter_id !== LOCAL_FORWARD_EMITTER_ID),
       receivers: [receiver], materialAssignments: workspace.materialAssignments, bsdfAssets: workspace.bsdfAssets,
       transformRules: workspace.transformRules, excludedComponentIds: workspace.excludedComponentIds,
       deletedComponentIds: workspace.deletedComponentIds, roiScopes: workspace.roiScopes, config: workspace.rayTraceConfig,
@@ -635,10 +639,32 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
     } finally { setValidatingCandidateId(null) }
   }
 
-  const createRoi = (candidate: LeakPreviewCandidate, precision: boolean) => {
+  const createRoi = (candidate: LeakPreviewCandidate, precision: boolean, local = false) => {
     if (!scene) return
+    const candidateIndex = (candidateIndices.get(candidate.id) ?? 0) + 1
+    const view = candidate.observerEvidence
+    const path = candidate.representativePath
+    const localReceiver = local && view && path && path.length >= 2
+      ? createCandidateReceiver(candidate, candidateIndex, scene, transformRules) : undefined
+    let focusedEmitter
+    if (local) {
+      if (!localReceiver || !path) return
+      if (runSignature && !samePreviewSignature(runSignature, previewInputSignature)) {
+        setMessage('Preview 조건이 변경되었습니다. 다시 검색한 뒤 국부 순방향을 준비하세요.')
+        return
+      }
+      try {
+        const sources = sourceMode === 'emitters' ? selectedEmitters : previewResult?.emitters ?? []
+        focusedEmitter = localForwardEmitter(scene, sources, path, localReceiver, transformRules)
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error))
+        return
+      }
+    }
     setMessage('ROI 후보에 포함되는 CAD Face를 찾고 있습니다.')
-    const clipBox = candidateRoiWithSources(scene, candidate, [...(previewResult?.emitters ?? []), ...emitters.filter((item) => item.enabled)], transformRules)
+    const localPoint = candidate.aperturePosition ?? candidate.center
+    const clipBox = localReceiver ? localForwardRoi(localPoint, localReceiver)
+      : candidateRoiWithSources(scene, candidate, [...(previewResult?.emitters ?? []), ...availableEmitters], transformRules)
     const faceIds = resolveLeakPreviewRoiFaces(
       scene,
       clipBox,
@@ -647,14 +673,13 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       transformRules,
     )
     const components = groupRoiFacesByComponent(scene, faceIds, componentNameOverrides)
-    if (components.length === 0) {
+    if (!local && components.length === 0) {
       setMessage('후보 위치에서 ROI로 만들 CAD Face를 찾지 못했습니다.')
       return
     }
-    const candidateIndex = (candidateIndices.get(candidate.id) ?? 0) + 1
-    const view = candidate.observerEvidence
+    const roiLabel = local ? 'Preview ROI 국부' : 'Preview ROI'
     const existingRoi = workspaceStore.getState().roiScopes.find(scope =>
-      scope.source === 'box' && scope.scopeId.startsWith('Preview ROI ') &&
+      scope.source === 'box' && scope.scopeId.startsWith(roiLabel + ' ') &&
       scope.clipBox && scope.clipBox.plane === clipBox.plane &&
       scope.clipBox.xMin === clipBox.xMin && scope.clipBox.xMax === clipBox.xMax &&
       scope.clipBox.yMin === clipBox.yMin && scope.clipBox.yMax === clipBox.yMax &&
@@ -665,7 +690,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
       JSON.stringify(scope.components) === JSON.stringify(components))
     if (existingRoi && !existingRoi.active) actions.setRoiScopeActive(existingRoi.id, true)
     if (!existingRoi) actions.addRoiScope({
-      label: `Preview ROI ${String(candidateIndex).padStart(2, '0')}`,
+      label: `${roiLabel} ${String(candidateIndex).padStart(2, '0')}`,
       source: 'box',
       view: 'coordinate',
       components,
@@ -674,9 +699,12 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         horizontalDeg: candidate.observerEvidence.horizontalDeg, verticalDeg: candidate.observerEvidence.verticalDeg,
         direction: candidate.observerEvidence.direction,
       } : undefined,
-      point: { x: candidate.center[0], y: candidate.center[1], z: candidate.center[2] },
+      point: { x: localPoint[0], y: localPoint[1], z: localPoint[2] },
     })
-    const { receiver, existed: receiverAlreadyExists } = ensureCandidateReceiver(candidate, candidateIndex, precision)
+    const { receiver, existed: receiverAlreadyExists } = localReceiver
+      ? { receiver: { ...localReceiver, receiver_id: LOCAL_FORWARD_RECEIVER_ID, display_name: '국부 Receiver' }, existed: false }
+      : ensureCandidateReceiver(candidate, candidateIndex, precision)
+    if (localReceiver) actions.upsertReceiver(receiver)
     if (precision) {
       if (candidate.observerEvidence || receiver.path_guidance_percent != null) {
         for (const other of receivers) {
@@ -684,11 +712,22 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         }
         actions.setReceiverEnabled(receiver.receiver_id, true)
       }
-      ensurePrecisionEmitters()
-      actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: forwardDiagnostics })
-      setMessage('ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
+      if (focusedEmitter) actions.upsertEmitter(focusedEmitter)
+      else {
+        if (emitters.some(emitter => emitter.emitter_id === LOCAL_FORWARD_EMITTER_ID && emitter.enabled)) {
+          actions.setEmitterEnabled(LOCAL_FORWARD_EMITTER_ID, false)
+        }
+        ensurePrecisionEmitters()
+      }
+      actions.setRayTraceConfig({ ...workspaceStore.getState().rayTraceConfig, receiver_diagnostics: local || forwardDiagnostics })
+      setMessage(local ? '국부 ROI·Receiver·집중 Emitter 준비 완료 · 진단용 1 lm' : 'ROI, Receiver와 기본 Emitter를 준비했습니다. 방향과 크기를 확인한 뒤 정밀해석을 실행하세요.')
       onOpenPrecision()
       return
+    }
+    if (receivers.some(receiver => receiver.receiver_id === LOCAL_FORWARD_RECEIVER_ID && receiver.enabled)) {
+      actions.setEmitterEnabled(LOCAL_FORWARD_EMITTER_ID, false)
+      actions.setReceiverEnabled(LOCAL_FORWARD_RECEIVER_ID, false)
+      actions.setReceiverEnabled(receiver.receiver_id, true)
     }
     setMessage(existingRoi ? '선택한 ROI와 Receiver를 적용했습니다.' : receiverAlreadyExists
       ? '선택한 후보의 ROI를 추가하고 Receiver를 갱신했습니다.'
@@ -825,6 +864,10 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
               if (selectedCandidate.apertureId) createRoi(selectedCandidate, true)
               else createViewReceiver(selectedCandidate, forwardDiagnostics)
             }}>정밀해석 준비</Button>
+            <div className="flex items-center gap-1">
+              <Button className="flex-1" size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || !selectedCandidate.representativePath || isRunning || validatingCandidateId !== null} onClick={() => { if (selectedCandidate) createRoi(selectedCandidate, true, true) }}>국부 순방향 준비</Button>
+              <HelpTooltip label="국부 순방향 준비 도움말">선택 검출점 주변 ROI와 Receiver를 준비하고, 경로에 연결된 광원면에서 첫 반사점 주변 또는 직광 Receiver로 집중 발사합니다. 전체 CAD로 차폐와 반사를 계산합니다. 활성화된 집중 Emitter만 순방향에 사용하며, 일반 발사로 돌아가려면 집중 Emitter를 끄거나 정밀해석 준비를 누르세요. 1 lm은 경로 검출용 설정입니다.</HelpTooltip>
+            </div>
             <Button size="sm" variant="outline" disabled={!selectedCandidate?.observerEvidence || comparisonCaseCount < 2 || isRunning || !samePreviewSignature(runSignature, previewInputSignature)} onClick={() => setCaseComparison(true)}>Case 비교</Button>
             {selectedCandidate?.observerEvidence && selectedCandidate.representativePath && <div className="col-span-2 flex items-center gap-2 text-xs">
               <label className="flex items-center gap-1"><input type="checkbox" checked={pathGuidance} disabled={isRunning} onChange={event => setPathGuidance(event.currentTarget.checked)} />경로 유도</label>

@@ -8,7 +8,7 @@ import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { defaultObserverSettings, createEscapeEnclosureReceivers, detectLeakPreviewCandidates, createLeakPreviewReceivers } from './leak-preview-model'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createBsdfFixture } from '@/test/bsdf-fixture'
-import { buildRayTraceRequest, createDatumEmitter } from '@/features/raytracing/ray-tracing-model'
+import { buildRayTraceRequest, createDatumEmitter, LOCAL_FORWARD_EMITTER_ID, LOCAL_FORWARD_RECEIVER_ID } from '@/features/raytracing/ray-tracing-model'
 import { apiClient } from '@/api'
 import { createViewAngleReceiver } from '@/features/raytracing/receiver-view'
 import { leakPreviewStore, snapshotLeakPreviewProjectState, snapshotLeakPreviewResult } from './leak-preview-store'
@@ -27,6 +27,52 @@ vi.mock('@/api', async () => {
   }
 })
 afterEach(() => { cleanup(); workspaceStore.getState().actions.resetWorkspace(); leakPreviewStore.getState().clear(); mocks.start.mockReset(); mocks.job = undefined; mocks.queryError = null })
+
+it('prepares a local ROI, receiver and focused emitter from an existing reverse-trace source', () => {
+  const scene = createSceneFixture()
+  const saved = createSavedLeakPreviewFixture()
+  const original = { ...createDatumEmitter('original', [30, 20, -5], [0, 0, 0]),
+    emission_direction: 'forward' as const, normal_flip: false }
+  const other = createDatumEmitter('unrelated', [45, 45, -5], [0, 0, 0])
+  const candidate = { ...saved.candidates[0], center: [30, 20, 0] as [number, number, number],
+    representativePath: [[30, 20, -5], [30, 20, 0], [30, 20, -20]] as [number, number, number][],
+    observerEvidence: { axis: 'neg_z' as const, stepDeg: 1, horizontalDeg: 0, verticalDeg: 0,
+      directCount: 0, reflectedCount: 1, direction: [0, 0, -1] as [number, number, number],
+      receiverCenter: [30, 20, -20] as [number, number, number], footprintWidthMm: 2, footprintHeightMm: 2 } }
+  const onOpenPrecision = vi.fn()
+  workspaceStore.getState().actions.addCadCase({ path: 'focused.step', displayName: 'Focused' })
+  render(<AppProviders><LeakPreviewPanel scene={scene} onOpenPrecision={onOpenPrecision} /></AppProviders>)
+  act(() => {
+    const { actions } = workspaceStore.getState()
+    actions.upsertEmitter(original)
+    actions.upsertEmitter(other)
+    leakPreviewStore.getState().setSourceEmitters([original.emitter_id, other.emitter_id])
+    leakPreviewStore.getState().setDetection(saved.result, saved.points, [candidate])
+    leakPreviewStore.getState().selectCandidate(candidate.id)
+  })
+  const originals = workspaceStore.getState().emitters
+  const prepare = screen.getByRole('button', { name: '국부 순방향 준비' })
+  fireEvent.click(prepare)
+  fireEvent.click(prepare)
+  const state = workspaceStore.getState()
+  expect(screen.queryByText(/경로 시작점에 일치하는 광원면이 없습니다/)).toBeNull()
+  expect(onOpenPrecision).toHaveBeenCalledTimes(2)
+  expect(state.roiScopes).toHaveLength(1)
+  expect(state.roiScopes[0].clipBox).toMatchObject({ xMin: 27.5, xMax: 32.5, yMin: 17, yMax: 23, zMin: -1, zMax: 1 })
+  expect(state.emitters.slice(0, 2)).toEqual(originals)
+  expect(state.emitters).toHaveLength(3)
+  expect(state.receivers).toHaveLength(1)
+  const request = buildRayTraceRequest({ scene, projectName: 'Local', emitters: state.emitters,
+    receivers: state.receivers, materialAssignments: [], transformRules: [], excludedComponentIds: [],
+    deletedComponentIds: [], roiScopes: state.roiScopes, config: state.rayTraceConfig })
+  expect(request.emitters).toHaveLength(1)
+  expect(request.emitters[0]).toMatchObject({ emitter_id: LOCAL_FORWARD_EMITTER_ID, center: [30, 20, -5],
+    width_mm: 2, height_mm: 2, power_lumen: 1, aim: { enabled: true, center: [30, 20, 0], radius_mm: 1 } })
+  expect(request.receivers.map(receiver => receiver.receiver_id)).toEqual([LOCAL_FORWARD_RECEIVER_ID])
+  expect(request.analysis_roi).toBeUndefined()
+  expect(request.roi_faces).toBeUndefined()
+  expect(request.config.receiver_diagnostics).toBe(true)
+})
 
 it('shows display filters before the first precision search and preserves their settings for later results', () => {
   render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)

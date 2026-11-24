@@ -739,14 +739,15 @@ function normalizeRoiScope(scope: RoiScope): RoiScope | null {
   const components = scope.components
     .map(normalizeRoiComponentClip)
     .filter((component) => component.faceIds.length > 0)
-  if (components.length === 0) return null
+  const clipBox = normalizeRoiClipBox(scope.clipBox)
+  if (!components.length && !(scope.source === 'box' && scope.observerView && clipBox)) return null
 
   return {
     ...scope,
     id: scope.id.trim(),
     scopeId: scope.scopeId.trim(),
     components,
-    clipBox: normalizeRoiClipBox(scope.clipBox),
+    clipBox,
     point: scope.point ? normalizeVector(scope.point) : undefined,
   }
 }
@@ -768,7 +769,7 @@ function normalizeProjectState(
           !deletedComponentSet.has(component.componentId),
       ),
     }))
-    .filter((scope) => scope.components.length > 0)
+    .filter((scope) => scope.components.length > 0 || (scope.source === 'box' && scope.observerView && scope.clipBox))
 
   return {
     hiddenComponentIds: normalizeIds(
@@ -2157,7 +2158,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 (component) => component.componentId !== componentId,
               ),
             }))
-            .filter((scope) => scope.components.length > 0)
+            .filter((scope) => scope.components.length > 0 || (scope.source === 'box' && scope.observerView && scope.clipBox))
 
           return {
             selectedFaceIds: state.selectedFaceIds.filter(
@@ -2271,7 +2272,8 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         const components = scope.components
           .map(normalizeRoiComponentClip)
           .filter((component) => component.faceIds.length > 0)
-        if (components.length === 0) return
+        const clipBox = normalizeRoiClipBox(scope.clipBox)
+        if (!components.length && !(scope.source === 'box' && scope.observerView && clipBox)) return
 
         set((state) => {
           const sequence = state.roiScopeSequence + 1
@@ -2289,7 +2291,7 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
                 view: scope.view,
                 components,
                 active: true,
-                clipBox: normalizeRoiClipBox(scope.clipBox),
+                clipBox,
                 observerView: scope.observerView ? structuredClone(scope.observerView) : undefined,
                 point: scope.point
                   ? normalizeVector(scope.point)

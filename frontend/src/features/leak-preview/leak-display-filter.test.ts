@@ -38,6 +38,13 @@ it('filters individual observations in a grouped candidate, includes thresholds,
   expect(restored.candidates).toBe(candidates)
 })
 
+it('keeps the brightest groups by count and retains their matching markers', () => {
+  const {candidates, points, summary} = fixture()
+  const result = filterLeakDisplay(points, [...candidates].reverse(), summary, {...defaultLeakDisplayFilter, topPercent: 20})
+  expect(result.candidates.map(candidate => candidate.id)).toEqual(['a'])
+  expect(result.points.map(point => point.candidateId)).toEqual(['a','a'])
+})
+
 it('uses the unfiltered brightness reference rather than rescaling after reflection filtering', () => {
   const {candidates,points,summary} = fixture()
   summary.cells[0].representative_path = [[0,0,-10],[0,1,-5],[0,0,0],[0,0,100]]

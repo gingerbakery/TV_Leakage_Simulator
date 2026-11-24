@@ -694,6 +694,9 @@ export function rotationFromPlaneAxes(
   ]
 }
 
+export const LOCAL_FORWARD_EMITTER_ID = '__preview_local_forward'
+export const LOCAL_FORWARD_RECEIVER_ID = '__preview_local_forward_receiver'
+
 export function nextSpecId(
   prefix: 'emitter' | 'receiver',
   currentIds: Iterable<string>,
@@ -762,6 +765,7 @@ export function rayObjectDisplayName(
   displayName?: string | null,
 ): string {
   const label = displayName?.trim() || objectId.trim()
+  if (kind === 'emitter' && objectId === LOCAL_FORWARD_EMITTER_ID) return '국부 집중 Emitter'
   const match = new RegExp(`^${kind}[\\s_-]*0*(\\d+)$`, 'i').exec(label)
   const kindLabel = kind === 'emitter' ? 'Emitter' : 'Receiver'
   if (match) return `${kindLabel} ${Number(match[1])}`
@@ -1094,9 +1098,14 @@ export function buildRayTraceRequest({
   auxiliaryBlockers = [],
   bsdfAssets = [],
 }: RayTraceRequestSource): RayTraceRequest {
-  const enabledEmitters = emitters.filter((emitter) => emitter.enabled).map(({ visible: _visible, ...emitter }) => emitter)
-  if (receivers.some((receiver) => receiver.enabled && (receiver.view_angles?.range_deg ?? 0) > 0)) throw new Error('시야각 범위가 설정된 Receiver는 각도별 해석으로 실행하세요.')
-  const enabledReceivers = receivers.filter((receiver) => receiver.enabled).map(({ view_angles: _viewAngles, ...receiver }) => receiver)
+  const focused = emitters.find((emitter) => emitter.enabled && emitter.emitter_id === LOCAL_FORWARD_EMITTER_ID)
+  const enabledEmitters = (focused ? [focused] : emitters.filter((emitter) => emitter.enabled))
+    .map(({ visible: _visible, ...emitter }) => emitter)
+  const activeReceivers = receivers.filter(receiver => receiver.enabled &&
+    (!focused || receiver.receiver_id === LOCAL_FORWARD_RECEIVER_ID))
+  if (focused && !activeReceivers.length) throw new Error('국부 Receiver를 켜거나 집중 Emitter를 끄세요.')
+  if (activeReceivers.some(receiver => (receiver.view_angles?.range_deg ?? 0) > 0)) throw new Error('시야각 범위가 설정된 Receiver는 각도별 해석으로 실행하세요.')
+  const enabledReceivers = activeReceivers.map(({ view_angles: _viewAngles, ...receiver }) => receiver)
   const totalRayCount = enabledEmitters.reduce(
     (sum, emitter) => sum + Math.max(1, emitter.ray_count),
     0,
@@ -1119,7 +1128,9 @@ export function buildRayTraceRequest({
   // Observer-discovered paths can reflect/occlude far outside the local ROI.
   // Keep the full transport scene instead of silently inventing open paths.
   const hasObserverRoi = roiScopes.some((scope) => scope.active && scope.observerView) || receivers.some((receiver) => receiver.enabled && receiver.view_angles)
-  const analysisRoiFaces = activeRoiFaces(roiScopes, deleted)
+  // Local forward detection is bounded by its receiver. Applying the inspection
+  // ROI to the trace would also clip the upstream emission surface and sensor.
+  const analysisRoiFaces = focused ? [] : activeRoiFaces(roiScopes, deleted)
   const roiFaces = hasObserverRoi ? [] : analysisRoiFaces
   const roiClipBoxes = activeRoiClipBoxes(roiScopes)
   const {
