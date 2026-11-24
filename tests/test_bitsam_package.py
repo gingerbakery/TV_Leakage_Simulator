@@ -290,7 +290,14 @@ class BitsamPackageTests(unittest.TestCase):
         exported = first.export_project({"scene_token": scene["metadata"]["scene_token"], "project": self.project})
         self.assertFalse(exported["trace_cached"])
         trace_loader.assert_not_called()
-        second_loader = Mock(side_effect=deferred)
+        def rebuild_with_different_feature_edges(path):
+            payload = deferred(path)
+            payload["mesh"]["feature_edge_segments"] = [
+                {"start": [0.0, 0.0, 0.0], "end": [1.0, 0.0, 0.0], "component_id": None},
+            ]
+            return payload
+
+        second_loader = Mock(side_effect=rebuild_with_different_feature_edges)
         second = ApiRuntime(self.root / "after", scene_loader=second_loader)
         package, _ = first.project_export_file(exported["download_url"].split("/")[-1])
         restored = second.import_project(package)

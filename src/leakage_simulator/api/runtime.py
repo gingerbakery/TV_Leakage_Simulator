@@ -887,9 +887,13 @@ class ApiRuntime:
         }
 
     def _portable_trace_loader(self, source: Path, viewer: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+        def face_binding_identity(mesh: dict[str, Any]) -> str:
+            # Feature edges are viewer overlays and are not used to bind trace faces.
+            return mesh_identity({key: value for key, value in mesh.items() if key != "feature_edge_segments"})
+
         def load() -> dict[str, Any]:
             rebuilt = self._scene_loader(str(source))
-            if mesh_identity(rebuilt["mesh"]) != mesh_identity(viewer):
+            if face_binding_identity(rebuilt["mesh"]) != face_binding_identity(viewer):
                 raise ValueError(
                     "Embedded CAD tessellation changed. Face bindings cannot be reused safely; "
                     "re-import the model and review face assignments."
