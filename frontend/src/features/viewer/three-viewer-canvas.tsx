@@ -21,7 +21,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACESFilmicToneMapping,
   ArrowHelper,
-  AdditiveBlending,
   Box3,
   BoxGeometry,
   BufferGeometry,
@@ -431,15 +430,14 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
     context.clearRect(0, 0, 64, 64)
     const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32)
     if (halo) {
-      gradient.addColorStop(0, 'rgba(255, 255, 255, .8)')
-      gradient.addColorStop(.3, 'rgba(255, 255, 255, .5)')
-      gradient.addColorStop(.6, 'rgba(255, 255, 255, .16)')
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+      gradient.addColorStop(0, 'rgba(12, 18, 29, 1)')
+      gradient.addColorStop(.53, 'rgba(12, 18, 29, 1)')
+      gradient.addColorStop(.76, 'rgba(12, 18, 29, 0)')
+      gradient.addColorStop(1, 'rgba(12, 18, 29, 0)')
     } else {
       gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(.25, 'rgba(255, 255, 255, .7)')
-      gradient.addColorStop(.55, 'rgba(255, 255, 255, .25)')
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+      gradient.addColorStop(.62, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(.83, 'rgba(255, 255, 255, 0)')
     }
     context.fillStyle = gradient
     context.fillRect(0, 0, 64, 64)
@@ -4048,17 +4046,12 @@ export function ThreeViewerCanvas({
     const cachedHalo = reuseMarkers ? markers.getObjectByName('leak-preview-glow-halo') as Points | undefined : undefined
     const cachedCore = reuseMarkers ? markers.getObjectByName('leak-preview-glow-points') as Points | undefined : undefined
     const positions = cachedCore ? cachedCore.geometry.getAttribute('position').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const haloColors = cachedHalo ? cachedHalo.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
     const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const haloLow = new Color(0xf8c75a)
-    const haloHigh = new Color(0xffe5a0)
-    const coreLow = new Color(0xffcc00)
-    const coreHigh = new Color(0xffed80)
-    const selectedHaloColor = new Color(0x00ffff).toArray()
-    const selectedCoreColor = new Color(0xffffff).toArray()
-    const dimHaloColor = new Color(0xb88a20).toArray()
-    const dimCoreColor = new Color(0xe6b83d).toArray()
-    const mixedHalo = new Color(), mixedCore = new Color()
+    const coreLow = new Color(0xff8a00)
+    const coreHigh = new Color(0xffed38)
+    const selectedCoreColor = new Color(0x48efff).toArray()
+    const dimCoreColor = new Color(0xd7973e).toArray()
+    const mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
       if (!cachedCore) positions.set(point.position, index * 3)
       const strength = Math.max(0, Math.min(1, point.relativeStrength))
@@ -4067,26 +4060,21 @@ export function ThreeViewerCanvas({
           point.observerAngles?.every((value,i) => value === selectedObservation.angles[i])
         : isLeakPreviewPointHighlighted(point, leakHighlight, selectedLeakCandidateId, selectedGroupSet)
       if (emphasized) {
-        haloColors.set(selectedHaloColor, index * 3)
         coreColors.set(selectedCoreColor, index * 3)
         return
       }
       if (leakHighlight || selectedLeakCandidateId || selectedLeakGroupIds.length) {
-        haloColors.set(dimHaloColor, index * 3)
         coreColors.set(dimCoreColor, index * 3)
         return
       }
-      mixedHalo.copy(haloLow).lerp(haloHigh, strength).toArray(haloColors, index * 3)
       mixedCore.copy(coreLow).lerp(coreHigh, strength).toArray(coreColors, index * 3)
     })
     if (cachedHalo && cachedCore) {
-      cachedHalo.geometry.getAttribute('color').needsUpdate = true
       cachedCore.geometry.getAttribute('color').needsUpdate = true
       cachedHalo.visible = true
     } else {
     const haloGeometry = new BufferGeometry()
     haloGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
-    haloGeometry.setAttribute('color', new Float32BufferAttribute(haloColors, 3))
     const glowHalo = new Points(
       haloGeometry,
       new PointsMaterial({
@@ -4094,12 +4082,10 @@ export function ThreeViewerCanvas({
         alphaTest: 0.015,
         size: leakPreviewDisplayStyle.haloSize,
         sizeAttenuation: false,
-        vertexColors: true,
         transparent: true,
         opacity: leakPreviewDisplayStyle.haloOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: AdditiveBlending,
         toneMapped: false,
       }),
     )
@@ -4121,7 +4107,6 @@ export function ThreeViewerCanvas({
         opacity: leakPreviewDisplayStyle.coreOpacity,
         depthTest: true,
         depthWrite: false,
-        blending: AdditiveBlending,
         toneMapped: false,
       }),
     )

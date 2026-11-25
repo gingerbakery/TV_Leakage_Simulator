@@ -975,14 +975,13 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
 
       <CollapsibleSection title="검출 방향">
         <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1 text-sm font-semibold">Detection Direction
+          <span className="flex items-center gap-1 text-sm font-semibold">{detectionMode === 'escape_directions' && observer.enabled ? '관찰 기준 방향' : '검출 기준 방향'}
             <HelpTooltip label="Preview 검출 방향 도움말">유출 방향: Ray Tracing에서 선택한 CPU 또는 GPU를 사용하며, GPU 선택 시 교차 판정은 CUDA BVH, 방향·광량 집계는 CPU에서 수행합니다. 모델 전체의 경계 상자를 최종적으로 벗어나는 광선을 선택 축 기준 0~90°로 집계합니다. 반구 반경이나 화면 카메라에 의존하지 않습니다. 검출 각도와 집계는 경계 상자 출구를 기준으로 하며, 점은 마지막 유출 구간의 실제 출발 위치에 표시합니다. 이전 결과에 출발 위치가 없으면 기존 경계 위치를 사용합니다. 평면: 기존 유한 사각 Receiver 방식입니다. 두 방식 모두 광선 수와 최대 반사 횟수에 따라 미약한 빛샘을 놓칠 수 있습니다.</HelpTooltip>
           </span>
-          <span className="text-xs text-muted-foreground">{detectionMode === 'escape_directions' ? '0–90°' : '1 View'}</span>
         </div>
         <select aria-label="Preview 검출 방식" className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
           value={detectionMode} disabled={isRunning} onChange={(event) => { setDetectionMode(event.currentTarget.value === 'planar' ? 'planar' : 'escape_directions'); if (event.currentTarget.value === 'planar') setObserver({ search_mode: 'preview' }) }}>
-          <option value="escape_directions">유출 방향 · Source sampling</option>
+          <option value="escape_directions">방향별 검출</option>
           <option value="planar">평면 Receiver</option>
         </select>
         <div className="grid grid-cols-3 gap-1.5">
@@ -993,6 +992,7 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
                 key={option.id}
                 size="sm"
                 variant={selected ? 'default' : 'outline'}
+                aria-pressed={selected}
                 disabled={isRunning}
                 onClick={() => toggleDirection(option.id)}
               >
@@ -1011,8 +1011,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           <label className="flex items-center gap-1 text-xs"><input aria-label="시야각 역추적 사용" type="checkbox" checked={observer.enabled} disabled={isRunning} onChange={(event) => setObserver({ enabled: event.currentTarget.checked, ...(!event.currentTarget.checked ? { search_mode: 'preview' as const } : {}) })} />ON</label>
         </div>
         {observer.enabled ? <>
-          <label className="block space-y-1 text-xs"><span className="flex items-center gap-1">검출 기준<HelpTooltip label="관찰 휘도 도움말">관찰 휘도는 평행 관찰 영상의 셀 평균 추정값(nit)입니다. 광원 출력, 반사율, BSDF와 샘플 확률을 반영합니다. 기본 필터 0.01 nit는 탐색용 설정이며 육안 가시성 표준이 아닙니다. 실제 광원·재질 보정과 투과 모델은 별도 검증이 필요합니다. 경로 탐색은 기존 방향 조건 검사이며 밝기가 아닙니다. 미지원 Aim·배광은 오류로 알리며 다른 광원으로 대체하지 않습니다.</HelpTooltip></span><select aria-label="역추적 검출 기준" className="h-8 w-full rounded border border-border bg-background px-2" disabled={isRunning} value={observer.measurement ?? 'paths'} onChange={(event) => setObserver({ measurement: event.currentTarget.value as 'paths' | 'radiance' })}><option value="radiance">관찰 휘도</option><option value="paths">경로 탐색</option></select></label>
-          {observer.measurement === 'radiance' ? <label className="block space-y-1 text-xs"><span>최소 휘도 (nit)</span><NumberInput aria-label="최소 관찰 휘도 (nit)" className="h-8 w-full rounded border border-border bg-background px-2" value={observer.min_luminance_nit ?? .01} min={0} step={.01} disabled={isRunning} onValueChange={(value) => setObserver({ min_luminance_nit: Math.max(0, value) })} /></label> : null}
+          <label className="block space-y-1 text-xs"><span className="flex items-center gap-1">검출 기준<HelpTooltip label="관찰 휘도 도움말">관찰 휘도는 평행 관찰 영상의 셀 평균 추정값(nit)입니다. 광원 출력, 반사율, BSDF와 샘플 확률을 반영합니다. 기본 필터 0.01 nit는 탐색용 설정이며 육안 가시성 표준이 아닙니다. 실제 광원·재질 보정과 투과 모델은 별도 검증이 필요합니다. 경로 탐색은 기존 방향 조건 검사이며 밝기가 아닙니다. 미지원 Aim·배광은 오류로 알리며 다른 광원으로 대체하지 않습니다.</HelpTooltip></span><select aria-label="역추적 검출 기준" className="h-8 w-full rounded border border-border bg-background px-2" disabled={isRunning} value={observer.measurement ?? 'paths'} onChange={(event) => setObserver({ measurement: event.currentTarget.value as 'paths' | 'radiance' })}><option value="radiance">관찰 휘도 (nit)</option><option value="paths">경로 탐색 (검출 수)</option></select></label>
+          {observer.measurement === 'radiance' ? <label className="block space-y-1 text-xs"><span>검출 최소 휘도 (nit)</span><NumberInput aria-label="최소 관찰 휘도 (nit)" className="h-8 w-full rounded border border-border bg-background px-2" value={observer.min_luminance_nit ?? .01} min={0} step={.01} disabled={isRunning} onValueChange={(value) => setObserver({ min_luminance_nit: Math.max(0, value) })} /></label> : null}
           <label className="flex items-center gap-1 text-xs"><input aria-label="각도 중간 탐색" type="checkbox" checked={observer.refine_angles ?? false} disabled={isRunning} onChange={(event) => setObserver({ refine_angles: event.currentTarget.checked })} />각도 중간 탐색<HelpTooltip label="각도 중간 탐색 도움말">검출이 0인 영역도 포함해 각도 간격을 절반으로 나눕니다. 방향 수와 계산량이 증가하며 더 좁은 각도의 미검출을 없애는 보장은 아닙니다.</HelpTooltip></label>
           <div className="block space-y-1 text-xs"><span className="flex items-center gap-1">각도 영역<HelpTooltip label="180도 전체 영역 도움말">선택한 도면 기준 방향을 중심으로 좌우 −90°~+90°, 상하 −90°~+90°의 반구를 검사합니다. 극점은 한 번만 검사합니다. 각도 간격 이하로 균등 분할하며 기본 간격은 15°입니다. 연속된 모든 각도를 검사하는 것은 아니므로 간격 사이의 좁은 빛샘은 놓칠 수 있습니다.</HelpTooltip></span><select aria-label="각도 영역" className="h-8 w-full rounded border border-border bg-background px-2" disabled={isRunning} value={observer.coverage ?? 'local'} onChange={(event) => setObserver({ coverage: event.currentTarget.value as 'local' | 'hemisphere', step_deg: event.currentTarget.value === 'hemisphere' ? 15 : 1 })}><option value="local">지정 각도 주변</option><option value="hemisphere">180° 전체 영역</option></select></div>
           <div className="grid grid-cols-2 gap-2">
@@ -1071,6 +1071,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         </div>
         <LeakDisplayFilterControls
           filter={displayFilter}
+          ranksByCount={observerSummary ? observerSummary.measure !== 'luminance_cd_m2' :
+            !previewResult && detectionMode === 'escape_directions' && observer.enabled && observer.measurement !== 'radiance'}
           hasNit={observerSummary?.measure === 'luminance_cd_m2' || (
             !previewResult && detectionMode === 'escape_directions' &&
             observer.enabled && observer.measurement === 'radiance'

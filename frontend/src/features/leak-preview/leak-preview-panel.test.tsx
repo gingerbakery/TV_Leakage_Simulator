@@ -89,12 +89,12 @@ it('shows display filters before the first precision search and preserves their 
 it('keeps the relative filter editable in path mode and enables a typed reflection limit', () => {
   render(<AppProviders><LeakPreviewPanel scene={createSceneFixture()} onOpenPrecision={() => undefined} /></AppProviders>)
   act(() => leakPreviewStore.getState().setObserver({ measurement: 'paths' }))
-  for (const name of ['표시 최대 반사 횟수', '표시 최소 밝기 비율 (%)']) {
+  for (const name of ['표시 최대 반사 횟수', '표시 최소 비율 (%)']) {
     expect(screen.getByRole('spinbutton', { name }).hasAttribute('disabled')).toBe(false)
   }
   expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', false)
   fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최대 반사 횟수' }), { target: { value: '3' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 밝기 비율 (%)' }), { target: { value: '5' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: '표시 최소 비율 (%)' }), { target: { value: '5' } })
   expect(leakPreviewStore.getState().displayFilter).toEqual({ maxReflections: 3, minNit: 0, minBrightnessRatio: 0.05 })
   expect(screen.getByRole('checkbox', { name: '최대 반사 필터 사용' })).toHaveProperty('checked', true)
   expect(screen.getByRole('spinbutton', { name: '표시 최소 nit' })).toHaveProperty('disabled', true)
@@ -668,7 +668,7 @@ it('enables Ray Tracing datum emitters and starts a BSDF Preview using CPU Sourc
   const existing = screen.getByRole('button', { name: '기존 Emitter 사용' }) as HTMLButtonElement
   expect(existing.disabled).toBe(false)
   fireEvent.click(existing)
-  expect((screen.getByLabelText('Preview 검출 방식') as HTMLSelectElement).selectedOptions[0].textContent).toContain('Source sampling')
+  expect((screen.getByLabelText('Preview 검출 방식') as HTMLSelectElement).value).toBe('escape_directions')
   fireEvent.click(screen.getByRole('button', { name: 'Run Leak Preview' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledOnce())
   const request = mocks.start.mock.calls[0][0].request
