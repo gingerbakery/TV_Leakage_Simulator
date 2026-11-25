@@ -919,7 +919,7 @@ class FastApiLayerTests(unittest.TestCase):
         }
         preparation_started = threading.Event()
 
-        def cancellable_builder(mesh, request, should_stop=None):
+        def cancellable_builder(mesh, request, should_stop=None, report_timing=None):
             preparation_started.set()
             while should_stop is None or not should_stop():
                 time.sleep(0.002)
@@ -932,7 +932,7 @@ class FastApiLayerTests(unittest.TestCase):
         ):
             job = runtime.start_raytrace_job({
                 "scene_token": scene_token,
-                "emitters": [{"enabled": True, "ray_count": 100_000}],
+                "emitters": [{"enabled": True, "ray_count": 100_000, "face_indices": [0]}],
             })
             self.assertTrue(preparation_started.wait(timeout=3))
             stopped = runtime.stop_raytrace_job(job["job_id"])

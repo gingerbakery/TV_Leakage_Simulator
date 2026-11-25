@@ -2142,6 +2142,15 @@ def _ray_power_values(
 
 
 @managed_primary_prefetch
+def validate_path_guidance(receivers: List[ReceiverSpec], config: RayTraceConfig) -> None:
+    if not any(receiver.path_guidance_percent is not None for receiver in receivers):
+        return
+    if len(receivers) != 1:
+        raise ValueError("경로 유도는 활성 Receiver 한 개에서 사용할 수 있습니다.")
+    if config.termination_mode == "threshold" and config.min_energy > 0:
+        raise ValueError("경로 유도에는 Minimum energy 0 또는 Russian Roulette 종료 방식이 필요합니다.")
+
+
 def run_direct_ray_trace(
     trace_input: DirectRayTraceInput,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -2444,10 +2453,7 @@ def run_direct_ray_trace(
     guidance_runtime_sec = 0.
     guidance_path = None
     if guided_frames:
-        if len(guided_frames) != 1 or len(receiver_frames) != 1:
-            raise ValueError("경로 유도는 활성 Receiver 한 개에서 사용할 수 있습니다.")
-        if trace_input.config.termination_mode == "threshold" and trace_input.config.min_energy > 0:
-            raise ValueError("경로 유도에는 Minimum energy 0 또는 Russian Roulette 종료 방식이 필요합니다.")
+        validate_path_guidance([frame.receiver for frame in receiver_frames], trace_input.config)
         # Preview guidance reweights the emitter direction only. The normal
         # transport pipeline still evaluates any BSDF at the actual surface hit.
         frame = guided_frames[0]

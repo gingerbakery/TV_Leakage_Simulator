@@ -77,7 +77,7 @@ def virtual_triangles(item):
     return [(points[0], points[i], points[i+1]) for i in range(1, len(points)-1)], normal
 
 
-def prepare_emission_scope(mesh, original_mesh, items, source_faces, transport_map, boxes, face_ids, context_retained):
+def prepare_emission_scope(mesh, original_mesh, items, source_faces, original_by_source, transport_map, boxes, face_ids, context_retained):
     """Build transparent sampling patches; never turn a cut into an absorber.
 
     Face sources already physically trimmed by legacy mesh ROI reuse those
@@ -86,11 +86,6 @@ def prepare_emission_scope(mesh, original_mesh, items, source_faces, transport_m
     """
     from .raytrace_bridge import _clip_triangle_to_box_union
     result = {}
-    original_by_source = {}
-    for i in range(len(original_mesh.faces)):
-        source = original_mesh.metadata(i).get("source_face_index")
-        if source is not None:
-            original_by_source.setdefault(source, []).append(i)
     for item in items:
         emitter_id = item["emitter_id"]
         face_source = item.get("emitter_type", "face") == "face"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -19,6 +20,7 @@ from leakage_simulator.raytrace_bridge import (
     PreparedTraceGeometry,
     build_direct_trace_input,
     build_prepared_trace_geometry,
+    validate_trace_request_before_geometry,
 )
 from leakage_simulator.bsdf_guard import validate_bsdf_request
 from leakage_simulator.raytracer import run_direct_ray_trace
@@ -96,6 +98,7 @@ class ApiRuntime:
         trace_runner: TraceRunner = run_direct_ray_trace,
         max_cached_scenes: int = 3,
         max_jobs: int = 8,
+        max_cached_prepared_faces: int = 25_000_000,
     ) -> None:
         self.root = root.resolve()
         self.upload_dir = self.root / "_uploads"
@@ -105,6 +108,7 @@ class ApiRuntime:
         self._trace_runner = trace_runner
         self._max_cached_scenes = max(1, max_cached_scenes)
         self._max_jobs = max(1, max_jobs)
+        self._max_cached_prepared_faces = max(0, max_cached_prepared_faces)
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_viewer_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
@@ -115,6 +119,7 @@ class ApiRuntime:
         self._portable_composite_sources: dict[tuple[str, ...], Path] = {}
         self._project_exports: dict[str, tuple[Path, str, float]] = {}
         self._trace_geometry_cache: dict[str, PreparedTraceGeometry] = {}
+        self._last_trace_geometry_parts: dict[str, str] = {}
         self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
@@ -961,6 +966,8 @@ class ApiRuntime:
         fingerprint = hashlib.sha256(json.dumps(request_payload, sort_keys=True,
             separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         validate_bsdf_request(request_payload)
+        if self._trace_input_builder is build_direct_trace_input:
+            validate_trace_request_before_geometry(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         requested_ray_count = sum(
             max(0, int(emitter.get("ray_count", 0)))
@@ -1005,7 +1012,7 @@ class ApiRuntime:
             if resume is not None:
                 old_id = resume.job_id
                 old = self._raytrace_jobs[old_id]
-                for key in ("processed_rays", "total_rays", "progress", "elapsed_sec", "geometry_cache_hit"):
+                for key in ("processed_rays", "total_rays", "progress", "elapsed_sec", "geometry_cache_hit", "preparation_elapsed_sec"):
                     if key in old:
                         job[key] = old[key]
                 job.update(status="running",phase="tracing",phase_detail="중단 지점에서 이어 계산 중",
@@ -1252,6 +1259,7 @@ class ApiRuntime:
         self,
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
+        parts: Optional[dict[str, str]] = None,
     ) -> str:
         excluded = sorted(
             int(value)
@@ -1303,6 +1311,11 @@ class ApiRuntime:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+        if parts is not None:
+            parts.update({
+                key: hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
+                for key, value in geometry_state.items()
+            })
         return hashlib.sha256(encoded).hexdigest()
 
     def _build_trace_input_for_request(
@@ -1311,6 +1324,7 @@ class ApiRuntime:
         request_payload: dict[str, Any],
         should_stop: Optional[Callable[[], bool]] = None,
         report_phase: Optional[Callable[[str], None]] = None,
+        report_timing: Optional[Callable[[str, float], None]] = None,
     ) -> Any:
         def phase(detail: str) -> None:
             if report_phase is not None:
@@ -1319,15 +1333,22 @@ class ApiRuntime:
         if should_stop is not None and should_stop():
             raise InterruptedError("Ray trace preparation stopped")
         phase("정밀 CAD Mesh 확인 중")
+        deferred = callable(scene_mesh.get("_deferred_trace_loader"))
+        started = time.perf_counter()
         scene_mesh = self._resolve_deferred_trace_mesh(scene_mesh)
+        if report_timing is not None:
+            report_timing("trace_mesh_deferred_or_wait" if deferred else "trace_mesh_available", time.perf_counter() - started)
         if should_stop is not None and should_stop():
             raise InterruptedError("Ray trace preparation stopped")
         phase("Emitter 및 ROI Surface 매핑 중")
+        started = time.perf_counter()
         request_payload = self._map_viewer_faces_to_trace(
             scene_mesh,
             request_payload,
             should_stop,
         )
+        if report_timing is not None:
+            report_timing("viewer_to_trace_face_map", time.perf_counter() - started)
         if self._trace_input_builder is not build_direct_trace_input:
             phase("Ray Tracing 입력 구성 중")
             trace_input = self._trace_input_builder(scene_mesh, request_payload)
@@ -1335,8 +1356,12 @@ class ApiRuntime:
                 raise InterruptedError("Ray trace preparation stopped")
             return trace_input
         phase("Geometry cache 확인 중")
-        cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload)
+        parts: dict[str, str] = {}
+        started = time.perf_counter()
+        cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload, parts)
         with self._state_lock:
+            previous_parts = self._last_trace_geometry_parts
+            self._last_trace_geometry_parts = parts
             # Refresh cache insertion order on a hit so the repeatedly used
             # Preview geometry survives experiments with several alternatives.
             prepared = self._trace_geometry_cache.pop(cache_key, None)
@@ -1347,6 +1372,16 @@ class ApiRuntime:
             if is_builder:
                 build_state = _TraceGeometryBuildState()
                 self._trace_geometry_builds[cache_key] = build_state
+        if report_timing is not None:
+            if prepared is not None:
+                cache_stage = "prepared_cache_hit"
+            elif not is_builder:
+                cache_stage = "prepared_cache_wait"
+            else:
+                changed = ",".join(key for key in parts if previous_parts.get(key) != parts[key])
+                reason = ("first_lookup" if not previous_parts else changed or "same_as_previous_lookup")
+                cache_stage = f"prepared_cache_miss changed_fields={reason}"
+            report_timing(cache_stage, time.perf_counter() - started)
         cache_hit = prepared is not None
         if prepared is None:
             assert build_state is not None
@@ -1367,6 +1402,7 @@ class ApiRuntime:
                             request_payload,
                             should_stop,
                             report_phase,
+                            report_timing,
                         )
                     raise build_state.error
                 prepared = build_state.prepared
@@ -1380,6 +1416,7 @@ class ApiRuntime:
                         scene_mesh,
                         request_payload,
                         should_stop=should_stop,
+                        **({"report_timing": report_timing} if report_timing is not None else {}),
                     )
                 except Exception as exc:
                     with self._state_lock:
@@ -1388,10 +1425,17 @@ class ApiRuntime:
                         build_state.event.set()
                     raise
                 with self._state_lock:
-                    self._trace_geometry_cache[cache_key] = prepared
-                    while len(self._trace_geometry_cache) > self._max_jobs:
-                        oldest_key = next(iter(self._trace_geometry_cache))
-                        self._trace_geometry_cache.pop(oldest_key, None)
+                    prepared_faces = len(prepared.mesh.faces)
+                    if prepared_faces <= self._max_cached_prepared_faces:
+                        self._trace_geometry_cache[cache_key] = prepared
+                    cached_faces = sum(len(value.mesh.faces) for value in self._trace_geometry_cache.values())
+                    while (
+                        len(self._trace_geometry_cache) > self._max_jobs
+                        or cached_faces > self._max_cached_prepared_faces
+                    ):
+                        oldest = self._trace_geometry_cache.pop(next(iter(self._trace_geometry_cache)))
+                        cached_faces -= len(oldest.mesh.faces)
+                        del oldest
                     build_state.prepared = prepared
                     self._trace_geometry_builds.pop(cache_key, None)
                     build_state.event.set()
@@ -1568,10 +1612,35 @@ class ApiRuntime:
                 if job.get("status") in {"completed", "cancelled", "failed"} and previous_status != job.get("status"):
                     terminal = dict(job)
         if terminal is not None:
-            print("[RAY] job end | {} | status={} phase={} | processed={}/{} progress={:.1%} | stop_requested={} | {}".format(
+            metrics = (terminal.get("result") or {}).get("metrics") or {}
+            performance = metrics.get("_performance_summary") or {}
+            observer = (metrics.get("_observer_probe_summary") or {}).get("performance") or {}
+            compute_fields = (
+                "compute_execution_state", "compute_execution_reason",
+                "gpu_cuda_gpu_attempt_count", "gpu_cuda_gpu_success_count",
+                "gpu_cuda_hybrid_cpu_success_count", "intersection_fallback_count",
+                "intersection_fallback_reason", "gpu_resident_wavefront_fallback_count",
+                "gpu_resident_wavefront_fallback_reason", "wavefront_residency",
+                "observer_transport_contract", "gpu_cuda_device_name",
+                "gpu_cuda_scene_upload_sec", "gpu_resident_wavefront_bindings_upload_sec",
+                "gpu_resident_wavefront_jit_compile_sec", "native_jit_compile_sec",
+                "gpu_resident_workspace_peak_bytes",
+            )
+            diagnostics = {
+                "prep_sec": terminal.get("preparation_elapsed_sec"),
+                "trace_sec": terminal.get("trace_elapsed_sec"),
+                "post_sec": terminal.get("post_elapsed_sec"),
+                "total_sec": max(0., time.time() - terminal["created_at"]) if "created_at" in terminal else None,
+                "resumed_from_job_id": terminal.get("resumed_from_job_id"),
+                **_process_memory_snapshot(),
+                "compute": {key: performance[key] for key in compute_fields if key in performance},
+                "observer_compute": {key: observer[key] for key in compute_fields if key in observer},
+            }
+            print("[RAY] job end | {} | status={} phase={} | processed={}/{} progress={:.1%} | stop_requested={} | {} | diagnostics={}".format(
                 job_id, terminal.get("status"), terminal.get("phase"),
                 terminal.get("processed_rays", 0), terminal.get("total_rays", 0), terminal.get("progress", 0),
-                terminal.get("stop_requested", False), terminal.get("error") or terminal.get("phase_detail", "")), flush=True)
+                terminal.get("stop_requested", False), terminal.get("error") or terminal.get("phase_detail", ""),
+                json.dumps(diagnostics, separators=(",", ":"))), flush=True)
 
     def _run_raytrace_job(
         self,
@@ -1584,6 +1653,21 @@ class ApiRuntime:
         def update_job(**updates):
             if session is None or not session.cancelled:
                 self._update_raytrace_job(session.job_id if session else job_id, **updates)
+        preparation_started_at = trace_started_at = post_started = None
+
+        def interrupted_timings():
+            now = time.perf_counter()
+            return {
+                "preparation_elapsed_sec": preparation_elapsed_sec if trace_started_at is not None else
+                (now - preparation_started_at if preparation_started_at is not None else None),
+                "trace_elapsed_sec": ((post_started or now) - trace_started_at) if trace_started_at is not None else None,
+                "post_elapsed_sec": now - post_started if post_started is not None else None,
+            }
+
+        def report_geometry_timing(stage: str, seconds: float) -> None:
+            memory = json.dumps(_process_memory_snapshot(), separators=(",", ":"))
+            print(f"[RAY] geometry stage | {job_id} | stage={stage} | {seconds:.3f}s | memory={memory}", flush=True)
+
         try:
             def should_stop() -> bool:
                 with self._state_lock:
@@ -1596,13 +1680,13 @@ class ApiRuntime:
                     if should_stop():
                         raise InterruptedError("Superseded while waiting for previous worker")
 
-            preparation_started_at = time.time()
+            preparation_started_at = time.perf_counter()
             def report_preparation_phase(detail: str) -> None:
                 update_job(
                     status="running",
                     phase="preparing",
                     phase_detail=detail,
-                    elapsed_sec=max(0.0, time.time() - preparation_started_at),
+                    elapsed_sec=time.perf_counter() - preparation_started_at,
                 )
 
             update_job(
@@ -1615,8 +1699,9 @@ class ApiRuntime:
                 request_payload,
                 should_stop,
                 report_preparation_phase,
+                report_geometry_timing,
             )
-            preparation_elapsed_sec = max(0.0, time.time() - preparation_started_at)
+            preparation_elapsed_sec = time.perf_counter() - preparation_started_at
             geometry_cache_hit = bool(
                 getattr(trace_input, "geometry_cache_hit", False)
             )
@@ -1633,7 +1718,7 @@ class ApiRuntime:
                 for emitter in trace_input.emitters
                 if emitter.enabled
             )
-            trace_started_at = time.time()
+            trace_started_at = time.perf_counter()
 
             def annotate_preparation(payload):
                 metrics = payload.setdefault("metrics", {})
@@ -1662,7 +1747,7 @@ class ApiRuntime:
             ) -> None:
                 elapsed_sec = max(
                     0.0,
-                    time.time() - trace_started_at,
+                    time.perf_counter() - trace_started_at,
                 )
                 safe_total = max(0, int(total_rays))
                 safe_processed = max(
@@ -1722,6 +1807,7 @@ class ApiRuntime:
             def pause_worker(partial_result):
                 nonlocal trace_started_at
                 wait_started = time.perf_counter()
+                trace_elapsed_sec = wait_started - trace_started_at
                 payload = partial_result.to_dict()
                 annotate_preparation(payload)
                 processed = int(payload["total_rays"])
@@ -1736,8 +1822,9 @@ class ApiRuntime:
                     update_job(status="completed",phase="stopped",phase_detail="중단 지점 보관 · 동일 조건으로 이어 실행 가능",
                         result=payload,processed_rays=processed,total_rays=total,
                         progress=processed/total if total else 0.,
-                        elapsed_sec=float(payload.get("runtime_sec",max(0.,time.time()-trace_started_at))),estimated_remaining_sec=None,
-                        stopped_early=True,resume_available=True,completed_at=time.time())
+                        elapsed_sec=float(payload.get("runtime_sec", trace_elapsed_sec)),estimated_remaining_sec=None,
+                        stopped_early=True,resume_available=True,completed_at=time.time(),
+                        trace_elapsed_sec=trace_elapsed_sec, post_elapsed_sec=time.perf_counter()-wait_started)
                 session.wake.wait()
                 trace_started_at += time.perf_counter()-wait_started
                 return not session.cancelled
@@ -1746,6 +1833,8 @@ class ApiRuntime:
             if session is not None:
                 runner_options["pause_callback"] = pause_worker
             result = self._trace_runner(trace_input, **runner_options)
+            post_started = time.perf_counter()
+            trace_elapsed_sec = post_started - trace_started_at
             if session is not None and session.cancelled:
                 return
             if not should_stop():
@@ -1788,10 +1877,12 @@ class ApiRuntime:
                 ),
                 elapsed_sec=max(
                     0.0,
-                    time.time() - trace_started_at,
+                    time.perf_counter() - trace_started_at,
                 ),
                 estimated_remaining_sec=0.0,
                 result=result_payload,
+                trace_elapsed_sec=trace_elapsed_sec,
+                post_elapsed_sec=time.perf_counter() - post_started,
                 stopped_early=stopped_early,
                 completed_at=time.time(),
             )
@@ -1803,6 +1894,7 @@ class ApiRuntime:
                 stopped_early=True,
                 estimated_remaining_sec=0.0,
                 completed_at=time.time(),
+                **interrupted_timings(),
             )
         except Exception as exc:
             current_id = session.job_id if session else job_id
@@ -1819,6 +1911,7 @@ class ApiRuntime:
                 error=f"{message} · {location}" if location else message,
                 estimated_remaining_sec=None,
                 completed_at=time.time(),
+                **interrupted_timings(),
             )
         finally:
             if session is not None:
@@ -1829,8 +1922,11 @@ class ApiRuntime:
                     if current is not None:
                         current["resume_available"] = False
                         if session.cancelled and current.get("status") in {"queued", "running"}:
-                            current.update(status="cancelled",phase="stopped",stopped_early=True,
-                                phase_detail="새 해석 시작으로 이전 작업 종료",completed_at=time.time())
+                            self._update_raytrace_job(
+                                session.job_id, status="cancelled", phase="stopped", stopped_early=True,
+                                phase_detail="새 해석 시작으로 이전 작업 종료", completed_at=time.time(),
+                                **interrupted_timings(),
+                            )
                 session.finished.set()
 
     def _prune_raytrace_jobs_locked(self) -> None:
@@ -1891,3 +1987,38 @@ class ApiRuntime:
                 "Parasolid .x_t is not supported by the current runtime."
             )
         return normalized
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("page_fault_count", wintypes.DWORD),
+            ("peak_working_set", ctypes.c_size_t),
+            ("working_set", ctypes.c_size_t),
+            ("quota_peak_paged_pool", ctypes.c_size_t),
+            ("quota_paged_pool", ctypes.c_size_t),
+            ("quota_peak_nonpaged_pool", ctypes.c_size_t),
+            ("quota_nonpaged_pool", ctypes.c_size_t),
+            ("pagefile_usage", ctypes.c_size_t),
+            ("peak_pagefile_usage", ctypes.c_size_t),
+        ]
+
+    _get_process_memory_info = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+    _get_process_memory_info.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_ProcessMemoryCounters), wintypes.DWORD,
+    ]
+    _get_process_memory_info.restype = wintypes.BOOL
+
+
+def _process_memory_snapshot() -> dict[str, int]:
+    if os.name != "nt":
+        return {}
+    counters = _ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    if not _get_process_memory_info(wintypes.HANDLE(-1), ctypes.byref(counters), counters.cb):
+        return {}
+    return {"rss_bytes": counters.working_set, "process_peak_rss_bytes": counters.peak_working_set}

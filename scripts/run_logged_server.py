@@ -14,10 +14,16 @@ import traceback
 class LoggedStream:
     def __init__(self, console, log, lock):
         self.console, self.log, self.lock = console, log, lock
+        self.at_line_start = True
 
     def write(self, text):
         with self.lock:
-            self.log.write(text)
+            for part in text.splitlines(keepends=True):
+                if self.at_line_start:
+                    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+                    self.log.write(f"{stamp} ")
+                self.log.write(part)
+                self.at_line_start = part.endswith("\n")
             self.log.flush()
             return self.console.write(text)
 

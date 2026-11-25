@@ -41,6 +41,8 @@ class LoggedServerTests(unittest.TestCase):
             self.assertIn('stderr evidence', process.stderr)
             self.assertIn('stderr evidence', content)
             self.assertIn('[SERVER LOG] UTC=', content)
+            for line in content.splitlines():
+                self.assertRegex(line, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00 ")
 
     def test_unhandled_exception_is_saved_before_exit(self):
         with tempfile.TemporaryDirectory() as directory:

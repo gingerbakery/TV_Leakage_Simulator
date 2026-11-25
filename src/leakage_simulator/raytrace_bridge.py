@@ -1,22 +1,63 @@
 from __future__ import annotations
 
+from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import math
+import time
+import numpy as np
 
 from .bsdf_guard import validate_bsdf_request
 from .geometry import TriangleMesh
-from .raytracer import DirectRayTraceInput
+from .raytracer import DirectRayTraceInput, validate_path_guidance
 from .types import EmitterSpec, OpticalAssignment, OpticalProfile, RayTraceConfig, ReceiverSpec, Vec3
 
 
 @dataclass(frozen=True)
 class PreparedTraceGeometry:
     mesh: TriangleMesh
-    source_to_trace_face: Dict[int, List[int]]
+    source_to_trace_face: Mapping[int, List[int]]
     roi_is_active: bool
     emission_scope: Dict = field(default_factory=dict)
     detection_boxes: List = field(default_factory=list)
+
+
+class _UnclippedFaceMap(Mapping[int, List[int]]):
+    """CAD triangles retain source order. Auxiliary faces share source -1."""
+
+    def __init__(self, mesh: TriangleMesh, source_count: int):
+        cad_count = len(mesh.faces)
+        while cad_count and mesh.metadata(cad_count - 1)["source_face_index"] == -1:
+            cad_count -= 1
+        self._sources = (
+            range(cad_count) if cad_count == source_count else
+            np.fromiter(
+                (mesh.face_metadata[index]["source_face_index"] for index in range(cad_count)),
+                dtype=np.int64, count=cad_count,
+            )
+        )
+        self._auxiliary = range(cad_count, len(mesh.faces))
+
+    def __getitem__(self, source: int) -> List[int]:
+        if source == -1 and self._auxiliary:
+            return list(self._auxiliary)
+        if isinstance(self._sources, range):
+            if source in self._sources:
+                return [int(source)]
+        else:
+            index = bisect_left(self._sources, source)
+            if index < len(self._sources) and self._sources[index] == source:
+                return [index]
+        raise KeyError(source)
+
+    def __iter__(self):
+        yield from map(int, self._sources)
+        if self._auxiliary:
+            yield -1
+
+    def __len__(self) -> int:
+        return len(self._sources) + bool(self._auxiliary)
 
 
 def _emitter_source_faces(
@@ -51,9 +92,12 @@ def build_prepared_trace_geometry(
     scene_mesh: Dict[str, Any],
     request_payload: Dict[str, Any],
     should_stop: Optional[Callable[[], bool]] = None,
+    report_timing: Optional[Callable[[str, float], None]] = None,
 ) -> PreparedTraceGeometry:
     if should_stop is not None and should_stop():
         raise InterruptedError("Ray trace preparation stopped")
+    started = time.perf_counter()
+    validate_trace_request_before_geometry(request_payload)
     component_cache: Dict[Tuple[int, ...], List[int]] = {}
     emitter_source_faces = {
         face_index
@@ -61,6 +105,13 @@ def build_prepared_trace_geometry(
         if str(item.get("emitter_type") or "face") == "face"
         for face_index in _emitter_source_faces(scene_mesh, item, component_cache)
     }
+    if not (request_payload.get("analysis_roi") or request_payload.get("roi_faces") or request_payload.get("roi_clip_boxes")):
+        face_count = len(scene_mesh.get("faces") or [])
+        for emitter in request_payload.get("emitters", []):
+            if str(emitter.get("emitter_type") or "face") == "face" and not any(
+                0 <= index < face_count for index in _emitter_source_faces(scene_mesh, emitter, component_cache)
+            ):
+                raise ValueError("Face emitter has no traceable faces after component exclusion")
     excluded_components = {
         int(component_id)
         for component_id in request_payload.get("excluded_component_ids", [])
@@ -73,14 +124,22 @@ def build_prepared_trace_geometry(
         and source_component_ids[face_index] is not None
         and int(source_component_ids[face_index]) in excluded_components
     }
-    mesh = build_transformed_mesh(
-        scene_mesh,
-        request_payload.get("transform_rules", []),
-        request_payload.get("excluded_component_ids", []),
-        emitter_source_face_indices=emitter_source_faces,
-        preview_blockers=request_payload.get("preview_blockers", []),
-        should_stop=should_stop,
-    )
+    if report_timing is not None:
+        report_timing("emitter_source_validation", time.perf_counter() - started)
+    started = time.perf_counter()
+    try:
+        mesh = build_transformed_mesh(
+            scene_mesh,
+            request_payload.get("transform_rules", []),
+            request_payload.get("excluded_component_ids", []),
+            emitter_source_face_indices=emitter_source_faces,
+            preview_blockers=request_payload.get("preview_blockers", []),
+            should_stop=should_stop,
+        )
+    finally:
+        if report_timing is not None:
+            report_timing("transformed_mesh", time.perf_counter() - started)
+    started = time.perf_counter()
     original_mesh = mesh
     roi_faces = request_payload.get("roi_faces")
     analysis_roi = request_payload.get("analysis_roi")
@@ -109,6 +168,7 @@ def build_prepared_trace_geometry(
     if raw_scope_boxes and not scope_boxes:
         raise ValueError("ROI 좌표 박스가 비어 있거나 잘못되었습니다.")
     roi_is_active = bool(roi_faces)
+    original_face_map = _UnclippedFaceMap(mesh, len(scene_mesh.get("faces") or []))
     if roi_is_active:
         mesh, source_to_trace_face = filter_mesh_to_roi(
             mesh,
@@ -117,24 +177,44 @@ def build_prepared_trace_geometry(
             clip_boxes=transport_boxes,
         )
     else:
-        source_to_trace_face: Dict[int, List[int]] = {}
-        for face_index in range(len(mesh.faces)):
-            source_face_index = int(
-                mesh.metadata(face_index).get("source_face_index", face_index)
-            )
-            source_to_trace_face.setdefault(source_face_index, []).append(face_index)
+        source_to_trace_face = original_face_map
+    if report_timing is not None:
+        report_timing("roi_and_face_map", time.perf_counter() - started)
     emission_scope = {}
     if scope_faces or scope_boxes:
+        started = time.perf_counter()
         from .roi_scope import prepare_emission_scope
         emission_scope = prepare_emission_scope(mesh, original_mesh, request_payload.get("emitters", []),
-            lambda item: _emitter_source_faces(scene_mesh, item, component_cache), source_to_trace_face,
+            lambda item: _emitter_source_faces(scene_mesh, item, component_cache), original_face_map, source_to_trace_face,
             scope_boxes, set(scope_faces), context_retained=not roi_is_active)
+        if report_timing is not None:
+            report_timing("roi_emitter_patches", time.perf_counter() - started)
     # Prepared geometry caches a BVH acceleration structure for both CPU and
     # CUDA consumers.  Compute-device selection remains request-local in
     # RayTraceConfig and is deliberately not encoded in this geometry cache.
     mesh.set_acceleration_structure("bvh")
-    mesh.prepare_acceleration(should_stop)
+    started = time.perf_counter()
+    try:
+        mesh.prepare_acceleration(should_stop)
+    finally:
+        if report_timing is not None:
+            report_timing("bvh_prepare", time.perf_counter() - started)
     return PreparedTraceGeometry(mesh, source_to_trace_face, roi_is_active, emission_scope, scope_boxes)
+
+
+def validate_trace_request_before_geometry(request_payload: Dict[str, Any]) -> None:
+    if not (request_payload.get("analysis_roi") or request_payload.get("roi_faces") or request_payload.get("roi_clip_boxes")):
+        for emitter in request_payload.get("emitters", []):
+            if (
+                str(emitter.get("emitter_type") or "face") == "face"
+                and not emitter.get("face_indices")
+                and not emitter.get("source_component_ids")
+            ):
+                raise ValueError("Face emitter has no traceable faces after component exclusion")
+    receivers = [ReceiverSpec.from_dict(dict(item)) for item in request_payload.get("receivers", [])]
+    config = RayTraceConfig.from_dict(dict(request_payload.get("config") or {}))
+    if request_payload.get("escape_collection") is None:
+        validate_path_guidance([receiver for receiver in receivers if receiver.enabled], config)
 
 
 def build_direct_trace_input(
@@ -163,8 +243,7 @@ def build_direct_trace_input(
             normalized["face_indices"] = [
                 trace_face_index
                 for face_index in source_faces
-                if face_index in source_to_trace_face
-                for trace_face_index in source_to_trace_face[face_index]
+                for trace_face_index in source_to_trace_face.get(face_index, ())
             ]
             if not normalized["face_indices"]:
                 if roi_is_active:
@@ -380,7 +459,7 @@ def filter_mesh_to_roi(
 
 def _filter_face_optical_assignments(
     optical_assignments: List[OpticalAssignment],
-    face_remap: Dict[int, List[int]],
+    face_remap: Mapping[int, List[int]],
 ) -> None:
     for assignment in optical_assignments:
         if assignment.target_type != "faces":
@@ -417,12 +496,14 @@ def build_transformed_mesh(
         and rule.get("object_id") is not None
     }
     component_bounds: Dict[int, List[List[float]]] = {}
-    for face_index, component_id in enumerate(component_ids):
+    for face_index, component_id in enumerate(component_ids if enabled_rules else ()):
         if face_index % 4096 == 0 and should_stop is not None and should_stop():
             raise InterruptedError("Ray trace preparation stopped")
         if component_id is None:
             continue
         normalized_component_id = int(component_id)
+        if normalized_component_id not in enabled_rules or enabled_rules[normalized_component_id].get("pivot"):
+            continue
         bounds = component_bounds.setdefault(
             normalized_component_id,
             [
