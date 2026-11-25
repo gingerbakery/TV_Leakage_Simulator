@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .server_diagnostics import log_event
+
 import os
 import re
 import time
@@ -82,6 +84,7 @@ def _cad_stage(
     detail: str = "",
 ) -> float:
     elapsed = time.perf_counter() - started_at
+    log_event("cad.stage_end", stage=stage, elapsed_sec=elapsed, detail=detail)
     suffix = " | {}".format(detail) if detail else ""
     print(
         "[CAD] {:<24} {:>8.3f}s{}".format(stage, elapsed, suffix),
@@ -91,6 +94,7 @@ def _cad_stage(
 
 
 def _cad_stage_start(stage: str, detail: str = "") -> None:
+    log_event("cad.stage_start", stage=stage, detail=detail)
     suffix = " | {}".format(detail) if detail else ""
     print(
         "[CAD] {:<24} {:>8}{}".format(stage, "START", suffix),

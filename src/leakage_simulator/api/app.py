@@ -32,6 +32,7 @@ from leakage_simulator.scene_binary import (
 )
 from leakage_simulator.roi import materialize_scene_derived_geometry
 
+from leakage_simulator.server_diagnostics import DiagnosticRequests, log_event
 from .runtime import ApiRuntime
 
 API_VERSION = "1.0.0"
@@ -39,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
+    log_event("request.error", http_status=status_code, detail=message)
     return JSONResponse(
         status_code=status_code,
         content={"error": message},
@@ -62,6 +64,7 @@ def create_app(
     application.state.api_runtime = api_runtime
     from leakage_simulator.lt_validation.routes import router as lt_validation_router
     application.include_router(lt_validation_router)
+    application.add_middleware(DiagnosticRequests)
     frontend_dist = api_runtime.root / "frontend" / "dist"
     frontend_index = frontend_dist / "index.html"
     frontend_assets = frontend_dist / "assets"
@@ -133,8 +136,9 @@ def create_app(
             preflight_gpu_cuda,
         )
 
+        started = time.perf_counter()
         capability = preflight_gpu_cuda(refresh=refresh)
-        return {
+        evidence = {
             "available": capability.available,
             "reason_code": capability.reason_code,
             "device_name": capability.device_name,
@@ -148,6 +152,8 @@ def create_app(
             "preflight_scope": capability.preflight_scope,
             "provider_contract": PROVIDER_CONTRACT,
         }
+        log_event("cuda.preflight", refresh=refresh, elapsed_sec=time.perf_counter() - started, **evidence)
+        return evidence
 
     @application.get("/api/scene")
     def scene(cad: str = "", format: str = "json", aux: list[str] = Query(default=[])) -> Any:
@@ -164,6 +170,8 @@ def create_app(
                     + len(manifest)
                     + int(json.loads(manifest)["binary"]["byte_length"])
                 )
+                log_event("cad.serialize", format="binary", response_bytes=binary_bytes,
+                          elapsed_sec=time.perf_counter() - binary_started_at)
                 print(
                     "[CAD] {:<24} {:>8.3f}s | {:.2f} MB".format(
                         "Binary manifest",
@@ -194,6 +202,8 @@ def create_app(
             serialization_sec = (
                 time.perf_counter() - serialization_started_at
             )
+            log_event("cad.serialize", format="json", response_bytes=len(response.body),
+                      elapsed_sec=serialization_sec)
             print(
                 "[CAD] {:<24} {:>8.3f}s | {:.2f} MB".format(
                     "JSON serialization",

@@ -152,6 +152,53 @@ def mesh_identity(mesh: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
+def equivalent_face_bindings(saved: dict[str, Any], rebuilt: dict[str, Any]) -> bool:
+    """Compare exact oriented triangles and binding labels, independent of row order."""
+    import numpy as np
+
+    fields = ("face_source_ids", "face_component_ids", "face_material_ids")
+    count = len(saved["faces"])
+    if (
+        not count
+        or count != len(rebuilt["faces"])
+        or len(saved["vertices"]) != len(rebuilt["vertices"])
+        or any(len(mesh.get(field, ())) != count for mesh in (saved, rebuilt) for field in fields)
+    ):
+        return False
+
+    materials: dict[str, int] = {}
+
+    def ordered_triangles(mesh):
+        vertices = np.array(mesh["vertices"], dtype=np.float64)
+        if not np.isfinite(vertices).all():
+            return None
+        unique, vertex_ids = np.unique(vertices, axis=0, return_inverse=True)
+        faces = np.array(mesh["faces"], dtype=np.int64)
+        if np.any(faces < 0) or np.any(faces >= len(vertices)):
+            return None
+        triangles = vertex_ids[faces]
+        # Select the smallest cyclic rotation. Reversing winding stays distinguishable.
+        a, b, c = triangles.T
+        use_b = (b < a) & (b <= c)
+        use_c = (c <= a) & (c < b)
+        rows = np.empty((6, count), dtype=np.int64)
+        rows[0] = np.where(use_b, b, np.where(use_c, c, a))
+        rows[1] = np.where(use_b, c, np.where(use_c, a, b))
+        rows[2] = np.where(use_b, a, np.where(use_c, b, c))
+        rows[3] = mesh["face_source_ids"]
+        rows[4] = np.fromiter((-1 if value is None else value for value in mesh["face_component_ids"]),
+                              dtype=np.int64, count=count)
+        rows[5] = np.fromiter((materials.setdefault(value, len(materials)) for value in mesh["face_material_ids"]),
+                              dtype=np.int64, count=count)
+        return unique, rows, np.lexsort(rows[::-1])
+
+    left = ordered_triangles(saved)
+    right = ordered_triangles(rebuilt)
+    if left is None or right is None or not np.array_equal(left[0], right[0]):
+        return False
+    return all(np.array_equal(a[left[2]], b[right[2]]) for a, b in zip(left[1], right[1]))
+
+
 def _javascript_number(value: float | int) -> str:
     """Return JSON.stringify-compatible text for a finite JavaScript Number.
 

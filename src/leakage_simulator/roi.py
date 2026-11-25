@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from array import array
+from importlib.metadata import version, PackageNotFoundError
 from typing import Dict, List, Optional, Sequence, Set
 import threading
 import time
 
 from .components import build_face_groups
 from .geometry import TriangleMesh, build_feature_edge_segments
-from .importers import import_geometry
+from .importers import (
+    TRACE_ANGULAR_DEFLECTION_RAD, TRACE_LINEAR_DEFLECTION_MM,
+    VIEWER_ANGULAR_DEFLECTION_RAD, VIEWER_LINEAR_DEFLECTION_MM, import_geometry,
+)
 from .types import ReceiverPatchConfig, ROIComponentClip, ROIPointSelection, ROIRegionResult, Vec3
 
 
@@ -64,6 +68,25 @@ def _scene_stage_start(stage: str) -> None:
         "[CAD] {:<24} {:>8}".format(stage, "START"),
         flush=True,
     )
+
+
+def _step_tessellation_metadata() -> dict:
+    ocp_version = None
+    for package in ("cadquery-ocp", "cadquery-ocp-novtk"):
+        try:
+            ocp_version = version(package)
+            break
+        except PackageNotFoundError:
+            continue
+    return {
+        "ocp_version": ocp_version,
+        "viewer_linear_deflection_mm": VIEWER_LINEAR_DEFLECTION_MM,
+        "viewer_angular_deflection_rad": VIEWER_ANGULAR_DEFLECTION_RAD,
+        "trace_linear_deflection_mm": TRACE_LINEAR_DEFLECTION_MM,
+        "trace_angular_deflection_rad": TRACE_ANGULAR_DEFLECTION_RAD,
+        "relative": False,
+        "parallel": True,
+    }
 
 
 def build_default_receivers(
@@ -307,6 +330,7 @@ def build_scene_payload(cad_path: Optional[str]) -> Dict:
         },
     }
     if deferred_trace_loader is not None:
+        payload["metadata"]["step_tessellation"] = _step_tessellation_metadata()
         deferred_payload_lock = threading.Lock()
         deferred_payload_cache: Dict[str, Dict] = {}
 

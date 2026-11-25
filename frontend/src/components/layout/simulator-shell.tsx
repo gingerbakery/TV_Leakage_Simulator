@@ -911,9 +911,13 @@ export function SimulatorShell() {
         (item) => !!(item.project.analysis_result || item.project.preview_result),
       ),
       caseCount: restored.cases.length,
-      notes: restored.cases.some((item) => !item.traceCached)
-        ? ['일부 Case의 정밀 해석 형상은 첫 해석 시 준비합니다.']
-        : [],
+      notes: [
+        ...restored.cases.filter((item) => item.traceBindingError).map(
+          (item) => `${item.name || item.cad.displayName} · 재해석하려면 CAD를 다시 가져오고 면 할당을 확인하세요.`,
+        ),
+        ...(restored.cases.some((item) => !item.traceCached && !item.traceBindingError)
+          ? ['일부 Case의 정밀 해석 형상은 첫 해석 시 준비합니다.'] : []),
+      ],
     })
   }
 
@@ -965,7 +969,9 @@ export function SimulatorShell() {
       fileName: file.name,
       includesCad: true,
       includesResult: !!(restored.project.analysis_result || restored.project.preview_result),
-      notes: restored.traceCached
+      notes: restored.traceBindingError
+        ? ['재해석하려면 CAD를 다시 가져오고 면 할당을 확인하세요.']
+        : restored.traceCached
         ? []
         : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
     })

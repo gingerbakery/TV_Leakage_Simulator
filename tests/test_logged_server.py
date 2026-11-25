@@ -15,14 +15,25 @@ class LoggedServerTests(unittest.TestCase):
     def run_fixture(self, root, source, *args, log_name='server.log'):
         entrypoint = root / 'fake_server.py'
         entrypoint.write_text(source, encoding='utf-8')
-        log = root / 'logs' / log_name
+        log = root / 'logs'
+        destination = ['--log-dir', str(log)] if log_name is None else ['--log-file', str(log / log_name)]
         process = subprocess.run(
             [sys.executable, '-X', 'faulthandler', str(WRAPPER),
-             '--log-file', str(log), '--entrypoint', str(entrypoint), *args],
+             *destination, '--entrypoint', str(entrypoint), *args],
             cwd=root, env={**os.environ, 'PYTHONUTF8': '1'},
             capture_output=True, text=True, encoding='utf-8', timeout=10,
         )
-        return process, log
+        return process, log if log_name is None else log / log_name
+
+    def test_log_directory_allocates_one_file_per_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, logs = self.run_fixture(root, "print('first launch')", log_name=None)
+            second, _ = self.run_fixture(root, "print('second launch')", log_name=None)
+            self.assertEqual((first.returncode, second.returncode), (0, 0))
+            records = sorted(path.read_text(encoding='utf-8').splitlines()[-1].split(' ', 1)[1]
+                             for path in logs.glob("server-*.log"))
+            self.assertEqual(records, ['first launch', 'second launch'])
 
     def test_progress_errors_and_entrypoint_arguments_reach_console_and_log(self):
         with tempfile.TemporaryDirectory() as directory:

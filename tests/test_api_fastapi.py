@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 import tempfile
 import sys
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -75,6 +78,35 @@ def _trace_runner(trace_input, progress_callback=None, should_stop=None):
 
 
 class FastApiLayerTests(unittest.TestCase):
+    def test_completed_job_log_contains_forward_and_observer_compute_evidence(self):
+        forward = {"compute_execution_state": "gpu_active", "gpu_cuda_gpu_success_count": 3}
+        observer = {"compute_execution_state": "gpu_mixed", "gpu_cuda_gpu_success_count": 2,
+                    "intersection_fallback_count": 1}
+        result = {"total_rays": 2, "metrics": {
+            "_performance_summary": forward,
+            "_observer_probe_summary": {"performance": observer, "planned_count": 4, "attempted_count": 4},
+        }}
+        self.runtime._trace_runner = Mock(return_value=SimpleNamespace(to_dict=lambda: result))
+        scene = self.runtime.load_scene("diagnostics.step")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            job = self.runtime.start_raytrace_job({"scene_token": scene["metadata"]["scene_token"]})
+            for _ in range(100):
+                lines = [line for line in output.getvalue().splitlines() if line.startswith("[DIAG] ")]
+                records = [json.loads(line.removeprefix("[DIAG] ")) for line in lines]
+                end = next((row for row in records if row["event"] == "ray.end"), None)
+                if end is not None:
+                    break
+                time.sleep(.005)
+        self.assertIsNotNone(end)
+        self.assertEqual(end["job_id"], job["job_id"])
+        self.assertEqual(end["status"], "completed")
+        for key, value in forward.items():
+            self.assertEqual(end["compute"][key], value)
+        for key, value in observer.items():
+            self.assertEqual(end["observer_compute"][key], value)
+        self.assertEqual(end["observer_workload"]["attempted_count"], 4)
+
     def test_preparation_iterator_failure_exposes_source_before_any_rays_run(self):
         def broken_builder(scene_mesh, request_payload):
             values = iter([1, 2])
@@ -198,16 +230,23 @@ class FastApiLayerTests(unittest.TestCase):
         }
 
         preparation_phases = []
+        stages = []
+
+        def record_stage(name, elapsed_sec):
+            self.assertGreaterEqual(elapsed_sec, 0)
+            stages.append(name)
+
         first = runtime._build_trace_input_for_request(
             scene_mesh,
             payload,
             report_phase=preparation_phases.append,
+            report_timing=record_stage,
         )
         changed_receiver = dict(payload)
         changed_receiver["receivers"] = [
             {**payload["receivers"][0], "width_mm": 2}
         ]
-        second = runtime._build_trace_input_for_request(scene_mesh, changed_receiver)
+        second = runtime._build_trace_input_for_request(scene_mesh, changed_receiver, report_timing=record_stage)
 
         self.assertFalse(first.geometry_cache_hit)
         self.assertIn("정밀 CAD Mesh 확인 중", preparation_phases)
@@ -222,9 +261,13 @@ class FastApiLayerTests(unittest.TestCase):
 
         changed_geometry = dict(payload)
         changed_geometry["excluded_component_ids"] = [1]
-        third = runtime._build_trace_input_for_request(scene_mesh, changed_geometry)
+        third = runtime._build_trace_input_for_request(scene_mesh, changed_geometry, report_timing=record_stage)
         self.assertFalse(third.geometry_cache_hit)
         self.assertIsNot(first.mesh, third.mesh)
+        for expected in ("trace_mesh_available", "viewer_to_trace_face_map", "transformed_mesh",
+                         "bvh_prepare", "prepared_cache_hit", "prepared_cache_miss changed_fields=first_lookup",
+                         "prepared_cache_miss changed_fields=excluded_component_ids"):
+            self.assertIn(expected, stages)
 
     def test_concurrent_identical_geometry_requests_share_one_bvh_build(self):
         import leakage_simulator.api.runtime as runtime_module
@@ -550,10 +593,12 @@ class FastApiLayerTests(unittest.TestCase):
         self.assertIn(refreshed, self.runtime._scene_mesh_cache)
 
     def test_scene_endpoint_streams_binary_manifest_and_arrays(self):
-        response = self.client.get(
-            "/api/scene",
-            params={"cad": "fixture.step", "format": "binary"},
-        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            response = self.client.get(
+                "/api/scene",
+                params={"cad": "fixture.step", "format": "binary"},
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -565,6 +610,16 @@ class FastApiLayerTests(unittest.TestCase):
             int(response.headers["content-length"]),
             len(response.content),
         )
+        events = {
+            event["event"]: event
+            for line in output.getvalue().splitlines() if line.startswith("[DIAG] ")
+            for event in [json.loads(line.removeprefix("[DIAG] "))]
+        }
+        started = events["request.start"]
+        for name in ("cad.scene_ready", "cad.serialize", "request.end"):
+            self.assertEqual(events[name]["request_id"], started["request_id"])
+        self.assertTrue(events["request.end"]["response_complete"])
+        self.assertEqual(events["request.end"]["response_bytes"], len(response.content))
 
     def test_duplicate_scene_loads_share_one_active_import(self):
         loader_started = threading.Event()

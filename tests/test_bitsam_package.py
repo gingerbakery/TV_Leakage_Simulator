@@ -279,7 +279,7 @@ class BitsamPackageTests(unittest.TestCase):
         self.assertNotEqual(reopened["project"]["workspace"], imported["project"]["workspace"])
         loader.assert_not_called()
 
-    def test_deferred_trace_not_built_during_save_or_load(self):
+    def test_save_embeds_deferred_trace_and_reopen_does_not_import_cad(self):
         trace_loader = Mock(return_value=self.scene["mesh"])
         def deferred(path):
             payload = scene_fixture(path)
@@ -288,10 +288,23 @@ class BitsamPackageTests(unittest.TestCase):
         first = ApiRuntime(self.root / "before", scene_loader=deferred)
         scene = first.load_scene(str(self.source))
         exported = first.export_project({"scene_token": scene["metadata"]["scene_token"], "project": self.project})
-        self.assertFalse(exported["trace_cached"])
-        trace_loader.assert_not_called()
+        self.assertTrue(exported["trace_cached"])
+        trace_loader.assert_called_once()
+        package, _ = first.project_export_file(exported["download_url"].split("/")[-1])
+        forbidden = Mock(side_effect=AssertionError("CAD unexpectedly imported"))
+        second = ApiRuntime(self.root / "after", scene_loader=forbidden)
+        restored = second.import_project(package)
+        scene = second.load_scene(restored["cad"]["path"])
+        second.run_raytrace_direct(trace_request(scene["metadata"]["scene_token"]))
+        forbidden.assert_not_called()
+
+    def test_legacy_load_checks_viewer_and_reuses_checked_trace_loader(self):
+        trace_loader = Mock(return_value=self.scene["mesh"])
+        write_package(self.package, self.project, self.source, self.scene, None)
+
         def rebuild_with_different_feature_edges(path):
-            payload = deferred(path)
+            payload = scene_fixture(path)
+            payload["_trace_mesh_loader"] = trace_loader
             payload["mesh"]["feature_edge_segments"] = [
                 {"start": [0.0, 0.0, 0.0], "end": [1.0, 0.0, 0.0], "component_id": None},
             ]
@@ -299,11 +312,12 @@ class BitsamPackageTests(unittest.TestCase):
 
         second_loader = Mock(side_effect=rebuild_with_different_feature_edges)
         second = ApiRuntime(self.root / "after", scene_loader=second_loader)
-        package, _ = first.project_export_file(exported["download_url"].split("/")[-1])
-        restored = second.import_project(package)
+        restored = second.import_project(self.package)
+        self.assertIsNone(restored["trace_binding_error"])
         self.source.unlink()
         loaded = second.load_scene(restored["cad"]["path"])
-        second_loader.assert_not_called()
+        second_loader.assert_called_once()
+        trace_loader.assert_not_called()
         request = trace_request(loaded["metadata"]["scene_token"])
         second.run_raytrace_direct(request)
         second.run_raytrace_direct(request)
@@ -320,9 +334,32 @@ class BitsamPackageTests(unittest.TestCase):
             return payload
         runtime = ApiRuntime(self.root / "after", scene_loader=changed)
         restored = runtime.import_project(self.package)
+        self.assertIn("Face bindings", restored["trace_binding_error"])
+        self.assertEqual(restored["project"]["analysis_result"], self.project["analysis_result"])
         scene = runtime.load_scene(restored["cad"]["path"])
         with self.assertRaisesRegex(ValueError, "Face bindings"):
             runtime.run_raytrace_direct(trace_request(scene["metadata"]["scene_token"]))
+
+    def test_deferred_rebuild_accepts_reordered_exact_face_bindings(self):
+        self.scene["mesh"]["face_source_ids"] = [11, 12]
+        write_package(self.package, self.project, self.source, self.scene, None)
+
+        def reordered(path):
+            payload = scene_fixture(path)
+            mesh = payload["mesh"]
+            mesh["vertices"].reverse()
+            mesh["faces"] = [(1, 0, 3), (2, 1, 3)]
+            mesh["face_source_ids"] = [12, 11]
+            return payload
+
+        runtime = ApiRuntime(self.root / "after", scene_loader=reordered)
+        restored = runtime.import_project(self.package)
+        scene = runtime.load_scene(restored["cad"]["path"])
+        token = scene["metadata"]["scene_token"]
+        runtime.run_raytrace_direct(trace_request(token))
+        request = {"emitters": [{"emitter_type": "face", "face_indices": [0]}]}
+        mapped = runtime._map_viewer_faces_to_trace(runtime._scene_mesh_cache[token], request)
+        self.assertEqual(mapped["emitters"][0]["face_indices"], [1])
 
     def test_cache_eviction_reloads_package_not_cad(self):
         write_package(self.package, self.project, self.source, self.scene, self.scene["mesh"])

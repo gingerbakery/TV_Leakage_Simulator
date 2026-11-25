@@ -193,6 +193,19 @@ describe('portable BITSAM packages', () => {
     expect(store.getState().restoredRayTraceResult).toEqual(project.analysis_result)
   })
 
+  it('keeps stored results available when CAD face bindings fail the open-time check', async () => {
+    const { project, scene } = fixture()
+    const client = mockClient()
+    client.importProject.mockResolvedValueOnce({
+      project, cad: { path: 'legacy/original.step', displayName: 'legacy.step' },
+      trace_cached: false, trace_binding_error: 'Face bindings cannot be reused safely',
+    })
+    const restored = await loadPortableProject(new File(['PK'], 'legacy.bitsam'), vi.fn(),
+      client, { getScene: vi.fn(async () => scene) })
+    expect(restored.traceBindingError).toBe('Face bindings cannot be reused safely')
+    expect(restored.project.analysis_result).toEqual(project.analysis_result)
+  })
+
   it('restores every Case setting and loads only the active Case Scene', async () => {
     const first = fixture()
     const second = fixture()

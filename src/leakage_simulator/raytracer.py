@@ -3540,13 +3540,17 @@ def run_direct_ray_trace(
         if escape_collector is None:
             raise ValueError("Observer probing requires escape collection bounds")
         from .observer_probe import trace_observer_paths
+        observer_started_at = time.perf_counter()
         metrics["_observer_probe_summary"] = trace_observer_paths(
             trace_input, escape_collector, resolved_optical_by_face, should_stop,
             progress_callback=observer_progress_callback,
             pause_callback=pause_with_snapshot if pause_callback is not None and resumable_observer else None,
         )
+        metrics["_observer_probe_summary"]["wall_elapsed_sec"] = time.perf_counter() - observer_started_at
         from .observer_path_validation import validate_observer_paths
+        observer_validation_started_at = time.perf_counter()
         validate_observer_paths(trace_input, metrics["_observer_probe_summary"], resolved_optical_by_face)
+        metrics["_observer_probe_summary"]["validation_sec"] = time.perf_counter() - observer_validation_started_at
         stopped_early = stopped_early or metrics["_observer_probe_summary"]["stopped"]
     if trace_input.analysis_roi:
         metrics["_roi_scope_summary"] = trace_input.analysis_roi

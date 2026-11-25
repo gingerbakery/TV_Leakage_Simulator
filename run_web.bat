@@ -90,7 +90,7 @@ echo [READY] Keep this window open while using the simulator.
 echo.
 
 start "" /b "%PY%" "%ROOT%scripts\open_web_when_ready.py" "http://127.0.0.1:%PORT%/"
-"%PY%" "%ROOT%run_web.py" --port "%PORT%" --strict-port
+"%PY%" "%ROOT%scripts\run_logged_server.py" --log-dir "%ROOT%outputs\cpu-runtime" --entrypoint "%ROOT%run_web.py" --port "%PORT%" --strict-port
 set "EXITCODE=%ERRORLEVEL%"
 
 if not "%EXITCODE%"=="0" (

@@ -22,6 +22,7 @@ interface PackageCaseImport {
   project: unknown
   cad: ActiveCad
   trace_cached: boolean
+  trace_binding_error?: string | null
 }
 
 interface PackageWorkspaceImportCase extends PackageCaseImport {
@@ -64,6 +65,7 @@ export interface PortableCaseRestore {
   scene: ScenePayload
   cad: ActiveCad
   traceCached: boolean
+  traceBindingError?: string
 }
 
 export interface PortableWorkspaceRestore {
@@ -325,7 +327,7 @@ export async function loadPortableBundle(
     ): Promise<ScenePayload>
   } = apiClient,
 ): Promise<PortableCaseRestore | PortableWorkspaceRestore> {
-  onProgress('프로젝트 업로드 · 무결성 검증 중…')
+  onProgress('프로젝트 업로드 · 저장 데이터 및 CAD 면 정보 확인 중…')
   const restored = await client.importProject(file)
   if (isWorkspaceImport(restored)) {
     const cases: PortableWorkspaceRestore['cases'] = []
@@ -369,6 +371,7 @@ export async function loadPortableBundle(
         ...(scene ? { scene } : {}),
         cad: item.cad,
         traceCached: item.trace_cached,
+        ...(item.trace_binding_error ? { traceBindingError: item.trace_binding_error } : {}),
       })
     }
     return {
@@ -385,7 +388,10 @@ export async function loadPortableBundle(
   if (!compatibility.compatible) {
     throw new BitsamProjectError(`저장된 형상과 설정이 일치하지 않습니다. ${compatibility.reasons.join(' / ')}`)
   }
-  return { project, scene, cad: restored.cad, traceCached: restored.trace_cached }
+  return {
+    project, scene, cad: restored.cad, traceCached: restored.trace_cached,
+    ...(restored.trace_binding_error ? { traceBindingError: restored.trace_binding_error } : {}),
+  }
 }
 
 export async function loadPortableProject(

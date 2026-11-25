@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import uuid
 from datetime import datetime, timezone
 import faulthandler
 from pathlib import Path
@@ -38,13 +39,16 @@ class LoggedStream:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--log-file', type=Path, required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument('--log-file', type=Path)
+    destination.add_argument('--log-dir', type=Path)
     parser.add_argument('--entrypoint', type=Path, required=True)
     args, server_args = parser.parse_known_args()
     entrypoint = args.entrypoint.resolve(strict=True)
-    args.log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file = args.log_file or args.log_dir / f'server-{uuid.uuid4().hex}.log'
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation prevents a second launcher from overwriting evidence.
-    with args.log_file.open('x', encoding='utf-8', buffering=1) as log:
+    with log_file.open('x', encoding='utf-8', buffering=1) as log:
         stdout, stderr, argv, search_path = sys.stdout, sys.stderr, sys.argv, sys.path[:]
         fault_handler_enabled = faulthandler.is_enabled()
         lock = threading.RLock()
@@ -54,7 +58,7 @@ def main():
         # the native CUDA/OCP/LLVM caller cannot handle an exception normally.
         faulthandler.enable(file=log, all_threads=True)
         try:
-            print(f'[SERVER LOG] {args.log_file.resolve()}', flush=True)
+            print(f'[SERVER LOG] {log_file.resolve()}', flush=True)
             print(f'[SERVER LOG] UTC={datetime.now(timezone.utc).isoformat()} Python={sys.version.split()[0]} executable={sys.executable}', flush=True)
             sys.argv = [str(entrypoint), *server_args]
             sys.path.insert(0, str(entrypoint.parent))

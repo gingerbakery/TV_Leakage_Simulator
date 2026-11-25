@@ -12,6 +12,7 @@ import time
 import traceback
 import uuid
 from array import array
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
@@ -34,6 +35,7 @@ from leakage_simulator.bitsam_package import (
     PACKAGE_SCHEMA,
     WORKSPACE_FORMAT,
     WORKSPACE_SCHEMA,
+    equivalent_face_bindings,
     extract_package,
     extract_workspace_package,
     mesh_identity,
@@ -45,6 +47,31 @@ from leakage_simulator.bitsam_package import (
     write_package,
     write_workspace_package,
 )
+from leakage_simulator.server_diagnostics import log_event, request_id
+
+
+def _trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
+    metrics = result.get("metrics") or {}
+    observer = metrics.get("_observer_probe_summary") or {}
+
+    def scalar_summary(summary):
+        return {
+            key: value if not isinstance(value, float) or abs(value) < float("inf") else None
+            for key, value in summary.items()
+            if value is None or isinstance(value, (str, bool, int, float))
+        }
+
+    return {
+        "compute_metrics_available": bool(metrics.get("_performance_summary")),
+        "observer_compute_metrics_available": bool(observer.get("performance")),
+        "compute": scalar_summary(metrics.get("_performance_summary") or {}),
+        "observer_compute": scalar_summary(observer.get("performance") or {}),
+        "observer_workload": {key: observer[key] for key in (
+            "planned_count", "attempted_count", "in_flight_sample_count", "direct_count",
+            "reflected_count", "depth_limited_count", "stopped", "runtime_sec",
+            "wall_elapsed_sec", "validation_sec",
+        ) if key in observer},
+    }
 
 
 class TraceResult(Protocol):
@@ -137,9 +164,11 @@ class ApiRuntime:
         if not cad_path:
             raise ValueError("CAD file is required")
 
+        started = time.perf_counter()
         cache_key = self._scene_cache_key(cad_path)
         with self._state_lock:
             payload = self._scene_payload_cache.get(cache_key)
+            payload_was_cached = payload is not None
             load_state = self._scene_loads.get(cache_key)
             is_loader = payload is None and load_state is None
             if is_loader:
@@ -194,7 +223,11 @@ class ApiRuntime:
                 self._scene_loads.pop(cache_key, None)
             load_state.event.set()
 
-        return self._register_scene(payload, Path(cad_path))
+        registered = self._register_scene(payload, Path(cad_path))
+        log_event("cad.scene_ready", source=Path(cad_path).name,
+                  cache="hit" if payload_was_cached else ("miss" if is_loader else "wait"),
+                  elapsed_sec=time.perf_counter() - started, **_process_memory_snapshot())
+        return registered
 
     def load_composite_scene(self, cad_paths: list[str]) -> dict[str, Any]:
         paths = [str(value).strip() for value in cad_paths if str(value).strip()]
@@ -317,26 +350,14 @@ class ApiRuntime:
             raise ValueError("CAD scene cache expired. Reload the CAD before saving BITSAM.")
         payload, source = record
         self._validate_project_fingerprint(project, payload)
-        lock = trace.get("_deferred_trace_lock")
-        if lock is not None:
-            with lock:
-                deferred_loader = trace.get("_deferred_trace_loader")
-                cached_trace = None if callable(deferred_loader) else trace
-                # A composite project cannot rebuild its trace geometry from
-                # the main CAD alone. Embed the resolved combined trace mesh.
-                if cached_trace is None and len((payload.get("metadata") or {}).get("source_files") or []) > 1:
-                    cached_trace = deferred_loader()
-                    if not isinstance(cached_trace, dict):
-                        raise ValueError("Accessory CAD trace mesh is unavailable")
-                    viewer_sources = trace.get("_viewer_face_source_ids") or []
-                    if viewer_sources:
-                        cached_trace = dict(cached_trace)
-                        cached_trace["_viewer_face_source_ids"] = viewer_sources
-                    with self._state_lock:
-                        self._scene_mesh_cache[token] = cached_trace
-        else:
-            cached_trace = trace
-        return write_package(destination, project, source, payload, cached_trace)
+        cached_trace = self._resolve_deferred_trace_mesh(trace)
+        manifest = write_package(destination, project, source, payload, cached_trace)
+        log_event("cad.portable_saved", source=source.name,
+                  viewer_faces=len(payload["mesh"]["faces"]), trace_faces=len(cached_trace["faces"]),
+                  viewer_cache_sha256=manifest["entries"]["scene.bin"]["sha256"],
+                  trace_cache_sha256=manifest["entries"]["trace.bin"]["sha256"],
+                  tessellation=payload["metadata"].get("step_tessellation"))
+        return manifest
 
     @staticmethod
     def _download_name(value: object, fallback: str = "simulation") -> str:
@@ -724,7 +745,7 @@ class ApiRuntime:
                 staging.rename(destination)
             # Re-open after the atomic move so a deferred trace loader captures
             # the permanent embedded CAD path rather than the staging path.
-            payload = self._load_portable_scene(destination)
+            payload = self._load_portable_scene(destination, check_bindings=True)
             source = (destination / manifest["source"]).resolve()
             self._commit_portable_cases(
                 [(source, destination, payload)],
@@ -738,6 +759,7 @@ class ApiRuntime:
             "project": project,
             "cad": {"path": str(source), "displayName": project["cad"]["display_name"]},
             "trace_cached": manifest["trace_cached"],
+            "trace_binding_error": payload["metadata"].get("trace_binding_error"),
             "elapsed_sec": elapsed,
         }
 
@@ -823,7 +845,7 @@ class ApiRuntime:
             shared_accessories: dict[tuple[str, str, str, str], Path] = {}
             for item in validated:
                 case_directory = destination / item["relative_directory"]
-                payload = self._load_portable_scene(case_directory)
+                payload = self._load_portable_scene(case_directory, check_bindings=True)
                 source = (case_directory / item["manifest"]["source"]).resolve()
                 metadata = item["metadata"]
                 project = item["project"]
@@ -872,6 +894,7 @@ class ApiRuntime:
                     },
                     "accessory_cads": accessory_cads,
                     "trace_cached": item["manifest"]["trace_cached"],
+                    "trace_binding_error": payload["metadata"].get("trace_binding_error"),
                 })
             self._commit_portable_cases(
                 portable_cases,
@@ -891,23 +914,39 @@ class ApiRuntime:
             "elapsed_sec": time.perf_counter() - started,
         }
 
-    def _portable_trace_loader(self, source: Path, viewer: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+    def _validated_portable_trace_loader(
+        self, source: Path, viewer: dict[str, Any], saved_settings: Any,
+    ) -> Callable[[], dict[str, Any]]:
         def face_binding_identity(mesh: dict[str, Any]) -> str:
             # Feature edges are viewer overlays and are not used to bind trace faces.
             return mesh_identity({key: value for key, value in mesh.items() if key != "feature_edge_segments"})
 
-        def load() -> dict[str, Any]:
-            rebuilt = self._scene_loader(str(source))
-            if face_binding_identity(rebuilt["mesh"]) != face_binding_identity(viewer):
-                raise ValueError(
-                    "Embedded CAD tessellation changed. Face bindings cannot be reused safely; "
-                    "re-import the model and review face assignments."
-                )
-            loader = rebuilt.get("_trace_mesh_loader")
-            return loader() if callable(loader) else rebuilt.get("_trace_mesh") or rebuilt["mesh"]
-        return load
+        started = time.perf_counter()
+        rebuilt = self._scene_loader(str(source))
+        mesh = rebuilt["mesh"]
+        saved_faces, rebuilt_faces = len(viewer["faces"]), len(mesh["faces"])
+        saved_hash, rebuilt_hash = face_binding_identity(viewer), face_binding_identity(mesh)
+        equivalent = saved_hash == rebuilt_hash or equivalent_face_bindings(viewer, mesh)
+        log_event("cad.portable_binding_check", source=source.name, saved_faces=saved_faces,
+                  rebuilt_faces=rebuilt_faces, saved_viewer_sha256=saved_hash,
+                  rebuilt_viewer_sha256=rebuilt_hash, equivalent=equivalent,
+                  saved_tessellation=saved_settings,
+                  rebuilt_tessellation=rebuilt.get("metadata", {}).get("step_tessellation"),
+                  elapsed_sec=time.perf_counter() - started)
+        if not equivalent:
+            raise ValueError(
+                "Embedded CAD tessellation changed. Face bindings cannot be reused safely "
+                f"(saved viewer triangles: {saved_faces:,}, rebuilt: {rebuilt_faces:,}). "
+                "Reopen a BITSAM with an embedded precision mesh, or re-import the CAD "
+                "and review face assignments before tracing."
+            )
+        loader = rebuilt.get("_trace_mesh_loader")
+        if callable(loader):
+            return loader
+        trace_mesh = rebuilt.get("_trace_mesh") or mesh
+        return lambda: trace_mesh
 
-    def _load_portable_scene(self, directory: Path) -> dict[str, Any]:
+    def _load_portable_scene(self, directory: Path, *, check_bindings: bool = False) -> dict[str, Any]:
         started = time.perf_counter()
         manifest = read_json(directory / "manifest.json")
         payload = read_scene_cache(directory / "scene.bin")
@@ -918,7 +957,25 @@ class ApiRuntime:
         if manifest["trace_cached"]:
             payload["_trace_mesh"] = read_scene_cache(directory / "trace.bin")["mesh"]
         else:
-            payload["_trace_mesh_loader"] = self._portable_trace_loader(source, payload["mesh"])
+            def validate():
+                return self._validated_portable_trace_loader(
+                    source, payload["mesh"], payload["metadata"].get("step_tessellation"),
+                )
+
+            if check_bindings:
+                try:
+                    payload["_trace_mesh_loader"] = validate()
+                except Exception as exc:
+                    detail = str(exc) or type(exc).__name__
+                    payload["metadata"]["trace_binding_error"] = detail
+                    log_event("cad.portable_binding_error", source=source.name, detail=detail)
+
+                    def reject():
+                        raise ValueError(detail)
+
+                    payload["_trace_mesh_loader"] = reject
+            else:
+                payload["_trace_mesh_loader"] = lambda: validate()()
         elapsed = time.perf_counter() - started
         payload["metadata"]["import_timings_sec"] = {"package_restore": elapsed, "scene_payload_total": elapsed}
         return payload
@@ -991,7 +1048,26 @@ class ApiRuntime:
             "resume_available": False,
             "resume_count": 0,
             "created_at": time.time(),
+            "_diagnostic_request_id": request_id.get(),
         }
+        config = request_payload.get("config")
+        if not isinstance(config, dict):
+            config = {}
+        observer = request_payload.get("observer_probe")
+        resume_scope = request_payload.get("resume_scope")
+        is_preview = isinstance(resume_scope, str) and resume_scope.startswith("preview:")
+        job_details = {
+            "mode": "preview" if is_preview else "forward",
+            "case_id": resume_scope.removeprefix("preview:") if isinstance(resume_scope, str) else None,
+            "input_fingerprint": fingerprint,
+            "rays": requested_ray_count,
+            "max_depth": config.get("max_depth"),
+            "compute_backend": config.get("compute_backend", "cpu"),
+            "intersection_backend": config.get("intersection_backend", "auto"),
+            "observer_measurement": observer.get("measurement") if isinstance(observer, dict) else None,
+            "observer_search_mode": observer.get("search_mode") if isinstance(observer, dict) else None,
+        }
+        log_event("ray.submit", job_id=job_id, **job_details)
         with self._state_lock:
             if any(j["status"] in {"queued", "running"} for j in self._sensor_comparison_jobs.values()):
                 raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
@@ -1016,7 +1092,8 @@ class ApiRuntime:
                     if key in old:
                         job[key] = old[key]
                 job.update(status="running",phase="tracing",phase_detail="중단 지점에서 이어 계산 중",
-                    resumed_from_job_id=old_id,resume_count=resume.resume_count+1)
+                    resumed_from_job_id=old_id,resume_count=resume.resume_count+1,
+                    _diagnostic_trace_baseline_sec=old.get("trace_elapsed_sec"))
                 old.update(resume_available=False,resumed_by_job_id=job_id)
                 self._raytrace_sessions.pop(old_id)
                 resume.job_id = job_id
@@ -1027,6 +1104,8 @@ class ApiRuntime:
                 resume.wake.set()
                 self._prune_raytrace_jobs_locked()
                 print(f"[RAY] job resume | {old_id[:8]} -> {job_id[:8]} | processed={job['processed_rays']}/{job['total_rays']}", flush=True)
+                log_event("ray.resume", job_id=job_id, resumed_from_job_id=old_id,
+                          processed_rays=job["processed_rays"], total_rays=job["total_rays"])
                 return dict(job)
             superseded_job_count = 0
             for existing_job in self._raytrace_jobs.values():
@@ -1043,9 +1122,6 @@ class ApiRuntime:
                 self._raytrace_sessions[job_id] = session
             self._prune_raytrace_jobs_locked()
 
-        config = request_payload.get("config")
-        if not isinstance(config, dict):
-            config = {}
         print(
             "[RAY] job start | {} | rays={} depth={} backend={} | stopped_previous={}".format(
                 job_id[:8],
@@ -1058,8 +1134,8 @@ class ApiRuntime:
         )
 
         worker = threading.Thread(
-            target=self._run_raytrace_job,
-            args=(job_id, scene_mesh, request_payload, session, tuple(predecessors)),
+            target=copy_context().run,
+            args=(self._run_raytrace_job, job_id, scene_mesh, request_payload, session, tuple(predecessors)),
             daemon=True,
             name="raytrace-{}".format(job_id[:8]),
         )
@@ -1092,13 +1168,25 @@ class ApiRuntime:
         with self._state_lock:
             if any(j["status"] in {"queued", "running"} for j in self._sensor_comparison_jobs.values()):
                 raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
+        started = time.perf_counter()
         validate_bsdf_request(request_payload)
         scene_mesh = self._scene_mesh_for_request(request_payload)
         trace_input = self._build_trace_input_for_request(
             scene_mesh,
             request_payload,
+            report_timing=lambda stage, seconds: log_event(
+                "ray.geometry_stage", stage=stage, elapsed_sec=seconds, **_process_memory_snapshot()
+            ),
         )
-        return self._trace_runner(trace_input).to_dict()
+        trace_started = time.perf_counter()
+        result = self._trace_runner(trace_input)
+        post_started = time.perf_counter()
+        payload = result.to_dict()
+        finished = time.perf_counter()
+        log_event("ray.direct_end", prep_sec=trace_started - started,
+                  trace_sec=post_started - trace_started, post_sec=finished - post_started,
+                  total_sec=finished - started, **_trace_diagnostics(payload))
+        return payload
 
     def start_sensor_comparison(self, payload):
         from leakage_simulator.sensor_comparison import ComparisonOptions, run_sensor_comparison
@@ -1127,10 +1215,21 @@ class ApiRuntime:
                     batch*3+phase_index+done/max(1, total))/(options.batches*3)
                 job.update(batch=batch+1, phase=phase, progress=max(job["progress"], min(.99, fraction)))
         def worker():
+            started = time.perf_counter()
+            prep_sec = None
+            report = None
+            log_event("sensor.start", job_id=job_id, input_fingerprint=job["input_request_sha256"])
             try:
                 with self._state_lock:
                     job["status"] = "running"
-                trace = self._build_trace_input_for_request(scene, request, should_stop=stopped)
+                trace = self._build_trace_input_for_request(
+                    scene, request, should_stop=stopped,
+                    report_timing=lambda stage, seconds: log_event(
+                        "ray.geometry_stage", job_id=job_id, stage=stage, elapsed_sec=seconds,
+                        **_process_memory_snapshot(),
+                    ),
+                )
+                prep_sec = time.perf_counter() - started
                 report = run_sensor_comparison(trace, options, stopped, progress)
                 report.update(input_request=job['input_request'],input_request_sha256=job['input_request_sha256'])
                 with self._state_lock:
@@ -1144,7 +1243,15 @@ class ApiRuntime:
                 traceback.print_exc()
                 with self._state_lock:
                     job.update(status="failed", phase="finished", error=str(exc))
-        threading.Thread(target=worker, daemon=True, name="sensor-comparison").start()
+            finally:
+                summary = report or {}
+                log_event("sensor.end", job_id=job_id, status=job["status"], error=job["error"],
+                          reason=summary.get("reason"), prep_sec=prep_sec, trace_sec=summary.get("runtime_sec"),
+                          total_sec=time.perf_counter() - started,
+                          compute_execution_state=summary.get("compute_execution_state"),
+                          failed_execution=summary.get("failed_execution"))
+        threading.Thread(target=copy_context().run, args=(worker,),
+                         daemon=True, name="sensor-comparison").start()
         return self.sensor_comparison_status(job_id)
 
     def sensor_comparison_status(self, job_id=None, stop=False):
@@ -1442,12 +1549,16 @@ class ApiRuntime:
         if cache_hit:
             phase("기존 Trace Mesh 및 BVH 불러오는 중")
         phase("Emitter 및 Receiver 계산 입력 구성 중")
-        return build_direct_trace_input(
+        started = time.perf_counter()
+        trace_input = build_direct_trace_input(
             scene_mesh,
             request_payload,
             prepared_geometry=prepared,
             geometry_cache_hit=cache_hit,
         )
+        if report_timing is not None:
+            report_timing("emitter_receiver_input", time.perf_counter() - started)
+        return trace_input
 
     @staticmethod
     def _resolve_deferred_trace_mesh(
@@ -1612,35 +1723,35 @@ class ApiRuntime:
                 if job.get("status") in {"completed", "cancelled", "failed"} and previous_status != job.get("status"):
                     terminal = dict(job)
         if terminal is not None:
-            metrics = (terminal.get("result") or {}).get("metrics") or {}
-            performance = metrics.get("_performance_summary") or {}
-            observer = (metrics.get("_observer_probe_summary") or {}).get("performance") or {}
-            compute_fields = (
-                "compute_execution_state", "compute_execution_reason",
-                "gpu_cuda_gpu_attempt_count", "gpu_cuda_gpu_success_count",
-                "gpu_cuda_hybrid_cpu_success_count", "intersection_fallback_count",
-                "intersection_fallback_reason", "gpu_resident_wavefront_fallback_count",
-                "gpu_resident_wavefront_fallback_reason", "wavefront_residency",
-                "observer_transport_contract", "gpu_cuda_device_name",
-                "gpu_cuda_scene_upload_sec", "gpu_resident_wavefront_bindings_upload_sec",
-                "gpu_resident_wavefront_jit_compile_sec", "native_jit_compile_sec",
-                "gpu_resident_workspace_peak_bytes",
-            )
+            trace_sec = terminal.get("trace_elapsed_sec")
+            baseline = terminal.get("_diagnostic_trace_baseline_sec")
             diagnostics = {
                 "prep_sec": terminal.get("preparation_elapsed_sec"),
-                "trace_sec": terminal.get("trace_elapsed_sec"),
+                "trace_sec": trace_sec,
+                "trace_segment_sec": max(0., trace_sec - (baseline or 0.)) if trace_sec is not None else None,
                 "post_sec": terminal.get("post_elapsed_sec"),
                 "total_sec": max(0., time.time() - terminal["created_at"]) if "created_at" in terminal else None,
                 "resumed_from_job_id": terminal.get("resumed_from_job_id"),
                 **_process_memory_snapshot(),
-                "compute": {key: performance[key] for key in compute_fields if key in performance},
-                "observer_compute": {key: observer[key] for key in compute_fields if key in observer},
+                "geometry_cache_hit": terminal.get("geometry_cache_hit"),
+                **_trace_diagnostics(terminal.get("result") or {}),
             }
+            log_event("ray.end", job_id=job_id, request_id=terminal.get("_diagnostic_request_id"),
+                      status=terminal.get("status"), phase=terminal.get("phase"),
+                      processed_rays=terminal.get("processed_rays"), total_rays=terminal.get("total_rays"),
+                      stopped_early=terminal.get("stopped_early"), error=terminal.get("error"),
+                      trace_timing_scope="cumulative_active" if terminal.get("resumed_from_job_id") else "job",
+                      **diagnostics)
             print("[RAY] job end | {} | status={} phase={} | processed={}/{} progress={:.1%} | stop_requested={} | {} | diagnostics={}".format(
                 job_id, terminal.get("status"), terminal.get("phase"),
                 terminal.get("processed_rays", 0), terminal.get("total_rays", 0), terminal.get("progress", 0),
                 terminal.get("stop_requested", False), terminal.get("error") or terminal.get("phase_detail", ""),
-                json.dumps(diagnostics, separators=(",", ":"))), flush=True)
+                json.dumps({
+                    **{key: diagnostics[key] for key in ("prep_sec", "trace_sec", "post_sec", "total_sec")},
+                    **{section: {key: diagnostics[section][key] for key in (
+                        "compute_execution_state", "gpu_cuda_gpu_success_count",
+                    ) if key in diagnostics[section]} for section in ("compute", "observer_compute")},
+                }, separators=(",", ":"))), flush=True)
 
     def _run_raytrace_job(
         self,
@@ -1665,8 +1776,14 @@ class ApiRuntime:
             }
 
         def report_geometry_timing(stage: str, seconds: float) -> None:
-            memory = json.dumps(_process_memory_snapshot(), separators=(",", ":"))
+            snapshot = _process_memory_snapshot()
+            log_event("ray.geometry_stage", job_id=job_id, stage=stage, elapsed_sec=seconds, **snapshot)
+            memory = json.dumps(snapshot, separators=(",", ":"))
             print(f"[RAY] geometry stage | {job_id} | stage={stage} | {seconds:.3f}s | memory={memory}", flush=True)
+
+        def report_phase(phase: str) -> None:
+            log_event("ray.phase", job_id=session.job_id if session else job_id,
+                      phase=phase, **_process_memory_snapshot())
 
         try:
             def should_stop() -> bool:
@@ -1681,6 +1798,7 @@ class ApiRuntime:
                         raise InterruptedError("Superseded while waiting for previous worker")
 
             preparation_started_at = time.perf_counter()
+            report_phase("preparing")
             def report_preparation_phase(detail: str) -> None:
                 update_job(
                     status="running",
@@ -1719,6 +1837,7 @@ class ApiRuntime:
                 if emitter.enabled
             )
             trace_started_at = time.perf_counter()
+            report_phase("tracing")
 
             def annotate_preparation(payload):
                 metrics = payload.setdefault("metrics", {})
@@ -1834,6 +1953,7 @@ class ApiRuntime:
                 runner_options["pause_callback"] = pause_worker
             result = self._trace_runner(trace_input, **runner_options)
             post_started = time.perf_counter()
+            report_phase("serializing")
             trace_elapsed_sec = post_started - trace_started_at
             if session is not None and session.cancelled:
                 return
