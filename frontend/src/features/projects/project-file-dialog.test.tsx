@@ -14,7 +14,10 @@ const saved: ProjectFileNotice = {
   downloadStarted: false,
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderNotice(notice: ProjectFileNotice = saved) {
   const onClose = vi.fn()
@@ -68,6 +71,25 @@ describe('ProjectFileDialog', () => {
     renderNotice({ ...saved, includesCad: false })
     expect(screen.queryByText('원본 CAD 및 모델 형상')).toBeNull()
     expect(screen.getByText('원본 CAD 파일은 별도로 보관해 주세요.')).not.toBeNull()
+  })
+
+  it('shows the missing trace warning and keeps its details behind keyboard-accessible help', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    const onClose = renderNotice({ ...saved, traceWarnings: [{
+      message: '정밀 해석 형상이 빠진 상태로 저장했습니다.',
+      detail: '원본 CAD와 결과는 보존됩니다.',
+    }] })
+    expect(screen.getByText('정밀 해석 형상이 빠진 상태로 저장했습니다.')).not.toBeNull()
+    expect(screen.queryByText('원본 CAD와 결과는 보존됩니다.')).toBeNull()
+    const help = screen.getByRole('button', { name: '정밀 해석 형상 도움말' })
+    help.focus()
+    expect((await screen.findByRole('tooltip')).textContent).toBe('원본 CAD와 결과는 보존됩니다.')
+    fireEvent.keyDown(help, { key: 'Enter' })
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('distinguishes download handoff from confirmed file writes', () => {

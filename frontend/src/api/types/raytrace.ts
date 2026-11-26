@@ -339,6 +339,7 @@ interface RayTraceJobProgress {
   resume_available?: boolean
   resume_count?: number
   resumed_from_job_id?: string
+  result_reused_from_job_id?: string
   resume_unavailable_reason?: string
   job_id: string
   processed_rays: number

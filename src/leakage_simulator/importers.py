@@ -907,6 +907,7 @@ def _import_step_ocp(
             "OCP viewer tessellation",
             "components={}".format(len(component_parts)),
         )
+        # Use serial meshing so STEP restores do not depend on worker scheduling.
         for component_shape, _name, _color in component_parts:
             try:
                 BRepMesh_IncrementalMesh(
@@ -914,7 +915,7 @@ def _import_step_ocp(
                     VIEWER_LINEAR_DEFLECTION_MM,
                     False,
                     VIEWER_ANGULAR_DEFLECTION_RAD,
-                    True,
+                    False,
                 ).Perform()
             except Exception:
                 pass
@@ -949,7 +950,7 @@ def _import_step_ocp(
             VIEWER_LINEAR_DEFLECTION_MM,
             False,
             VIEWER_ANGULAR_DEFLECTION_RAD,
-            True,
+            False,
         )
         try:
             mesh_builder.Perform()
@@ -1103,7 +1104,7 @@ def _import_step_ocp(
                     TRACE_LINEAR_DEFLECTION_MM,
                     False,
                     TRACE_ANGULAR_DEFLECTION_RAD,
-                    True,
+                    False,
                 ).Perform()
             except Exception:
                 pass

@@ -288,7 +288,7 @@ export async function savePortableWorkspace(
   onProgress: (message: string) => void,
   client: PortableWorkspaceExportClient = portableClient,
   destination?: PackageSaveTarget,
-): Promise<{ cancelled: boolean; downloaded?: boolean; caseCount?: number }> {
+): Promise<{ cancelled: boolean; downloaded?: boolean; caseCount?: number; traceCached?: boolean }> {
   if (cases.length === 0) {
     throw new BitsamProjectError('저장할 Case가 없습니다.')
   }
@@ -304,6 +304,7 @@ export async function savePortableWorkspace(
   return {
     ...saved,
     caseCount: prepared.case_count ?? cases.length,
+    traceCached: prepared.trace_cached,
   }
 }
 

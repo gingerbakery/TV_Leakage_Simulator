@@ -81,7 +81,7 @@ export function rayTraceJobQueryOptions(
     queryKey: apiQueryKeys.rayTraceJob(jobId),
     queryFn: ({ signal }) => client.getRayTraceJob(jobId, { signal }),
     enabled: jobId.trim().length > 0,
-    staleTime: 0,
+    staleTime: (query) => query.state.data?.result_reused_from_job_id ? Infinity : 0,
     refetchInterval: (query) =>
       getRayTracePollingInterval(query.state.data),
     refetchIntervalInBackground: true,

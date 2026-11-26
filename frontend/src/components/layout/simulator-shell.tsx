@@ -116,6 +116,23 @@ const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 384
 const WORKFLOW_SIDEBAR_WIDE_WIDTH = 464
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 560
 
+const omittedTraceWarning = {
+  message: '정밀 해석 형상이 빠진 상태로 저장했습니다.',
+  detail: '원본 CAD, 표시 형상, 해석 설정 및 기존 결과는 보존됩니다. 다시 해석하려면 CAD를 다시 가져온 뒤 면 할당을 확인하세요.',
+}
+
+function traceBindingWarning(error: string, caseName?: string) {
+  const message = error.startsWith('CAD 재읽기 중 메시가')
+    ? error
+    : '정밀 해석 형상을 준비하지 못했습니다. CAD를 다시 가져온 뒤 면 할당을 확인하세요.'
+  return {
+    message: caseName ? `${caseName} · ${message}` : message,
+    detail: message === error
+      ? '저장된 표시 형상과 재생성된 메시의 면 연결을 안전하게 확인하지 못했습니다. 기존 결과를 열거나 프로젝트를 다시 저장할 수 있습니다. 비교 값은 서버 로그의 cad.portable_binding_check에서 확인할 수 있습니다.'
+      : error,
+  }
+}
+
 function workflowSidebarMaxWidth(viewportWidth = window.innerWidth) {
   if (viewportWidth < 1024) return WORKFLOW_SIDEBAR_MAX_WIDTH
   return Math.max(
@@ -735,6 +752,7 @@ export function SimulatorShell() {
         includesResult: cases.some((item) => !!(item.project.analysis_result || item.project.preview_result)),
         downloadStarted: !!saved.downloaded,
         caseCount: saved.caseCount ?? cases.length,
+        traceWarnings: saved.traceCached === false ? [omittedTraceWarning] : undefined,
       })
     }
   }
@@ -782,6 +800,7 @@ export function SimulatorShell() {
           includesCad: true,
           includesResult: !!(project.analysis_result || project.preview_result),
           downloadStarted: !!saved.downloaded,
+          traceWarnings: saved.traceCached === false ? [omittedTraceWarning] : undefined,
         })
         return
       }
@@ -911,10 +930,9 @@ export function SimulatorShell() {
         (item) => !!(item.project.analysis_result || item.project.preview_result),
       ),
       caseCount: restored.cases.length,
+      traceWarnings: restored.cases.flatMap((item) => item.traceBindingError
+        ? [traceBindingWarning(item.traceBindingError, item.name || item.cad.displayName)] : []),
       notes: [
-        ...restored.cases.filter((item) => item.traceBindingError).map(
-          (item) => `${item.name || item.cad.displayName} · 재해석하려면 CAD를 다시 가져오고 면 할당을 확인하세요.`,
-        ),
         ...(restored.cases.some((item) => !item.traceCached && !item.traceBindingError)
           ? ['일부 Case의 정밀 해석 형상은 첫 해석 시 준비합니다.'] : []),
       ],
@@ -969,11 +987,8 @@ export function SimulatorShell() {
       fileName: file.name,
       includesCad: true,
       includesResult: !!(restored.project.analysis_result || restored.project.preview_result),
-      notes: restored.traceBindingError
-        ? ['재해석하려면 CAD를 다시 가져오고 면 할당을 확인하세요.']
-        : restored.traceCached
-        ? []
-        : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
+      traceWarnings: restored.traceBindingError ? [traceBindingWarning(restored.traceBindingError)] : undefined,
+      notes: restored.traceBindingError || restored.traceCached ? [] : ['정밀 해석 형상은 첫 해석 시 준비합니다.'],
     })
   }
 

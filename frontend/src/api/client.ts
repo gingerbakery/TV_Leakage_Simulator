@@ -102,7 +102,7 @@ export interface LeakageApiClient {
   }>
   importBsdf(files: { name: string; text: string }[], options?: ApiRequestOptions): Promise<BsdfAsset>
   getScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<ScenePayload>
-  refreshScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[]): Promise<SceneRefreshResponse>
+  refreshScene(cadPath: string, options?: ApiRequestOptions, accessoryPaths?: string[], viewerBinding?: string): Promise<SceneRefreshResponse>
   getSectionCap(
     request: SectionCapRequest,
     options?: ApiRequestOptions,
@@ -176,12 +176,13 @@ export function createApiClient(
       }
     },
 
-    refreshScene(cadPath, requestOptions, accessoryPaths = []) {
+    refreshScene(cadPath, requestOptions, accessoryPaths = [], viewerBinding) {
       return http.requestJson<SceneRefreshResponse>('/api/scene/refresh', {
         method: 'POST',
         json: {
           cad: cadPath,
           ...(accessoryPaths.length > 0 ? { aux: accessoryPaths } : {}),
+          ...(viewerBinding !== undefined ? { viewer_binding: viewerBinding } : {}),
         },
         signal: requestOptions?.signal,
       })

@@ -7,8 +7,9 @@ import re
 import sys
 import zipfile
 from array import array
+from collections import Counter
 from collections.abc import Sequence
-from itertools import repeat
+from itertools import product, repeat
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -152,51 +153,149 @@ def mesh_identity(mesh: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
-def equivalent_face_bindings(saved: dict[str, Any], rebuilt: dict[str, Any]) -> bool:
-    """Compare exact oriented triangles and binding labels, independent of row order."""
+def compare_face_bindings(
+    saved: dict[str, Any], rebuilt: dict[str, Any], *, identical: bool = False,
+) -> dict[str, Any]:
+    """Require an unambiguous vertex match and exact oriented triangles and labels."""
     import numpy as np
 
     fields = ("face_source_ids", "face_component_ids", "face_material_ids")
-    count = len(saved["faces"])
-    if (
-        not count
-        or count != len(rebuilt["faces"])
-        or len(saved["vertices"]) != len(rebuilt["vertices"])
-        or any(len(mesh.get(field, ())) != count for mesh in (saved, rebuilt) for field in fields)
+    counts = (len(saved["vertices"]), len(rebuilt["vertices"]))
+    report = {
+        "equivalent": identical,
+        "mismatch_reasons": [],
+        "saved_vertices": counts[0],
+        "rebuilt_vertices": counts[1],
+        "coordinate_tolerance": None,
+        "max_coordinate_delta": 0.0 if identical else None,
+        "max_sorted_coordinate_delta": 0.0 if identical else None,
+        "triangle_topology_diff_count": 0 if identical else None,
+        **{f"{field}_diff_count": 0 if identical else None for field in fields},
+    }
+    if identical:
+        return report
+
+    def reject(*reasons):
+        report["mismatch_reasons"].extend(reasons)
+        return report
+
+    if counts[0] != counts[1]:
+        return reject("vertex_count")
+    if not counts[0]:
+        return reject("empty_vertices")
+    meshes = (saved, rebuilt)
+    vertices = [np.asarray(mesh["vertices"], dtype=np.float64) for mesh in meshes]
+    if not all(np.isfinite(points).all() for points in vertices):
+        return reject("invalid_coordinates")
+    (left, left_inverse, left_counts), (right, right_inverse, right_counts) = [
+        np.unique(points, axis=0, return_inverse=True, return_counts=True)
+        for points in vertices
+    ]
+    if len(left) != len(right):
+        return reject("unique_vertex_count")
+    # Diagnostic only. Lexicographic ranks can change after a small shift.
+    sorted_delta = float(np.max(np.abs(right - left)))
+    if math.isfinite(sorted_delta):
+        report["max_sorted_coordinate_delta"] = sorted_delta
+    origin = left.min(axis=0)
+    tolerance = math.hypot(*(left.max(axis=0) - origin)) * 1e-9
+    if not math.isfinite(tolerance):
+        return reject("invalid_coordinates")
+    report["coordinate_tolerance"] = tolerance
+    left_to_right = np.arange(len(left))
+    if sorted_delta != 0:
+        if not tolerance:
+            return reject("coordinate_delta")
+        # Use a spatial grid so almost equal points can match across any sort
+        # or cell boundary. Reject ambiguous correspondences instead of guessing.
+        cells: dict[tuple[int, ...], list[int]] = {}
+        for index, cell in enumerate(np.floor((right - origin) / tolerance)):
+            if not np.isfinite(cell).all():
+                return reject("coordinate_delta")
+            cells.setdefault(tuple(map(int, cell)), []).append(index)
+        offsets = tuple(product((-1, 0, 1), repeat=3))
+        for index, cell in enumerate(np.floor((left - origin) / tolerance).astype(np.int64)):
+            x, y, z = map(int, cell)
+            candidates = [
+                candidate
+                for dx, dy, dz in offsets
+                for candidate in cells.get((x + dx, y + dy, z + dz), ())
+            ]
+            deltas = right[candidates] - left[index]
+            matches = np.flatnonzero(np.linalg.norm(deltas, axis=1) <= tolerance)
+            if not len(matches):
+                return reject("coordinate_delta")
+            if len(matches) > 1:
+                return reject("ambiguous_vertex_match")
+            left_to_right[index] = candidates[matches[0]]
+        if len(np.unique(left_to_right)) != len(left):
+            return reject("non_bijective_vertex_match")
+    report["max_coordinate_delta"] = float(np.max(np.abs(right[left_to_right] - left)))
+    if not np.array_equal(left_counts, right_counts[left_to_right]):
+        return reject("vertex_multiplicity")
+
+    right_to_left = np.empty_like(left_to_right)
+    right_to_left[left_to_right] = np.arange(len(left))
+    vertex_indices = (left_inverse, right_to_left[right_inverse])
+    if len(left) != counts[0]:
+        # Coincident vertices can still have distinct connectivity. Only use
+        # row identity when the coordinate groups retain the same row order.
+        if not np.array_equal(*vertex_indices):
+            return reject("ambiguous_coincident_vertices")
+        vertex_indices = (np.arange(counts[0]),) * 2
+    topology = []
+    for mesh, indices in zip(meshes, vertex_indices):
+        faces = np.asarray(mesh["faces"], dtype=np.int64).reshape(-1, 3)
+        if np.any(faces < 0) or np.any(faces >= len(indices)):
+            return reject("invalid_triangle_indices")
+        triangles = indices[faces]
+        # Canonical cyclic rotation preserves winding, including repeated indices.
+        rotations = np.stack((triangles, np.roll(triangles, 1, axis=1), np.roll(triangles, 2, axis=1)))
+        order = np.lexsort(tuple(rotations[:, :, i] for i in (2, 1, 0)), axis=0)
+        topology.append(rotations[order[0], np.arange(len(faces))])
+
+    count = [len(rows) for rows in topology]
+    order = [np.lexsort(rows.T[::-1]) for rows in topology]
+    if np.array_equal(topology[0][order[0]], topology[1][order[1]]):
+        common_triangles = count[0]
+    else:
+        common_triangles = sum((Counter(map(tuple, topology[0])) & Counter(map(tuple, topology[1]))).values())
+    report["triangle_topology_diff_count"] = max(count) - common_triangles
+    if report["triangle_topology_diff_count"]:
+        reject("triangle_topology")
+
+    # Count label changes among common oriented triangles. Check the full
+    # label tuple too, since duplicate triangles may swap individual labels.
+    if any(len(mesh.get(field, ())) != count[i] for i, mesh in enumerate(meshes) for field in fields):
+        return reject("binding_label_count")
+    if common_triangles == count[0] == count[1] and all(
+        np.array_equal(np.asarray(saved[field], dtype=object)[order[0]],
+                       np.asarray(rebuilt[field], dtype=object)[order[1]])
+        for field in fields
     ):
-        return False
+        for field in fields:
+            report[f"{field}_diff_count"] = 0
+    else:
+        def matched_label_count(selected_fields):
+            rows = [
+                Counter(zip(map(tuple, triangles), *(mesh[field] for field in selected_fields)))
+                for triangles, mesh in zip(topology, meshes)
+            ]
+            return sum((rows[0] & rows[1]).values())
 
-    materials: dict[str, int] = {}
+        for field in fields:
+            differences = common_triangles - matched_label_count((field,))
+            report[f"{field}_diff_count"] = differences
+            if differences:
+                reject(field)
+        if common_triangles != matched_label_count(fields) and not any(report[f"{field}_diff_count"] for field in fields):
+            reject("binding_label_combination")
+    report["equivalent"] = not report["mismatch_reasons"] and bool(common_triangles)
+    return report
 
-    def ordered_triangles(mesh):
-        vertices = np.array(mesh["vertices"], dtype=np.float64)
-        if not np.isfinite(vertices).all():
-            return None
-        unique, vertex_ids = np.unique(vertices, axis=0, return_inverse=True)
-        faces = np.array(mesh["faces"], dtype=np.int64)
-        if np.any(faces < 0) or np.any(faces >= len(vertices)):
-            return None
-        triangles = vertex_ids[faces]
-        # Select the smallest cyclic rotation. Reversing winding stays distinguishable.
-        a, b, c = triangles.T
-        use_b = (b < a) & (b <= c)
-        use_c = (c <= a) & (c < b)
-        rows = np.empty((6, count), dtype=np.int64)
-        rows[0] = np.where(use_b, b, np.where(use_c, c, a))
-        rows[1] = np.where(use_b, c, np.where(use_c, a, b))
-        rows[2] = np.where(use_b, a, np.where(use_c, b, c))
-        rows[3] = mesh["face_source_ids"]
-        rows[4] = np.fromiter((-1 if value is None else value for value in mesh["face_component_ids"]),
-                              dtype=np.int64, count=count)
-        rows[5] = np.fromiter((materials.setdefault(value, len(materials)) for value in mesh["face_material_ids"]),
-                              dtype=np.int64, count=count)
-        return unique, rows, np.lexsort(rows[::-1])
 
-    left = ordered_triangles(saved)
-    right = ordered_triangles(rebuilt)
-    if left is None or right is None or not np.array_equal(left[0], right[0]):
-        return False
-    return all(np.array_equal(a[left[2]], b[right[2]]) for a, b in zip(left[1], right[1]))
+def equivalent_face_bindings(saved: dict[str, Any], rebuilt: dict[str, Any]) -> bool:
+    return compare_face_bindings(saved, rebuilt)["equivalent"]
 
 
 def _javascript_number(value: float | int) -> str:
@@ -379,6 +478,9 @@ def write_package(
         portable_scene = dict(scene)
         metadata = dict(scene["metadata"])
         metadata.pop("scene_token", None)
+        metadata.pop("trace_binding_error", None)
+        if trace_mesh is None:
+            metadata.pop("trace_step_tessellation", None)
         metadata["source_file"] = source_entry
         portable_scene["metadata"] = metadata
         manifest, blocks = prepare_scene_binary(portable_scene, coordinate_dtype="float64")

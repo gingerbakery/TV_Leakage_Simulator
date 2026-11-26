@@ -478,7 +478,9 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
         if (!cacheExpired || !activeCad?.path) throw error
         setMessage('CAD Scene 캐시를 자동 복구하고 있습니다.')
         const accessoryPaths = scene.metadata.source_files?.slice(1) ?? []
-        const refreshed = await apiClient.refreshScene(activeCad.path, undefined, accessoryPaths)
+        const refreshed = await apiClient.refreshScene(
+          activeCad.path, undefined, accessoryPaths, scene.metadata.viewer_binding ?? '',
+        )
         const refreshedScene: ScenePayload = {
           ...scene,
           metadata: {
@@ -1105,6 +1107,11 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
           </Button>
         )}
         {canResumePreview && !isRunning ? <div className="flex items-center gap-2 text-xs"><span>중단 지점 보관</span><HelpTooltip label="Preview 이어 실행 도움말">같은 입력이면 광원 추적 결과와 관찰 휘도 역추적의 각도·셀·집계 전 Ray 상태를 유지해 이어갑니다. 변경된 입력으로 실행하거나 다른 해석 시작, 서버 종료, 작업 이력 정리 시 보관 상태는 해제됩니다. 보관 중에는 계산 메모리를 유지합니다. 경로 탐색 모드는 대상이 아닙니다.</HelpTooltip><Button size="sm" variant="outline" onClick={() => void runPreview(true)}>Preview 처음부터</Button></div> : null}
+        {!canResumePreview && !isRunning && previewResult ? <div className="flex items-center gap-2 text-xs">
+          {job?.result_reused_from_job_id ? <span>완료 결과 재사용</span> : null}
+          <Button size="sm" variant="outline" disabled={!hasPreviewSource || (detectionMode === 'escape_directions' && observer.enabled && observerPlan.error !== null)} onClick={() => void runPreview(true)}>다시 계산</Button>
+          <HelpTooltip label="Preview 다시 계산 도움말">같은 입력이면 완료 결과를 불러옵니다. 다시 계산을 선택하면 Preview 계산을 새로 실행합니다.</HelpTooltip>
+        </div> : null}
         {queryError ? <div className="space-y-1 text-xs text-destructive"><div>{queryError}</div><Button size="sm" variant="outline" onClick={() => void jobQuery.refetch()}>상태 다시 조회</Button></div> : null}
         <div className="flex items-center justify-between rounded-md border border-amber-300/70 bg-amber-50/60 px-2.5 py-2 dark:border-amber-700/60 dark:bg-amber-950/20">
           <span className="text-xs font-semibold">Leak Visualization</span>

@@ -234,6 +234,9 @@ def create_app(
         try:
             refreshed = api_runtime.load_composite_scene([cad_path, *auxiliary_paths])
             metadata = refreshed.get("metadata") or {}
+            expected_binding = payload.get("viewer_binding")
+            if expected_binding is not None and expected_binding != metadata.get("viewer_binding"):
+                raise ValueError("CAD 메시가 변경되었습니다. 도면을 다시 열고 광원 면과 면 할당을 확인하세요.")
             scene_token = str(metadata.get("scene_token") or "")
             if not scene_token:
                 raise ValueError("CAD scene refresh returned no scene token")

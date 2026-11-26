@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 
 from leakage_simulator.api import ApiRuntime, create_app
+from leakage_simulator.api.runtime import PortableFaceBindingError
 from leakage_simulator.bitsam_package import (
     package_expanded_size,
     read_scene_cache,
@@ -165,6 +166,27 @@ class BitsamWorkspacePackageTests(unittest.TestCase):
         self.assertEqual(exported["case_count"], 2)
         path, _ = self.runtime.project_export_file(exported["download_url"].split("/")[-1])
         return path
+
+    def test_workspace_recovers_an_accessory_case_without_its_trace_mesh(self) -> None:
+        with patch.object(
+            self.runtime, "_resolve_deferred_trace_mesh",
+            side_effect=[scene_fixture(self.first_path)["mesh"], PortableFaceBindingError()],
+        ):
+            package = self.exported_path()
+        loader = Mock(side_effect=AssertionError("Composite restore must not rebuild the primary CAD alone"))
+        runtime = ApiRuntime(self.root / "recovery", scene_loader=loader)
+        restored = runtime.import_project(package)
+        case = restored["cases"][1]
+        self.assertFalse(case["trace_cached"])
+        self.assertIn("면 할당을 확인하세요", case["trace_binding_error"])
+        self.assertEqual(case["project"], self.request["cases"][1]["project"])
+        payload = runtime.load_composite_scene([
+            case["cad"]["path"], case["accessory_cads"][0]["cad"]["path"],
+        ])
+        self.assertEqual(payload["metadata"]["component_count"], 2)
+        with self.assertRaises(PortableFaceBindingError):
+            runtime._resolve_deferred_trace_mesh(runtime._scene_mesh_cache[payload["metadata"]["scene_token"]])
+        loader.assert_not_called()
 
     def test_workspace_preserves_separate_preview_evidence_for_every_case(self) -> None:
         for index, item in enumerate(self.request["cases"]):

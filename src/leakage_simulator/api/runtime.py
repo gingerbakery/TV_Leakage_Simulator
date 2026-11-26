@@ -36,7 +36,7 @@ from leakage_simulator.bitsam_package import (
     PACKAGE_SCHEMA,
     WORKSPACE_FORMAT,
     WORKSPACE_SCHEMA,
-    equivalent_face_bindings,
+    compare_face_bindings,
     extract_package,
     extract_workspace_package,
     mesh_identity,
@@ -103,15 +103,19 @@ class _TraceGeometryBuildState:
 
 class _RayTraceSession:
     """One live worker, retained at a committed primary boundary, never pickled."""
-    def __init__(self, job_id: str, fingerprint: str, predecessors=()):
+    def __init__(self, job_id: str, fingerprint: str, finished: threading.Event):
         self.job_id = job_id
         self.fingerprint = fingerprint
+        self.finished = finished
         self.wake = threading.Event()
-        self.finished = threading.Event()
         self.paused = False
         self.cancelled = False
         self.resume_count = 0
-        self.predecessors = tuple(predecessors)
+
+
+class PortableFaceBindingError(ValueError):
+    def __init__(self) -> None:
+        super().__init__("CAD 재읽기 중 메시가 미세하게 달라졌습니다(도면 문제 아님) 다시 가져온 뒤 면 할당을 확인하세요")
 
 
 class ApiRuntime:
@@ -152,6 +156,7 @@ class ApiRuntime:
         self._trace_geometry_builds: dict[str, _TraceGeometryBuildState] = {}
         self._scene_loads: dict[str, _SceneLoadState] = {}
         self._raytrace_jobs: dict[str, dict[str, Any]] = {}
+        self._raytrace_workers: dict[str, threading.Event] = {}
         self._sensor_comparison_jobs: dict[str, dict[str, Any]] = {}
         self._raytrace_sessions: dict[str, _RayTraceSession] = {}
         try:
@@ -169,7 +174,9 @@ class ApiRuntime:
         started = time.perf_counter()
         cache_key = self._scene_cache_key(cad_path)
         with self._state_lock:
-            payload = self._scene_payload_cache.get(cache_key)
+            payload = self._scene_payload_cache.pop(cache_key, None)
+            if payload is not None:
+                self._scene_payload_cache[cache_key] = payload
             payload_was_cached = payload is not None
             load_state = self._scene_loads.get(cache_key)
             is_loader = payload is None and load_state is None
@@ -363,6 +370,8 @@ class ApiRuntime:
         token: str,
         project: dict[str, Any],
         destination: Path,
+        *,
+        include_trace_mesh: bool = True,
     ) -> dict[str, Any]:
         if not isinstance(project, dict):
             raise ValueError("BITSAM project settings are required")
@@ -373,13 +382,25 @@ class ApiRuntime:
             raise ValueError("CAD scene cache expired. Reload the CAD before saving BITSAM.")
         payload, source = record
         self._validate_project_fingerprint(project, payload)
-        cached_trace = self._resolve_deferred_trace_mesh(trace)
+        cached_trace = None
+        trace_omission_reason = None
+        if include_trace_mesh:
+            try:
+                cached_trace = self._resolve_deferred_trace_mesh(trace)
+            except PortableFaceBindingError:
+                trace_omission_reason = "face_binding_mismatch"
+        else:
+            trace_omission_reason = "disabled"
         manifest = write_package(destination, project, source, payload, cached_trace)
         log_event("cad.portable_saved", source=source.name,
-                  viewer_faces=len(payload["mesh"]["faces"]), trace_faces=len(cached_trace["faces"]),
+                  trace_cached=manifest["trace_cached"], include_trace_requested=include_trace_mesh,
+                  viewer_faces=len(payload["mesh"]["faces"]),
+                  trace_faces=len(cached_trace["faces"]) if cached_trace is not None else None,
                   viewer_cache_sha256=manifest["entries"]["scene.bin"]["sha256"],
-                  trace_cache_sha256=manifest["entries"]["trace.bin"]["sha256"],
-                  tessellation=payload["metadata"].get("step_tessellation"))
+                  trace_cache_sha256=manifest["entries"].get("trace.bin", {}).get("sha256"),
+                  trace_omission_reason=trace_omission_reason,
+                  tessellation=payload["metadata"].get("step_tessellation"),
+                  trace_tessellation=payload["metadata"].get("trace_step_tessellation"))
         return manifest
 
     @staticmethod
@@ -401,6 +422,9 @@ class ApiRuntime:
 
     def export_project(self, request: dict[str, Any]) -> dict[str, Any]:
         token = str(request.get("scene_token") or "")
+        include_trace_mesh = request.get("include_trace_mesh", True)
+        if type(include_trace_mesh) is not bool:
+            raise ValueError("include_trace_mesh must be a boolean")
         project = request.get("project")
         if not isinstance(project, dict):
             raise ValueError("BITSAM project settings are required")
@@ -411,7 +435,7 @@ class ApiRuntime:
         temporary = path.with_suffix(".writing")
         started = time.perf_counter()
         try:
-            manifest = self._write_case_package(token, project, temporary)
+            manifest = self._write_case_package(token, project, temporary, include_trace_mesh=include_trace_mesh)
             temporary.replace(path)
         except Exception:
             temporary.unlink(missing_ok=True)
@@ -846,8 +870,6 @@ class ApiRuntime:
                     saved_source_count = len(saved_sources) if isinstance(saved_sources, list) else 1
                     if saved_source_count != 1 + len(visible_accessories):
                         raise ValueError("Workspace Accessory CAD composition does not match the saved Case")
-                    if visible_accessories and not manifest["trace_cached"]:
-                        raise ValueError("Workspace Accessory CAD Case is missing its combined trace cache")
                     validated.append({
                         "metadata": case,
                         "relative_directory": relative_directory,
@@ -938,7 +960,7 @@ class ApiRuntime:
         }
 
     def _validated_portable_trace_loader(
-        self, source: Path, viewer: dict[str, Any], saved_settings: Any,
+        self, source: Path, viewer: dict[str, Any], metadata: dict[str, Any],
     ) -> Callable[[], dict[str, Any]]:
         def face_binding_identity(mesh: dict[str, Any]) -> str:
             # Feature edges are viewer overlays and are not used to bind trace faces.
@@ -949,20 +971,18 @@ class ApiRuntime:
         mesh = rebuilt["mesh"]
         saved_faces, rebuilt_faces = len(viewer["faces"]), len(mesh["faces"])
         saved_hash, rebuilt_hash = face_binding_identity(viewer), face_binding_identity(mesh)
-        equivalent = saved_hash == rebuilt_hash or equivalent_face_bindings(viewer, mesh)
+        comparison = compare_face_bindings(viewer, mesh, identical=saved_hash == rebuilt_hash)
+        rebuilt_settings = rebuilt.get("metadata", {}).get("step_tessellation")
         log_event("cad.portable_binding_check", source=source.name, saved_faces=saved_faces,
                   rebuilt_faces=rebuilt_faces, saved_viewer_sha256=saved_hash,
-                  rebuilt_viewer_sha256=rebuilt_hash, equivalent=equivalent,
-                  saved_tessellation=saved_settings,
-                  rebuilt_tessellation=rebuilt.get("metadata", {}).get("step_tessellation"),
+                  rebuilt_viewer_sha256=rebuilt_hash, **comparison,
+                  saved_tessellation=metadata.get("step_tessellation"),
+                  rebuilt_tessellation=rebuilt_settings,
                   elapsed_sec=time.perf_counter() - started)
-        if not equivalent:
-            raise ValueError(
-                "Embedded CAD tessellation changed. Face bindings cannot be reused safely "
-                f"(saved viewer triangles: {saved_faces:,}, rebuilt: {rebuilt_faces:,}). "
-                "Reopen a BITSAM with an embedded precision mesh, or re-import the CAD "
-                "and review face assignments before tracing."
-            )
+        if not comparison["equivalent"]:
+            raise PortableFaceBindingError()
+        if rebuilt_settings is not None:
+            metadata["trace_step_tessellation"] = rebuilt_settings
         loader = rebuilt.get("_trace_mesh_loader")
         if callable(loader):
             return loader
@@ -974,15 +994,23 @@ class ApiRuntime:
         manifest = read_json(directory / "manifest.json")
         payload = read_scene_cache(directory / "scene.bin")
         source = directory / manifest["source"]
+        payload["metadata"].pop("trace_binding_error", None)
         payload["metadata"]["source_file"] = str(source)
         payload["metadata"]["portable_project"] = True
         payload["metadata"]["trace_mesh_deferred"] = not manifest["trace_cached"]
         if manifest["trace_cached"]:
             payload["_trace_mesh"] = read_scene_cache(directory / "trace.bin")["mesh"]
+            entries = manifest["entries"]
+            payload["_verified_scene_identity"] = (
+                "portable:" + entries["scene.bin"]["sha256"] + ":" + entries["trace.bin"]["sha256"]
+            )
         else:
             def validate():
+                if len(payload["metadata"].get("source_files") or ()) > 1:
+                    # Only the workspace knows the full Accessory CAD composition.
+                    raise PortableFaceBindingError()
                 return self._validated_portable_trace_loader(
-                    source, payload["mesh"], payload["metadata"].get("step_tessellation"),
+                    source, payload["mesh"], payload["metadata"],
                 )
 
             if check_bindings:
@@ -993,7 +1021,11 @@ class ApiRuntime:
                     payload["metadata"]["trace_binding_error"] = detail
                     log_event("cad.portable_binding_error", source=source.name, detail=detail)
 
+                    binding_mismatch = isinstance(exc, PortableFaceBindingError)
+
                     def reject():
+                        if binding_mismatch:
+                            raise PortableFaceBindingError()
                         raise ValueError(detail)
 
                     payload["_trace_mesh_loader"] = reject
@@ -1047,13 +1079,18 @@ class ApiRuntime:
         if self._trace_input_builder is build_direct_trace_input:
             validate_trace_request_before_geometry(request_payload)
         scene_mesh, scene_identity = self._trace_scene_for_request(request_payload)
-        resume_scope = request_payload.get("resume_scope")
+        result_inputs = dict(request_payload, scene_token=scene_identity)
+        resume_scope = result_inputs.pop("resume_scope", None)
         # Batch loads its Case scene again on continuation, which can issue a
         # new token for the same registered tracing geometry.
         resume_inputs = request_payload
         if isinstance(resume_scope, str) and resume_scope.startswith("batch:"):
             resume_inputs = dict(request_payload, scene_token=scene_identity)
         fingerprint = hashlib.sha256(json.dumps(resume_inputs, sort_keys=True,
+            separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+        is_preview = isinstance(resume_scope, str) and resume_scope.startswith("preview:")
+        mode = "preview" if is_preview else "forward"
+        result_key = hashlib.sha256(json.dumps([mode, result_inputs], sort_keys=True,
             separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         requested_ray_count = sum(
             max(0, int(emitter.get("ray_count", 0)))
@@ -1078,15 +1115,15 @@ class ApiRuntime:
             "resume_count": 0,
             "created_at": time.time(),
             "_diagnostic_request_id": request_id.get(),
+            "_result_key": result_key,
             "_diagnostic_start_memory": _process_memory_snapshot(),
         }
         config = request_payload.get("config")
         if not isinstance(config, dict):
             config = {}
         observer = request_payload.get("observer_probe")
-        is_preview = isinstance(resume_scope, str) and resume_scope.startswith("preview:")
         job_details = {
-            "mode": "preview" if is_preview else "forward",
+            "mode": mode,
             "case_id": resume_scope.removeprefix("preview:") if isinstance(resume_scope, str) else None,
             "input_fingerprint": fingerprint,
             "rays": requested_ray_count,
@@ -1096,20 +1133,43 @@ class ApiRuntime:
             "observer_measurement": observer.get("measurement") if isinstance(observer, dict) else None,
             "observer_search_mode": observer.get("search_mode") if isinstance(observer, dict) else None,
         }
-        log_event("ray.submit", job_id=job_id, **job_details)
+        log_event("ray.submit", job_id=job_id, result_input_fingerprint=result_key, force_recompute=restart,
+                  scene_token=request_payload.get("scene_token"), scene_identity=scene_identity,
+                  **job["_diagnostic_start_memory"], **job_details)
         with self._state_lock:
             if any(j["status"] in {"queued", "running"} for j in self._sensor_comparison_jobs.values()):
                 raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
             resume = next((session for session in self._raytrace_sessions.values()
                 if session.paused and not session.cancelled and session.fingerprint == fingerprint), None) if not restart else None
-            predecessors = []
+            job["_result_cache_decision"] = (
+                "forced_recompute" if restart else "resume" if resume is not None else "miss"
+            )
+            if not restart and resume is None:
+                previous = next((
+                    candidate for candidate in reversed(self._raytrace_jobs.values())
+                    if candidate.get("_result_key") == result_key
+                    and candidate.get("status") == "completed"
+                    and candidate.get("_result_reusable")
+                ), None)
+                if previous is not None:
+                    source_job_id = previous.get("result_reused_from_job_id") or previous["job_id"]
+                    self._raytrace_jobs[job_id] = job
+                    self._update_raytrace_job(
+                        job_id, status="completed", phase="completed",
+                        phase_detail="동일 입력의 완료 결과 재사용",
+                        result=previous["result"], result_reused_from_job_id=source_job_id,
+                        processed_rays=previous["processed_rays"], total_rays=previous["total_rays"],
+                        progress=1.0, completed_at=time.time(), estimated_remaining_sec=0.0,
+                        preparation_elapsed_sec=0.0, trace_elapsed_sec=0.0, post_elapsed_sec=0.0,
+                        _result_reusable=True, _result_cache_decision="hit",
+                    )
+                    self._prune_raytrace_jobs_locked()
+                    return dict(job)
             for old_id, session in list(self._raytrace_sessions.items()):
                 if session is resume:
                     continue
                 session.cancelled = True
                 session.wake.set()
-                predecessors.extend(session.predecessors)
-                predecessors.append(session)
                 self._raytrace_sessions.pop(old_id, None)
                 if old_id in self._raytrace_jobs:
                     self._raytrace_jobs[old_id].update(resume_available=False,
@@ -1144,9 +1204,11 @@ class ApiRuntime:
                 existing_job["phase"] = "stopping"
                 superseded_job_count += 1
             self._raytrace_jobs[job_id] = job
-            predecessors = list(dict.fromkeys(s for s in predecessors if not s.finished.is_set()))
+            predecessors = tuple(self._raytrace_workers.values())
+            finished = threading.Event()
+            self._raytrace_workers[job_id] = finished
             observer = request_payload.get("observer_probe")
-            session = _RayTraceSession(job_id, fingerprint, predecessors) if self._supports_pause and (not observer or observer.get("measurement") == "radiance") else None
+            session = _RayTraceSession(job_id, fingerprint, finished) if self._supports_pause and (not observer or observer.get("measurement") == "radiance") else None
             if session is not None:
                 self._raytrace_sessions[job_id] = session
             self._prune_raytrace_jobs_locked()
@@ -1164,11 +1226,19 @@ class ApiRuntime:
 
         worker = threading.Thread(
             target=copy_context().run,
-            args=(self._run_raytrace_worker, job_id, scene_mesh, request_payload, session, tuple(predecessors)),
+            args=(self._run_raytrace_worker, job_id, scene_mesh, request_payload, scene_identity, session, predecessors, finished),
             daemon=True,
             name="raytrace-{}".format(job_id[:8]),
         )
-        worker.start()
+        try:
+            worker.start()
+        except Exception:
+            with self._state_lock:
+                self._raytrace_workers.pop(job_id, None)
+                self._raytrace_sessions.pop(job_id, None)
+            finished.set()
+            self._update_raytrace_job(job_id, status="failed", phase="failed", completed_at=time.time())
+            raise
         with self._state_lock:
             return dict(self._raytrace_jobs[job_id])
 
@@ -1199,10 +1269,11 @@ class ApiRuntime:
                 raise ValueError("광량 비교를 마치거나 중지한 후 해석하세요.")
         started = time.perf_counter()
         validate_bsdf_request(request_payload)
-        scene_mesh = self._scene_mesh_for_request(request_payload)
+        scene_mesh, scene_identity = self._trace_scene_for_request(request_payload)
         trace_input = self._build_trace_input_for_request(
             scene_mesh,
             request_payload,
+            scene_identity=scene_identity,
             report_timing=lambda stage, seconds: log_event(
                 "ray.geometry_stage", stage=stage, elapsed_sec=seconds, **_process_memory_snapshot()
             ),
@@ -1400,6 +1471,8 @@ class ApiRuntime:
         scene_mesh: dict[str, Any],
         request_payload: dict[str, Any],
         parts: Optional[dict[str, str]] = None,
+        *,
+        scene_identity: str | None = None,
     ) -> str:
         excluded = sorted(
             int(value)
@@ -1424,7 +1497,7 @@ class ApiRuntime:
             if int(component_id) in excluded_set
         })
         geometry_state = {
-            "scene_token": str(request_payload.get("scene_token") or ""),
+            "scene_identity": scene_identity or str(request_payload.get("scene_token") or ""),
             "geometry_mode": str(
                 request_payload.get("geometry_mode") or "precision"
             ),
@@ -1466,6 +1539,7 @@ class ApiRuntime:
         report_phase: Optional[Callable[[str], None]] = None,
         report_timing: Optional[Callable[[str, float], None]] = None,
         *,
+        scene_identity: str | None = None,
         diagnostic_job_id: str | None = None,
     ) -> Any:
         def phase(detail: str) -> None:
@@ -1484,6 +1558,7 @@ class ApiRuntime:
             raise InterruptedError("Ray trace preparation stopped")
         phase("Emitter 및 ROI Surface 매핑 중")
         started = time.perf_counter()
+        viewer_request = request_payload
         request_payload = self._map_viewer_faces_to_trace(
             scene_mesh,
             request_payload,
@@ -1500,7 +1575,10 @@ class ApiRuntime:
         phase("Geometry cache 확인 중")
         parts: dict[str, str] = {}
         started = time.perf_counter()
-        cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload, parts)
+        if scene_identity is None:
+            with self._state_lock:
+                scene_identity = self._scene_identities.get(str(request_payload.get("scene_token") or ""))
+        cache_key = self._trace_geometry_cache_key(scene_mesh, request_payload, parts, scene_identity=scene_identity)
         with self._state_lock:
             previous_parts = self._last_trace_geometry_parts
             self._last_trace_geometry_parts = parts
@@ -1541,10 +1619,11 @@ class ApiRuntime:
                     ):
                         return self._build_trace_input_for_request(
                             scene_mesh,
-                            request_payload,
+                            viewer_request,
                             should_stop,
                             report_phase,
                             report_timing,
+                            scene_identity=scene_identity,
                             diagnostic_job_id=diagnostic_job_id,
                         )
                     raise build_state.error
@@ -1633,9 +1712,9 @@ class ApiRuntime:
             resolved = loader()
             if not isinstance(resolved, dict):
                 raise RuntimeError("Deferred trace mesh loader returned invalid data")
-            scene_mesh.clear()
             scene_mesh.update(resolved)
             scene_mesh["_viewer_face_source_ids"] = viewer_sources
+            scene_mesh.pop("_deferred_trace_loader", None)
             print(
                 "[CAD] deferred trace mesh   {:>8.3f}s | {} faces".format(
                     time.perf_counter() - started_at,
@@ -1778,6 +1857,7 @@ class ApiRuntime:
         if terminal is not None:
             trace_sec = terminal.get("trace_elapsed_sec")
             baseline = terminal.get("_diagnostic_trace_baseline_sec")
+            reused_from = terminal.get("result_reused_from_job_id")
             memory = _process_memory_snapshot()
             initial_memory = terminal.get("_diagnostic_start_memory", {})
             initial_rss = initial_memory.get("rss_bytes")
@@ -1785,6 +1865,14 @@ class ApiRuntime:
             initial_commit = initial_memory.get("private_commit_bytes")
             commit = memory.get("private_commit_bytes")
             diagnostics = {
+                "result_reused_from_job_id": reused_from,
+                "result_cache_decision": terminal.get("_result_cache_decision"),
+                "result_cache_eligible": terminal.get("_result_reusable", False),
+                "result_cache_ineligible_reasons": terminal.get("_result_cache_ineligible_reasons", []),
+                "trace_mesh_cache": "skipped" if reused_from else terminal.get("_trace_mesh_cache"),
+                "prepared_geometry_cache": "skipped" if reused_from else terminal.get("_prepared_geometry_cache"),
+                "prepared_cache_changed_fields": terminal.get("_prepared_cache_changed_fields"),
+                "previous_worker_wait_sec": terminal.get("_previous_worker_wait_sec"),
                 "rss_start_bytes": initial_rss,
                 "rss_delta_bytes": rss - initial_rss if rss is not None and initial_rss is not None else None,
                 "private_commit_start_bytes": initial_commit,
@@ -1798,7 +1886,7 @@ class ApiRuntime:
                 "resumed_from_job_id": terminal.get("resumed_from_job_id"),
                 **memory,
                 "geometry_cache_hit": terminal.get("geometry_cache_hit"),
-                **_trace_diagnostics(terminal.get("result") or {}),
+                **_trace_diagnostics({} if reused_from else terminal.get("result") or {}),
             }
             log_event("ray.end", job_id=job_id, request_id=terminal.get("_diagnostic_request_id"),
                       status=terminal.get("status"), phase=terminal.get("phase"),
@@ -1817,22 +1905,28 @@ class ApiRuntime:
                     ) if key in diagnostics[section]} for section in ("compute", "observer_compute")},
                 }, separators=(",", ":"))), flush=True)
 
-    def _run_raytrace_worker(self, job_id, scene_mesh, request_payload, session, predecessors):
+    def _run_raytrace_worker(self, job_id, scene_mesh, request_payload, scene_identity, session, predecessors, finished):
         try:
-            self._run_raytrace_job(job_id, scene_mesh, request_payload, session, predecessors)
+            self._run_raytrace_job(job_id, scene_mesh, request_payload, session, predecessors, scene_identity=scene_identity)
         finally:
             del scene_mesh, request_payload
-            with self._state_lock:
-                cached_geometry_entries = len(self._trace_geometry_cache)
-                cached_geometry_faces = sum(len(entry.mesh.faces) for entry in self._trace_geometry_cache.values())
-                cached_shallow_bytes = sum(_prepared_geometry_shallow_bytes(entry)
-                                           for entry in self._trace_geometry_cache.values())
-                retained_results = len({id(job["result"]) for job in self._raytrace_jobs.values() if job.get("result") is not None})
-            log_event("ray.worker_released", job_id=session.job_id if session else job_id,
-                      prepared_cache_entries=cached_geometry_entries,
-                      prepared_cache_shallow_bytes=cached_shallow_bytes,
-                      prepared_cache_faces=cached_geometry_faces, retained_results=retained_results,
-                      **_process_memory_snapshot())
+            try:
+                with self._state_lock:
+                    cached_geometry_entries = len(self._trace_geometry_cache)
+                    cached_geometry_faces = sum(len(entry.mesh.faces) for entry in self._trace_geometry_cache.values())
+                    cached_shallow_bytes = sum(_prepared_geometry_shallow_bytes(entry)
+                                               for entry in self._trace_geometry_cache.values())
+                    retained_results = len({id(job["result"]) for job in self._raytrace_jobs.values() if job.get("result") is not None})
+                    queued_workers = len(self._raytrace_workers) - 1
+                log_event("ray.worker_released", job_id=session.job_id if session else job_id,
+                          prepared_cache_entries=cached_geometry_entries,
+                          prepared_cache_shallow_bytes=cached_shallow_bytes,
+                          prepared_cache_faces=cached_geometry_faces, retained_results=retained_results,
+                          queued_workers=queued_workers, **_process_memory_snapshot())
+            finally:
+                with self._state_lock:
+                    self._raytrace_workers.pop(job_id, None)
+                    finished.set()
 
     def _run_raytrace_job(
         self,
@@ -1841,6 +1935,8 @@ class ApiRuntime:
         request_payload: dict[str, Any],
         session: Optional[_RayTraceSession] = None,
         predecessors: tuple = (),
+        *,
+        scene_identity: str | None = None,
     ) -> None:
         def update_job(**updates):
             if session is None or not session.cancelled:
@@ -1858,7 +1954,20 @@ class ApiRuntime:
 
         def report_geometry_timing(stage: str, seconds: float) -> None:
             snapshot = _process_memory_snapshot()
-            log_event("ray.geometry_stage", job_id=job_id, stage=stage, elapsed_sec=seconds, **snapshot)
+            name, _, changed = stage.partition(" changed_fields=")
+            cache_fields = {}
+            if name.startswith("prepared_cache_"):
+                cache_fields["_prepared_geometry_cache"] = name.removeprefix("prepared_cache_")
+                if changed:
+                    cache_fields["_prepared_cache_changed_fields"] = changed.split(",")
+            elif name in {"trace_mesh_deferred_or_wait", "trace_mesh_available"}:
+                cache_fields["_trace_mesh_cache"] = "available" if name == "trace_mesh_available" else "resolved_or_waited"
+            elif name == "previous_worker_release_wait":
+                cache_fields["_previous_worker_wait_sec"] = seconds
+            if cache_fields:
+                update_job(**cache_fields)
+            log_event("ray.geometry_stage", job_id=job_id, stage=stage, elapsed_sec=seconds,
+                      **{key.removeprefix("_"): value for key, value in cache_fields.items()}, **snapshot)
             memory = json.dumps(snapshot, separators=(",", ":"))
             print(f"[RAY] geometry stage | {job_id} | stage={stage} | {seconds:.3f}s | memory={memory}", flush=True)
 
@@ -1872,12 +1981,15 @@ class ApiRuntime:
                     job = self._raytrace_jobs.get(session.job_id if session else job_id)
                     return bool((session and session.cancelled) or (job and job.get("stop_requested")))
 
+            wait_started = time.perf_counter()
             for previous in predecessors:
                 update_job(status="running",phase="preparing",phase_detail="이전 계산 상태 정리 중")
-                while not previous.finished.wait(.05):
+                while not previous.wait(.05):
                     if should_stop():
                         raise InterruptedError("Superseded while waiting for previous worker")
 
+            if predecessors:
+                report_geometry_timing("previous_worker_release_wait", time.perf_counter() - wait_started)
             preparation_started_at = time.perf_counter()
             report_phase("preparing")
             def report_preparation_phase(detail: str) -> None:
@@ -1899,6 +2011,7 @@ class ApiRuntime:
                 should_stop,
                 report_preparation_phase,
                 report_geometry_timing,
+                scene_identity=scene_identity,
                 diagnostic_job_id=job_id,
             )
             preparation_elapsed_sec = time.perf_counter() - preparation_started_at
@@ -2062,7 +2175,21 @@ class ApiRuntime:
                 job_total_ray_count += observer_total
                 job_processed_ray_count += observer_done
             stopped_early = (should_stop() and processed_ray_count < total_ray_count) or (has_observer and bool(observer_summary.get("stopped")))
+            performance = (result_payload.get("metrics") or {}).get("_performance_summary") or {}
+            backend = (request_payload.get("config") or {}).get("compute_backend", "cpu")
+            gpu_result_verified = (
+                performance.get("compute_execution_state") in {"gpu_active", "gpu_mixed"}
+                and (performance.get("gpu_cuda_gpu_success_count") or 0) > 0
+            )
+            ineligible_reasons = [reason for reason, applies in (
+                ("stopped", should_stop() or stopped_early or performance.get("stopped_early")),
+                ("ray_count_incomplete", processed_ray_count != total_ray_count),
+                ("observer_incomplete", has_observer and observer_summary.get("complete") is not True),
+                ("gpu_execution_unverified", backend == "gpu_cuda" and not gpu_result_verified),
+            ) if applies]
             update_job(
+                _result_reusable=not ineligible_reasons,
+                _result_cache_ineligible_reasons=ineligible_reasons,
                 status="completed",
                 phase="stopped" if stopped_early else "completed",
                 phase_detail=(
@@ -2129,7 +2256,6 @@ class ApiRuntime:
                                 phase_detail="새 해석 시작으로 이전 작업 종료", completed_at=time.time(),
                                 **interrupted_timings(),
                             )
-                session.finished.set()
 
     def _prune_raytrace_jobs_locked(self) -> None:
         if len(self._raytrace_jobs) <= self._max_jobs:

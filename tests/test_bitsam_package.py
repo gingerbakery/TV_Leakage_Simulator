@@ -4,15 +4,18 @@ import copy
 import hashlib
 import json
 import tempfile
+import time
 import unittest
 import zipfile
+from functools import partial
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
 from leakage_simulator.api import ApiRuntime, create_app
-from leakage_simulator.bitsam_package import extract_package, read_scene_cache, write_package
+from leakage_simulator.bitsam_package import compare_face_bindings, extract_package, read_scene_cache, write_package
+from leakage_simulator.raytracer import run_direct_ray_trace
 
 
 def scene_fixture(path):
@@ -59,6 +62,65 @@ def trace_request(token):
 
 
 class BitsamPackageTests(unittest.TestCase):
+    def test_completed_trace_reuses_result_and_geometry_across_scene_tokens(self):
+        precision_loader = Mock(return_value=self.scene["mesh"])
+
+        def deferred(path):
+            payload = scene_fixture(path)
+            payload["_trace_mesh_loader"] = precision_loader
+            return payload
+
+        runtime = ApiRuntime(
+            self.root / "repeat", scene_loader=deferred,
+            trace_runner=partial(run_direct_ray_trace, intersection_dispatch="scalar"),
+        )
+
+        def run(request):
+            job = runtime.start_raytrace_job(request)
+            deadline = time.monotonic() + 5
+            while job["status"] in {"queued", "running"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                job = runtime.raytrace_job_snapshot(job["job_id"])
+            self.assertEqual(job["status"], "completed", job.get("error"))
+            with runtime._state_lock:
+                worker = runtime._raytrace_workers.get(job["job_id"])
+            if worker is not None:
+                self.assertTrue(worker.wait(5))
+            return job
+
+        scene = runtime.load_scene(str(self.source))
+        request = trace_request(scene["metadata"]["scene_token"])
+        first = run(request)
+        self.assertFalse(first["geometry_cache_hit"])
+        self.assertEqual(first["_trace_mesh_cache"], "resolved_or_waited")
+        self.assertEqual(first["_prepared_geometry_cache"], "miss")
+        refreshed = runtime.load_scene(str(self.source))
+        request["scene_token"] = refreshed["metadata"]["scene_token"]
+        request["resume_scope"] = "second-case"
+        reused = run(request)
+        self.assertEqual(reused["result_reused_from_job_id"], first["job_id"])
+        self.assertEqual(reused["_result_cache_decision"], "hit")
+        self.assertEqual(reused["result"], first["result"])
+        self.assertEqual(reused["trace_elapsed_sec"], 0.0)
+
+        forced = run(dict(request, restart_from_beginning=True))
+        self.assertNotIn("result_reused_from_job_id", forced)
+        self.assertEqual(forced["_result_cache_decision"], "forced_recompute")
+        self.assertEqual(forced["_prepared_geometry_cache"], "hit")
+        self.assertTrue(forced["geometry_cache_hit"])
+        self.assertNotEqual(forced["result"]["run_id"], first["result"]["run_id"])
+        request["optical_profiles"][0]["reflectance"] = 0.2
+        changed = run(request)
+        self.assertNotIn("result_reused_from_job_id", changed)
+        self.assertEqual(changed["_result_cache_decision"], "miss")
+        self.assertTrue(changed["geometry_cache_hit"])
+        precision_loader.assert_called_once()
+
+        preview = dict(request, resume_scope="preview:second-case", geometry_mode="preview")
+        first_preview = run(preview)
+        self.assertNotIn("result_reused_from_job_id", first_preview)
+        self.assertEqual(run(preview)["result_reused_from_job_id"], first_preview["job_id"])
+
     def test_preview_evidence_round_trips_without_precision_result_or_live_job(self):
         self.project.pop("analysis_result")
         self.project["preview_result"] = {
@@ -298,6 +360,24 @@ class BitsamPackageTests(unittest.TestCase):
         second.run_raytrace_direct(trace_request(scene["metadata"]["scene_token"]))
         forbidden.assert_not_called()
 
+    def test_export_can_explicitly_omit_the_precision_mesh(self):
+        trace_loader = Mock(side_effect=AssertionError("Trace mesh unexpectedly built"))
+
+        def deferred(path):
+            payload = scene_fixture(path)
+            payload["_trace_mesh_loader"] = trace_loader
+            return payload
+
+        runtime = ApiRuntime(self.root / "before", scene_loader=deferred)
+        scene = runtime.load_scene(str(self.source))
+        exported = runtime.export_project({
+            "scene_token": scene["metadata"]["scene_token"],
+            "project": self.project,
+            "include_trace_mesh": False,
+        })
+        self.assertFalse(exported["trace_cached"])
+        trace_loader.assert_not_called()
+
     def test_legacy_load_checks_viewer_and_reuses_checked_trace_loader(self):
         trace_loader = Mock(return_value=self.scene["mesh"])
         write_package(self.package, self.project, self.source, self.scene, None)
@@ -333,14 +413,58 @@ class BitsamPackageTests(unittest.TestCase):
             payload["mesh"]["face_source_ids"] = [22, 22]
             return payload
         runtime = ApiRuntime(self.root / "after", scene_loader=changed)
-        restored = runtime.import_project(self.package)
-        self.assertIn("Face bindings", restored["trace_binding_error"])
+        with patch("leakage_simulator.api.runtime.log_event") as log:
+            restored = runtime.import_project(self.package)
+        event = next(call.kwargs for call in log.call_args_list if call.args[0] == "cad.portable_binding_check")
+        self.assertEqual(event["triangle_topology_diff_count"], 0)
+        self.assertEqual(event["face_source_ids_diff_count"], 2)
+        self.assertEqual(event["mismatch_reasons"], ["face_source_ids"])
+        self.assertIn("면 할당을 확인하세요", restored["trace_binding_error"])
         self.assertEqual(restored["project"]["analysis_result"], self.project["analysis_result"])
         scene = runtime.load_scene(restored["cad"]["path"])
-        with self.assertRaisesRegex(ValueError, "Face bindings"):
+        with self.assertRaisesRegex(ValueError, "면 할당을 확인하세요"):
             runtime.run_raytrace_direct(trace_request(scene["metadata"]["scene_token"]))
+        for evict in (False, True):
+            with self.subTest(evict=evict):
+                if evict:
+                    runtime._scene_payload_cache.clear()
+                    scene = runtime.load_scene(restored["cad"]["path"])
+                exported = runtime.export_project({
+                    "scene_token": scene["metadata"]["scene_token"], "project": restored["project"],
+                })
+                self.assertFalse(exported["trace_cached"])
+                saved, _ = runtime.project_export_file(exported["download_url"].split("/")[-1])
+                with zipfile.ZipFile(saved) as archive:
+                    self.assertIn("scene.bin", archive.namelist())
+                    self.assertNotIn("trace.bin", archive.namelist())
+                    self.assertEqual(archive.read("cad/original.step"), self.source.read_bytes())
+                    self.assertEqual(json.loads(archive.read("project.json")), restored["project"])
+                reimported = ApiRuntime(self.root / "reopened", scene_loader=changed).import_project(saved)
+                self.assertEqual(reimported["project"], restored["project"])
 
-    def test_deferred_rebuild_accepts_reordered_exact_face_bindings(self):
+    def test_binding_comparison_reports_winding_and_label_changes(self):
+        original = self.scene["mesh"]
+        modified = copy.deepcopy(original)
+        modified["faces"][0] = (0, 2, 1)
+        modified["face_component_ids"][1] = 8
+        modified["face_material_ids"][1] = "glass"
+        report = compare_face_bindings(original, modified)
+        self.assertFalse(report["equivalent"])
+        self.assertEqual(report["triangle_topology_diff_count"], 1)
+        self.assertEqual(report["face_component_ids_diff_count"], 1)
+        self.assertEqual(report["face_material_ids_diff_count"], 1)
+
+    def test_binding_comparison_rejects_coordinate_movement_outside_tolerance(self):
+        original = self.scene["mesh"]
+        modified = copy.deepcopy(original)
+        x, y, z = modified["vertices"][0]
+        modified["vertices"][0] = (x + 0.001, y, z)
+        report = compare_face_bindings(original, modified)
+        self.assertFalse(report["equivalent"])
+        self.assertEqual(report["mismatch_reasons"], ["coordinate_delta"])
+        self.assertAlmostEqual(report["max_sorted_coordinate_delta"], 0.001)
+
+    def test_deferred_rebuild_accepts_reordered_face_bindings_with_small_coordinate_drift(self):
         self.scene["mesh"]["face_source_ids"] = [11, 12]
         write_package(self.package, self.project, self.source, self.scene, None)
 
@@ -348,6 +472,8 @@ class BitsamPackageTests(unittest.TestCase):
             payload = scene_fixture(path)
             mesh = payload["mesh"]
             mesh["vertices"].reverse()
+            x, y, z = mesh["vertices"][0]
+            mesh["vertices"][0] = (x - 1e-10, y, z)
             mesh["faces"] = [(1, 0, 3), (2, 1, 3)]
             mesh["face_source_ids"] = [12, 11]
             return payload

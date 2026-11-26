@@ -1,6 +1,7 @@
 """Structured events written to the simulator server log."""
 
 import json
+import sys
 import time
 import uuid
 from contextvars import ContextVar
@@ -16,7 +17,8 @@ def log_event(event, **fields):
         "request_id": request_id.get(),
         **fields,
     }
-    print("[DIAG] " + json.dumps(record, ensure_ascii=True, separators=(",", ":")), flush=True)
+    sys.stdout.write("[DIAG] " + json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 class DiagnosticRequests:

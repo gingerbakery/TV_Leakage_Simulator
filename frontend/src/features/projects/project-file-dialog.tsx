@@ -1,5 +1,6 @@
 import { useRef, type RefObject } from 'react'
 
+import { HelpTooltip } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,6 +18,7 @@ export interface ProjectFileNotice {
   caseCount?: number
   downloadStarted?: boolean
   notes?: string[]
+  traceWarnings?: Array<{ message: string; detail: string }>
 }
 
 interface ProjectFileDialogProps {
@@ -45,6 +47,8 @@ export function ProjectFileDialog({ notice, onClose, returnFocusRef }: ProjectFi
         onKeyDown={(event) => {
           if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.defaultPrevented ||
               event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          if (event.target instanceof HTMLElement && event.target.closest('button') &&
+              !confirmRef.current?.contains(event.target)) return
           event.preventDefault()
           event.stopPropagation()
           onClose()
@@ -68,6 +72,12 @@ export function ProjectFileDialog({ notice, onClose, returnFocusRef }: ProjectFi
           {!isLoad && notice && !notice.includesCad && <p className="mt-2">원본 CAD 파일은 별도로 보관해 주세요.</p>}
           {!isLoad && notice?.downloadStarted && <p className="mt-2">브라우저에서 다운로드 완료를 확인해 주세요.</p>}
           {notice?.notes?.map((note) => <p key={note} className="mt-2 [overflow-wrap:anywhere]">{note}</p>)}
+          {notice?.traceWarnings?.map(({ message, detail }, index) => (
+            <div key={index} className="mt-2 flex items-start gap-1 text-popover-foreground">
+              <p>{message}</p>
+              <HelpTooltip label="정밀 해석 형상 도움말">{detail}</HelpTooltip>
+            </div>
+          ))}
         </div>
         <div className="flex justify-end pt-1">
           <Button ref={confirmRef} variant="outline" className="min-w-20" onClick={onClose}>확인</Button>

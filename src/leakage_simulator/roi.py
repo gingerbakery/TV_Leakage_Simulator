@@ -85,7 +85,7 @@ def _step_tessellation_metadata() -> dict:
         "trace_linear_deflection_mm": TRACE_LINEAR_DEFLECTION_MM,
         "trace_angular_deflection_rad": TRACE_ANGULAR_DEFLECTION_RAD,
         "relative": False,
-        "parallel": True,
+        "parallel": False,
     }
 
 

@@ -129,6 +129,7 @@ describe('portable BITSAM packages', () => {
       cancelled: false,
       downloaded: false,
       caseCount: 2,
+      traceCached: true,
     })
   })
 

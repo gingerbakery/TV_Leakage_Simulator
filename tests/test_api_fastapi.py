@@ -78,6 +78,33 @@ def _trace_runner(trace_input, progress_callback=None, should_stop=None):
 
 
 class FastApiLayerTests(unittest.TestCase):
+    def test_completed_result_reuse_skips_trace_unless_forced(self):
+        runner = Mock(wraps=_trace_runner)
+        self.runtime._trace_runner = runner
+        scene = self.runtime.load_scene("result-reuse.step")
+        request = {"scene_token": scene["metadata"]["scene_token"]}
+
+        def completed(job):
+            job_id = job["job_id"]
+            for _ in range(200):
+                snapshot = self.runtime.raytrace_job_snapshot(job_id)
+                if snapshot["status"] in {"completed", "error"}:
+                    self.assertEqual(snapshot["status"], "completed")
+                    return snapshot
+                time.sleep(.01)
+            self.fail(f"Ray trace job {job_id} did not complete")
+
+        first = completed(self.runtime.start_raytrace_job(request))
+        reused = completed(self.runtime.start_raytrace_job(request))
+        self.assertNotEqual(reused["job_id"], first["job_id"])
+        self.assertEqual(reused["result_reused_from_job_id"], first["job_id"])
+        self.assertEqual(reused["result"], first["result"])
+        self.assertEqual(runner.call_count, 1)
+
+        forced = completed(self.runtime.start_raytrace_job({**request, "restart_from_beginning": True}))
+        self.assertIsNone(forced.get("result_reused_from_job_id"))
+        self.assertEqual(runner.call_count, 2)
+
     def test_completed_job_log_contains_forward_and_observer_compute_evidence(self):
         forward = {"compute_execution_state": "gpu_active", "gpu_cuda_gpu_success_count": 3}
         observer = {"compute_execution_state": "gpu_mixed", "gpu_cuda_gpu_success_count": 2,
@@ -576,21 +603,26 @@ class FastApiLayerTests(unittest.TestCase):
         )
 
     def test_scene_refresh_returns_a_new_server_token_without_scene_payload(self):
-        original = self.client.get(
+        original_metadata = self.client.get(
             "/api/scene",
             params={"cad": "fixture.step"},
-        ).json()["metadata"]["scene_token"]
+        ).json()["metadata"]
 
         response = self.client.post(
             "/api/scene/refresh",
-            json={"cad": "fixture.step"},
+            json={"cad": "fixture.step", "viewer_binding": original_metadata["viewer_binding"]},
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(set(response.json()), {"scene_token"})
         refreshed = response.json()["scene_token"]
-        self.assertNotEqual(refreshed, original)
+        self.assertNotEqual(refreshed, original_metadata["scene_token"])
         self.assertIn(refreshed, self.runtime._scene_mesh_cache)
+        mismatch = self.client.post(
+            "/api/scene/refresh",
+            json={"cad": "fixture.step", "viewer_binding": "stale-mesh"},
+        )
+        self.assertEqual(mismatch.status_code, 400)
 
     def test_scene_endpoint_streams_binary_manifest_and_arrays(self):
         output = io.StringIO()

@@ -1801,6 +1801,7 @@ export function RayTracingPanel({
   const autoConvergenceActiveRef = useRef(false)
   const convergenceMultiplierRef = useRef(1)
   const convergenceSegmentIndexRef = useRef(0)
+  const forceRecomputeRef = useRef(false)
   const convergenceAggregateRef = useRef<RayTraceResult | null>(null)
   const handledConvergenceJobRef = useRef<string | null>(null)
   const launchedSegmentRef = useRef({ rayMultiplier: 1, segmentIndex: 0 })
@@ -2179,7 +2180,7 @@ export function RayTracingPanel({
         const accessoryPaths = scene.metadata.source_files?.slice(1) ?? []
         const refreshed = await apiClient.refreshScene(activeCad.path, {
           signal: abortController?.signal,
-        }, accessoryPaths)
+        }, accessoryPaths, scene.metadata.viewer_binding ?? '')
         const refreshedScene: ScenePayload = {
           ...scene,
           metadata: {
@@ -2249,6 +2250,7 @@ export function RayTracingPanel({
     const continuation = !restart && canResume ? resumeState : null
     convergenceMultiplierRef.current = continuation?.cumulativeMultiplier ?? 1
     convergenceSegmentIndexRef.current = continuation?.segmentIndex ?? 0
+    forceRecomputeRef.current = restart
     convergenceAggregateRef.current = continuation?.aggregate ?? null
     // The previous partial result must not be processed again while start is pending.
     handledConvergenceJobRef.current = job?.job_id ?? null
@@ -2371,6 +2373,7 @@ export function RayTracingPanel({
       incrementalMultiplier,
       true,
       convergenceSegmentIndexRef.current,
+      forceRecomputeRef.current,
     )
   }, [actions, config.auto_convergence, config.convergence_target_percent, config.max_convergence_multiplier, enabledEmitterRayCount, job, launchRun, receivers])
 
@@ -3206,6 +3209,11 @@ export function RayTracingPanel({
           <span>중단 지점 보관 · {job?.processed_rays.toLocaleString()} Ray</span>
           <HelpTooltip label="중단 후 이어 실행 도움말">완료된 Ray 묶음 경계에서 난수·누적 결과·계산 상태를 메모리에 보관합니다. 같은 입력은 BVH 준비와 완료 Ray 계산을 반복하지 않고 이어갑니다. 변경한 입력으로 실행하거나 다른 해석을 시작하면 보관 상태를 해제합니다. 서버 종료와 작업 이력 정리 시에도 해제되며, 보관 중에는 계산 메모리를 유지합니다. 정밀 Ray Tracing의 현재 계산 구간을 이어갑니다. Preview의 관찰 휘도 역추적도 해당 패널에서 이어 실행할 수 있으며 경로 탐색 모드는 제외됩니다. 처음부터는 보관 상태를 버리고 새로 계산합니다.</HelpTooltip>
           <Button size="sm" variant="outline" disabled={!canRun} onClick={() => void handleRun(true)}>처음부터</Button>
+        </div> : null}
+        {!canResume && !isRunning && latestResult ? <div className="flex items-center gap-2 text-xs">
+          {job?.result_reused_from_job_id ? <span>완료 결과 재사용</span> : null}
+          <Button size="sm" variant="outline" disabled={!canRun} onClick={() => void handleRun(true)}>다시 계산</Button>
+          <HelpTooltip label="다시 계산 도움말">같은 입력이면 완료 결과를 불러옵니다. 다시 계산을 선택하면 Ray 계산을 새로 실행합니다.</HelpTooltip>
         </div> : null}
         <p className="text-xs leading-4 text-muted-foreground">
           Emitter {enabledEmitterCount} · Receiver {enabledReceiverCount} ·
