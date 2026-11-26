@@ -643,9 +643,11 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('50.0')).not.toBeNull()
     expect(screen.getAllByText('0.0%')).toHaveLength(3)
     expect(screen.queryByText('4.000 mm²')).toBeNull()
-    expect(screen.queryByText('0.011 lm')).toBeNull()
+    expect(screen.getByText('0.011 lm')).not.toBeNull()
     fireEvent.click(compareCheckbox)
     expect(compareCheckbox).toHaveProperty('checked', false)
+    expect(screen.getByText('Baseline 미선택')).not.toBeNull()
+    expect(screen.getByText('0.011 lm')).not.toBeNull()
     expect(
       screen.getByRole('dialog', { name: 'Ray Tracing Analysis Result' }),
     ).not.toBeNull()
@@ -658,7 +660,7 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('광영역(@5%) 변화')).not.toBeNull()
   })
 
-  it('shows only Baseline-relative percentages for comparison metrics', () => {
+  it('shows Baseline-relative percentages and distinguishes equal values from small changes', () => {
     const baseline = createRayTraceResultFixture()
     const improved = structuredClone(baseline)
     improved.run_id = 'run-improved'
@@ -675,6 +677,18 @@ describe('Step 11 result UI', () => {
       [0, 0],
       [0.003, 0],
     ]
+    const slightlyChanged = structuredClone(baseline)
+    slightlyChanged.run_id = 'run-slight-change'
+    slightlyChanged.metrics.receiver_001 = {
+      ...(slightlyChanged.metrics.receiver_001 as Record<string, unknown>),
+      total_flux_lumen: 0.010999,
+    }
+    const shiftedPattern = structuredClone(baseline)
+    shiftedPattern.run_id = 'run-shifted-pattern'
+    shiftedPattern.receiver_grids[0].flux_lumen.reverse()
+    expect(shiftedPattern.receiver_grids[0].flux_lumen).not.toEqual(
+      baseline.receiver_grids[0].flux_lumen,
+    )
 
     render(
       <RayTraceResultWindow
@@ -683,6 +697,8 @@ describe('Step 11 result UI', () => {
         reportCases={[
           { caseId: 'case-1', name: 'Baseline', cadName: 'a.step', result: baseline },
           { caseId: 'case-2', name: 'Improved', cadName: 'b.step', result: improved },
+          { caseId: 'case-3', name: 'Small change', cadName: 'c.step', result: slightlyChanged },
+          { caseId: 'case-4', name: 'Shifted pattern', cadName: 'd.step', result: shiftedPattern },
         ]}
         onOpenChange={vi.fn()}
       />,
@@ -693,6 +709,9 @@ describe('Step 11 result UI', () => {
     expect(screen.getByText('20.0% 감소')).not.toBeNull()
     expect(screen.getByText('50.0% 감소')).not.toBeNull()
     expect(screen.getByText('75.0% 감소')).not.toBeNull()
+    expect(screen.getByText('<0.05% 감소')).not.toBeNull()
+    const shiftedRow = screen.getByDisplayValue('Shifted pattern').closest('tr')!
+    expect(shiftedRow.textContent?.match(/0\.0%/g)).toHaveLength(3)
     expect(screen.queryByText('0.0055 lm')).toBeNull()
     expect(screen.queryByText('10.000')).toBeNull()
     expect(screen.queryByText('1.000 mm²')).toBeNull()

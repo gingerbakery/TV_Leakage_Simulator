@@ -240,15 +240,16 @@ function caseFlux(
   result: RayTraceResult,
   receiverScope: ReceiverCompareScope = 'all',
 ): number {
-  if (receiverScope !== 'all') {
-    const receiver = scopedReceivers(result, receiverScope)[0]
-    return receiver
-      ? numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen)
-      : 0
-  }
   return scopedReceivers(result, receiverScope).reduce(
-    (sum, receiver) =>
-      sum + numeric(objectValue(result.metrics, receiver.receiver_id).total_flux_lumen),
+    (sum, receiver) => {
+      const flux = objectValue(result.metrics, receiver.receiver_id).total_flux_lumen
+      if (typeof flux === 'number' && Number.isFinite(flux)) return sum + flux
+      const grid = result.receiver_grids.find((item) => item.receiver_id === receiver.receiver_id)
+      return (grid?.flux_lumen ?? []).reduce(
+        (total, row) => row.reduce((subtotal, cell) => subtotal + numeric(cell), total),
+        sum,
+      )
+    },
     0,
   )
 }
@@ -268,7 +269,16 @@ function caseLuminance(
   const receiverIds = new Set(receivers.map((item) => item.receiver_id))
   for (const receiver of receivers) {
     const metrics = objectValue(result.metrics, receiver.receiver_id)
-    const receiverPeak = numeric(metrics.peak_nit_est)
+    const grid = result.receiver_grids.find((item) => item.receiver_id === receiver.receiver_id)
+    const binAreaM2 = numeric(grid?.bin_area_mm2) * 1e-6
+    const receiverPeak = typeof metrics.peak_nit_est === 'number' && Number.isFinite(metrics.peak_nit_est)
+      ? metrics.peak_nit_est
+      : binAreaM2 > 0
+        ? (grid?.flux_lumen ?? []).reduce(
+            (peak, row) => row.reduce((maximum, flux) => Math.max(maximum, numeric(flux)), peak),
+            0,
+          ) * result.config.k_abs * result.config.k_brdf / binAreaM2 / Math.PI
+        : 0
     const receiverMean = numeric(metrics.mean_nit_est)
     const area = Math.max(0, receiver.width_mm * receiver.height_mm)
     peakNit = Math.max(peakNit, receiverPeak)
@@ -484,6 +494,9 @@ function comparisonConditionMismatches(
 
   const receivers = scopedReceivers(result, receiverScope)
   const baselineReceivers = scopedReceivers(baseline, receiverScope)
+  if (receivers.length === 0 || baselineReceivers.length === 0) {
+    mismatches.push('Receiver · 비교 대상 없음')
+  }
   if (receiverScope === 'all' && receivers.length !== baselineReceivers.length) {
     mismatches.push('Receiver · 활성 개수')
   }
@@ -579,9 +592,8 @@ function leakageImprovementScore(
 
 function relativeChangePercent(value: number, baseline: number): number | null {
   if (!Number.isFinite(value) || !Number.isFinite(baseline)) return null
-  if (Math.abs(baseline) <= 1e-15) return Math.abs(value) <= 1e-15 ? 0 : null
-  const change = ((value - baseline) / baseline) * 100
-  return Math.abs(change) < 0.05 ? 0 : change
+  if (baseline === 0) return value === 0 ? 0 : null
+  return ((value - baseline) / baseline) * 100
 }
 
 function analysisExcelSheets(
@@ -594,6 +606,7 @@ function analysisExcelSheets(
     ? caseLuminance(baselineCase.result, receiverScope)
     : null
   const compareRows = cases.map((item) => {
+    const hasReceiver = scopedReceivers(item.result, receiverScope).length > 0
     const luminance = caseLuminance(item.result, receiverScope)
     const flux = caseFlux(item.result, receiverScope)
     const mismatches = baselineCase
@@ -606,7 +619,7 @@ function analysisExcelSheets(
       item.cad_name,
       item.note,
       receiverScope === 'all' ? 'All Receivers' : receiverScope.replace(/^name:/, ''),
-      comparable ? 'Match' : 'Mismatch',
+      baselineCase ? (comparable ? 'Match' : 'Mismatch') : 'No baseline',
       mismatches.join(' / '),
       comparable && baselineCase
         ? leakageImprovementScore(item.result, baselineCase.result, receiverScope)
@@ -623,6 +636,9 @@ function analysisExcelSheets(
       item.result.run_id,
       item.result.runtime_sec,
       item.saved_at,
+      hasReceiver ? luminance.peakNit : null,
+      hasReceiver ? flux : null,
+      hasReceiver ? luminance.lightAreaMm2[5] : null,
     ]
   })
 
@@ -769,9 +785,9 @@ function analysisExcelSheets(
         'Baseline', 'Case', 'CAD', 'Note', 'Receiver Scope', 'Conditions',
         'Mismatch Details', 'Improvement Score', 'Peak Change (%)',
         'Total Flux Change (%)', 'Light Area @5% Change (%)', 'Run ID',
-        'Runtime (s)', 'Saved At',
+        'Runtime (s)', 'Saved At', 'Peak (nit)', 'Total Flux (lm)', 'Light Area @5% (mm²)',
       ], ...compareRows],
-      columnWidths: [10, 18, 24, 28, 20, 12, 42, 18, 18, 22, 24, 22, 14, 24],
+      columnWidths: [10, 18, 24, 28, 20, 12, 42, 18, 18, 22, 24, 22, 14, 24, 16, 18, 22],
     },
     {
       name: 'Receiver Results',
@@ -999,32 +1015,36 @@ function RelativeComparisonValue({
   value,
   baseline,
   comparable,
+  unit,
 }: {
-  value: number
+  value: number | null
   baseline: number
   comparable: boolean
+  unit: string
 }) {
-  if (!comparable || !Number.isFinite(value) || !Number.isFinite(baseline)) {
-    return <span className="text-muted-foreground">—</span>
-  }
-  if (Math.abs(baseline) <= 1e-15) {
-    return Math.abs(value) <= 1e-15 ? (
-      <span className="text-muted-foreground">0.0%</span>
-    ) : (
-      <span className="text-muted-foreground">—</span>
+  if (value === null) return <span className="text-muted-foreground">—</span>
+  const change = comparable ? relativeChangePercent(value, baseline) : null
+  if (change === null) {
+    return (
+      <span className="text-muted-foreground">
+        {Number.isFinite(value) ? `${Number(value.toPrecision(4))} ${unit}` : '—'}
+      </span>
     )
   }
-  const rawChange = ((value - baseline) / baseline) * 100
-  const change = Math.abs(rawChange) < 0.05 ? 0 : rawChange
   if (change === 0) {
-    return <span className="text-muted-foreground">0.0%</span>
+    return (
+      <span className="text-muted-foreground">
+        0.0%
+        <span className="block text-xs">{Number(value.toPrecision(4))} {unit}</span>
+      </span>
+    )
   }
   const improved = change < 0
   return (
     <span
       className={improved ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'font-semibold text-red-600 dark:text-red-400'}
     >
-      {Math.abs(change).toFixed(1)}% {improved ? '감소' : '증가'}
+      {Math.abs(change) < 0.05 ? '<0.05' : Math.abs(change).toFixed(1)}% {improved ? '감소' : '증가'}
     </span>
   )
 }
@@ -3027,7 +3047,7 @@ export function RayTraceResultWindow({
                           <span className="flex items-center justify-end gap-1">
                             빛샘 개선 점수
                             <HelpTooltip label="빛샘 개선 점수 설명">
-                              Baseline 50점을 기준으로 Peak nit 60%, Total flux 25%, 광영역(@5%) 15%를 가중 평가합니다. 점수가 높을수록 빛샘이 개선된 구조입니다.
+                              Baseline 50점을 기준으로 Peak nit 60%, Total flux 25%, 광영역(@5%) 15%를 가중 평가합니다. 비교 조건이 일치하고 기준값이 있는 경우에 점수를 계산합니다. 세 지표가 같으면 수광 패턴의 위치나 모양이 달라도 변화율은 0%입니다. 변화율을 계산할 수 없는 지표는 측정값과 단위를 표시합니다.
                             </HelpTooltip>
                           </span>
                         </th>
@@ -3061,6 +3081,7 @@ export function RayTraceResultWindow({
                     </thead>
                     <tbody>
                       {analysisCases.map((item) => {
+                        const hasReceiver = scopedReceivers(item.result, receiverCompareScope).length > 0
                         const flux = caseFlux(item.result, receiverCompareScope)
                         const luminance = caseLuminance(
                           item.result,
@@ -3174,10 +3195,12 @@ export function RayTraceResultWindow({
                             <td className="p-2 text-center">
                               <span className="inline-flex items-center gap-1">
                                 <Badge variant={conditionsMatch ? 'secondary' : 'destructive'}>
-                                  {conditionsMatch ? '일치' : '불일치'}
+                                  {!baselineCase ? 'Baseline 미선택' : conditionsMatch ? '일치' : '불일치'}
                                 </Badge>
                                 <HelpTooltip label={`${item.name} 비교 조건 설명`}>
-                                  {conditionsMatch ? (
+                                  {!baselineCase ? (
+                                    '비교할 Case를 체크하고 Baseline을 선택하세요.'
+                                  ) : conditionsMatch ? (
                                     'Baseline과 Ray, Emitter, Receiver 설정 조건이 모두 일치합니다.'
                                   ) : (
                                     <span className="block">
@@ -3192,23 +3215,26 @@ export function RayTraceResultWindow({
                             </td>
                             <td className="p-2 text-right tabular-nums">
                               <RelativeComparisonValue
-                                value={luminance.peakNit}
+                                value={hasReceiver ? luminance.peakNit : null}
                                 baseline={baselineLuminance?.peakNit ?? 0}
                                 comparable={conditionsMatch}
+                                unit="nit"
                               />
                             </td>
                             <td className="p-2 text-right tabular-nums">
                               <RelativeComparisonValue
-                                value={flux}
+                                value={hasReceiver ? flux : null}
                                 baseline={baselineFlux}
                                 comparable={conditionsMatch}
+                                unit="lm"
                               />
                             </td>
                             <td className="p-2 text-right tabular-nums">
                               <RelativeComparisonValue
-                                value={luminance.lightAreaMm2[5]}
+                                value={hasReceiver ? luminance.lightAreaMm2[5] : null}
                                 baseline={baselineLuminance?.lightAreaMm2[5] ?? 0}
                                 comparable={conditionsMatch}
+                                unit="mm²"
                               />
                             </td>
                             <td className="p-2 text-right">
