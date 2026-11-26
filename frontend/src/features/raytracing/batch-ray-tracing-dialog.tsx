@@ -172,7 +172,7 @@ export function BatchRayTracingDialog({
       open={manager.open}
       onOpenChange={manager.setOpen}
       title="Batch Ray Tracing"
-      help="선택한 Case를 위에서 아래 순서로 하나씩 해석합니다. 한 Case가 실패해도 다음 Case를 계속 실행하며, 완료된 결과는 각 Case에 보관됩니다. 앱 종료 후에도 남기려면 Batch 완료 후 Save Workspace를 눌러 .bitsam 파일로 저장하세요. 동일한 CAD 구성은 준비된 Scene과 Geometry를 가능한 범위에서 재사용합니다. GPU Case는 엄격한 CUDA 준비 검사를 통과하지 못하면 CPU로 대체하지 않고 실패로 기록합니다."
+      help="선택한 Case를 위에서 아래 순서로 하나씩 해석합니다. 한 Case가 실패해도 다음 Case를 계속 실행하며, 완료된 결과는 각 Case에 보관됩니다. 같은 세션에서 중단 후 동일한 Case와 설정으로 다시 실행하면 완료된 Case는 건너뛰고 진행하던 해석을 이어갑니다. 이미 실패한 Case는 실패 상태로 유지됩니다. 서버에 중단 지점이 없으면 진행하던 해석 구간을 다시 계산합니다. 앱 종료 후에도 남기려면 Batch 완료 후 Save Workspace를 눌러 .bitsam 파일로 저장하세요. 동일한 CAD 구성은 준비된 Scene과 Geometry를 가능한 범위에서 재사용합니다. GPU Case는 엄격한 CUDA 준비 검사를 통과하지 못하면 CPU로 대체하지 않고 실패로 기록합니다."
       size="lg"
       contentClassName="max-h-[min(52rem,calc(100vh-2rem))]"
       footer={

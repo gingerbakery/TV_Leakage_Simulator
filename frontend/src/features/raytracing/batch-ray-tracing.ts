@@ -87,6 +87,16 @@ export interface BatchRayTracingController {
 
 type AuxiliaryBlockers = NonNullable<RayTraceRequest['preview_blockers']>
 
+interface BatchConvergenceCheckpoint {
+  caseId: string
+  sceneIdentity: string | undefined
+  accumulatedResult: RayTraceResult
+  history: Record<string, number>[]
+  segmentIndex: number
+  currentMultiplier: number
+  rayMultiplier: number
+}
+
 export interface BatchRayTracingControllerOptions {
   store: WorkspaceStoreApi
   client?: BatchApi
@@ -288,6 +298,13 @@ export function createBatchRayTracingController(
   let abortController: AbortController | null = null
   let activeRun: Promise<BatchRayTraceState> | null = null
   let running = false
+  let batchSetupKey: string | null = null
+  let resumeScope: string | null = null
+  const completedCases = new Map<string, {
+    state: BatchRayTraceCaseState
+    sceneIdentity: string | undefined
+  }>()
+  let checkpoint: BatchConvergenceCheckpoint | null = null
   let state: BatchRayTraceState = {
     batchId: null,
     status: 'idle',
@@ -454,6 +471,7 @@ export function createBatchRayTracingController(
   const execute = async (
     snapshots: CadCaseRayTraceSnapshot[],
     signal: AbortSignal,
+    previousCases: Map<string, BatchRayTraceCaseState>,
   ): Promise<BatchRayTraceState> => {
     const sceneCache = new Map<string, ScenePayload>()
     if (options.initialScene && snapshots[0]) {
@@ -488,6 +506,7 @@ export function createBatchRayTracingController(
 
     for (const snapshot of snapshots) {
       ensureNotAborted(signal)
+      if (previousCases.get(snapshot.caseId)?.status === 'failed') continue
       state.currentCaseId = snapshot.caseId
       publish()
       const workspace = snapshot.workspaceState
@@ -526,19 +545,6 @@ export function createBatchRayTracingController(
         })
         continue
       }
-      if (
-        workspace.rayTraceConfig.compute_backend === 'gpu_cuda' &&
-        gpuFailure
-      ) {
-        updateCase(snapshot.caseId, {
-          status: 'failed',
-          progress: 1,
-          phaseDetail: 'GPU 준비 검사 실패',
-          error: gpuFailure,
-        })
-        continue
-      }
-
       try {
         const sourceKey = batchSourceKey(snapshot)
         let scene = sceneCache.get(sourceKey)
@@ -559,6 +565,34 @@ export function createBatchRayTracingController(
           rememberScene(sourceKey, scene)
         }
 
+        const sceneIdentity = scene.metadata.trace_scene_identity ?? scene.metadata.scene_token
+        const previousCase = completedCases.get(snapshot.caseId)
+        if (
+          previousCase &&
+          previousCase.sceneIdentity === sceneIdentity &&
+          options.store.getState().actions.validateCadCaseRayTraceSetup(
+            snapshot.caseId,
+            snapshot.setupHash,
+          ) === 'current' &&
+          options.store.getState().cadCases.find((item) => item.caseId === snapshot.caseId)
+            ?.latestResult?.run_id === previousCase.state.runId
+        ) {
+          updateCase(snapshot.caseId, { ...previousCase.state, name: snapshot.name })
+          continue
+        }
+        completedCases.delete(snapshot.caseId)
+        if (workspace.rayTraceConfig.compute_backend === 'gpu_cuda' && gpuFailure) {
+          updateCase(snapshot.caseId, {
+            status: 'failed',
+            progress: 1,
+            phaseDetail: 'GPU 준비 검사 실패',
+            error: gpuFailure,
+          })
+          continue
+        }
+        const continuation = checkpoint?.caseId === snapshot.caseId &&
+          checkpoint.sceneIdentity === sceneIdentity ? checkpoint : null
+        if (checkpoint?.caseId === snapshot.caseId) checkpoint = continuation
         const auxiliaryBlockers = options.getAuxiliaryBlockers?.(snapshot) ??
           buildPrecisionPreviewConstraints(
             snapshot.leakPreviewState?.blockers ?? [],
@@ -566,11 +600,11 @@ export function createBatchRayTracingController(
             Boolean(workspace.rayTraceConfig.apply_preview_blockers),
             Boolean(workspace.rayTraceConfig.apply_allowed_areas),
           )
-        let accumulatedResult: RayTraceResult | null = null
-        const history: Record<string, number>[] = []
-        let rayMultiplier = 1
-        let segmentIndex = 0
-        let currentMultiplier = 1
+        let accumulatedResult = continuation?.accumulatedResult ?? null
+        const history = continuation?.history ?? []
+        let rayMultiplier = continuation?.rayMultiplier ?? 1
+        let segmentIndex = continuation?.segmentIndex ?? 0
+        let currentMultiplier = continuation?.currentMultiplier ?? 1
         const maximumMultiplier = Math.max(
           1,
           workspace.rayTraceConfig.max_convergence_multiplier ?? 8,
@@ -591,6 +625,9 @@ export function createBatchRayTracingController(
               segmentIndex,
               auxiliaryBlockers,
             )
+            if (resumeScope) {
+              request.resume_scope = `${resumeScope}:${snapshot.caseId}`
+            }
             return runJob(
               snapshot,
               request,
@@ -616,11 +653,17 @@ export function createBatchRayTracingController(
               status: 'loading_scene',
               phaseDetail: 'CAD Scene 캐시 복구 중',
             })
-            scene = await client.getScene(
+            const refreshedScene = await client.getScene(
               primaryPath,
               { signal },
               accessoryPaths,
             )
+            if (!scene?.metadata.viewer_binding ||
+                scene.metadata.viewer_binding !== refreshedScene.metadata.viewer_binding ||
+                scene.metadata.trace_scene_identity !== refreshedScene.metadata.trace_scene_identity) {
+              throw new Error('CAD 메시가 변경되었습니다. 도면을 다시 열고 광원 면과 면 할당을 확인하세요.')
+            }
+            scene = refreshedScene
             rememberScene(sourceKey, scene)
             segmentResult = await runSegment()
           }
@@ -661,6 +704,15 @@ export function createBatchRayTracingController(
           rayMultiplier = nextMultiplier - currentMultiplier
           currentMultiplier = nextMultiplier
           segmentIndex += 1
+          checkpoint = {
+            caseId: snapshot.caseId,
+            sceneIdentity: scene.metadata.trace_scene_identity ?? scene.metadata.scene_token,
+            accumulatedResult,
+            history,
+            segmentIndex,
+            currentMultiplier,
+            rayMultiplier,
+          }
           updateCase(snapshot.caseId, {
             phaseDetail: `Auto convergence ${segmentIndex + 1}차 실행 준비`,
             progress: segmentCaseProgress(
@@ -692,6 +744,7 @@ export function createBatchRayTracingController(
           throw new Error('실행 중 Case 조건이 변경되어 오래된 결과를 저장하지 않았습니다.')
         }
 
+        if (checkpoint?.caseId === snapshot.caseId) checkpoint = null
         updateCase(snapshot.caseId, {
           status: 'completed',
           progress: 1,
@@ -704,6 +757,12 @@ export function createBatchRayTracingController(
           jobId: null,
           runId: accumulatedResult.run_id,
         })
+        if (resumeScope) {
+          completedCases.set(snapshot.caseId, {
+            state: state.cases.find((item) => item.caseId === snapshot.caseId)!,
+            sceneIdentity: scene.metadata.trace_scene_identity ?? scene.metadata.scene_token,
+          })
+        }
       } catch (error) {
         options.store.getState().actions.setCadCaseRayTraceJob(
           snapshot.caseId,
@@ -743,6 +802,7 @@ export function createBatchRayTracingController(
           })
           break
         }
+        if (checkpoint?.caseId === snapshot.caseId) checkpoint = null
         updateCase(snapshot.caseId, {
           status: 'failed',
           progress: 1,
@@ -792,6 +852,17 @@ export function createBatchRayTracingController(
     if (snapshots.length === 0) {
       throw new Error('실행할 Case를 하나 이상 선택해 주세요.')
     }
+    const setupKey = JSON.stringify(snapshots.map(({ caseId, setupHash }) => [caseId, setupHash]))
+    const continuing = state.status === 'cancelled' && batchSetupKey === setupKey
+    const previousCases = new Map(continuing ? state.cases.map((item) => [item.caseId, item]) : [])
+    if (!continuing) {
+      checkpoint = null
+      completedCases.clear()
+      resumeScope = options.caseSource || options.getAuxiliaryBlockers
+        ? null
+        : `batch:${now()}:${Math.random().toString(36).slice(2)}`
+    }
+    batchSetupKey = resumeScope ? setupKey : null
     running = true
     options.store.getState().actions.setBatchRayTraceActive(true)
     abortController = new AbortController()
@@ -815,10 +886,13 @@ export function createBatchRayTracingController(
         geometryCacheHit: null,
         segmentIndex: 0,
         rayMultiplier: 1,
+        ...(previousCases.get(snapshot.caseId)?.status === 'failed'
+          ? { ...previousCases.get(snapshot.caseId), name: snapshot.name }
+          : {}),
       })),
     }
     publish()
-    const promise = execute(snapshots, abortController.signal)
+    const promise = execute(snapshots, abortController.signal, previousCases)
     activeRun = promise
     try {
       return await promise

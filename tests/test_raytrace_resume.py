@@ -164,6 +164,31 @@ class ApiResumeTests(TestCase):
         self.assertEqual(self.terminal(third)["result"]["total_rays"],80)
         self.assertEqual((self.builders,self.runners),(1,1))
 
+    def test_batch_resumes_after_reloading_the_same_scene(self):
+        self.payload["resume_scope"] = "batch:example:case-1"
+        paused = self.pause_first()
+        reloaded = self.runtime.load_scene("resume.step")["metadata"]
+        self.assertNotEqual(reloaded["scene_token"], self.payload["scene_token"])
+        resumed = self.runtime.start_raytrace_job(dict(
+            self.payload, scene_token=reloaded["scene_token"],
+        ))
+        self.assertEqual(resumed["resumed_from_job_id"], paused["job_id"])
+        self.assertEqual(resumed["processed_rays"], 8)
+        self.assertEqual(self.terminal(resumed)["result"]["total_rays"], 80)
+        self.assertEqual((self.builders, self.runners), (1, 1))
+
+    def test_batch_restarts_with_different_scene_geometry_identity(self):
+        self.payload["resume_scope"] = "batch:example:case-1"
+        paused = self.pause_first()
+        replacement = self.runtime.load_scene("replacement.step")["metadata"]
+        fresh = self.runtime.start_raytrace_job(dict(
+            self.payload, scene_token=replacement["scene_token"],
+        ))
+        self.assertNotIn("resumed_from_job_id", fresh)
+        self.assertEqual(self.terminal(fresh)["result"]["total_rays"], 80)
+        self.assertEqual((self.builders, self.runners), (2, 2))
+        self.assertFalse(self.runtime.raytrace_job_snapshot(paused["job_id"])["resume_available"])
+
     def test_pruning_a_paused_checkpoint_releases_its_worker(self):
         paused=self.pause_first()
         with self.runtime._state_lock:

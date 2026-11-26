@@ -138,6 +138,7 @@ class ApiRuntime:
         self._max_jobs = max(1, max_jobs)
         self._max_cached_prepared_faces = max(0, max_cached_prepared_faces)
         self._scene_mesh_cache: dict[str, dict[str, Any]] = {}
+        self._scene_identities: dict[str, str] = {}
         self._scene_viewer_mesh_cache: dict[str, dict[str, Any]] = {}
         self._scene_payload_cache: dict[str, dict[str, Any]] = {}
         self._scene_records: dict[str, tuple[dict[str, Any], Path]] = {}
@@ -237,15 +238,22 @@ class ApiRuntime:
         source_key = tuple(str(Path(value).resolve()) for value in paths)
         with self._state_lock:
             package_root = self._portable_composite_sources.get(source_key)
+        if len(paths) == 1 and package_root is None:
+            return self.load_scene(paths[0])
+        composite_key = "composite:" + json.dumps([str(package_root), *map(self._scene_cache_key, paths)])
+        with self._state_lock:
+            cached = self._scene_payload_cache.pop(composite_key, None)
+            if cached is not None:
+                self._scene_payload_cache[composite_key] = cached
+        if cached is not None:
+            return self._register_scene(cached, Path(paths[0]))
         if package_root is not None:
             payload = self._load_portable_scene(package_root)
             metadata = dict(payload.get("metadata") or {})
             metadata["source_file"] = paths[0]
             metadata["source_files"] = paths
             payload["metadata"] = metadata
-            return self._register_scene(payload, Path(paths[0]))
-        if len(paths) == 1:
-            return self.load_scene(paths[0])
+            return self._register_scene(self._cache_composite_payload(composite_key, payload), Path(paths[0]))
         payloads: list[dict[str, Any]] = []
         trace_meshes: list[dict[str, Any]] = []
         for path in paths:
@@ -263,40 +271,49 @@ class ApiRuntime:
         def load_trace_mesh() -> dict[str, Any]:
             resolved: list[dict[str, Any]] = []
             for trace in trace_meshes:
-                loader = trace.get("_deferred_trace_loader")
-                value = loader() if callable(loader) else trace
+                value = self._resolve_deferred_trace_mesh(trace)
                 if not isinstance(value, dict):
                     raise ValueError("Accessory CAD trace mesh is unavailable")
                 resolved.append(value)
             return merge_scene_meshes(resolved, component_maps, source_offsets)
 
         merged["_trace_mesh_loader"] = load_trace_mesh
-        return self._register_scene(merged, Path(paths[0]))
+        return self._register_scene(self._cache_composite_payload(composite_key, merged), Path(paths[0]))
+
+    def _cache_composite_payload(self, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._state_lock:
+            payload = self._scene_payload_cache.setdefault(key, payload)
+            while len(self._scene_payload_cache) > self._max_cached_scenes:
+                self._scene_payload_cache.pop(next(iter(self._scene_payload_cache)))
+            return payload
 
     def _register_scene(self, payload: dict[str, Any], source: Path) -> dict[str, Any]:
         viewer_mesh = payload.get("mesh")
         if not isinstance(viewer_mesh, dict):
             raise ValueError("Scene payload is missing mesh data")
-        trace_loader = payload.get("_trace_mesh_loader")
-        trace_mesh = payload.get("_trace_mesh") or viewer_mesh
-        if callable(trace_loader):
-            trace_mesh = {
-                "_deferred_trace_loader": trace_loader,
-                "_deferred_trace_lock": threading.Lock(),
-                "_viewer_face_source_ids": viewer_mesh.get(
-                    "face_source_ids"
-                ) or [],
-            }
-        elif not isinstance(trace_mesh, dict):
-            raise ValueError("Scene payload trace mesh must be an object")
-        elif trace_mesh is not viewer_mesh:
-            trace_mesh = dict(trace_mesh)
-            trace_mesh["_viewer_face_source_ids"] = viewer_mesh.get(
-                "face_source_ids"
-            ) or []
-
-        scene_token = "scene_{}".format(time.time_ns())
+        scene_token = "scene_" + uuid.uuid4().hex
         with self._state_lock:
+            registered = payload.get("_registered_meshes")
+            if registered is None:
+                identity = payload.get("_verified_scene_identity") or uuid.uuid4().hex
+                trace_loader = payload.get("_trace_mesh_loader")
+                trace_mesh = payload.get("_trace_mesh") or viewer_mesh
+                if callable(trace_loader):
+                    trace_mesh = {
+                        "_deferred_trace_loader": trace_loader,
+                        "_deferred_trace_lock": threading.Lock(),
+                        "_viewer_face_source_ids": viewer_mesh.get("face_source_ids") or [],
+                    }
+                elif not isinstance(trace_mesh, dict):
+                    raise ValueError("Scene payload trace mesh must be an object")
+                elif trace_mesh is not viewer_mesh:
+                    trace_mesh = dict(trace_mesh, _viewer_face_source_ids=viewer_mesh.get("face_source_ids") or [])
+                viewer_binding = mesh_identity(viewer_mesh)
+                payload["_registered_meshes"] = (trace_mesh, identity, viewer_binding)
+                payload.pop("_trace_mesh_loader", None)
+            else:
+                trace_mesh, identity, viewer_binding = registered
+            self._scene_identities[scene_token] = identity
             self._scene_mesh_cache[scene_token] = trace_mesh
             self._scene_viewer_mesh_cache[scene_token] = viewer_mesh
             self._scene_records[scene_token] = (payload, source.resolve())
@@ -304,6 +321,7 @@ class ApiRuntime:
             while len(self._scene_mesh_cache) > self._max_cached_scenes:
                 oldest_token = next(iter(self._scene_mesh_cache))
                 self._scene_mesh_cache.pop(oldest_token, None)
+                self._scene_identities.pop(oldest_token, None)
                 self._scene_viewer_mesh_cache.pop(oldest_token, None)
                 self._scene_records.pop(oldest_token, None)
 
@@ -312,11 +330,15 @@ class ApiRuntime:
         # to the browser. It remains in the short-lived server scene cache.
         response_payload.pop("_trace_mesh", None)
         response_payload.pop("_trace_mesh_loader", None)
+        response_payload.pop("_registered_meshes", None)
+        response_payload.pop("_verified_scene_identity", None)
         raw_metadata = payload.get("metadata")
         if not isinstance(raw_metadata, dict):
             raise ValueError("Scene payload metadata must be an object")
         metadata = dict(raw_metadata)
         metadata["scene_token"] = scene_token
+        metadata["viewer_binding"] = viewer_binding
+        metadata["trace_scene_identity"] = identity
         response_payload["metadata"] = metadata
         return response_payload
 
@@ -1021,12 +1043,18 @@ class ApiRuntime:
         restart = request_payload.pop("restart_from_beginning", False)
         if not isinstance(restart, bool):
             raise ValueError("restart_from_beginning must be boolean")
-        fingerprint = hashlib.sha256(json.dumps(request_payload, sort_keys=True,
-            separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         validate_bsdf_request(request_payload)
         if self._trace_input_builder is build_direct_trace_input:
             validate_trace_request_before_geometry(request_payload)
-        scene_mesh = self._scene_mesh_for_request(request_payload)
+        scene_mesh, scene_identity = self._trace_scene_for_request(request_payload)
+        resume_scope = request_payload.get("resume_scope")
+        # Batch loads its Case scene again on continuation, which can issue a
+        # new token for the same registered tracing geometry.
+        resume_inputs = request_payload
+        if isinstance(resume_scope, str) and resume_scope.startswith("batch:"):
+            resume_inputs = dict(request_payload, scene_token=scene_identity)
+        fingerprint = hashlib.sha256(json.dumps(resume_inputs, sort_keys=True,
+            separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         requested_ray_count = sum(
             max(0, int(emitter.get("ray_count", 0)))
             for emitter in request_payload.get("emitters", [])
@@ -1056,7 +1084,6 @@ class ApiRuntime:
         if not isinstance(config, dict):
             config = {}
         observer = request_payload.get("observer_probe")
-        resume_scope = request_payload.get("resume_scope")
         is_preview = isinstance(resume_scope, str) and resume_scope.startswith("preview:")
         job_details = {
             "mode": "preview" if is_preview else "forward",
@@ -1352,17 +1379,21 @@ class ApiRuntime:
         self,
         request_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        return self._trace_scene_for_request(request_payload)[0]
+
+    def _trace_scene_for_request(self, request_payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
         scene_token = str(request_payload.get("scene_token") or "")
         with self._state_lock:
             if request_payload.get("geometry_mode") == "preview":
                 scene_mesh = self._scene_viewer_mesh_cache.get(scene_token)
             else:
                 scene_mesh = self._scene_mesh_cache.get(scene_token)
+            identity = self._scene_identities.get(scene_token, scene_token)
         if scene_mesh is None:
             raise ValueError(
                 "CAD scene cache expired. Reload the CAD model and run again"
             )
-        return scene_mesh
+        return scene_mesh, identity
 
     def _trace_geometry_cache_key(
         self,

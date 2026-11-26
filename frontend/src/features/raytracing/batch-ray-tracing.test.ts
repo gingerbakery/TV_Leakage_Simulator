@@ -513,6 +513,61 @@ describe('batch Ray Tracing controller', () => {
       .toEqual([null, null])
   })
 
+  it.each([false, true])('continues only an unchanged batch (changed setup: %s)', async (changed) => {
+    const store = createWorkspaceStore()
+    const firstCaseId = addConfiguredCase(store, 'completed.step')
+    const secondCaseId = addConfiguredCase(store, 'interrupted.step', {
+      autoConvergence: true,
+      maxConvergenceMultiplier: 2,
+    })
+    let interrupted = false
+    const startRayTrace = vi.fn(async (request: RayTraceRequest) => {
+      const call = startRayTrace.mock.calls.length
+      if (call === 3) return queuedJob('paused')
+      const job = completedJob(`job-${call}`, request)
+      const result = job.status === 'completed' ? job.result! : null
+      if (result) {
+        result.metrics[request.receivers[0].receiver_id] = {
+          error_estimate_percent: 100,
+          peak_error_estimate_percent: 100,
+        }
+      }
+      return job
+    })
+    const controller = createBatchRayTracingController({
+      store,
+      client: createClient({ startRayTrace }),
+      onStateChange: (state) => {
+        if (!interrupted && state.cases[1]?.jobId === 'paused') {
+          interrupted = true
+          void controller.cancel()
+        }
+      },
+      sleep: immediateSleep,
+    })
+
+    expect((await controller.run([firstCaseId, secondCaseId])).status).toBe('cancelled')
+    const previousRequest = startRayTrace.mock.calls[2][0]
+    if (changed) {
+      store.getState().actions.setRayTraceConfig({
+        ...store.getState().rayTraceConfig,
+        seed: 43,
+      })
+    }
+    const finalState = await controller.run([firstCaseId, secondCaseId])
+    expect(finalState.status).toBe('completed')
+    if (changed) {
+      expect(startRayTrace).toHaveBeenCalledTimes(6)
+      expect(startRayTrace.mock.calls[5][0].resume_scope).not.toBe(previousRequest.resume_scope)
+    } else {
+      expect(startRayTrace).toHaveBeenCalledTimes(4)
+      expect(startRayTrace.mock.calls[3][0]).toEqual(previousRequest)
+      expect(finalState.cases[0].runId).toBe('run-job-1')
+    }
+    const result = store.getState().cadCases.find((item) => item.caseId === secondCaseId)?.latestResult
+    expect(result?.total_rays).toBe(2 * previousRequest.emitters[0].ray_count)
+  })
+
   it('stops a backend job that is returned after cancellation raced with start', async () => {
     const store = createWorkspaceStore()
     const caseId = addConfiguredCase(store, 'start-race.step')
@@ -851,13 +906,15 @@ describe('batch Ray Tracing controller', () => {
     }])
   })
 
-  it('reloads the scene token once when the backend scene cache expired', async () => {
+  it.each([true, false])('checks CAD bindings on cache expiry (same binding: %s)', async (sameBinding) => {
     const store = createWorkspaceStore()
     const caseId = addConfiguredCase(store, 'retry.step')
     const firstScene = createSceneFixture()
     firstScene.metadata.scene_token = 'expired-token'
+    firstScene.metadata.viewer_binding = 'original-binding'
     const refreshedScene = createSceneFixture()
     refreshedScene.metadata.scene_token = 'fresh-token'
+    refreshedScene.metadata.viewer_binding = sameBinding ? 'original-binding' : 'different-binding'
     const getScene = vi.fn()
       .mockResolvedValueOnce(firstScene)
       .mockResolvedValueOnce(refreshedScene)
@@ -884,6 +941,11 @@ describe('batch Ray Tracing controller', () => {
     const finalState = await controller.run([caseId])
 
     expect(getScene).toHaveBeenCalledTimes(2)
+    if (!sameBinding) {
+      expect(startRayTrace).toHaveBeenCalledTimes(1)
+      expect(finalState.cases[0].status).toBe('failed')
+      return
+    }
     expect(startRayTrace).toHaveBeenCalledTimes(2)
     expect(startRayTrace.mock.calls[0][0].scene_token).toBe('expired-token')
     expect(startRayTrace.mock.calls[1][0].scene_token).toBe('fresh-token')

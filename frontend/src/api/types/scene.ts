@@ -78,6 +78,8 @@ export interface ScenePayload {
     import_timings_sec?: Record<string, number>
     receiver_face_hint: number[]
     scene_token: string
+    viewer_binding?: string
+    trace_scene_identity?: string
   }
 }
 
