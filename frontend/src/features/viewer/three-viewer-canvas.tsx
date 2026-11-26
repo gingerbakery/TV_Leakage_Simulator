@@ -427,20 +427,26 @@ function createLeakPreviewDotTexture(halo: boolean): CanvasTexture {
   canvas.height = 64
   const context = canvas.getContext('2d')
   if (context) {
-    context.clearRect(0, 0, 64, 64)
-    const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32)
+    context.translate(32, 32)
+    context.rotate(-Math.PI / 7)
+    context.scale(1, .74)
+    const gradient = context.createRadialGradient(-3, 1, 0, 0, 0, 32)
     if (halo) {
-      gradient.addColorStop(0, 'rgba(12, 18, 29, 1)')
-      gradient.addColorStop(.53, 'rgba(12, 18, 29, 1)')
-      gradient.addColorStop(.76, 'rgba(12, 18, 29, 0)')
-      gradient.addColorStop(1, 'rgba(12, 18, 29, 0)')
+      // Keep the dark edge close to the core, then fade into a yellow glow.
+      gradient.addColorStop(0, 'rgba(32, 25, 6, .55)')
+      gradient.addColorStop(.34, 'rgba(32, 25, 6, .35)')
+      gradient.addColorStop(.42, 'rgba(255, 213, 35, .22)')
+      gradient.addColorStop(.66, 'rgba(255, 224, 55, .13)')
+      gradient.addColorStop(1, 'rgba(255, 224, 55, 0)')
     } else {
       gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(.62, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(.83, 'rgba(255, 255, 255, 0)')
+      gradient.addColorStop(.28, 'rgba(255, 255, 255, .98)')
+      gradient.addColorStop(.52, 'rgba(255, 255, 255, .72)')
+      gradient.addColorStop(.78, 'rgba(255, 255, 255, .23)')
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
     }
     context.fillStyle = gradient
-    context.fillRect(0, 0, 64, 64)
+    context.fillRect(-32, -32, 64, 64)
   }
   const texture = new CanvasTexture(canvas)
   texture.colorSpace = SRGBColorSpace
@@ -3425,12 +3431,14 @@ export function ThreeViewerCanvas({
           const rect = canvas.getBoundingClientRect()
           const pixel = { x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width, height: rect.height }
           const pixelVisible = runtime.leakMarkerOcclusion.pixelVisibilityTest(camera, pixel)
+          const preview = leakPreviewStore.getState()
+          const pointScale = preview.pointSizePercent / 100
           const pickedPoint = pickLeakPreviewPoint(runtime.leakMarkerOcclusion.markers, camera,
             { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect,
-            (point, distance) => distance <= (leakPreviewDisplayStyle.haloSize / 2) ** 2
-              ? pixelVisible(point) : runtime.leakMarkerOcclusion.isPointVisible(point, camera))
+            (point, distance) => distance <= (leakPreviewDisplayStyle.haloSize * pointScale / 2) ** 2
+              ? pixelVisible(point) : runtime.leakMarkerOcclusion.isPointVisible(point, camera),
+            leakPreviewDisplayStyle.pickRadius * pointScale)
           const candidateId = pickedPoint?.candidateId
-          const preview = leakPreviewStore.getState()
           const index = preview.candidates.findIndex((candidate) => candidate.id === candidateId)
           if (candidateId && index >= 0) {
             preview.selectCandidate(candidateId, 'viewer', pickedPoint?.observation)
@@ -4047,10 +4055,10 @@ export function ThreeViewerCanvas({
     const cachedCore = reuseMarkers ? markers.getObjectByName('leak-preview-glow-points') as Points | undefined : undefined
     const positions = cachedCore ? cachedCore.geometry.getAttribute('position').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
     const coreColors = cachedCore ? cachedCore.geometry.getAttribute('color').array as Float32Array : new Float32Array(visibleLeakPreviewPoints.length * 3)
-    const coreLow = new Color(0xff8a00)
+    const coreLow = new Color(0xffcf20)
     const coreHigh = new Color(0xffed38)
-    const selectedCoreColor = new Color(0x48efff).toArray()
-    const dimCoreColor = new Color(0xd7973e).toArray()
+    const selectedCoreColor = new Color(0xfff7a0).toArray()
+    const dimCoreColor = new Color(0xc6a731).toArray()
     const mixedCore = new Color()
     visibleLeakPreviewPoints.forEach((point, index) => {
       if (!cachedCore) positions.set(point.position, index * 3)
@@ -4073,6 +4081,7 @@ export function ThreeViewerCanvas({
       cachedCore.geometry.getAttribute('color').needsUpdate = true
       cachedHalo.visible = true
     } else {
+    const pointScale = leakPreviewStore.getState().pointSizePercent / 100
     const haloGeometry = new BufferGeometry()
     haloGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
     const glowHalo = new Points(
@@ -4080,7 +4089,7 @@ export function ThreeViewerCanvas({
       new PointsMaterial({
         map: createLeakPreviewDotTexture(true),
         alphaTest: 0.015,
-        size: leakPreviewDisplayStyle.haloSize,
+        size: leakPreviewDisplayStyle.haloSize * pointScale,
         sizeAttenuation: false,
         transparent: true,
         opacity: leakPreviewDisplayStyle.haloOpacity,
@@ -4099,8 +4108,8 @@ export function ThreeViewerCanvas({
       coreGeometry,
       new PointsMaterial({
         map: createLeakPreviewDotTexture(false),
-        alphaTest: 0.08,
-        size: leakPreviewDisplayStyle.coreSize,
+        alphaTest: 0.015,
+        size: leakPreviewDisplayStyle.coreSize * pointScale,
         sizeAttenuation: false,
         vertexColors: true,
         transparent: true,
@@ -4188,6 +4197,16 @@ export function ThreeViewerCanvas({
       runtime.leakPreviewRoot.add(outline)
     }
   }, [pointViewMode, selectedLeakObservation, leakHighlight, leakPreviewResult, leakPreviewCandidates, leakPreviewIgnoreAreas, leakPreviewIgnoreAreasVisible, visibleLeakPreviewPoints, leakPreviewVisualizationVisible, scene, selectedLeakCandidateId, selectedLeakGroupIds, transformRules])
+
+  useEffect(() => leakPreviewStore.subscribe((state, previous) => {
+    if (state.pointSizePercent === previous.pointSizePercent) return
+    const markers = runtimeRef.current?.leakMarkerOcclusion.markers
+    const pointScale = state.pointSizePercent / 100
+    const halo = markers?.getObjectByName('leak-preview-glow-halo') as Points<BufferGeometry, PointsMaterial> | undefined
+    const core = markers?.getObjectByName('leak-preview-glow-points') as Points<BufferGeometry, PointsMaterial> | undefined
+    if (halo) halo.material.size = leakPreviewDisplayStyle.haloSize * pointScale
+    if (core) core.material.size = leakPreviewDisplayStyle.coreSize * pointScale
+  }), [])
 
   useEffect(() => {
     const runtime = runtimeRef.current

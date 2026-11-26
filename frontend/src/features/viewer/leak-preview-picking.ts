@@ -11,6 +11,7 @@ export function pickLeakPreviewPoint(
   pointer: { x: number; y: number },
   viewport: { width: number; height: number },
   isVisible?: (point: Vector3, distanceSquared: number) => boolean,
+  pickRadius: number = leakPreviewDisplayStyle.pickRadius,
 ): { candidateId: string; observation?: ObserverPointSelection } | null {
   if (viewport.width <= 0 || viewport.height <= 0) return null
   root.updateWorldMatrix(true, true)
@@ -34,7 +35,7 @@ export function pickLeakPreviewPoint(
       const x = (projected.x + 1) * viewport.width / 2
       const y = (1 - projected.y) * viewport.height / 2
       const distance = (x - pointer.x) ** 2 + (y - pointer.y) ** 2
-      if (distance > leakPreviewDisplayStyle.pickRadius ** 2) continue
+      if (distance > pickRadius ** 2) continue
       const source = (object.userData.leakPoints as LeakPreviewPoint[] | undefined)?.[index]
       const observation = source?.observerAngles ? {position: source.position, angles: source.observerAngles} : undefined
       candidates.push({ id, point: world.clone(), distance, depth: projected.z, observation })

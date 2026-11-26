@@ -119,6 +119,8 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
   const [caseComparison, setCaseComparison] = useState(false)
   const comparisonCaseCount = useWorkspaceStore(state => state.cadCases.length)
   const pointViewMode = useLeakPreviewStore(state => state.pointViewMode)
+  const pointSizePercent = useLeakPreviewStore(state => state.pointSizePercent)
+  const setPointSizePercent = useLeakPreviewStore(state => state.setPointSizePercent)
   const setPointViewMode = useLeakPreviewStore(state => state.setPointViewMode)
   const [forwardDiagnostics, setForwardDiagnostics] = useState(false)
   const [candidatesCollapsed,setCandidatesCollapsed] = useState(false)
@@ -1124,6 +1126,23 @@ export function LeakPreviewPanel({ scene, onOpenPrecision }: LeakPreviewPanelPro
             {visualizationVisible ? <Eye /> : <EyeOff />}
             {visualizationVisible ? 'Hide' : 'Show'}
           </Button>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <label className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="whitespace-nowrap">Leak Point 크기</span>
+            <input
+              type="range"
+              min={50}
+              max={200}
+              step={10}
+              value={pointSizePercent}
+              aria-valuetext={`${pointSizePercent}%`}
+              onChange={event => setPointSizePercent(event.currentTarget.valueAsNumber)}
+              className="min-w-0 flex-1 accent-amber-500"
+            />
+          </label>
+          <span className="w-9 text-right tabular-nums">{pointSizePercent}%</span>
+          <HelpTooltip label="Leak Point 크기 도움말">100%는 기본 크기입니다. 노란색 중심과 빛 번짐을 함께 조절하며 검출 결과와 광량에는 영향을 주지 않습니다.</HelpTooltip>
         </div>
       </section>
 

@@ -73,6 +73,8 @@ interface LeakPreviewState {
   selectedPointView: { horizontal: number; vertical: number } | null
   pointViewMode: 'all' | 'current' | 'selected'
   setPointViewMode(mode: 'all' | 'current' | 'selected'): void
+  pointSizePercent: number
+  setPointSizePercent(percent: number): void
   cameraViewRequest: { candidate: LeakPreviewCandidate | null; sceneToken: string | null } | null
   requestCameraView(candidate: LeakPreviewCandidate | null): void
   sceneToken: string | null
@@ -220,6 +222,8 @@ const store = createStore<LeakPreviewState>()((set, get) => {
   selectedPointView: null,
   pointViewMode: 'all',
   setPointViewMode: pointViewMode => set({ pointViewMode }),
+  pointSizePercent: 100,
+  setPointSizePercent: pointSizePercent => set({ pointSizePercent }),
   cameraViewRequest: null,
   requestCameraView: (candidate) => set({ cameraViewRequest: { candidate: candidate ? structuredClone(candidate) : null, sceneToken: get().sceneToken } }),
   points: [],
