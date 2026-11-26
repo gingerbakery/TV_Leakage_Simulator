@@ -31,8 +31,13 @@ class LoggedServerTests(unittest.TestCase):
             first, logs = self.run_fixture(root, "print('first launch')", log_name=None)
             second, _ = self.run_fixture(root, "print('second launch')", log_name=None)
             self.assertEqual((first.returncode, second.returncode), (0, 0))
-            records = sorted(path.read_text(encoding='utf-8').splitlines()[-1].split(' ', 1)[1]
-                             for path in logs.glob("server-*.log"))
+            records = []
+            for path in logs.glob("server-*.log"):
+                lines = path.read_text(encoding='utf-8').splitlines()
+                self.assertIn('[SERVER PROCESS EXIT]', lines[-1])
+                self.assertIn('code=0 hex=0x00000000', lines[-1])
+                records.append(lines[-2].split(' ', 1)[1])
+            records.sort()
             self.assertEqual(records, ['first launch', 'second launch'])
 
     def test_progress_errors_and_entrypoint_arguments_reach_console_and_log(self):
@@ -86,6 +91,16 @@ class LoggedServerTests(unittest.TestCase):
             self.assertEqual(first.returncode, 0)
             self.assertNotEqual(second.returncode, 0)
             self.assertEqual(log.read_bytes(), original)
+
+    def test_abrupt_server_exit_is_recorded_by_supervisor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process, log = self.run_fixture(Path(directory),
+                "import os\nprint('last job phase', flush=True)\nos._exit(23)\n")
+            self.assertEqual(process.returncode, 23)
+            lines = log.read_text(encoding='utf-8').splitlines()
+            self.assertIn('last job phase', lines[-2])
+            self.assertIn('[SERVER PROCESS EXIT]', lines[-1])
+            self.assertIn('code=23 hex=0x00000017', lines[-1])
 
 
 if __name__ == '__main__':

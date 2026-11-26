@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
 import time
 import tempfile
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,7 @@ from .runtime import ApiRuntime
 
 API_VERSION = "1.0.0"
 ROOT = Path(__file__).resolve().parents[3]
+SERVER_HEARTBEAT_INTERVAL_SEC = 60
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
@@ -54,12 +57,40 @@ def create_app(
     boot_token = os.environ.get("LEAKAGE_BOOT_TOKEN")
     if boot_token is None:
         boot_token = str(time.time_ns())
+
+    @asynccontextmanager
+    async def lifespan(_application):
+        started = time.monotonic()
+
+        def record(event):
+            log_event(event, pid=os.getpid(), boot_token=boot_token,
+                      uptime_sec=round(time.monotonic() - started, 1),
+                      **api_runtime.server_diagnostic_snapshot())
+
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(SERVER_HEARTBEAT_INTERVAL_SEC)
+                record("server.heartbeat")
+
+        record("server.start")
+        task = asyncio.create_task(heartbeat())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:
+                record("server.shutdown")
+
     application = FastAPI(
         title="TV Leakage Simulator API",
         version=API_VERSION,
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
     application.state.api_runtime = api_runtime
     from leakage_simulator.lt_validation.routes import router as lt_validation_router

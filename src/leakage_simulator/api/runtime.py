@@ -1242,6 +1242,27 @@ class ApiRuntime:
         with self._state_lock:
             return dict(self._raytrace_jobs[job_id])
 
+    def server_diagnostic_snapshot(self) -> dict[str, Any]:
+        fields = (
+            "status", "phase", "phase_detail", "progress", "processed_rays",
+            "total_rays", "batch", "stop_requested", "stopped_early", "resume_available",
+        )
+        summaries = []
+        with self._state_lock:
+            for kind, jobs in (
+                ("raytrace", self._raytrace_jobs),
+                ("sensor_comparison", self._sensor_comparison_jobs),
+            ):
+                latest_id = next(reversed(jobs), None)
+                for job_id, job in jobs.items():
+                    if job_id == latest_id or job.get("status") in {"queued", "running"}:
+                        summaries.append({
+                            "kind": kind,
+                            "job_id": job_id,
+                            **{key: job[key] for key in fields if key in job},
+                        })
+        return {"jobs": summaries, **_process_memory_snapshot()}
+
     def raytrace_job_snapshot(
         self,
         job_id: str,
