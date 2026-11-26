@@ -3750,6 +3750,11 @@ def run_direct_ray_trace(
         **native_cpu_sampling.delta_stats(primary_preparation_baseline),
         **primary_prefetch_stats.to_dict(),
         "optical_resolution_sec": optical_resolution_sec,
+        "optical_routing_cache_status": (
+            resolved_optical_by_face.routing_cache_status
+            if isinstance(resolved_optical_by_face, ResolvedOpticalFaces)
+            else "per_triangle"
+        ),
         "optical_resolution_contract": (
             "run_local_optical_palette_v1" if isinstance(resolved_optical_by_face, ResolvedOpticalFaces)
             else "per_triangle_optical_resolution_v1"

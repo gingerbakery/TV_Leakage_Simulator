@@ -195,7 +195,7 @@ def build_prepared_trace_geometry(
     mesh.set_acceleration_structure("bvh")
     started = time.perf_counter()
     try:
-        mesh.prepare_acceleration(should_stop)
+        mesh.prepare_acceleration(should_stop, report_timing=report_timing)
     finally:
         if report_timing is not None:
             report_timing("bvh_prepare", time.perf_counter() - started)

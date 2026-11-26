@@ -97,6 +97,7 @@ class ResolvedOpticalFaces(Sequence[ResolvedOpticalProperty]):
     properties: tuple[ResolvedOpticalProperty, ...]
     palette: tuple[ResolvedOpticalProperty, ...]
     palette_slots: np.ndarray
+    routing_cache_status: str = "unreported"
 
     def __len__(self):
         return len(self.properties)
@@ -266,9 +267,14 @@ class OpticalPropertyResolver:
                 ('part_assignment', self.part_assignments, part_assignments),
             ):
                 mapping_signature = []
+                route_by_assignment = {}
                 for key, assignment in assignments.items():
                     resolved = resolved_mapping[key]
-                    token = (source, id(assignment)) if resolved is not None else None
+                    # Requests reconstruct assignment objects. Use their first
+                    # target as the route while preserving shared assignments.
+                    token = None
+                    if resolved is not None:
+                        token = route_by_assignment.setdefault(id(assignment), (source, key))
                     mapping_signature.append((key, token))
                     if token is not None:
                         routes[token] = resolved
@@ -280,7 +286,7 @@ class OpticalPropertyResolver:
                 slots = cached.slots.copy()
                 properties = tuple(np.take(np.asarray(palette, dtype=object), slots).tolist())
                 slots.setflags(write=False)
-                return ResolvedOpticalFaces(properties, palette, slots)
+                return ResolvedOpticalFaces(properties, palette, slots, "hit")
         properties = []
         palette = []
         palette_by_identity = {}
@@ -306,9 +312,11 @@ class OpticalPropertyResolver:
             slots[face_index] = slot
             properties.append(resolved)
         slots.setflags(write=False)
+        cache_status = "disabled_or_ineligible"
         if cache_enabled:
             route_by_identity = {id(value): key for key, value in routes.items()}
             self.mesh._optical_routing_cache = _build_optical_routing_cache(
                 self.mesh, signature, tuple(route_by_identity[id(value)] for value in palette), slots,
             )
-        return ResolvedOpticalFaces(tuple(properties), tuple(palette), slots)
+            cache_status = "miss_stored" if self.mesh._optical_routing_cache is not None else "miss_not_stored"
+        return ResolvedOpticalFaces(tuple(properties), tuple(palette), slots, cache_status)

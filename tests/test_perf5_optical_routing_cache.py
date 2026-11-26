@@ -83,6 +83,17 @@ class OpticalRoutingCacheTests(unittest.TestCase):
         resolver.profiles.pop('mirror')
         self.assert_resolver_parity(resolver)
 
+    def test_reconstructed_assignments_reuse_routes_and_bind_current_profiles(self):
+        first = self.resolver()
+        self.assert_resolver_parity(first)
+        cached = first.mesh._optical_routing_cache
+        next_run = self.resolver()
+        next_run.mesh = first.mesh
+        next_run.profiles['black'].reflectance = 0.42
+        actual = self.assert_resolver_parity(next_run)
+        self.assertIs(next_run.mesh._optical_routing_cache, cached)
+        self.assertIn(0.42, [entry.profile.reflectance for entry in actual.palette])
+
     def test_in_place_metadata_and_equal_dictionary_replacements_invalidate_routes(self):
         resolver = self.resolver()
         self.assert_resolver_parity(resolver)

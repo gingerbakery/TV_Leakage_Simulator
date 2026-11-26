@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -1049,6 +1050,7 @@ class ApiRuntime:
             "resume_count": 0,
             "created_at": time.time(),
             "_diagnostic_request_id": request_id.get(),
+            "_diagnostic_start_memory": _process_memory_snapshot(),
         }
         config = request_payload.get("config")
         if not isinstance(config, dict):
@@ -1135,7 +1137,7 @@ class ApiRuntime:
 
         worker = threading.Thread(
             target=copy_context().run,
-            args=(self._run_raytrace_job, job_id, scene_mesh, request_payload, session, tuple(predecessors)),
+            args=(self._run_raytrace_worker, job_id, scene_mesh, request_payload, session, tuple(predecessors)),
             daemon=True,
             name="raytrace-{}".format(job_id[:8]),
         )
@@ -1432,6 +1434,8 @@ class ApiRuntime:
         should_stop: Optional[Callable[[], bool]] = None,
         report_phase: Optional[Callable[[str], None]] = None,
         report_timing: Optional[Callable[[str, float], None]] = None,
+        *,
+        diagnostic_job_id: str | None = None,
     ) -> Any:
         def phase(detail: str) -> None:
             if report_phase is not None:
@@ -1510,6 +1514,7 @@ class ApiRuntime:
                             should_stop,
                             report_phase,
                             report_timing,
+                            diagnostic_job_id=diagnostic_job_id,
                         )
                     raise build_state.error
                 prepared = build_state.prepared
@@ -1532,20 +1537,37 @@ class ApiRuntime:
                         build_state.event.set()
                     raise
                 with self._state_lock:
+                    memory_before = _process_memory_snapshot()
                     prepared_faces = len(prepared.mesh.faces)
-                    if prepared_faces <= self._max_cached_prepared_faces:
+                    admitted = prepared_faces <= self._max_cached_prepared_faces
+                    if admitted:
                         self._trace_geometry_cache[cache_key] = prepared
                     cached_faces = sum(len(value.mesh.faces) for value in self._trace_geometry_cache.values())
+                    evicted_entries = []
                     while (
                         len(self._trace_geometry_cache) > self._max_jobs
                         or cached_faces > self._max_cached_prepared_faces
                     ):
-                        oldest = self._trace_geometry_cache.pop(next(iter(self._trace_geometry_cache)))
+                        oldest_key = next(iter(self._trace_geometry_cache))
+                        oldest = self._trace_geometry_cache.pop(oldest_key)
                         cached_faces -= len(oldest.mesh.faces)
+                        evicted_entries.append({
+                            "cache_key": oldest_key,
+                            "faces": len(oldest.mesh.faces),
+                            "shallow_bytes": _prepared_geometry_shallow_bytes(oldest),
+                        })
                         del oldest
+                    memory_after = _process_memory_snapshot()
                     build_state.prepared = prepared
                     self._trace_geometry_builds.pop(cache_key, None)
                     build_state.event.set()
+                log_event("ray.prepared_cache_store", job_id=diagnostic_job_id,
+                          cache_key=cache_key, admitted=admitted,
+                          prepared_faces=prepared_faces, cached_faces=cached_faces,
+                          prepared_shallow_bytes=_prepared_geometry_shallow_bytes(prepared),
+                          evicted_entries=len(evicted_entries), evictions=evicted_entries,
+                          face_limit=self._max_cached_prepared_faces, entry_limit=self._max_jobs,
+                          memory_before_eviction=memory_before, memory_after_eviction=memory_after)
         if cache_hit:
             phase("기존 Trace Mesh 및 BVH 불러오는 중")
         phase("Emitter 및 Receiver 계산 입력 구성 중")
@@ -1725,14 +1747,25 @@ class ApiRuntime:
         if terminal is not None:
             trace_sec = terminal.get("trace_elapsed_sec")
             baseline = terminal.get("_diagnostic_trace_baseline_sec")
+            memory = _process_memory_snapshot()
+            initial_memory = terminal.get("_diagnostic_start_memory", {})
+            initial_rss = initial_memory.get("rss_bytes")
+            rss = memory.get("rss_bytes")
+            initial_commit = initial_memory.get("private_commit_bytes")
+            commit = memory.get("private_commit_bytes")
             diagnostics = {
+                "rss_start_bytes": initial_rss,
+                "rss_delta_bytes": rss - initial_rss if rss is not None and initial_rss is not None else None,
+                "private_commit_start_bytes": initial_commit,
+                "private_commit_delta_bytes": commit - initial_commit
+                if commit is not None and initial_commit is not None else None,
                 "prep_sec": terminal.get("preparation_elapsed_sec"),
                 "trace_sec": trace_sec,
                 "trace_segment_sec": max(0., trace_sec - (baseline or 0.)) if trace_sec is not None else None,
                 "post_sec": terminal.get("post_elapsed_sec"),
                 "total_sec": max(0., time.time() - terminal["created_at"]) if "created_at" in terminal else None,
                 "resumed_from_job_id": terminal.get("resumed_from_job_id"),
-                **_process_memory_snapshot(),
+                **memory,
                 "geometry_cache_hit": terminal.get("geometry_cache_hit"),
                 **_trace_diagnostics(terminal.get("result") or {}),
             }
@@ -1752,6 +1785,23 @@ class ApiRuntime:
                         "compute_execution_state", "gpu_cuda_gpu_success_count",
                     ) if key in diagnostics[section]} for section in ("compute", "observer_compute")},
                 }, separators=(",", ":"))), flush=True)
+
+    def _run_raytrace_worker(self, job_id, scene_mesh, request_payload, session, predecessors):
+        try:
+            self._run_raytrace_job(job_id, scene_mesh, request_payload, session, predecessors)
+        finally:
+            del scene_mesh, request_payload
+            with self._state_lock:
+                cached_geometry_entries = len(self._trace_geometry_cache)
+                cached_geometry_faces = sum(len(entry.mesh.faces) for entry in self._trace_geometry_cache.values())
+                cached_shallow_bytes = sum(_prepared_geometry_shallow_bytes(entry)
+                                           for entry in self._trace_geometry_cache.values())
+                retained_results = len({id(job["result"]) for job in self._raytrace_jobs.values() if job.get("result") is not None})
+            log_event("ray.worker_released", job_id=session.job_id if session else job_id,
+                      prepared_cache_entries=cached_geometry_entries,
+                      prepared_cache_shallow_bytes=cached_shallow_bytes,
+                      prepared_cache_faces=cached_geometry_faces, retained_results=retained_results,
+                      **_process_memory_snapshot())
 
     def _run_raytrace_job(
         self,
@@ -1818,6 +1868,7 @@ class ApiRuntime:
                 should_stop,
                 report_preparation_phase,
                 report_geometry_timing,
+                diagnostic_job_id=job_id,
             )
             preparation_elapsed_sec = time.perf_counter() - preparation_started_at
             geometry_cache_hit = bool(
@@ -2134,6 +2185,16 @@ if os.name == "nt":
     _get_process_memory_info.restype = wintypes.BOOL
 
 
+def _prepared_geometry_shallow_bytes(prepared: PreparedTraceGeometry) -> int:
+    """Count top-level containers without walking millions of objects."""
+    mesh = prepared.mesh
+    return sum(sys.getsizeof(container) for container in (
+        mesh.vertices, mesh.faces, mesh.face_material, mesh.face_metadata,
+        mesh._prepared_triangles, mesh._bvh_nodes, mesh._bvh_face_indices,
+        prepared.source_to_trace_face,
+    ) if container is not None)
+
+
 def _process_memory_snapshot() -> dict[str, int]:
     if os.name != "nt":
         return {}
@@ -2141,4 +2202,9 @@ def _process_memory_snapshot() -> dict[str, int]:
     counters.cb = ctypes.sizeof(counters)
     if not _get_process_memory_info(wintypes.HANDLE(-1), ctypes.byref(counters), counters.cb):
         return {}
-    return {"rss_bytes": counters.working_set, "process_peak_rss_bytes": counters.peak_working_set}
+    return {
+        "rss_bytes": counters.working_set,
+        "process_peak_rss_bytes": counters.peak_working_set,
+        "private_commit_bytes": counters.pagefile_usage,
+        "process_peak_private_commit_bytes": counters.peak_pagefile_usage,
+    }
