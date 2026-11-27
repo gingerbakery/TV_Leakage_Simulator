@@ -1146,6 +1146,34 @@ describe('workspace store', () => {
     })
   })
 
+  it('preserves the tracing result and highlighted path when toggling an ROI', () => {
+    const store = createWorkspaceStore()
+    const { actions } = store.getState()
+    actions.addCadCase({ path: 'roi-result.step', displayName: 'ROI result' })
+    actions.addRoiScope({
+      source: 'box',
+      view: 'coordinate',
+      components: [],
+      clipBox: { plane: 'xyz', xMin: 0, xMax: 5, yMin: 0, yMax: 5, zMin: 0, zMax: 5 },
+      observerView: { horizontalDeg: 0, verticalDeg: 0, direction: [0, 0, -1] },
+    })
+    const result = createRayTraceResultFixture()
+    actions.setActiveCadCaseResult(result)
+    actions.setRestoredRayTraceResult(result)
+    actions.setActiveRayTraceJobId('roi-job')
+    actions.setHighlightedRayPathSelection({ runId: result.run_id, pathIndices: [0], label: 'Stored Path #1' })
+    const before = store.getState()
+    for (const active of [false, true]) {
+      actions.setRoiScopeActive(before.roiScopes[0].id, active)
+      const state = store.getState()
+      expect(state.roiScopes[0].active).toBe(active)
+      expect(state.activeRayTraceJobId).toBe('roi-job')
+      expect(state.cadCases[0].latestResult).toBe(before.cadCases[0].latestResult)
+      expect(state.restoredRayTraceResult).toBe(before.restoredRayTraceResult)
+      expect(state.highlightedRayPathSelection).toBe(before.highlightedRayPathSelection)
+    }
+  })
+
   it('owns multi-scope ROI activation and clears it with scene state', () => {
     const store = createWorkspaceStore()
     const { actions } = store.getState()

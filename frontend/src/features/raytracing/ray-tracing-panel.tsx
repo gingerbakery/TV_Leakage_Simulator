@@ -1050,7 +1050,7 @@ function EmitterDialog({
 function ReceiverCenterCoordinates({ center }: { center: Vec3 }) {
   const coordinateInput = useRef<HTMLTextAreaElement>(null)
   const [copyFeedback, setCopyFeedback] = useState<{ value: string; message: string } | null>(null)
-  const value = center.join(', ')
+  const value = center.map(coordinate => coordinate.toFixed(1)).join(', ')
   const copy = async () => {
     let message = '복사됨'
     try {
@@ -1070,7 +1070,7 @@ function ReceiverCenterCoordinates({ center }: { center: Vec3 }) {
   return <div className="min-w-0 space-y-0.5 text-xs">
     <div className="flex flex-wrap items-center gap-1">
       <span>중심 X/Y/Z (mm)</span>
-      <HelpTooltip label="Receiver 중심 좌표 도움말">도면 원점 (0, 0, 0) 기준의 실제 수광면 중심입니다. 거리와 오프셋이 반영된 X, Y, Z를 쉼표로 구분해 복사합니다.</HelpTooltip>
+      <HelpTooltip label="Receiver 중심 좌표 도움말">도면 원점 (0, 0, 0) 기준의 실제 수광면 중심입니다. 거리와 오프셋이 반영된 X, Y, Z를 소수 첫째 자리까지 복사합니다.</HelpTooltip>
       <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => void copy()}>좌표 복사</Button>
       {copyFeedback?.value === value ? <span role="status">{copyFeedback.message}</span> : null}
     </div>
@@ -1518,7 +1518,7 @@ function ReceiverDialog({
             'Receiver center Z',
           ]}
           value={center}
-          decimals={2}
+          decimals={1}
           onChange={setCenter}
         />
         {isLeakPreviewReceiver ? (
@@ -1527,7 +1527,7 @@ function ReceiverDialog({
             value={viewDistance}
             min={0.001}
             step={0.01}
-            decimals={2}
+            decimals={1}
             onChange={setViewDistance}
           />
         ) : null}
@@ -1541,7 +1541,7 @@ function ReceiverDialog({
             'Receiver offset Z',
           ]}
           value={positionOffset}
-          decimals={2}
+          decimals={1}
           onChange={setPositionOffset}
         />
         <VectorFields
@@ -1561,7 +1561,7 @@ function ReceiverDialog({
           <div className="grid grid-cols-2 gap-2">{([['horizontal_deg','좌우 시야각 (°)',-90,90],['vertical_deg','상하 시야각 (°)',-90,90],['range_deg','주변 범위 (±°)',0,10],['step_deg','각도 간격 (°)',.1,90]] as const).map(([key,label,min,max]) => <NumberField key={key} label={label} ariaLabel={`Receiver ${label}`} value={viewAngles[key]} min={min} max={max} decimals={1} step={.1} onChange={(value) => setViewAngles({ ...viewAngles, [key]: Math.max(min,Math.min(max,value)) })} />)}</div>
           <div className="flex items-center justify-between gap-1"><span className="flex items-center gap-1 text-xs">{anglePlan.count}개 각도<HelpTooltip label="Receiver 시야각 범위 도움말">Preview와 같은 평행 관찰 방향 규칙입니다. 후면 −Z에서 좌우 +는 +X, 상하 +는 +Y입니다. 범위는 두 축에 각각 적용하고 중심·끝점을 포함합니다. 각도마다 Receiver 한 개로 독립 실행하므로 총 계산량도 각도 수만큼 증가합니다. Preview 검사 수준·해상도·셀 반복은 정밀해석 조건에 적용되지 않습니다.</HelpTooltip></span><Button size="sm" variant="outline" onClick={() => { const preview = leakPreviewStore.getState(); setViewAngles({ axis: preview.directions[0] ?? 'neg_z', horizontal_deg: preview.observer.horizontal_deg, vertical_deg: preview.observer.vertical_deg, range_deg: preview.observer.range_deg, step_deg: preview.observer.step_deg }) }}>Preview 각도 가져오기</Button></div>
           {anglePlan.error ? <div role="alert" className="text-xs text-destructive">{anglePlan.error}</div> : null}
-          {distanceReference === 'leak_point' ? <div className="flex items-center gap-1 text-xs">Leak Point (mm) · {center.map(value => value.toFixed(2)).join(' / ')}<HelpTooltip label="Receiver Leak Point 원점 도움말">저장된 검출점의 X/Y/Z 좌표이며 Point 거리의 0mm입니다. 기준점은 유지하고 거리로 Receiver를 이동합니다.</HelpTooltip></div> : <VectorFields label="관찰 기준점 (mm)" help="Receiver 중심을 투영할 모델 좌표입니다. 기본값은 변환된 전체 모델 중심입니다. 수광면은 이 지점에서 관찰 방향으로 투영해 CAD 경계 밖에 배치합니다." labels={['X','Y','Z']} ariaLabels={['Receiver target X','Receiver target Y','Receiver target Z']} value={center} decimals={2} onChange={setCenter} />}
+          {distanceReference === 'leak_point' ? <div className="flex items-center gap-1 text-xs">Leak Point (mm) · {center.map(value => value.toFixed(1)).join(' / ')}<HelpTooltip label="Receiver Leak Point 원점 도움말">저장된 검출점의 X/Y/Z 좌표이며 Point 거리의 0mm입니다. 기준점은 유지하고 거리로 Receiver를 이동합니다.</HelpTooltip></div> : <VectorFields label="관찰 기준점 (mm)" help="Receiver 중심을 투영할 모델 좌표입니다. 기본값은 변환된 전체 모델 중심입니다. 수광면은 이 지점에서 관찰 방향으로 투영해 CAD 경계 밖에 배치합니다." labels={['X','Y','Z']} ariaLabels={['Receiver target X','Receiver target Y','Receiver target Z']} value={center} decimals={1} onChange={setCenter} />}
           {initialReceiver?.reference_mode === 'leak_preview_candidate' ? <label className={fieldLabelClassName}><span className="flex items-center gap-1">거리 기준<HelpTooltip label="Receiver 거리 기준 도움말">Leak Point는 저장된 검출점을 0mm로 삼고 검출 방향으로 이동합니다. 세트 외부는 전체 CAD 경계 바깥의 여유 거리입니다. 기존 Receiver는 저장된 기준을 유지합니다. Leak Point는 내부 반사면일 수 있어 가까운 Receiver가 실제 외부 유출 광량을 뜻하지 않을 수 있습니다.</HelpTooltip></span><select aria-label="Receiver 거리 기준" className={inputClassName} value={distanceReference} onChange={event => {
             const reference = event.currentTarget.value as 'set_bounds' | 'leak_point'
             setDistanceReference(reference)
@@ -1571,7 +1571,7 @@ function ReceiverDialog({
               setPositionOffset([0,0,0])
             } else setViewDistance(value => Math.max(.001, value))
           }}><option value="set_bounds">세트 외부</option><option value="leak_point" disabled={!initialReceiver.observer_reference_path?.length}>Leak Point</option></select></label> : null}
-          <NumberField label={distanceReference === 'leak_point' ? 'Point 거리 (mm)' : '외부 여유 (mm)'} ariaLabel={distanceReference === 'leak_point' ? 'Receiver Leak Point 거리' : 'Receiver 시야각 외부 여유'} description={distanceReference === 'leak_point' ? '0mm는 저장된 Leak Point입니다. 양수는 검출 시야각 방향으로 이동합니다. 시야각·크기는 유지하며 0mm에서는 검출면과 겹쳐 Ray가 집계되지 않을 수 있습니다.' : '관찰 방향의 전체 CAD 경계에서 수광면까지의 거리입니다. 시야각을 바꿔도 모델 밖에 배치합니다.'} value={viewDistance} min={distanceReference === 'leak_point' ? 0 : .001} decimals={2} step={.1} onChange={setViewDistance} />
+          <NumberField label={distanceReference === 'leak_point' ? 'Point 거리 (mm)' : '외부 여유 (mm)'} ariaLabel={distanceReference === 'leak_point' ? 'Receiver Leak Point 거리' : 'Receiver 시야각 외부 여유'} description={distanceReference === 'leak_point' ? '0mm는 저장된 Leak Point입니다. 양수는 검출 시야각 방향으로 이동합니다. 시야각·크기는 유지하며 0mm에서는 검출면과 겹쳐 Ray가 집계되지 않을 수 있습니다.' : '관찰 방향의 전체 CAD 경계에서 수광면까지의 거리입니다. 시야각을 바꿔도 모델 밖에 배치합니다.'} value={viewDistance} min={distanceReference === 'leak_point' ? 0 : .001} decimals={1} step={.1} onChange={setViewDistance} />
           {distanceReference === 'leak_point' && viewDistance === 0 ? <div role="status" className="text-xs text-amber-700">0 mm · 검출면과 겹침</div> : null}
           {pointReceiverInsideSetBounds ? <div role="status" className="flex items-center gap-1 text-xs text-amber-700">전체 CAD 경계 안 · 외부 유출 여부 확인<HelpTooltip label="Receiver 외부 배치 확인 도움말">선택 관찰 방향의 전체 CAD 경계 상자보다 안쪽입니다. 실제 기구 내부라는 확정은 아니지만 Receiver가 빛이 외부로 나오기 전에 광선을 받을 수 있습니다. 검출점이 내부 반사면이면 실제 틈 바깥까지 거리를 늘려 확인하세요.</HelpTooltip></div> : null}
         </div> : (
@@ -1587,7 +1587,7 @@ function ReceiverDialog({
                   value={viewDistance}
                   min={0.001}
                   step={0.01}
-                  decimals={2}
+                  decimals={1}
                   onChange={setViewDistance}
                   description="현재 Viewer의 시점 중심에서 카메라 방향으로 떨어진 Receiver 위치를 지정합니다."
                 />
@@ -1614,7 +1614,7 @@ function ReceiverDialog({
                     'Receiver center Z',
                   ]}
                   value={previewReceiver.center}
-                  decimals={2}
+                  decimals={1}
                   onChange={(nextCenter) =>
                     setPositionOffset([
                       nextCenter[0] - previewReceiver.base_center![0],
@@ -1653,7 +1653,7 @@ function ReceiverDialog({
               value={width}
               min={0.001}
               step={0.01}
-              decimals={2}
+              decimals={1}
               onChange={setWidth}
             />
             <NumberField
@@ -1662,7 +1662,7 @@ function ReceiverDialog({
               value={height}
               min={0.001}
               step={0.01}
-              decimals={2}
+              decimals={1}
               onChange={setHeight}
             />
           </div>
@@ -1714,6 +1714,7 @@ function ReceiverDialog({
           />
         </div>
         <label className="flex items-center gap-2 text-xs">
+            decimals={1}
           <input
             type="checkbox"
             checked={normalFlip}
@@ -2663,11 +2664,11 @@ export function RayTracingPanel({
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {receiver.view_angles ? `시야각 ${receiver.view_angles.horizontal_deg}° / ${receiver.view_angles.vertical_deg}°` : receiver.placement_mode === 'current_view'
+                    {receiver.view_angles ? `시야각 ${receiver.view_angles.horizontal_deg.toFixed(1)}° / ${receiver.view_angles.vertical_deg.toFixed(1)}°` : receiver.placement_mode === 'current_view'
                       ? 'Current View'
                       : 'Datum Plane'}
                     {' · '}
-                    {receiver.width_mm} × {receiver.height_mm} mm
+                    {receiver.width_mm.toFixed(1)} × {receiver.height_mm.toFixed(1)} mm
                     {receiver.path_guidance_percent != null && ` · 경로 유도 ${receiver.path_guidance_percent}%`}
                   </div>
                   {receiver.reference_mode === 'leak_preview_candidate' ? <ReceiverCenterCoordinates center={receiver.center} /> : null}

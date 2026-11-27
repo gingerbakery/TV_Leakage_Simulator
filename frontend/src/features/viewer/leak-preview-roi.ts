@@ -2,6 +2,13 @@ import type { RoiScope } from '@/stores'
 import type { LeakPreviewPoint } from '@/features/leak-preview/leak-preview-model'
 import { emitterPointInRoi } from './emitter-roi-display'
 
+export const localForwardRoiLabel = 'Preview ROI 국부'
+
+export function hideLocalForwardRois(scopes: RoiScope[]): RoiScope[] {
+  return scopes.filter(scope => !(scope.source === 'box' && scope.observerView &&
+    scope.scopeId.startsWith(localForwardRoiLabel + ' ')))
+}
+
 /** Display filtering only: preserve the detection result for ROI toggles. */
 export function leakPreviewPointsInRoi(points: LeakPreviewPoint[], scopes: RoiScope[]): LeakPreviewPoint[] {
   const boxes = scopes.flatMap((scope) => scope.active && scope.clipBox ? [scope.clipBox] : [])

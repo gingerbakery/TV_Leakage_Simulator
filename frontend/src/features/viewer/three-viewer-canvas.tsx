@@ -7,7 +7,7 @@ import { leakPreviewDisplayStyle } from './leak-preview-display-style'
 import { filterLeakDisplay } from '@/features/leak-preview/leak-display-filter'
 import { leakPreviewPointsInRoi } from './leak-preview-roi'
 import { pickLeakPreviewPoint } from './leak-preview-picking'
-import { groupObserverMarkers, createObserverObservationIndex, resolveObserverPoint } from '@/features/leak-preview/observer-point-selection'
+import { groupObserverMarkers, createObserverObservationIndex, resolveDisplayedObserverPoint } from '@/features/leak-preview/observer-point-selection'
 import { FullViewPipFrame } from './full-view-pip-frame'
 import { fullViewPipRect, type FullViewPipSize } from './full-view-pip-layout'
 import { expandBlockerGroups } from '@/features/leak-preview/blocker-groups'
@@ -89,7 +89,7 @@ import {
   leakPreviewStore,
   useLeakPreviewStore,
 } from '@/features/leak-preview/leak-preview-store'
-import { rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
+import { LOCAL_FORWARD_EMITTER_ID, rayObjectDisplayName } from '@/features/raytracing/ray-tracing-model'
 import {
   buildRayPathVisualization,
   rayPathFilterOrder,
@@ -2042,12 +2042,19 @@ export function ThreeViewerCanvas({
   const pointViewMode = useLeakPreviewStore(state => state.pointViewMode)
   const leakHighlight = useLeakPreviewStore(state => state.highlight)
   const selectedPointView = useLeakPreviewStore(state => state.selectedPointView)
-  const [currentLeakViewIndex, setCurrentLeakViewIndex] = useState(-1)
+  const [trackedLeakView, setTrackedLeakView] = useState<{ summary: typeof leakObserverSummary; index: number } | null>(null)
   const viewTracker = useRef({ mode: pointViewMode, summary: leakObserverSummary, index: -1 })
-  const viewIndex = viewTracker.current.summary === leakObserverSummary ? currentLeakViewIndex : -1
+  const viewIndex = trackedLeakView?.summary === leakObserverSummary ? trackedLeakView.index : -1
+  if (viewTracker.current.summary !== leakObserverSummary || viewTracker.current.mode !== pointViewMode) {
+    viewTracker.current.index = -2
+  }
   viewTracker.current.mode = pointViewMode
   viewTracker.current.summary = leakObserverSummary
   const currentLeakView = leakObserverSummary?.views[viewIndex]
+  useEffect(() => {
+    leakPreviewStore.setState({ currentPointView: pointViewMode === 'current' && currentLeakView
+      ? [currentLeakView.horizontal_deg, currentLeakView.vertical_deg] : null })
+  }, [pointViewMode, currentLeakView])
   const fixedLeakView = pointViewMode === 'current' ? (currentLeakView ? [currentLeakView.horizontal_deg, currentLeakView.vertical_deg] : null)
     : selectedPointView ? [selectedPointView.horizontal, selectedPointView.vertical] : null
   const filteredLeakPreviewPoints = useMemo(() => {
@@ -2077,9 +2084,11 @@ export function ThreeViewerCanvas({
     filteredLeakPreviewPoints, observationIndex, markerGroupingDistance, selectedLeakCandidateId, selectedObservation,
     leakHighlight?.kind === 'observer' ? [leakHighlight.horizontal, leakHighlight.vertical] : undefined,
   ), [filteredLeakPreviewPoints, observationIndex, markerGroupingDistance, selectedLeakCandidateId, selectedObservation, leakHighlight])
-  const selectedLeakObservation = useMemo(() => resolveObserverPoint(
+  const selectedLeakObservation = useMemo(() => resolveDisplayedObserverPoint(
     leakPreviewCandidates.find(candidate => candidate.id === selectedLeakCandidateId), selectedObservation,
-    leakPreviewPoints, leakObserverSummary, observationIndex), [leakPreviewCandidates, selectedLeakCandidateId, selectedObservation, leakPreviewPoints, leakObserverSummary, observationIndex])
+    filteredLeakPreviewPoints, leakObserverSummary, observationIndex, pointViewMode === 'all' ? undefined : fixedLeakView),
+  [leakPreviewCandidates, selectedLeakCandidateId, selectedObservation, filteredLeakPreviewPoints, leakObserverSummary,
+    observationIndex, pointViewMode, fixedLeakView?.[0], fixedLeakView?.[1]])
   const leakPreviewIgnoreAreas = useLeakPreviewStore((state) => state.ignoreAreas)
   const leakPreviewBlockers = useLeakPreviewStore((state) => state.blockers)
   const selectedBlocker = useLeakPreviewStore((state) => state.selectedBlocker)
@@ -2534,7 +2543,7 @@ export function ThreeViewerCanvas({
         })
         if (tracker.index !== index) {
           tracker.index = index
-          setCurrentLeakViewIndex(index)
+          setTrackedLeakView({ summary, index })
         }
       }
       orientationCamera.position.copy(cameraDirection)
@@ -4128,9 +4137,7 @@ export function ThreeViewerCanvas({
     }
 
     const selected = selectedLeakObservation
-    if (selected?.representativePath && (pointViewMode === 'all' || visibleLeakPreviewPoints.some(point =>
-      point.candidateId === selected.id && point.observerAngles?.[0] === selected.observerEvidence?.horizontalDeg &&
-      point.observerAngles?.[1] === selected.observerEvidence?.verticalDeg))) {
+    if (selected?.representativePath) {
       const addArrow = (start: number[], end: number[], color: number, name: string) => {
         const origin = new Vector3(...start)
         const delta = new Vector3(...end).sub(origin)
@@ -4775,7 +4782,7 @@ export function ThreeViewerCanvas({
       : []
     for (const emitter of placementEmitters) {
       if (!emitter.enabled || emitter.visible === false) continue
-      if (emitter.aim?.enabled) {
+      if (emitter.aim?.enabled || emitter.emitter_id === LOCAL_FORWARD_EMITTER_ID) {
         let sourceCenter = emitter.center
         if (emitter.emitter_type === 'face') {
           const bodyComponentIds = emitter.source_component_ids ?? []
@@ -4822,6 +4829,17 @@ export function ThreeViewerCanvas({
             (totalArea > 0 ? weightedCenter.multiplyScalar(1 / totalArea).toArray() : null)
         }
         if (sourceCenter) {
+          if (emitter.emitter_id === LOCAL_FORWARD_EMITTER_ID) {
+            const geometry = new BufferGeometry()
+            geometry.setAttribute('position', new Float32BufferAttribute(sourceCenter, 3))
+            const marker = new Points(geometry, new PointsMaterial({
+              map: createLeakPreviewDotTexture(false), alphaTest: .15, color: 0x22d3ee,
+              size: 12, sizeAttenuation: false, transparent: true, depthTest: false, depthWrite: false, toneMapped: false,
+            }))
+            marker.name = 'local-forward-emitter-marker'
+            marker.renderOrder = 280
+            runtime.placementRoot.add(marker)
+          }
           const aimOverlay = createEmitterAimOverlay(emitter, sourceCenter)
           if (aimOverlay) {
             aimOverlay.userData.rayObjectKind = 'emitter'

@@ -872,10 +872,12 @@ describe('whole-set leak preview', () => {
     expect(grazingCandidate?.center[2]).toBeCloseTo(20)
   })
 
-  it('finds ROI faces from authoritative mesh ownership when Component face lists are truncated', () => {
+  it('finds ROI faces when Component face lists are truncated and bounds miss the mesh', () => {
     const scene = createSceneFixture()
     scene.components[1].face_indices = []
     scene.components[1].is_truncated = true
+    scene.components[1].bbox_min = [80, 80, 80]
+    scene.components[1].bbox_max = [90, 90, 90]
 
     const faceIds = resolveLeakPreviewRoiFaces(
       scene,

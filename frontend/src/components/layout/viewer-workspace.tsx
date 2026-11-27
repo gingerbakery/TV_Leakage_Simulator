@@ -1,3 +1,4 @@
+import { hideLocalForwardRois } from '@/features/viewer/leak-preview-roi'
 import {
   lazy,
   Suspense,
@@ -91,6 +92,7 @@ const ThreeViewerCanvas = lazy(() =>
 )
 
 interface ViewerWorkspaceProps {
+  showingLeakPreview?: boolean
   cadModelVisible?: boolean
   scene?: ScenePayload
   isSceneLoading?: boolean
@@ -108,6 +110,7 @@ interface ViewerWorkspaceProps {
 }
 
 export function ViewerWorkspace({
+  showingLeakPreview = false,
   cadModelVisible = true,
   scene,
   isSceneLoading = false,
@@ -184,7 +187,9 @@ export function ViewerWorkspace({
   const componentColorOverrides = useWorkspaceStore(
     workspaceSelectors.componentColorOverrides,
   )
-  const roiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const workspaceRoiScopes = useWorkspaceStore(workspaceSelectors.roiScopes)
+  const roiScopes = useMemo(() => showingLeakPreview ? hideLocalForwardRois(workspaceRoiScopes) : workspaceRoiScopes,
+    [showingLeakPreview, workspaceRoiScopes])
   const transformRules = useWorkspaceStore(workspaceSelectors.transformRules)
   const emitters = useWorkspaceStore(workspaceSelectors.emitters)
   const receivers = useWorkspaceStore(workspaceSelectors.receivers)

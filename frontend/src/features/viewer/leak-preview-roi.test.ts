@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import type { RoiScope } from '@/stores'
 import type { LeakPreviewPoint } from '@/features/leak-preview/leak-preview-model'
-import { leakPreviewPointsInRoi } from './leak-preview-roi'
+import { hideLocalForwardRois, leakPreviewPointsInRoi, localForwardRoiLabel } from './leak-preview-roi'
 
 const scope = (id: string, xMin: number, xMax: number, active = true): RoiScope => ({
   id, scopeId: id, active, source: 'box', view: 'coordinate', components: [],
@@ -44,4 +44,16 @@ it('filters exterior observer markers using their retained internal evidence loc
   const point: LeakPreviewPoint = { position: [10, .5, 0], surfacePosition: [.5,.5,0], relativeStrength: 1 }
   expect(leakPreviewPointsInRoi([point], [scope('internal',0,1)])).toEqual([point])
   expect(leakPreviewPointsInRoi([point], [scope('exterior',9,11)])).toEqual([])
+})
+
+it('shows the original Preview points when returning from a local forward ROI', () => {
+  const local: RoiScope = {
+    ...scope(localForwardRoiLabel + ' 01', 0, 1),
+    observerView: { horizontalDeg: 0, verticalDeg: 0, direction: [0, 0, -1] },
+  }
+  const manuallyDrawn = scope('manual', 3, 4)
+  expect(leakPreviewPointsInRoi(points, [local])).toEqual(points.slice(0, 2))
+  expect(leakPreviewPointsInRoi(points, hideLocalForwardRois([local]))).toBe(points)
+  expect(hideLocalForwardRois([local, manuallyDrawn])).toEqual([manuallyDrawn])
+  expect(local.active).toBe(true)
 })

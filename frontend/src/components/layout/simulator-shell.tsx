@@ -1498,6 +1498,7 @@ export function SimulatorShell() {
           />
         </div>
         <ViewerWorkspace
+          showingLeakPreview={activeSection === 'leak-preview'}
           scene={scene}
           cadModelVisible={activeCadCaseVisible}
           isSceneLoading={sceneQuery.isPending && activeCad !== null}

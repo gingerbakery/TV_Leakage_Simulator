@@ -370,7 +370,8 @@ export function RoiSelectionPanel({
               ROI List
             </div>
             <HelpTooltip label="ROI List 도움말">
-              활성화한 scope만 분석과 Viewer 격리 표시에 반영됩니다.
+              체크박스를 바꾸면 Viewer 격리 표시와 다음 해석에 적용할 ROI가 바뀝니다.
+              이미 실행한 해석의 결과와 선택한 Ray는 유지됩니다.
             </HelpTooltip>
           </div>
           {roiScopes.length > 0 ? (

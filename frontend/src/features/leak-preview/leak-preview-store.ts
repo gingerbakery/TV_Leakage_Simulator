@@ -70,6 +70,7 @@ function projectStateFromStore(state: LeakPreviewState): LeakPreviewProjectState
 interface LeakPreviewState {
   displayFilter: LeakDisplayFilter
   setDisplayFilter(patch: Partial<LeakDisplayFilter>): void
+  currentPointView: [number, number] | null
   selectedPointView: { horizontal: number; vertical: number } | null
   pointViewMode: 'all' | 'current' | 'selected'
   setPointViewMode(mode: 'all' | 'current' | 'selected'): void
@@ -219,6 +220,7 @@ const store = createStore<LeakPreviewState>()((set, get) => {
     }))
     persistDetection()
   },
+  currentPointView: null,
   selectedPointView: null,
   pointViewMode: 'all',
   setPointViewMode: pointViewMode => set({ pointViewMode }),

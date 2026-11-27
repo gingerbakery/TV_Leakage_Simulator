@@ -32,7 +32,7 @@ it('prepares a local ROI, receiver and focused emitter from an existing reverse-
   const scene = createSceneFixture()
   const saved = createSavedLeakPreviewFixture()
   const original = { ...createDatumEmitter('original', [30, 20, -5], [0, 0, 0]),
-    emission_direction: 'forward' as const, normal_flip: false }
+    emission_direction: 'forward' as const, normal_flip: false, luminance_nit: 812, ray_count: 42_000 }
   const other = createDatumEmitter('unrelated', [45, 45, -5], [0, 0, 0])
   const candidate = { ...saved.candidates[0], center: [30, 20, 0] as [number, number, number],
     representativePath: [[30, 20, -5], [30, 20, 0], [30, 20, -20]] as [number, number, number][],
@@ -57,8 +57,10 @@ it('prepares a local ROI, receiver and focused emitter from an existing reverse-
   const state = workspaceStore.getState()
   expect(screen.queryByText(/경로 시작점에 일치하는 광원면이 없습니다/)).toBeNull()
   expect(onOpenPrecision).toHaveBeenCalledTimes(2)
+  expect(leakPreviewStore.getState().result).toBe(saved.result)
+  expect(leakPreviewStore.getState().candidates).toEqual([candidate])
   expect(state.roiScopes).toHaveLength(1)
-  expect(state.roiScopes[0].clipBox).toMatchObject({ xMin: 27.5, xMax: 32.5, yMin: 17, yMax: 23, zMin: -1, zMax: 1 })
+  expect(state.roiScopes[0].clipBox).toMatchObject({ xMin: 16.5, xMax: 43.5, yMin: 6, yMax: 34, zMin: -15, zMax: 10 })
   expect(state.emitters.slice(0, 2)).toEqual(originals)
   expect(state.emitters).toHaveLength(3)
   expect(state.receivers).toHaveLength(1)
@@ -67,8 +69,10 @@ it('prepares a local ROI, receiver and focused emitter from an existing reverse-
     deletedComponentIds: [], roiScopes: state.roiScopes, config: state.rayTraceConfig })
   expect(request.emitters).toHaveLength(1)
   expect(request.emitters[0]).toMatchObject({ emitter_id: LOCAL_FORWARD_EMITTER_ID, center: [30, 20, -5],
-    width_mm: 2, height_mm: 2, power_lumen: 1, aim: { enabled: true, center: [30, 20, 0], radius_mm: 1 } })
-  expect(request.receivers.map(receiver => receiver.receiver_id)).toEqual([LOCAL_FORWARD_RECEIVER_ID])
+    width_mm: 6, height_mm: 6, power_mode: original.power_mode, luminance_nit: 812,
+    emission_direction: original.emission_direction, direction_distribution: original.direction_distribution, ray_count: 42_000 })
+  expect(request.emitters[0].aim).toBe(original.aim)
+  expect(request.receivers).toMatchObject([{ receiver_id: LOCAL_FORWARD_RECEIVER_ID, width_mm: 7, height_mm: 8 }])
   expect(request.analysis_roi).toBeUndefined()
   expect(request.roi_faces).toBeUndefined()
   expect(request.config.receiver_diagnostics).toBe(true)
@@ -285,7 +289,8 @@ it('keeps a saved precision result when serialization changes only object key or
   await waitFor(() => expect(leakPreviewStore.getState().result).toBe(result))
   expect(screen.queryByText(/^Preview 재실행 필요$/)).toBeNull()
   act(() => leakPreviewStore.getState().setObserver({ spacing_mm: 3 }))
-  expect(leakPreviewStore.getState().result).toBeNull()
+  expect(leakPreviewStore.getState().result).toBe(result)
+  expect(screen.getByText(/설정 변경 전 결과 · Preview 재실행 필요/)).toBeTruthy()
 })
 
 it.each(['resume', 'restart', 'changed'] as const)('handles a stopped radiance Preview: %s', async (action) => {
@@ -389,9 +394,11 @@ it('keeps saved results while the scene loads and rebinds a restarted server ses
   expect(screen.getByText('저장된 Preview 결과')).toBeTruthy()
   expect(screen.getAllByRole('article')).toHaveLength(fixture.candidates.length)
   expect(mocks.start).toHaveBeenCalledOnce()
-  // A real input change still invalidates saved evidence.
   act(() => leakPreviewStore.getState().setQuality('deep'))
-  expect(leakPreviewStore.getState().result).toBeNull()
+  expect(leakPreviewStore.getState().result).toBe(fixture.result)
+  expect(screen.getByText('설정 변경 전 결과 · Preview 재실행 필요')).toBeTruthy()
+  act(() => leakPreviewStore.getState().setQuality(settings.quality))
+  expect(screen.queryByText('설정 변경 전 결과 · Preview 재실행 필요')).toBeNull()
 })
 
 it('starts a full hemisphere search and hides unused local angles', async () => {

@@ -1589,11 +1589,8 @@ function boxesOverlap(
   )
 }
 
-/** Candidate-local face lookup. Component boxes reject unrelated full-set
- * geometry before triangle bounds are inspected. The final pass uses the
- * mesh's authoritative face_component_ids instead of component.face_indices:
- * large binary scenes may intentionally truncate the latter for UI payload
- * size, while the tessellation and its ownership array remain complete. */
+/** Select from actual mesh triangles; imported component bounds and face lists
+ * can be incomplete. Use mesh ownership to group the overlapping faces. */
 export function resolveLeakPreviewRoiFaces(
   scene: ScenePayload,
   clip: RoiClipBox,
@@ -1604,28 +1601,9 @@ export function resolveLeakPreviewRoiFaces(
   const unavailable = new Set([...hiddenComponentIds, ...deletedComponentIds])
   const result: number[] = []
   const transformPoint = createLeakPreviewPointTransform(scene, transformRules)
-  const candidateComponentIds = new Set<number>()
-  for (const component of scene.components) {
-    if (unavailable.has(component.component_id)) continue
-    const componentMinimum: Vec3 = [Infinity, Infinity, Infinity]
-    const componentMaximum: Vec3 = [-Infinity, -Infinity, -Infinity]
-    for (const x of [component.bbox_min[0], component.bbox_max[0]]) {
-      for (const y of [component.bbox_min[1], component.bbox_max[1]]) {
-        for (const z of [component.bbox_min[2], component.bbox_max[2]]) {
-          const point = transformPoint(component.component_id, [x, y, z])
-          for (let axis = 0; axis < 3; axis += 1) {
-            componentMinimum[axis] = Math.min(componentMinimum[axis], point[axis])
-            componentMaximum[axis] = Math.max(componentMaximum[axis], point[axis])
-          }
-        }
-      }
-    }
-    if (!boxesOverlap(componentMinimum, componentMaximum, clip)) continue
-    candidateComponentIds.add(component.component_id)
-  }
   for (const [faceId, face] of scene.mesh.faces.entries()) {
     const componentId = scene.mesh.face_component_ids[faceId]
-    if (componentId === null || !candidateComponentIds.has(componentId)) continue
+    if (componentId == null || unavailable.has(componentId)) continue
     const minimum: Vec3 = [Infinity, Infinity, Infinity]
     const maximum: Vec3 = [-Infinity, -Infinity, -Infinity]
     for (const vertexId of face) {
@@ -1649,6 +1627,7 @@ export function createCandidateReceiver(
   index: number,
   scene?: ScenePayload,
   transforms: ComponentTransformRule[] = [],
+  receiverMarginMm = 1,
 ): ReceiverSpec {
   if (candidate.observerEvidence && scene) {
     const evidence = candidate.observerEvidence
@@ -1671,7 +1650,8 @@ export function createCandidateReceiver(
     const width = Math.max(1, evidence.footprintWidthMm ?? candidate.widthMm)
     const height = Math.max(1, evidence.footprintHeightMm ?? candidate.heightMm)
     const extent = (axis: Vec3) => Math.abs(dot(candidate.uAxis, axis)) * width + Math.abs(dot(candidate.vAxis, axis)) * height
-    const widthMm = Math.max(1, extent(receiver.u_axis!)) + 2, heightMm = Math.max(1, extent(receiver.v_axis!)) + 2
+    const widthMm = Math.max(1, extent(receiver.u_axis!)) + 2 * receiverMarginMm
+    const heightMm = Math.max(1, extent(receiver.v_axis!)) + 2 * receiverMarginMm
     const distance = receiverFootprintDistance(scene, addScaled(target, offset, 1), outward,
       receiver.u_axis!, receiver.v_axis!, widthMm, heightMm, leakPreviewReceiverDistanceMm, transforms)
     receiver.center = target.map((value, axis) => value + outward[axis] * distance + offset[axis]) as Vec3

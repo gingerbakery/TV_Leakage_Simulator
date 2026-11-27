@@ -73,6 +73,28 @@ export function resolveObserverPoint(candidate: LeakPreviewCandidate | undefined
       directCount: cell.direct_count, reflectedCount: cell.reflected_count } }
 }
 
+/** Resolve the clicked sample, or the strongest visible sample at the displayed angle. */
+export function resolveDisplayedObserverPoint(candidate: LeakPreviewCandidate | undefined, selection: ObserverPointSelection | null,
+  points: LeakPreviewPoint[], summary: ObserverProbeSummary | null, index: ObserverObservationIndex,
+  angle?: readonly number[] | null): LeakPreviewCandidate | undefined {
+  if (angle === undefined) return resolveObserverPoint(candidate, selection, points, summary, index)
+  if (!candidate || !angle) return undefined
+  const matches = points.filter(point => point.candidateId === candidate.id &&
+    point.observerAngles?.[0] === angle[0] && point.observerAngles?.[1] === angle[1])
+  const entries = index.get(candidate.id)
+  let best: Observation | undefined
+  for (const point of matches) {
+    const observation = entries?.get(key(point.position, point.observerAngles!))
+    if (!observation) continue
+    if (selection && key(selection.position, selection.angles) === key(point.position, point.observerAngles!)) {
+      return resolveObserverPoint(candidate, selection, points, summary, index)
+    }
+    if (!best || (observation.cell.luminance_nit ?? point.relativeStrength) >
+      (best.cell.luminance_nit ?? best.point.relativeStrength)) best = observation
+  }
+  return best && resolveObserverPoint(candidate, best.selection, points, summary, index)
+}
+
 /** Collapse visual markers while retaining the original observation for picking. */
 export function groupObserverMarkers(
   points: LeakPreviewPoint[], index: ObserverObservationIndex, tolerance: number,
@@ -113,4 +135,17 @@ export function groupObserverMarkers(
     else buckets.set(bucket, [{ pattern, apertureId: point.apertureId }])
   }
   return markers
+}
+
+/** Retain one selectable observation per sampled path pattern and direction. */
+export function representativeObservations(candidateId: string, index: ObserverObservationIndex) {
+  const representatives: Array<{ observation: Observation; pattern: ReturnType<typeof leakPathPattern> }> = []
+  for (const observation of index.get(candidateId)?.values() ?? []) {
+    const pattern = leakPathPattern(observation.cell.representative_path, 3)
+    if (!representatives.some(item =>
+      item.observation.view === observation.view && similarLeakPathPatterns(item.pattern, pattern, 3))) {
+      representatives.push({ observation, pattern })
+    }
+  }
+  return representatives.map(item => item.observation)
 }

@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { createRayTraceResultFixture } from '@/test/raytrace-fixture'
 import { createSceneFixture } from '@/test/scene-fixture'
 import { createCandidateReceiver, defaultObserverSettings, detectLeakPreviewCandidates, observerProbeSummary } from './leak-preview-model'
-import { candidateObservations, highestObservedLuminance, resolveObserverPoint } from './observer-point-selection'
+import { candidateObservations, createObserverObservationIndex, highestObservedLuminance, resolveDisplayedObserverPoint, resolveObserverPoint } from './observer-point-selection'
 
 it('binds an individual grouped observation to its own angle, path and Receiver without rewriting aggregate photometry', () => {
   const scene = createSceneFixture(), result = createRayTraceResultFixture()
@@ -28,6 +28,13 @@ it('binds an individual grouped observation to its own angle, path and Receiver 
   const receiver=createCandidateReceiver(resolved,1,scene)
   expect(receiver.view_angles?.horizontal_deg).toBe(45)
   expect(receiver.observer_reference_path).toEqual(summary.cells[1].representative_path)
+  const index = createObserverObservationIndex(detection.points, summary)
+  expect(resolveDisplayedObserverPoint(candidate, null, detection.points, summary, index, [45, 0])?.representativePath)
+    .toEqual(summary.cells[1].representative_path)
+  expect(resolveDisplayedObserverPoint(candidate, chosen, detection.points, summary, index, [0, 0])?.representativePath)
+    .toEqual(summary.cells[0].representative_path)
+  expect(resolveDisplayedObserverPoint(candidate, chosen, detection.points, summary, index, [90, 0])).toBeUndefined()
+  expect(resolveDisplayedObserverPoint(candidate, chosen, [], summary, index, [45, 0])).toBeUndefined()
   expect(detection).toEqual(before)
   expect(resolveObserverPoint(candidate,{position:[999,0,0],angles:[45,0]},detection.points,summary)).toBe(candidate)
   summary.cells[1].path_validation={status:'invalid'}

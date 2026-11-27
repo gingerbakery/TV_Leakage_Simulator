@@ -2303,12 +2303,16 @@ export function createWorkspaceStore(): WorkspaceStoreApi {
         })
       },
       setRoiScopeActive: (scopeId, active) => {
-        set((state) => ({
-          roiScopes: state.roiScopes.map((scope) =>
-            scope.id === scopeId ? { ...scope, active } : scope,
-          ),
-          ...invalidateRayTraceState(state),
-        }))
+        set((state) => {
+          const scope = state.roiScopes.find((item) => item.id === scopeId)
+          if (!scope || scope.active === active) return state
+          // Preserve the run and selected path while inspecting its source in Full View.
+          return {
+            roiScopes: state.roiScopes.map((item) =>
+              item === scope ? { ...item, active } : item,
+            ),
+          }
+        })
       },
       removeRoiScope: (scopeId) => {
         set((state) => ({
