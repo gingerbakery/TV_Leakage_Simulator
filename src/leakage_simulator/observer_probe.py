@@ -273,7 +273,13 @@ def _sample_source(sources, index, rng):
     selected = min(bisect_left(weights, draw), len(weights)-1)
     triangle, normal, face = triangles[selected]
     root, fraction = math.sqrt(rng.random()), rng.random()
-    point = tuple((1-root)*triangle[0][i]+root*(1-fraction)*triangle[1][i]+root*fraction*triangle[2][i] for i in range(3))
+    a, b, c = triangle
+    weight_a, weight_b, weight_c = 1-root, root*(1-fraction), root*fraction
+    point = (
+        weight_a*a[0] + weight_b*b[0] + weight_c*c[0],
+        weight_a*a[1] + weight_b*b[1] + weight_c*c[1],
+        weight_a*a[2] + weight_b*b[2] + weight_c*c[2],
+    )
     return emitter, point, normal, face
 
 
@@ -429,10 +435,13 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                         break
                     toward_source = vec_norm(source_offset)
                     block = yield (vec_add(hit.point, vec_mul(toward_source, epsilon)), toward_source, epsilon, source_distance-epsilon+1e-9)
-                    proposal = vertices + [(hit.point, hit.normal, profile)]
-                    if source_connection_visible(mesh, block, source_distance, epsilon) and emission_supported(emitter, point, normal, vec_mul(toward_source, -1)) and supported(proposal, point, launch):
-                        found = (first_point, depth+1, [point] + [v[0] for v in reversed(proposal)] + [launch])
-                        break
+                    if source_connection_visible(mesh, block, source_distance, epsilon) and emission_supported(
+                        emitter, point, normal, vec_mul(toward_source, -1)
+                    ):
+                        proposal = vertices + [(hit.point, hit.normal, profile)]
+                        if supported(proposal, point, launch):
+                            found = (first_point, depth+1, [point] + [v[0] for v in reversed(proposal)] + [launch])
+                            break
                 normal = hit.normal if vec_dot(direction, hit.normal) < 0 else vec_mul(hit.normal, -1)
                 if not profile.bsdf_asset_id and (profile.reflectance <= 0 or profile.scatter_model == "none"):
                     break
