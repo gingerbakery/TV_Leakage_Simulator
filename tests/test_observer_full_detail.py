@@ -65,6 +65,22 @@ class FullDetailObserverTests(TestCase):
         self.assertEqual(progress[0], (0,1600))
         self.assertEqual(progress[-1], (1600,1600))
 
+    def test_gpu_full_detail_defaults_to_larger_host_chunks(self):
+        trace, collector, resolved, _, _ = self.context()
+        cpu = trace_observer_paths(trace, collector, resolved)
+        self.assertEqual(cpu["performance"]["observer_host_chunk_limit"], 8192)
+        trace.config.compute_backend = "gpu_cuda"
+        trace.config.intersection_backend = "bvh"
+        from leakage_simulator.gpu_cuda_intersection import GpuCudaUnavailable
+
+        with patch.object(trace.mesh, "intersect_rays_gpu_cuda",
+                          side_effect=GpuCudaUnavailable("test_device_unavailable")):
+            default = trace_observer_paths(trace, collector, resolved)
+            explicit = trace_observer_paths(trace, collector, resolved, batch_size=7)
+        self.assertEqual(default["performance"]["observer_host_chunk_limit"], 32768)
+        self.assertEqual(explicit["performance"]["observer_host_chunk_limit"], 7)
+        self.assertEqual(default["cells"], explicit["cells"])
+
     def test_display_merging_is_bounded_without_discarding_path_counts(self):
         trace, collector, resolved, _, _ = self.context()
         full = trace_observer_paths(trace, collector, resolved)

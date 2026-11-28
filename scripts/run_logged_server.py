@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import uuid
@@ -39,6 +40,24 @@ class LoggedStream:
         return getattr(self.console, name)
 
 
+def source_revision(root):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True,
+            check=True, timeout=3, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout.strip()
+
+    try:
+        commit = git("rev-parse", "HEAD")
+    except (OSError, subprocess.SubprocessError):
+        return {"git_commit": None, "git_tracked_changes": None}
+    try:
+        dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+    except (OSError, subprocess.SubprocessError):
+        dirty = None
+    return {"git_commit": commit, "git_tracked_changes": dirty}
+
+
 def run_server(log_file, entrypoint, server_args):
     with log_file.open('a', encoding='utf-8', buffering=1) as log:
         stdout, stderr, argv, search_path = sys.stdout, sys.stderr, sys.argv, sys.path[:]
@@ -51,6 +70,12 @@ def run_server(log_file, entrypoint, server_args):
         faulthandler.enable(file=log, all_threads=True)
         try:
             print(f'[SERVER LOG] UTC={datetime.now(timezone.utc).isoformat()} PID={os.getpid()} Python={sys.version.split()[0]} executable={sys.executable}', flush=True)
+            print("[DIAG] " + json.dumps({
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "event": "server.build",
+                "pid": os.getpid(),
+                **source_revision(entrypoint.parent),
+            }, separators=(",", ":")), flush=True)
             sys.argv = [str(entrypoint), *server_args]
             sys.path.insert(0, str(entrypoint.parent))
             runpy.run_path(str(entrypoint), run_name='__main__')

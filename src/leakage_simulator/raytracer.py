@@ -350,6 +350,7 @@ class _IntersectionDispatchStats:
     gpu_cuda_scene_upload_sec: float = 0.0
     gpu_cuda_workspace_prepare_sec: float = 0.0
     gpu_cuda_input_upload_sec: float = 0.0
+    gpu_cuda_jit_launch_sec: float = 0.0
     gpu_cuda_kernel_sec: float = 0.0
     gpu_cuda_output_download_sec: float = 0.0
     gpu_cuda_device_name: Optional[str] = None
@@ -662,6 +663,7 @@ class _IntersectionDispatchStats:
                         execution.workspace_prepare_sec
                     )
                     self.gpu_cuda_input_upload_sec += execution.input_upload_sec
+                    self.gpu_cuda_jit_launch_sec += execution.jit_compile_sec
                     self.gpu_cuda_kernel_sec += execution.kernel_sec
                     self.gpu_cuda_output_download_sec += (
                         execution.output_download_sec
@@ -792,6 +794,7 @@ class _IntersectionDispatchStats:
                 self.gpu_cuda_workspace_prepare_sec
             ),
             "gpu_cuda_input_upload_sec": self.gpu_cuda_input_upload_sec,
+            "gpu_cuda_jit_launch_sec": self.gpu_cuda_jit_launch_sec,
             "gpu_cuda_kernel_sec": self.gpu_cuda_kernel_sec,
             "gpu_cuda_output_download_sec": self.gpu_cuda_output_download_sec,
             "gpu_cuda_device_scene_reuse_count": (

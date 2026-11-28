@@ -11,6 +11,8 @@ import random
 import time
 from bisect import bisect_left
 
+import numpy as np
+
 from .geometry import RayBatch, vec_add, vec_sub, vec_mul, vec_dot, vec_cross, vec_norm
 from .reflection import ideal_specular_direction, orthonormal_basis, sample_cosine_weighted_hemisphere, sample_reflection_direction
 from .bsdf_transport import incident_frame
@@ -275,9 +277,10 @@ def _sample_source(sources, index, rng):
     return emitter, point, normal, face
 
 
-def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=8192, progress_callback=None, pause_callback=None):
+def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, dispatch="batch", batch_size=None, progress_callback=None, pause_callback=None):
     started = time.perf_counter()
-    if dispatch not in ("batch", "scalar") or not isinstance(batch_size, int) or not 1 <= batch_size <= 8192:
+    if dispatch not in ("batch", "scalar") or (batch_size is not None and
+            (not isinstance(batch_size, int) or not 1 <= batch_size <= 8192)):
         raise ValueError("Invalid observer dispatch/batch size")
     from .raytracer import _IntersectionDispatchStats
     requested = getattr(trace_input.config, "compute_backend", "cpu")
@@ -288,7 +291,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
     if trace_input.observer_probe.get("measurement") == "radiance":
         from .observer_radiance import trace_observer_radiance
         return trace_observer_radiance(trace_input, collector, resolved, should_stop,
-            dispatch=dispatch, batch_size=batch_size, progress_callback=progress_callback, pause_callback=pause_callback)
+            dispatch=dispatch, batch_size=8192 if batch_size is None else batch_size,
+            progress_callback=progress_callback, pause_callback=pause_callback)
     stats = _IntersectionDispatchStats(intersection_backend=trace_input.config.intersection_backend,
         requested_provider="gpu_cuda" if requested == "gpu_cuda" else "python_cpu")
     spec = trace_input.observer_probe
@@ -315,9 +319,22 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
     stopped = False
     passes = int(spec["samples_per_cell"])
     full = spec.get("search_mode") == "full_detail"
+    default_batch_size = 32768 if full and requested == "gpu_cuda" else 8192
+    effective_batch_size = default_batch_size if batch_size is None else batch_size
+    timing = dict(
+        observer_path_launch_sec=0., observer_path_optical_sec=0.,
+        observer_query_pack_sec=0., observer_intersection_dispatch_sec=0.,
+        observer_hit_materialize_sec=0., observer_aggregate_sec=0.,
+        observer_progress_callback_sec=0.,
+        observer_host_query_rows=0, observer_host_query_batches=0,
+        observer_effective_chunk_max=0,
+    )
     cell_limit = min(16_384, max(1, FULL_DETAIL_CELL_LIMIT//len(views)))
+    timing["observer_setup_sec"] = time.perf_counter() - started
     if progress_callback is not None:
+        progress_started = time.perf_counter()
         progress_callback(0, planned_count)
+        timing["observer_progress_callback_sec"] += time.perf_counter() - progress_started
 
     def supported(vertices, source_point, launch):
         if vertices and config.k_brdf <= 0:
@@ -334,6 +351,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
         outward, u, v = plan["outward"], plan["u"], plan["v"]
         distance, width, height = plan["distance"], plan["width"], plan["height"]
         columns, rows = plan["columns"], plan["rows"]
+        view_origin = vec_add(center, vec_mul(outward, distance))
+        view_direction = vec_mul(outward, -1)
         stride = 1
         view_cells = {}
         counts = {"horizontal_deg": horizontal, "vertical_deg": vertical, "direct_count": 0, "reflected_count": 0,
@@ -344,21 +363,27 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
             attempted += 1
             # Preserve v1 path-discovery samples for saved legacy results.
             # The radiance estimator separately honors config.seed.
-            rng = random.Random(1729 + view_index*1_000_003 + sample_index*9176)
+            seed = 1729 + view_index*1_000_003 + sample_index*9176
+            rng = None
             cell_index = sample_index // passes
             row, column = divmod(cell_index, columns)
             # First pass covers cell centres; extra passes independently jitter.
-            jx, jy = (.5, .5) if sample_index % passes == 0 else (rng.random(), rng.random())
-            launch = vec_add(vec_add(vec_add(center, vec_mul(outward, distance)), vec_mul(u, plan["min_u"]+(column+jx)*width/columns)), vec_mul(v, plan["min_v"]+(row+jy)*height/rows))
+            jx = jy = .5
+            if sample_index % passes:
+                rng = random.Random(seed)
+                jx, jy = rng.random(), rng.random()
+            launch = vec_add(vec_add(view_origin, vec_mul(u, plan["min_u"]+(column+jx)*width/columns)), vec_mul(v, plan["min_v"]+(row+jy)*height/rows))
             if sample_index >= grid_samples:
                 # Source projections are essential at extreme angles: even a
                 # large emitter becomes a sub-pixel sliver near 90 degrees.
+                if rng is None:
+                    rng = random.Random(seed)
                 _, target, _, _ = _sample_source(sources, sample_index-grid_samples, rng)
                 launch = vec_add(target, vec_mul(outward, distance-vec_dot(vec_sub(target, center), outward)))
                 relative = vec_sub(target, center)
                 column = max(0, min(columns-1, int((vec_dot(relative, u)-plan["min_u"])/max(width, 1e-12)*columns)))
                 row = max(0, min(rows-1, int((vec_dot(relative, v)-plan["min_v"])/max(height, 1e-12)*rows)))
-            origin, direction = launch, vec_mul(outward, -1)
+            origin, direction = launch, view_direction
             vertices = []
             first_point = None
             found = None
@@ -395,11 +420,14 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 profile = resolved[hit.face_index].profile
                 # Source connection at every bounce supplements random continuation.
                 if sources:
+                    if rng is None:
+                        rng = random.Random(seed)
                     emitter, point, normal, face = _sample_source(sources, sample_index+depth, rng)
-                    source_distance = math.sqrt(vec_dot(vec_sub(point, hit.point), vec_sub(point, hit.point)))
+                    source_offset = vec_sub(point, hit.point)
+                    source_distance = math.sqrt(vec_dot(source_offset, source_offset))
                     if source_distance <= 4*epsilon:
                         break
-                    toward_source = vec_norm(vec_sub(point, hit.point))
+                    toward_source = vec_norm(source_offset)
                     block = yield (vec_add(hit.point, vec_mul(toward_source, epsilon)), toward_source, epsilon, source_distance-epsilon+1e-9)
                     proposal = vertices + [(hit.point, hit.normal, profile)]
                     if source_connection_visible(mesh, block, source_distance, epsilon) and emission_supported(emitter, point, normal, vec_mul(toward_source, -1)) and supported(proposal, point, launch):
@@ -412,6 +440,8 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 if profile.scatter_model == "specular" and not profile.bsdf_asset_id:
                     new_direction = ideal_specular_direction(direction, normal)
                 else:
+                    if rng is None:
+                        rng = random.Random(seed)
                     proposal = rng.random()
                     if proposal < 1/3:
                         new_direction = ideal_specular_direction(direction, normal)
@@ -425,12 +455,15 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
             return found, row, column, launch
 
         total_samples = grid_samples + targeted_samples
-        for chunk_start in range(0, total_samples, batch_size):
+        for chunk_start in range(0, total_samples, effective_batch_size):
             if should_stop is not None and should_stop():
                 stopped = True
                 break
-            probes = [probe(i) for i in range(chunk_start, min(total_samples, chunk_start+batch_size))]
-            completed, interrupted = _execute_probes(mesh, probes, stats, dispatch, should_stop)
+            chunk_end = min(total_samples, chunk_start + effective_batch_size)
+            timing["observer_effective_chunk_max"] = max(timing["observer_effective_chunk_max"], chunk_end - chunk_start)
+            probes = [probe(i) for i in range(chunk_start, chunk_end)]
+            completed, interrupted = _execute_probes(mesh, probes, stats, dispatch, should_stop, timing=timing)
+            aggregate_started = time.perf_counter()
             stopped = stopped or interrupted
             for item in completed:
                 if item is None:
@@ -460,10 +493,14 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                     while len(view_cells) > cell_limit:
                         view_cells = _coarsen_cells(view_cells)
                         stride *= 2
+            timing["observer_aggregate_sec"] += time.perf_counter() - aggregate_started
             if progress_callback is not None:
+                progress_started = time.perf_counter()
                 progress_callback(attempted, planned_count)
+                timing["observer_progress_callback_sec"] += time.perf_counter() - progress_started
             if stopped:
                 break
+        aggregate_started = time.perf_counter()
         for cell in view_cells.values():
             cell["position"] = [x/(cell["direct_count"]+cell["reflected_count"]) for x in cell.pop("position_sum")]
             cells.append(cell)
@@ -474,11 +511,30 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
                 sampling_resolution=[columns, rows], sample_spacing_mm=[width/columns, height/rows], display_stride=stride,
                 spacing_mm=[width/columns*stride, height/rows*stride])
         summaries.append(counts)
+        timing["observer_aggregate_sec"] += time.perf_counter() - aggregate_started
         if stopped:
             break
     performance = stats.to_summary()
+    performance.update(timing, observer_transport_contract="observer_host_wavefront_v1",
+        observer_requested_chunk_size=batch_size, observer_host_chunk_limit=effective_batch_size)
     state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
-    performance.update(compute_execution_state=state, compute_execution_reason=reason)
+    elapsed = time.perf_counter() - started
+    measured = sum(value for key, value in timing.items() if key.endswith("_sec"))
+    cuda_requested = requested == "gpu_cuda"
+    cpu_fallback_sec = stats.reference_batch_sec if cuda_requested else 0.
+    cuda_dispatch = None
+    if cuda_requested:
+        cuda_accounted_sec = sum(performance[key] for key in (
+            "gpu_cuda_scene_upload_sec", "gpu_cuda_workspace_prepare_sec",
+            "gpu_cuda_input_upload_sec", "gpu_cuda_jit_launch_sec",
+            "gpu_cuda_kernel_sec", "gpu_cuda_output_download_sec",
+        ))
+        cuda_dispatch = max(0., timing["observer_intersection_dispatch_sec"]
+                            - cpu_fallback_sec - cuda_accounted_sec)
+    performance.update(compute_execution_state=state, compute_execution_reason=reason,
+        observer_unattributed_sec=max(0., elapsed - measured),
+        observer_cpu_fallback_sec=cpu_fallback_sec,
+        observer_cuda_dispatch_unattributed_sec=cuda_dispatch)
     return {"contract": CONTRACT, "sample_contract": "observer_per_ray_seed_batch_v1",
             "search_contract": "observer_full_spacing_v1" if full else "observer_grid_v1",
             "execution_backend": "gpu_cuda" if state in ("gpu_active", "gpu_mixed") else "cpu",
@@ -486,10 +542,10 @@ def trace_observer_paths(trace_input, collector, resolved, should_stop=None, *, 
             "settings": spec, "attempted_count": attempted, "planned_count": planned_count,
             "direct_count": direct, "reflected_count": reflected, "excluded_count": excluded,
             "depth_limited_count": depth_limited, "stopped": stopped, "complete": not stopped,
-            "runtime_sec": time.perf_counter()-started, "views": summaries, "cells": cells}
+            "runtime_sec": elapsed, "views": summaries, "cells": cells}
 
 
-def _execute_probes(mesh, probes, stats, dispatch, should_stop, pause_callback=None):
+def _execute_probes(mesh, probes, stats, dispatch, should_stop, pause_callback=None, *, timing=None):
     """Wavefront scheduler for primary, continuation AND source-shadow rays.
 
     Per-probe RNG is private and results reduce in primary order, so batch
@@ -498,25 +554,42 @@ def _execute_probes(mesh, probes, stats, dispatch, should_stop, pause_callback=N
     completed = [None] * len(probes)
     active = []
     try:
+        phase_started = time.perf_counter()
         for index, probe in enumerate(probes):
             try:
                 active.append((index, probe, next(probe)))
             except StopIteration as done:
                 completed[index] = done.value
+        if timing is not None:
+            timing["observer_path_launch_sec"] += time.perf_counter() - phase_started
         while active:
             if should_stop is not None and should_stop():
                 # Keep active generators, their RNGs, completed slots and
                 # outstanding queries on this stack while the worker waits.
                 if pause_callback is None or not pause_callback():
                     return completed, True
+            phase_started = time.perf_counter()
             if dispatch == "scalar":
                 hits = [stats.intersect_scalar(mesh, query[0], query[1], min_t=query[2], max_t=query[3]) for _, _, query in active]
             else:
                 queries = [query for _, _, query in active]
                 rays = RayBatch(origins=[q[0] for q in queries], directions=[q[1] for q in queries],
                     min_t=[q[2] for q in queries], max_t=[q[3] for q in queries])
+                batch_started = time.perf_counter()
                 batch = stats.intersect_batch(mesh, rays, allow_hybrid_cpu=False)
-                hits = [batch.materialize(mesh, rays, i) for i in range(len(active))]
+                materialize_started = time.perf_counter()
+                hits = [None] * len(active)
+                for index in np.flatnonzero(batch.hit_mask).tolist():
+                    hits[index] = batch.materialize(mesh, rays, index)
+                if timing is not None:
+                    timing["observer_query_pack_sec"] += batch_started - phase_started
+                    timing["observer_intersection_dispatch_sec"] += materialize_started - batch_started
+                    timing["observer_hit_materialize_sec"] += time.perf_counter() - materialize_started
+                    timing["observer_host_query_rows"] += len(active)
+                    timing["observer_host_query_batches"] += 1
+            if timing is not None and dispatch == "scalar":
+                timing["observer_intersection_dispatch_sec"] += time.perf_counter() - phase_started
+            phase_started = time.perf_counter()
             following = []
             for (index, probe, _), hit in zip(active, hits):
                 try:
@@ -524,6 +597,8 @@ def _execute_probes(mesh, probes, stats, dispatch, should_stop, pause_callback=N
                 except StopIteration as done:
                     completed[index] = done.value
             active = following
+            if timing is not None:
+                timing["observer_path_optical_sec"] += time.perf_counter() - phase_started
         return completed, False
     finally:
         for probe in probes:

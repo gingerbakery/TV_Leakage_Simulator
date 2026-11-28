@@ -8,6 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 import copy
 import math
+import os
 import random
 import time
 
@@ -307,6 +308,18 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
     plans = sensor.plans() if sensor is not None else sampling_plan(spec, collector.minimum, collector.maximum, collector.direction, 0, epsilon)
     planned = sum(p["grid_samples"] for p in plans)
     requested = getattr(config, "compute_backend", "cpu")
+    host_timing = dict(
+        observer_path_launch_sec=0., observer_path_optical_sec=0.,
+        observer_query_pack_sec=0., observer_intersection_dispatch_sec=0.,
+        observer_hit_materialize_sec=0., observer_aggregate_sec=0.,
+        observer_host_query_rows=0, observer_host_query_batches=0,
+        observer_effective_chunk_max=0,
+    )
+    larger_host_chunks = (
+        sensor is None and spec.get("search_mode") == "full_detail"
+        and requested == "gpu_cuda" and os.environ.get("LEAKAGE_OBSERVER_HOST_BATCH") == "larger"
+    )
+    host_work_budget = 1_048_576 if larger_host_chunks else 262_144
     resident = None
     resident_reason = None
     resident_batches = 0
@@ -381,6 +394,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
 
     def result(out_cells, out_views, is_stopped):
         performance = stats.to_summary()
+        performance.update(host_timing)
+        performance["observer_host_work_budget"] = host_work_budget if resident is None else None
         state, reason = stats.compute_execution_diagnosis(gpu_compute_requested=requested == "gpu_cuda")
         if state == "gpu_active" and resident is None:
             state, reason = "gpu_mixed", "observer_transport_cpu_host_roundtrip"
@@ -537,22 +552,35 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         cosine_light = abs(vec_dot(source_normal, vec_mul(wi, -1)))
                         if f <= 0 or cosine_light <= 1e-14:
                             connections[1] += 1
-                            rejection_details.append(dict(depth=depth, outcome="direction_rejected",
-                                reason=("brdf_and_source_grazing" if f <= 0 and cosine_light <= 1e-14 else
-                                        "brdf_nonpositive" if f <= 0 else "source_grazing"),
-                                reflection_point_mm=hit.point, reflection_face_index=hit.face_index,
-                                source_point_mm=point, source_index=source_index))
+                            if sensor is not None:
+                                rejection_details.append(dict(depth=depth, outcome="direction_rejected",
+                                    reason=("brdf_and_source_grazing" if f <= 0 and cosine_light <= 1e-14 else
+                                            "brdf_nonpositive" if f <= 0 else "source_grazing"),
+                                    reflection_point_mm=hit.point, reflection_face_index=hit.face_index,
+                                    source_point_mm=point, source_index=source_index,
+                                    scatter_model=profile.scatter_model, bsdf_asset_id=profile.bsdf_asset_id,
+                                    material_reflectance=profile.reflectance, specular_ratio=profile.specular_ratio,
+                                    gaussian_sigma_deg=profile.gaussian_sigma_deg,
+                                    mesh_normal=hit.normal, oriented_normal=normal,
+                                    incident_toward_source=wi, outgoing_toward_previous_vertex=wo,
+                                    incident_cosine=vec_dot(normal, wi), outgoing_cosine=vec_dot(normal, wo),
+                                    source_normal=source_normal, source_cosine=cosine_light, brdf_value=f))
                         else:
                             # Include endpoint CAD so a Block covering the
                             # source is not skipped as an emitter self-hit.
                             block = yield vec_add(hit.point, vec_mul(wi, epsilon)), wi, epsilon, distance-epsilon+1e-9
                             if not source_connection_visible(mesh, block, distance, epsilon):
                                 connections[2] += 1
-                                rejection_details.append(dict(depth=depth, outcome="occluded",
-                                    reason="source_connection_blocked", reflection_point_mm=hit.point,
-                                    reflection_face_index=hit.face_index, source_point_mm=point,
-                                    source_index=source_index, blocker_face_index=block.face_index,
-                                    blocker_point_mm=block.point, blocker_metadata=mesh.metadata(block.face_index)))
+                                if sensor is not None:
+                                    rejection_details.append(dict(depth=depth, outcome="occluded",
+                                        reason="source_connection_blocked", reflection_point_mm=hit.point,
+                                        reflection_face_index=hit.face_index, source_point_mm=point,
+                                        source_index=source_index, blocker_face_index=block.face_index,
+                                        blocker_point_mm=block.point, blocker_metadata=mesh.metadata(block.face_index),
+                                        reflection_metadata=mesh.metadata(hit.face_index),
+                                        blocker_same_face=block.face_index == hit.face_index,
+                                        blocker_distance_from_offset_mm=block.t,
+                                        source_distance_from_reflection_mm=distance, ray_offset_mm=epsilon))
                             else:
                                 pdf = distance2/(sources[source_index][3]*cosine_light*len(sources))
                                 le = emission_radiance(sources[source_index], point, source_normal, vec_mul(wi, -1))
@@ -637,13 +665,15 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
 
         # Transparent/excluded CAD sources require virtual triangle tests on
         # the host too. Keep each committed chunk bounded for Stop/progress.
-        host_work_limit = max(1, 262144//max(1, len(virtual)*(config.max_depth+1)))
+        host_work_limit = max(1, host_work_budget//max(1, len(virtual)*(config.max_depth+1)))
         effective_batch_size = resident.batch_size(batch_size) if resident is not None else min(batch_size, host_work_limit)
         for start in range(0, plan["grid_samples"], effective_batch_size):
             if should_stop and should_stop():
                 if pause_callback is None or not pause_current():
                     stopped = True
                     break
+            host_timing["observer_effective_chunk_max"] = max(
+                host_timing["observer_effective_chunk_max"], min(effective_batch_size, plan["grid_samples"]-start))
             if resident is not None:
                 # Commit only after the entire chunk has validated. Failure does
                 # not publish an incomplete or duplicated radiance accumulator.
@@ -666,7 +696,8 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
             else:
                 completed, interrupted = _execute_probes(mesh,
                     [probe(i) for i in range(start, min(plan["grid_samples"], start+effective_batch_size))],
-                    stats, dispatch, should_stop, pause_current if pause_callback is not None else None)
+                    stats, dispatch, should_stop, pause_current if pause_callback is not None else None, timing=host_timing)
+            aggregate_started = time.perf_counter()
             if sensor is not None:
                 record_stages(sensor_stages, completed)
                 values = [item[1] for item in completed if item is not None]
@@ -680,6 +711,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                             sensor_path_strength = item[5]
                 committed += len(values)
                 committed_depth_limited = depth_limited
+                host_timing["observer_aggregate_sec"] += time.perf_counter() - aggregate_started
                 if progress_callback:
                     progress_callback(committed, planned)
                 if interrupted:
@@ -702,6 +734,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                                 pending[key] = cell[key]
                 committed += completed.sample_count
                 committed_depth_limited = depth_limited
+                host_timing["observer_aggregate_sec"] += time.perf_counter() - aggregate_started
                 if progress_callback:
                     progress_callback(committed, planned)
                 continue
@@ -730,6 +763,7 @@ def trace_observer_radiance(trace_input, collector, resolved, should_stop=None,
                         pending.update(position=path[-2], representative_path=path, representative_contribution_nit=contribution)
             committed += sum(item is not None for item in completed)
             committed_depth_limited = depth_limited
+            host_timing["observer_aggregate_sec"] += time.perf_counter() - aggregate_started
             if progress_callback:
                 progress_callback(committed, planned)
             if interrupted:

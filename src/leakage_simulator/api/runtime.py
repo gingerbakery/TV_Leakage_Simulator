@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
 import shutil
@@ -51,6 +52,40 @@ from leakage_simulator.bitsam_package import (
 from leakage_simulator.server_diagnostics import log_event, request_id
 
 
+def _trace_result_checks(result: dict[str, Any]) -> dict[str, Any]:
+    if not result:
+        return {}
+    config = result.get("config") or {}
+    grids = []
+    for index, grid in enumerate(result.get("receiver_grids") or [], start=1):
+        digest = hashlib.sha256()
+        row_totals = []
+        for row in grid["flux_lumen"]:
+            values = array("d", row)
+            row_totals.append(math.fsum(values))
+            if sys.byteorder != "little":
+                values.byteswap()
+            digest.update(values)
+        grids.append({
+            "receiver_index": index,
+            "resolution": grid["resolution"],
+            "hits": grid["hit_count"],
+            "flux_lumen": math.fsum(row_totals),
+            "heatmap_fp64_le_sha256": digest.hexdigest(),
+        })
+    return {
+        "result_total_rays": result.get("total_rays"),
+        "receiver_hit_count": result.get("receiver_hit_count"),
+        "surface_hit_count": result.get("surface_hit_count"),
+        "terminated_ray_count": result.get("terminated_ray_count"),
+        "seed": config.get("seed"),
+        "max_depth": config.get("max_depth"),
+        "emitter_types": sorted({item["emitter_type"] for item in result.get("emitters") or []
+                                 if item.get("enabled", True) and item.get("emitter_type")}),
+        "receivers": grids,
+    }
+
+
 def _trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
     metrics = result.get("metrics") or {}
     observer = metrics.get("_observer_probe_summary") or {}
@@ -63,6 +98,7 @@ def _trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {
+        "result_checks": _trace_result_checks(result),
         "compute_metrics_available": bool(metrics.get("_performance_summary")),
         "observer_compute_metrics_available": bool(observer.get("performance")),
         "compute": scalar_summary(metrics.get("_performance_summary") or {}),
